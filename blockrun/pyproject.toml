@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "em-blockrun"
+version = "0.1.0"
+description = "Resumable, chunked parallel maps on dask — locally or on Flatiron Rusty/SLURM."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# Runtime dependencies (dask, distributed, dask-jobqueue, pyyaml) are provided by
+# conda-forge via pixi (see pixi.toml), so they are intentionally not duplicated
+# here — this keeps it installable as a path dependency into a consumer's pixi env
+# without uv trying to re-resolve conda-provided packages.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["em_blockrun"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exercises a real dask cluster (LocalCluster); slower to run",
+]
