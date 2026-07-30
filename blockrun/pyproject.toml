@@ -9,11 +9,18 @@ description = "Resumable, chunked parallel maps on dask — locally or on Flatir
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
-# Runtime dependencies (dask, distributed, dask-jobqueue, pyyaml) are provided by
-# conda-forge via pixi (see pixi.toml), so they are intentionally not duplicated
-# here — this keeps it installable as a path dependency into a consumer's pixi env
-# without uv trying to re-resolve conda-provided packages.
-dependencies = []
+# All runtime deps are pure-Python and available from both conda-forge and PyPI.
+# In the shared conda env they come from conda-forge, so install with
+# `pip install --no-deps -e .` to keep pip from re-resolving them.
+dependencies = [
+    "dask",
+    "distributed",        # dask.distributed Client / LocalCluster / as_completed
+    "dask-jobqueue>=0.8", # SLURMCluster
+    "pyyaml",             # dask-config.yaml loading
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["em_blockrun"]

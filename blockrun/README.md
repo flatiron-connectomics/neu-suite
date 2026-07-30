@@ -29,8 +29,14 @@ Orchestration background and hard-won SLURM gotchas: see
 
 ## Environment
 
-Managed with [pixi]; the env is detached to ceph (home inode quota).
+One conda environment covers this repo and its consumers (`em-volume-tools`,
+`em-seg-morpho`), each installed editable. All runtime deps here are pure Python
+and come from conda-forge; `--no-deps` keeps pip from re-resolving them.
 
 ```bash
-pixi install && pixi run -e dev test
+conda activate em-lib
+pip install --no-deps -e .
+python -m pytest -q
 ```
+
+The combined spec lives one level up, at `em-libraries/environment.yml`.
