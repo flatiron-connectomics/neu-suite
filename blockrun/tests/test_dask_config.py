@@ -81,10 +81,10 @@ def test_deep_merge_does_not_mutate_its_inputs():
 def test_overlay_keeps_template_values_it_does_not_mention(tmp_path):
     """The reason layering exists: a site file is the keys that differ, not a fork."""
     site = tmp_path / "site.yaml"
-    site.write_text("jobqueue:\n  slurm:\n    account: your-account\n")
+    site.write_text("jobqueue:\n  slurm:\n    account: test-account\n")
     merged, sources = dc.load_config(["dask-slurm-example", str(site)])
     slurm = merged["jobqueue"]["slurm"]
-    assert slurm["account"] == "ccn"
+    assert slurm["account"] == "test-account"
     assert slurm["cores"] and slurm["walltime"], "template values were lost"
     assert "distributed" in merged, "sibling section was lost"
     assert len(sources) == 2
@@ -94,8 +94,8 @@ def test_overlay_keeps_template_values_it_does_not_mention(tmp_path):
 # validation — the part that earns its keep
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("doc,expected", [
-    ({"jobqueue": {"slurm": {"acount": "ccn"}}}, "jobqueue.slurm.acount"),
-    ({"jobqeue": {"slurm": {"account": "ccn"}}}, "jobqeue"),
+    ({"jobqueue": {"slurm": {"acount": "x"}}}, "jobqueue.slurm.acount"),
+    ({"jobqeue": {"slurm": {"account": "x"}}}, "jobqeue"),
     ({"distributed": {"worker": {"memry": {"target": False}}}},
      "distributed.worker.memry"),
 ])
@@ -140,7 +140,7 @@ def test_free_form_mappings_accept_arbitrary_keys():
 def test_load_config_raises_and_names_the_offending_file(tmp_path):
     """With a merge chain, 'which overlay did this come from' is the real question."""
     bad = tmp_path / "typo-site.yaml"
-    bad.write_text("jobqueue:\n  slurm:\n    acount: ccn\n")
+    bad.write_text("jobqueue:\n  slurm:\n    acount: x\n")
     with pytest.raises(dc.ConfigKeyError) as exc:
         dc.load_config(["dask-slurm-example", str(bad)])
     message = str(exc.value)
@@ -168,7 +168,7 @@ def test_non_mapping_yaml_is_rejected(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_effective_config_records_the_merged_result_and_its_sources(tmp_path):
     site = tmp_path / "site.yaml"
-    site.write_text("jobqueue:\n  slurm:\n    account: your-account\n")
+    site.write_text("jobqueue:\n  slurm:\n    account: test-account\n")
     merged, sources = dc.load_config(["dask-slurm-example", str(site)])
 
     out = tmp_path / "work"
@@ -178,7 +178,7 @@ def test_effective_config_records_the_merged_result_and_its_sources(tmp_path):
     text = open(written).read()
     for source in sources:
         assert source in text, "the merge chain must be recoverable from the record"
-    assert yaml.safe_load(text)["jobqueue"]["slurm"]["account"] == "ccn"
+    assert yaml.safe_load(text)["jobqueue"]["slurm"]["account"] == "test-account"
 
 
 def test_effective_config_accepts_an_explicit_file_path(tmp_path):
