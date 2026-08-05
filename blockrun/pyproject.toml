@@ -7,6 +7,8 @@ name = "em-blockrun"
 version = "0.1.0"
 description = "Resumable, chunked parallel maps on dask — locally or on Flatiron Rusty/SLURM."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
 # All runtime deps are pure-Python and available from both conda-forge and PyPI.
