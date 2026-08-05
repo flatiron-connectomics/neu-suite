@@ -1,10 +1,17 @@
-# Local (dev / smoke test) — no SLURM. See docs/dask-slurm-rusty.md §5c.
+# Local dask cluster — development and smoke tests. No SLURM, no scheduler.
+#
+# Use this to prove a small job end to end before committing a real allocation.
+# `--workers N` becomes N single-threaded local processes, so keep N well under the
+# core count. This is the default when no --config is given.
 jobqueue:
   local: {}
 distributed:
   worker:
     memory:
-      # DISABLE dask's memory manager. Use `false`, NOT 0.0 (see cookbook Gotcha #1).
+      # DISABLE dask's memory manager, all four keys. Use `false`, NOT 0.0 — 0.0
+      # reads as "spill once 0% is used", i.e. spill constantly. Spilling a block's
+      # working set to disk is slower than letting the block finish, and the peak is
+      # bounded by one block by design.
       target: false
       spill: false
       pause: false

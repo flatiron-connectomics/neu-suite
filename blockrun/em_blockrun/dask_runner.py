@@ -1,21 +1,24 @@
-"""Dask cluster startup for local or Rusty/SLURM execution.
+"""Dask cluster startup for local or SLURM execution.
 
-Lifted from docs/dask-slurm-rusty.md §4 (the ``start_dask`` cookbook), verbatim
-in behavior. The config's first ``jobqueue`` key selects the cluster type:
-``local`` -> LocalCluster, ``slurm`` -> SLURMCluster (``scale`` submits sbatch).
-The driver process must stay alive for the whole run; on exit the cluster (and
-its SLURM jobs) are torn down.
+The config's first ``jobqueue`` key selects the cluster type: ``local`` ->
+LocalCluster, ``slurm`` -> SLURMCluster (``scale`` submits sbatch). The client
+process must stay alive for the whole run; on exit the cluster (and its SLURM jobs)
+are torn down.
+
+Config loading — bundled templates, layered overrides, key validation — lives in
+:mod:`em_blockrun.dask_config`.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Iterator
+from typing import Iterator, Sequence
 
 import dask
-import yaml
 from dask.distributed import Client
+
+from .dask_config import load_config, write_effective_config
 
 # Pin every worker to a single thread for numerical libs, so N single-threaded
 # dask workers on a node don't each spawn a full BLAS thread-pool and oversubscribe.
@@ -34,22 +37,44 @@ _THREAD_PIN = [
 @contextlib.contextmanager
 def start_dask(
     num_workers: int,
-    config_path: str = "dask-config.yaml",
+    config_path: str | Sequence[str] = "dask-local",
     label: str = "job",
     logger: logging.Logger | None = None,
     wait_timeout: int = 600,
+    effective_config_path: str | None = None,
 ) -> Iterator[Client]:
-    """Start a Dask cluster from a YAML config and yield a connected Client.
+    """Start a Dask cluster from one or more YAML configs; yield a connected Client.
+
+    ``config_path`` is a bundled name (see :func:`bundled_configs`) or a path, or a
+    **sequence of either**, deep-merged left to right — so a site config carries only
+    the keys that differ from a template. Unrecognised keys raise rather than merging
+    silently; see :mod:`em_blockrun.dask_config`.
+
+    The default is the bundled ``dask-local``, so ``start_dask(4)`` works from any
+    directory. It used to be the relative path ``"dask-config.yaml"``, which resolved
+    only from whichever directory happened to contain such a file.
 
     The config's first ``jobqueue`` key selects the cluster type:
       - ``"local"``: a LocalCluster with ``num_workers`` single-threaded workers.
       - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs.
     Tears the cluster (and SLURM jobs) down on exit.
+
+    ``effective_config_path`` (a directory or file) records the merged result. Worth
+    passing from a run directory: with layered overrides, "what config did this run
+    actually use" is otherwise only answerable by replaying the merge by hand.
     """
     logger = logger or logging.getLogger(__name__)
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    config, sources = load_config(config_path)
+    if effective_config_path:
+        written = write_effective_config(effective_config_path, config, sources)
+        logger.info("dask config: %s -> %s", " + ".join(sources), written)
+    else:
+        logger.info("dask config: %s", " + ".join(sources))
 
+    if not config.get("jobqueue"):
+        raise ValueError(
+            f"no 'jobqueue' section in {' + '.join(sources)}; it selects the cluster "
+            f"type ('local' or 'slurm')")
     cluster_type = next(iter(config["jobqueue"]))
     dask.config.update(dask.config.config, config)  # load YAML into dask's global config
 

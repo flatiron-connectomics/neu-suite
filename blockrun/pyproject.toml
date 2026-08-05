@@ -24,6 +24,11 @@ dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["em_blockrun"]
+# em_blockrun/configs/*.yaml are package DATA and ship automatically, because
+# hatchling includes every tracked file under `packages`. Consumers resolve them by
+# name through importlib.resources, so a missing template breaks `--config
+# dask-local`. Keep them TRACKED, and never add an unanchored `configs/` pattern to
+# .gitignore — it matches at any depth and would silently exclude these.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
