@@ -48,7 +48,9 @@ jobs:
         # consumer while the test suite — running from a source tree — stays green.
         run: |
           pip install build
-          python -m build --wheel --no-isolation -o dist/
+          # No --no-isolation: `build` provisions hatchling into a temp env itself.
+          # Passing it locally works only because hatchling is installed there.
+          python -m build --wheel -o dist/
           python - <<'PY'
           import glob, zipfile, sys
           names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
