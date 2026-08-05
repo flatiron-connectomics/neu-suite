@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first — no point finishing CI for a
+# commit that has already been superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what the shared em-lib environment uses; 3.11 is the floor
+        # pyproject declares, and testing it is the only thing keeping that
+        # declaration honest.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        # Every dependency is on PyPI and none is a compiled extension pinned to a
+        # conda build, so a plain pip install is faithful here. The consumers are
+        # not so lucky — see their workflows.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: Check the bundled dask templates ship in a built wheel
+        # The templates are package DATA resolved via importlib.resources. If they
+        # are ever dropped from the wheel, `--config dask-local` breaks for every
+        # consumer while the test suite — running from a source tree — stays green.
+        run: |
+          pip install build
+          python -m build --wheel --no-isolation -o dist/
+          python - <<'PY'
+          import glob, zipfile, sys
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          want = {"em_blockrun/configs/dask-local.yaml",
+                  "em_blockrun/configs/dask-slurm-example.yaml"}
+          missing = want - set(names)
+          sys.exit(f"missing from wheel: {sorted(missing)}" if missing else 0)
+          PY
