@@ -71,3 +71,10 @@ python -m pytest -q
 ```
 
 The combined spec lives one level up, at `em-libraries/environment.yml`.
+
+## License
+
+©2026 The Simons Foundation, Inc.
+
+Licensed under the [Apache License, Version 2.0](LICENSE). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how contributions are licensed.
