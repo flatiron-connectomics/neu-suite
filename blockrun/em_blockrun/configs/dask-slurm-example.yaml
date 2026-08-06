@@ -30,10 +30,25 @@ jobqueue:
     memory: 900GB            # EDIT ME: <= the smallest eligible node's memory
     walltime: "12:00:00"     # every stage is idempotent — a killed job just resumes
 
-    account: your-account    # EDIT ME: -A
     queue: your-partition    # EDIT ME: --partition
 
-    name: em-seg-morpho
+    # account: your-account  # -A. Usually UNNECESSARY: with a single account
+    #                        # association SLURM applies your default, and
+    #                        # dask-jobqueue simply omits the -A directive when this
+    #                        # is unset. Set it only if you belong to several
+    #                        # accounts and need a non-default one. Note an account
+    #                        # and a partition may share a name, so check which one
+    #                        # you mean (`sacctmgr show user $USER withassoc`).
+
+    # name: my-job           # #SBATCH -J, and the <name>-<jobid>.{err,out} log
+    #                        # filenames. Left unset on purpose: start_dask fills it
+    #                        # from the calling command (em-vol / em-morpho), so
+    #                        # `squeue` says which tool submitted the job without
+    #                        # this needing editing per project. Set it to override.
+
+    # SLURM's stdout/stderr for the WORKER jobs — worker tracebacks and dask's own
+    # chatter, i.e. where to look when workers die or never start. Not the run's
+    # progress record, which lives in the tool's --work-dir.
     log-directory: /path/to/dask-job-logs   # EDIT ME: somewhere with room; not $HOME
 
     # To pin a node type (usually unnecessary — it shrinks the eligible pool):

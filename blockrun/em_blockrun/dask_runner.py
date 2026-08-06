@@ -18,7 +18,7 @@ from typing import Iterator, Sequence
 import dask
 from dask.distributed import Client
 
-from .dask_config import load_config, write_effective_config
+from .dask_config import deep_merge, load_config, write_effective_config
 
 # Pin every worker to a single thread for numerical libs, so N single-threaded
 # dask workers on a node don't each spawn a full BLAS thread-pool and oversubscribe.
@@ -65,17 +65,30 @@ def start_dask(
     """
     logger = logger or logging.getLogger(__name__)
     config, sources = load_config(config_path)
-    if effective_config_path:
-        written = write_effective_config(effective_config_path, config, sources)
-        logger.info("dask config: %s -> %s", " + ".join(sources), written)
-    else:
-        logger.info("dask config: %s", " + ".join(sources))
 
     if not config.get("jobqueue"):
         raise ValueError(
             f"no 'jobqueue' section in {' + '.join(sources)}; it selects the cluster "
             f"type ('local' or 'slurm')")
     cluster_type = next(iter(config["jobqueue"]))
+
+    # Default the job name to the caller's label, so `squeue` and the per-job worker
+    # logs say WHICH command submitted them. dask-jobqueue's own default is the
+    # uninformative "dask-worker", and `name` drives two things: `#SBATCH -J` and the
+    # `<log-directory>/<name>-<jobid>.{err,out}` filenames. Deriving it from the
+    # command means it does not have to be edited into every site config — and a
+    # config that DOES set it still wins.
+    section = config["jobqueue"].get(cluster_type) or {}
+    if "name" not in section:
+        config = deep_merge(config, {"jobqueue": {cluster_type: {"name": label}}})
+
+    # Dump AFTER the injection, so the record matches what dask actually received.
+    if effective_config_path:
+        written = write_effective_config(effective_config_path, config, sources)
+        logger.info("dask config: %s -> %s", " + ".join(sources), written)
+    else:
+        logger.info("dask config: %s", " + ".join(sources))
+
     dask.config.update(dask.config.config, config)  # load YAML into dask's global config
 
     if cluster_type == "local":
