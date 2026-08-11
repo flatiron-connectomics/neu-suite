@@ -33,6 +33,12 @@ jobs:
           for repo in em-blockrun em-volume-tools em-seg-morpho; do
             git clone --depth 1 https://github.com/flatiron-connectomics/$repo.git $repo
           done
+          # Which commit of each package this site documents. The docs build against
+          # main, so they can be a push ahead of the packages — and when they are, the
+          # failure is otherwise an AttributeError with no hint of version skew.
+          for repo in em-blockrun em-volume-tools em-seg-morpho; do
+            echo "$repo $(git -C $repo log -1 --format='%h %ci %s')"
+          done
 
       - uses: actions/setup-python@v5
         with:

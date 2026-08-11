@@ -56,7 +56,21 @@ def _subcommands(parser: argparse.ArgumentParser):
 def _load(module: str) -> argparse.ArgumentParser:
     import importlib
 
-    return importlib.import_module(module).build_parser()
+    mod = importlib.import_module(module)
+    builder = getattr(mod, "build_parser", None)
+    if builder is None:
+        # This site is built against the package repositories' `main`, so it is one
+        # version skew away from a confusing failure: the docs can be newer than the
+        # package they document. Raised by name because the underlying symptom is a
+        # bare AttributeError inside a Sphinx event handler, which says nothing about
+        # what to do.
+        raise RuntimeError(
+            f"{module} has no build_parser(). The CLI reference renders the real "
+            f"ArgumentParser, so the package needs the commit that split "
+            f"build_parser() out of _parse_args — and this site builds against the "
+            f"package repositories' main branch, so that commit has to be PUSHED, not "
+            f"just committed locally. Installed from: {getattr(mod, '__file__', '?')}")
+    return builder()
 
 
 def _rst_safe(text: str) -> str:
