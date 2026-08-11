@@ -15,7 +15,8 @@ em-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
     --work-dir /mnt/ceph/users/<you>/gt-meshing --stages mesh --mesh-scale 0 \
     --config ... --workers 48
 
-em-vol annotations s3://.../gt_v2 --label gt --out gt_layer.json
+em-vol bboxes-json s3://.../gt_v2 --label gt --out gt_layer.json
+em-vol ng-url-gen --seg s3://.../gt_v2 --layer gt_layer.json --select-last
 ```
 
 ## Why `relabel` is not optional
@@ -30,7 +31,7 @@ ids, 508 of them used by more than one chunk.** A body numbered 1 was a chimera 
 dozen unrelated cells spanning 57 × 29 × 33 µm, where a single chunk is about 2 µm.
 
 `relabel` walks the occupied regions in order and gives each its own range. It finds the
-regions the same way `annotations` does — from which chunk objects exist — so they are
+regions the same way `bboxes-json` does — from which chunk objects exist — so they are
 pairwise disjoint and chunk-aligned, and it is serial by construction because each range
 begins where the last ended.
 
