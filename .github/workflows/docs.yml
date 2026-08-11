@@ -1,0 +1,69 @@
+name: docs
+
+# Rebuilt on a change here, on a dispatch from any of the three package repos (so
+# merging there refreshes the published CLI reference), and on demand.
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [package-updated]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy midway; queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The three packages are cloned rather than carried as submodules: submodules
+      # pin a commit, which buys nothing without a release story and guarantees the
+      # published docs lag the code. main is what everyone runs.
+      - name: Check out the packages
+        run: |
+          for repo in em-blockrun em-volume-tools em-seg-morpho; do
+            git clone --depth 1 https://github.com/flatiron-connectomics/$repo.git $repo
+          done
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # No conda, and that is not an accident: importing the two CLI modules pulls in
+      # dask, distributed and numpy only — never tensorstore, vol2mesh, dvidutils or
+      # kimimaro, which are conda-only on flyem-forge and would force a much slower
+      # micromamba job. em-volume-tools' test suite pins that property so this cannot
+      # quietly stop being true.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+          pip install ./em-blockrun ./em-volume-tools ./em-seg-morpho
+
+      # -W because the CLI reference is generated: a warning here means a parser stopped
+      # rendering, which is exactly the silent drift this site exists to prevent.
+      - name: Build
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

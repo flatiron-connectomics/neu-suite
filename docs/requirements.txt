@@ -1,0 +1,9 @@
+# Documentation build only. Deliberately NOT the em-lib environment: importing the two
+# CLI modules pulls in dask, distributed and numpy and nothing else — no tensorstore,
+# vol2mesh, dvidutils or kimimaro — so the site builds from PyPI alone, with no conda
+# and no flyem-forge. A test in em-volume-tools pins that property.
+sphinx>=8
+myst-parser>=4
+sphinx-argparse>=0.5
+furo>=2024.8.6
+sphinx-design>=0.6

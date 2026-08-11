@@ -1,0 +1,32 @@
+# The three packages are their own repositories, cloned as siblings here. They are
+# NOT submodules — see .github/workflows/docs.yml for why.
+em-blockrun/
+em-volume-tools/
+em-seg-morpho/
+
+# Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
+# one cluster's partitions, accounts and paths.
+configs/
+
+# Working notes and agent context. These carry ceph paths, usernames and in-flight run
+# detail that do not belong in a public repository.
+CLAUDE.md
+NOTES-TODO.md
+CLI-CONSOLIDATION-PLAN.md
+
+# Dataset content and run artefacts, which are large and belong on ceph, not in git.
+*.csv
+*.jsonl
+*.log
+gt_v1_*.json
+gt_v2_*.json
+*.relabel-*.json
+
+# Build output and the generated pages. Generating them is the point: a committed copy
+# could disagree with the code, which is the failure this site is designed to prevent.
+docs/_build/
+docs/_generated/
+
+__pycache__/
+*.pyc
+.venv/

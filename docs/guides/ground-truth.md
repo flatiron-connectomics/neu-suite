@@ -1,0 +1,71 @@
+# Ground truth: from annotated chunks to meshes
+
+The full path for manually annotated chunks assembled into one volume, meshed, and
+published for viewing.
+
+```bash
+em-vol create  s3://.../gt_v1 --like s3://.../image --dtype uint64 --kind segmentation
+em-vol write   s3://.../gt_v1 --src chunk1.h5 --src chunk2.h5 ...
+em-vol downsample s3://.../gt_v1 --start-level 0 --config ... --workers 24
+
+em-vol relabel s3://.../gt_v1 --out s3://.../gt_v2       # ← do not skip
+em-vol downsample s3://.../gt_v2 --start-level 0 --config ... --workers 24
+
+em-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
+    --work-dir /mnt/ceph/users/<you>/gt-meshing --stages mesh --mesh-scale 0 \
+    --config ... --workers 48
+
+em-vol annotations s3://.../gt_v2 --label gt --out gt_layer.json
+```
+
+## Why `relabel` is not optional
+
+Annotation tools number each chunk from 1. Assembled into one volume, the same integer
+names a different cell in every chunk — and nothing downstream can tell. Meshing produces
+one body whose components are scattered metres apart in model space: correct for the
+label, useless as ground truth.
+
+Measured on a real 12-chunk ground truth volume: **3,832 label-instances, 1,901 distinct
+ids, 508 of them used by more than one chunk.** A body numbered 1 was a chimera of a
+dozen unrelated cells spanning 57 × 29 × 33 µm, where a single chunk is about 2 µm.
+
+`relabel` walks the occupied regions in order and gives each its own range. It finds the
+regions the same way `annotations` does — from which chunk objects exist — so they are
+pairwise disjoint and chunk-aligned, and it is serial by construction because each range
+begins where the last ended.
+
+```{important}
+The old→new mapping is written to `<destination>.relabel-<level>.json` and is the **only**
+route from a new id back to the region and original label it came from. Keep it with the
+volume. Prefer `--out` over `--in-place` for the same reason: a sparse copy is nearly
+free, and the original stays as the record of the raw annotation.
+```
+
+`--block-size N` numbers region *k* from `N*k+1` instead of consecutively, so the chunk a
+label came from is readable straight off the id.
+
+Because `relabel` is single-scale, the levels above it hold the old ids until
+`downsample` re-runs. It says so on every run.
+
+## Meshing
+
+`--stages mesh` if you do not want skeletons; without it you get both.
+
+Fault policy is asymmetric on purpose. Per-**body** tasks isolate failures — recorded with
+a traceback, retried on the next run — while per-**block** tasks fail fast, because stage 2
+aggregates across blocks and a silently skipped block truncates every body passing through
+it while the output still looks complete. Expect roughly 0.5% of bodies to fail; they are
+highly fragmented ones whose small components collapse under LOD decimation.
+
+```{warning}
+If you delete a subresource directory afterwards, remove its key from the volume's `info`
+too. An `info` naming a `skeletons` directory that no longer exists is a volume describing
+something that is not there.
+```
+
+## Watching it
+
+```bash
+em-morpho progress   <work-dir>      # live, both stages have real denominators
+em-morpho run-report <work-dir>      # self-contained HTML, works on an in-flight run
+```
