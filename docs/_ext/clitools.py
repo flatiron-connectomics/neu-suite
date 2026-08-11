@@ -152,11 +152,34 @@ def write_cheatsheet(path: Path) -> None:
         out += [f"| [`{prog} {name}`](#{prog}-{name}) | {help_} |"
                 for name, _sub, help_ in subs]
         out.append("")
+        out += _extras(module)
         for name, sub, help_ in subs:
             usage = " ".join(sub.format_usage().split())
             usage = usage[len("usage: "):] if usage.startswith("usage: ") else usage
             out += [f"### `{prog} {name}`", "", help_, "", "```text", usage, "```", ""]
     path.write_text("\n".join(out))
+
+
+def _extras(module: str) -> list[str]:
+    """Per-command detail worth having on the cheat sheet, taken from the package.
+
+    Only `em-morpho`'s stages so far. They belong here because "which stages do I pass"
+    is the question the cheat sheet exists to answer, and `--stages index,mesh,skel`
+    tells you nothing about what those are — but the text is imported rather than
+    restated, so the site, `--help` and the code cannot disagree.
+    """
+    import importlib
+
+    doc = getattr(importlib.import_module(module), "STAGE_DOC", None)
+    if not doc:
+        return []
+    out = ["#### Stages", "",
+           "Passed to `run --stages` as a comma-separated list, and run in this order. "
+           "Each is idempotent and resumable, so re-running a subset continues rather "
+           "than redoing it.", "",
+           "| stage | what it does |", "| --- | --- |"]
+    out += [f"| `{name}` | {text} |" for name, text in doc.items()]
+    return out + [""]
 
 
 GITHUB = "https://github.com/flatiron-connectomics"
