@@ -24,7 +24,7 @@ GENERATED = HERE / "_generated"
 # The two console scripts. em-blockrun is a library and declares no [project.scripts],
 # so it has no CLI page — it appears in the design notes instead.
 COMMANDS = [
-    ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, "
+    ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, copy, "
                                       "create, write, renumber"),
     ("em-morpho", "em_seg_morpho.cli", "meshes and skeletons from a segmentation"),
 ]
