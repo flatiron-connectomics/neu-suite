@@ -5,8 +5,16 @@ name: docs
 on:
   push:
     branches: [main]
+  # Sent by each package repo's `tests.yml` after a green push to its main, so the
+  # published CLI reference follows the code without anyone touching this repo.
   repository_dispatch:
     types: [package-updated]
+  # The fallback that needs no token: if DOCS_DISPATCH_TOKEN is ever missing, revoked
+  # or expired, the site is at most a day stale rather than frozen at whatever commit
+  # last pushed here. Note GitHub disables schedules on a repo with 60 days of no
+  # activity, which for this repo is plausible — the dispatch is the primary path.
+  schedule:
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,6 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Why this build is running
+        run: |
+          echo "trigger: ${{ github.event_name }}"
+          if [ -n "${{ github.event.client_payload.repo }}" ]; then
+            echo "dispatched by ${{ github.event.client_payload.repo }} @ ${{ github.event.client_payload.sha }}"
+          fi
 
       # The three packages are cloned rather than carried as submodules: submodules
       # pin a commit, which buys nothing without a release story and guarantees the
