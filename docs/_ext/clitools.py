@@ -25,7 +25,7 @@ GENERATED = HERE / "_generated"
 # so it has no CLI page — it appears in the design notes instead.
 COMMANDS = [
     ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, copy, "
-                                      "create, write, renumber"),
+                                      "create, write, renumber, annotate"),
     ("em-morpho", "em_seg_morpho.cli", "meshes and skeletons from a segmentation"),
 ]
 
