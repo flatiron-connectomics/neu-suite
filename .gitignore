@@ -15,12 +15,8 @@ NOTES-TODO.md
 CLI-CONSOLIDATION-PLAN.md
 
 # Dataset content and run artefacts, which are large and belong on ceph, not in git.
-*.csv
-*.jsonl
 *.log
-gt_v1_*.json
-gt_v2_*.json
-*.relabel-*.json
+data/
 
 # Build output and the generated pages. Generating them is the point: a committed copy
 # could disagree with the code, which is the failure this site is designed to prevent.
