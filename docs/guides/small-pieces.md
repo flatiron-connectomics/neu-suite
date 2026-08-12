@@ -88,6 +88,14 @@ Reads are blocked, so a "small" volume that turns out not to be still packs rath
 filling memory. `--chunk` sets the HDF5 storage chunk, which is what governs partial reads
 when the piece is written back.
 
+### When background is not 0
+
+`--background 1` on `write`, `to-hdf5` or `convert` replaces those values with 0 **as the
+source is read**. That timing is the point, not a convenience: an all-background block of 1s
+is not all-fill, so without it every such block is *stored*, and the volume stops answering
+"where is the data" by which chunks exist. `em-vol mask-by-value` repairs data that has
+already landed — see [the ground-truth guide](ground-truth.md).
+
 ### When another tool named the fields differently
 
 `--voxel-size-field` (default `voxel_size`) sets the attribute the scale is written under
