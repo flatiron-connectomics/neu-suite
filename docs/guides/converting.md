@@ -42,13 +42,50 @@ crop origin, which for precomputed means a `voxel_offset` equal to the crop star
 loading the crop beside the original in neuroglancer lands it exactly over the region it
 came from rather than at the origin.
 
+### Excluding a region: `--mask-bbox`
+
+The complement of a crop. `--mask-bbox` copies **everything except** a box, writing
+`--mask-value` (0 by default) inside it — which is how you hold a region out of a copy,
+an evaluation box out of a training volume, say.
+
+```bash
+em-vol copy --src V --dst training --mask-bbox 5664,4544,6848,5696,4608,6912
+em-vol copy --src V --dst training --crop-bbox ... --mask-bbox ... --mask-bbox ...
+```
+
+Repeatable. The masking happens on the **read** side, so every pyramid level inherits the
+hole: each level is derived from the one below it in the output, and a post-pass over
+level 0 alone would leave the region visible as soon as you zoomed out. Mask coordinates
+are always the **source's**, so a mask names the same box whether or not `--crop-bbox` is
+also given.
+
+A box that does not intersect the volume is an **error**, not a no-op: you asked for a
+region to be excluded, and copying everything instead is the one outcome that must not
+pass quietly — a box in the wrong axis order or the wrong scale looks exactly like this.
+
+```{danger}
+**A mask cannot erase what is already at the destination.** A block wholly inside the mask
+reads as all fill, and an all-fill block is *elided* rather than written — that elision is
+what makes a sparse copy cheap. So if the destination already holds that region from an
+earlier, unmasked run, it stays, in every level, and the run still reports success.
+
+`convert` and `copy` resume by default, so this is the realistic way to leak a held-out
+region. Both warn when `--mask-bbox` is given, the destination exists, and `--fresh` is
+not. Use `--fresh` (or delete the destination) unless you are resuming a run that had the
+same mask.
+```
+
 ```{tip}
-`--crop-scale N` lets you give the box in scale-N voxels — usually the level you were
-browsing when you picked it. The conversion uses the source's **own recorded per-level
-voxel sizes**, never an assumed `2**N`: real pyramids are anisotropic, and with factors
-`(1,2,2)` the same six numbers name a box of a different shape at every level. The
-resolved level-0 box is logged before anything runs, and `--dry-run` shows it along with
-the level shapes and the byte count.
+`--bbox-scale N` lets you give **every** box — crop and masks alike — in scale-N voxels,
+usually the level you were browsing when you picked it. The conversion uses the source's
+**own recorded per-level voxel sizes**, never an assumed `2**N`: real pyramids are
+anisotropic, and with factors `(1,2,2)` the same six numbers name a box of a different
+shape at every level. One flag covers all boxes on purpose — two would let you set the
+crop's scale and forget the mask's, putting the hole somewhere else entirely.
+
+`--bbox-order xyz` reads each corner in the order neuroglancer *displays*, which is the
+order a box gets copied out of the viewer in. Both resolve to zyx before anything runs and
+the result is logged; `--dry-run` shows the boxes, the level shapes and the byte count.
 ```
 
 ### The pyramid is rebuilt, not copied
@@ -64,6 +101,53 @@ origin**. If that origin is not a multiple of the coarsest cumulative factor, th
 output's coarse voxels straddle the source's differently and each level's `voxel_offset`
 rounds to its own grid. Level 0 is exact either way. Both commands warn and print an
 aligned origin to use instead.
+
+### Aligning the box first
+
+`em-vol align-bbox` moves a box onto a grid and prints it back, so the crop never
+straddles one:
+
+```bash
+em-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 --to both
+em-vol copy --src V --dst D \
+    --crop-bbox $(em-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 -q)
+```
+
+Which grid matters more than which rounding, and there are three:
+
+`--to write-unit` (default)
+: the chunk, or the **shard** where the level is sharded. A partial write is a
+  read-modify-write: it keeps the object's existing data, but two concurrent partial
+  writes into one object lose one of them silently. Aligning to the *inner* chunk of a
+  sharded level looks like alignment and protects against nothing.
+
+`--to pyramid`
+: the cumulative factor of the source's deepest level, so the crop's coarse levels land
+  on the source's own grid and the two overlay at any zoom. Note this is the strong
+  version of the guarantee: the warning `copy` prints is about the *crop's own* schedule
+  factor, which is smaller, and it names the minimal origin if that is all you need.
+
+`--to both`
+: the per-axis LCM of those two. What a cropped copy of a multiscale volume wants.
+
+Modes are `outer` (grow to cover — never loses a voxel, cannot fail), `inner` (shrink to
+fit inside), `nearest` (round both ends) and `origin` (align the origin and keep the
+**extent** exactly, for a fixed-size crop — its far edge then stays off the grid, and it
+says so). `inner` and `nearest` raise rather than hand back an empty box when the request
+spans no whole block.
+
+`--block z,y,x` aligns to a grid you name and needs no volume at all. `--scale N` takes
+the box in scale-N voxels — converted through the volume's real per-level voxel sizes, so
+an anisotropic pyramid is handled — and reports the result back at that scale when it is
+exactly representable there, which is what `em-morpho --roi` wants.
+
+```{note}
+Growing a box outward can run past the volume, and the result is then trimmed to the
+extent. That trimmed edge sits mid-block and is nonetheless **aligned by definition** —
+the volume's own final block is partial there, so there is no neighbouring data in it to
+lose. `align-bbox` reports the trim and does not report it as misalignment; `em-vol write`
+applies the same rule through the same predicate, so the two cannot drift apart.
+```
 
 ## Choose the level you trust
 
