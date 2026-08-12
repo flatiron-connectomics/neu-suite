@@ -4,9 +4,12 @@
 of small subvolumes — image stacks, HDF5 files — that belong at known positions inside one
 larger volume and arrive at different times. That is `create` then `write`.
 
-Both run in the calling process. No dask, no manifest, no cluster.
+All three run in the calling process. No dask, no manifest, no cluster.
 
 ```bash
+em-vol to-hdf5 --src slices/ --out a.h5 \
+    --voxel-size 8,8,8 --offset 24,128,256      # a piece that knows where it goes
+
 em-vol create /abs/gt.precomputed --like s3://.../image.precomputed \
     --dtype uint64 --kind segmentation          # empty, in the image's exact frame
 
@@ -42,12 +45,79 @@ still clean.
 routinely record one, and `--offset-field` names it (default `voxel_offset`).
 
 ```{warning}
-**The axis order is asked for, never guessed.** `voxel_offset` is precomputed's field
-name, and precomputed means xyz — while everything in these packages is zyx. Reversed,
-the piece lands mirrored through the z=x diagonal, and nothing downstream can tell.
-`--offset-order xyz` if the stored numbers are xyz. The provenance and any reversal are
-printed on every run.
+**The axis order is never guessed.** `voxel_offset` is precomputed's field name, and
+precomputed means xyz — while everything in these packages is zyx. Reversed, the piece
+lands mirrored through the z=x diagonal, and nothing downstream can tell.
+
+So it is either *recorded* or *asked for*: a source may state its order in an `axes`
+attribute, which is what `em-vol to-hdf5` writes, and then `write` reads it rather than
+assuming. Failing that it falls back to zyx, and `--offset-order xyz` overrides both. The
+provenance, which of the three applied, and any reversal are printed on every run.
 ```
+
+## `to-hdf5` makes a piece worth placing
+
+The inverse of `write`. An image stack off a microscope or an annotation tool is a
+directory of PNGs with no coordinates attached; `em-vol to-hdf5` packs it into one HDF5
+file **with** its frame and position, so placing it later needs no arguments at all:
+
+```bash
+em-vol to-hdf5 --src slices/ --out piece.h5 --voxel-size 40,8,8 --offset 24,128,256
+em-vol write <volume> --src piece.h5        # no --offset, no --offset-order
+```
+
+What it records: `voxel_offset` in whole voxels on the dataset — the field `write` already
+looks for — plus `voxel_size`, `offset` (the same place in physical units), `units` and
+`axes` in this package's own vocabulary, on the root *and* the dataset, so either the file
+or the array alone is self-describing.
+
+The dataset defaults to `/data`, which is also what the reader assumes when it is not told,
+so a file packed with no arguments reads with none. `--dataset` names another.
+
+An existing file is **added to** when its recorded frame matches — several pieces of one
+volume in one file is a legitimate arrangement, each keeping its own `voxel_offset` — and
+refused when it does not, since one file describing two coordinate systems is not worth
+allowing. A dataset name already in use needs `--dataset` or `--overwrite`.
+
+```{tip}
+A file with more than one volumetric dataset can no longer be read without naming one, so
+`to-hdf5` says so when it creates that situation rather than leaving you to meet it later.
+```
+
+Reads are blocked, so a "small" volume that turns out not to be still packs rather than
+filling memory. `--chunk` sets the HDF5 storage chunk, which is what governs partial reads
+when the piece is written back.
+
+### When another tool named the fields differently
+
+`--voxel-size-field` (default `voxel_size`) sets the attribute the scale is written under
+**and** read from, so a file keeps whatever spelling its siblings use and repacking one
+never asks you to retype a scale it already carries. `--offset-field` does the same for
+`voxel_offset` — change it on `em-vol write` too, or `write` will look for the old name.
+
+`em-vol write --voxel-size-field` uses it for one thing only: **checking** the piece against
+the level it is going into. A region extracted at level 1 and written to level 0 fits,
+places cleanly, and is at the wrong resolution — the shapes, dtype and bounds are all
+consistent, so nothing else here would notice. It warns rather than refuses, since writing
+a deliberately coarser piece is legitimate.
+
+### Taking a box out of a volume
+
+`--src` is any readable source, a volume included — so the same command extracts a region
+for annotation or inspection and hands it back afterwards:
+
+```bash
+em-vol to-hdf5 --src <volume> --out region.h5 --level 1 --crop-bbox 2,2,2,10,10,10
+#   ... annotate region.h5 ...
+em-vol write <volume> --src region.h5 --level 1        # straight back where it came from
+```
+
+`--level` picks which level to read (default 0) and `--crop-bbox` a box within it, in **that
+level's voxels**. Two defaults make the round trip argument-free: the level's own recorded
+voxel size becomes the frame — never `2**level`, so an anisotropic pyramid is handled — and
+the crop origin becomes the recorded `voxel_offset`, which is the one number nobody should
+have to type twice. `--offset` overrides it, for extracting from one volume to place into
+another somewhere else.
 
 ## Partial chunks are preserved, but only one writer at a time
 
