@@ -149,6 +149,24 @@ lose. `align-bbox` reports the trim and does not report it as misalignment; `em-
 applies the same rule through the same predicate, so the two cannot drift apart.
 ```
 
+## How many levels a rebuild covers
+
+`downsample --max-levels` **defaults to as many levels as the volume records**, because
+that is a property of the pyramid being repaired rather than a preference. Pass it only to
+*extend* a pyramid.
+
+A volume recording one level or none is the opposite case — there is no pyramid to match,
+and `em-vol write` and `em-vol relabel` both end by telling you to run `downsample` to
+build one — so there the ordinary conversion default applies instead.
+
+```{warning}
+Levels that exist **above** the schedule are left untouched, and every shape matches, so
+the mismatch check cannot see it — only the count differs. Whatever they hold stays: empty
+if they were never built (the volume vanishes at the coarsest zooms), or the data from
+before your change if they were. `downsample` warns; the fix is a larger `--max-levels`,
+or deleting them.
+```
+
 ## Choose the level you trust
 
 Downsampling cascades, so a bad level poisons every level above it. `--start-level N`
@@ -156,6 +174,35 @@ seeds from level N and rebuilds upward; `--dry-run` prints the schedule beside w
 disk and refuses if they disagree, rather than leaving the pyramid half-consistent.
 
 `--start-level 0` is ordinary and means "keep level 0, rebuild everything above it".
+
+## Sparse volumes: `--sparse`
+
+A ground-truth volume or an ROI export is mostly empty, and rebuilding its pyramid the
+ordinary way still visits every task in the grid to discover that. `--sparse` skips the
+ones whose input holds no stored chunk:
+
+```bash
+em-vol downsample <volume> --start-level 0 --kind segmentation --sparse
+```
+
+On a 15401×13544×16648 GT volume with 386 stored level-0 chunks, that is **245,406 tasks
+down to 233** — one listing per level (about half a second) instead of a read per task.
+
+**It is exact, not an estimate.** TensorStore never persists an all-fill chunk, so a chunk
+with no object *is* all fill: the task's input is entirely fill, its output is entirely
+fill, and an all-fill output is written nowhere. Skipping changes no byte of the result —
+only the read that would have discovered the zeros. This is a different question from the
+occupancy prefilter in `em-morpho`, which asks whether a region *probably* holds labels
+and therefore needs dilating.
+
+Three things to know:
+
+- **Level 0 is never filtered**, so `convert --sparse` still copies its whole grid. The
+  source there is foreign, and whether it has stored a chunk is not something this package
+  can ask of it. `--sparse` transforms a rebuild; it does not speed up an import.
+- If the level it seeds from has **no** stored chunks, it refuses rather than skipping
+  everything and reporting success.
+- Sharded levels are filtered at *shard* granularity — still exact, just less selective.
 
 ## Resume, and what the numbers mean
 
