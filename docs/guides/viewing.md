@@ -113,6 +113,12 @@ knowing about each other.
 to use numbers copied straight out of the viewer, since xyz is what neuroglancer
 displays. Whichever you use is echoed back on every run.
 
+`--hide-slices` sets `showSlices: false`, hiding the cross-section planes **inside the 3D
+panel** — usually what you want when the link is about meshes or skeletons, which the
+slices otherwise sit across. It leaves the 2D panels alone; `--layout 3d` is what removes
+those. Like `--position` and the two zooms, the key is written only when asked for, so a
+link without it opens the way the viewer normally would.
+
 ```{note}
 Everything after `#!` is a URL fragment and never reaches a server, so a link carries no
 data anywhere. It does mean the entire state travels in the URL: a dozen inline bounding
