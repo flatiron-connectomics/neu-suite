@@ -96,6 +96,22 @@ is not all-fill, so without it every such block is *stored*, and the volume stop
 "where is the data" by which chunks exist. `em-vol mask-by-value` repairs data that has
 already landed — see [the ground-truth guide](ground-truth.md).
 
+### Bringing a foreign HDF5 file into this layout
+
+A file written elsewhere often already describes itself — data in `main`, with
+`voxel_offset` and `voxel_size` beside it, as attributes *or* as top-level datasets. Point
+`to-hdf5` at it and pass nothing:
+
+```bash
+em-vol to-hdf5 --src theirs.h5 --out canonical.h5
+```
+
+Everything it records becomes the default: the offset, the voxel size, and a recorded
+`axes` if it has one. `main` needs no `--src-dataset` either — it is the file's only 3D
+dataset, so it is found on its own. Add `--crop-bbox` and the piece lands at the **sum** of
+what the file said and where the box started inside it, since a box out of a piece that
+knows its position belongs there rather than at the box's own offset.
+
 ### When another tool named the fields differently
 
 `--voxel-size-field` (default `voxel_size`) sets the attribute the scale is written under
