@@ -21,12 +21,14 @@ HERE = Path(__file__).resolve().parent.parent          # docs/
 ROOT = HERE.parent                                     # the workspace root
 GENERATED = HERE / "_generated"
 
-# The two console scripts. em-blockrun is a library and declares no [project.scripts],
-# so it has no CLI page — it appears in the design notes instead.
+# The console scripts. em-blockrun is a library and declares no [project.scripts], so it
+# has no CLI page — it appears in the design notes instead.
 COMMANDS = [
     ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, copy, "
                                       "create, write, renumber, annotate"),
     ("em-morpho", "em_seg_morpho.cli", "meshes and skeletons from a segmentation"),
+    ("em-annot", "em_annotation.cli", "DVID annotations into tables: synapses and other "
+                                      "point annotations, per-body records"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
@@ -38,6 +40,7 @@ INCLUDED = [
     ("em-volume-tools/docs/dask-slurm-rusty.md", "dask-slurm-rusty.md"),
     ("em-seg-morpho/README.md", "em-seg-morpho-readme.md"),
     ("em-seg-morpho/docs/DESIGN.md", "em-seg-morpho-design.md"),
+    ("em-annotation/README.md", "em-annotation-readme.md"),
 ]
 
 
@@ -127,6 +130,11 @@ def em_vol_parser() -> argparse.ArgumentParser:
 def em_morpho_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the em-morpho page."""
     return documented_parser("em_seg_morpho.cli")
+
+
+def em_annot_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the em-annot page."""
+    return documented_parser("em_annotation.cli")
 
 
 def write_cheatsheet(path: Path) -> None:
