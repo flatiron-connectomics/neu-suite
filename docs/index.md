@@ -65,5 +65,6 @@ _generated/em-volume-tools-readme
 _generated/em-volume-tools-design
 _generated/em-seg-morpho-readme
 _generated/em-seg-morpho-design
+_generated/em-annotation-readme
 _generated/dask-slurm-rusty
 ```
