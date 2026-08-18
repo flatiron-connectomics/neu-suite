@@ -41,7 +41,12 @@ exclude_patterns = ["_build", "_ext", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
 html_title = "em-libraries"
-html_static_path = []
+html_static_path = ["_static"]
+
+# Cropped from the pathway figure on the front page, to the medulla and the R7p neuron in
+# it. A browser renders this at 16-32 px, where the whole figure is an indistinct grey —
+# the green disc with a yellow mark is the only part of it that survives that downscale.
+html_favicon = "_static/favicon.png"
 html_theme_options = {
     "source_repository": "https://github.com/flatiron-connectomics/em-libraries/",
     "source_branch": "main",
