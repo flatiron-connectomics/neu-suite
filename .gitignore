@@ -15,6 +15,10 @@ CLAUDE.md
 NOTES-TODO.md
 CLI-CONSOLIDATION-PLAN.md
 
+# em-annotation site defaults (em_annotation.config), found by walking up from the working
+# directory. Personal, and it carries a server name and a branch ref.
+em-annotation.toml
+
 # Dataset content and run artefacts, which are large and belong on ceph, not in git.
 *.log
 data/
@@ -24,6 +28,10 @@ data/
 docs/_build/
 docs/_generated/
 
+# Analysis notebooks
+notebooks/
+
 __pycache__/
 *.pyc
 .venv/
+.ipynb_checkpoints/
