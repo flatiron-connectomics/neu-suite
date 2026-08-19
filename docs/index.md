@@ -29,13 +29,13 @@ other.
 
 ## Which one do I want?
 
-You almost certainly want a **command**, and there are three:
+You almost certainly want a **command**, and there are four:
 
-::::{grid} 3
+::::{grid} 2
 :::{grid-item-card} `em-vol`
 The volumes themselves — inspect one, convert a source into a multiscale pyramid,
 create an empty volume in a known frame and write pieces into it, renumber labels,
-watch a run, or emit a viewer layer showing where the data is.
+watch a run.
 :::
 :::{grid-item-card} `em-morpho`
 Meshes and skeletons from a segmentation, published into the same precomputed volume
@@ -45,6 +45,11 @@ so one neuroglancer layer shows labels, meshes and skeletons together.
 Annotations out of DVID — synapses and per-body records — into columnar tables, then on
 into neuroglancer. Choose the bodies by synapse count, and label each synapse with the
 neuropil it sits in.
+:::
+:::{grid-item-card} `em-ngl`
+Anything a **viewer** consumes: a shareable link or a state, a layer of your own
+coordinates, a layer of boxes showing where a sparse volume's data is. The other three
+write data and know nothing about neuroglancer.
 :::
 ::::
 
@@ -83,5 +88,6 @@ _generated/em-volume-tools-design
 _generated/em-seg-morpho-readme
 _generated/em-seg-morpho-design
 _generated/em-annotation-readme
+_generated/em-ngl-readme
 _generated/dask-slurm-rusty
 ```

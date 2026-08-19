@@ -1,15 +1,23 @@
 # Viewing the results in neuroglancer
 
+Everything on this page is `em-ngl`, the package that owns the viewer side. em-volume-tools
+writes volumes and em-annotation writes annotation sources; neither knows neuroglancer
+exists, which is why the shaders and states live somewhere else.
+
+Its three producers share one output stage: `--format {layer,state,url}` chooses what you
+get, `--out` writes it somewhere instead of stdout, and `--into` adds the layers to an
+existing state given as a URL or a JSON file.
+
 ## Finding the data in a sparse volume
 
 A volume holding a few labelled boxes inside a large empty frame is hard to look at — the
-boxes are needles. `em-vol bboxes-json` emits an annotation layer with one bounding box
+boxes are needles. `em-ngl bboxes` emits an annotation layer with one bounding box
 per written region, giving a clickable list that jumps between them.
 
 ```bash
-em-vol bboxes-json s3://.../gt_v2 --label gt              # layer JSON to stdout
-em-vol bboxes-json s3://.../gt_v2 --out layer.json        # local path or s3://...
-em-vol bboxes-json s3://.../gt_v2 --state --out state.json  # a whole loadable state
+em-ngl bboxes s3://.../gt_v2 --label gt                   # layer JSON to stdout
+em-ngl bboxes s3://.../gt_v2 --out layer.json             # local path or s3://...
+em-ngl bboxes s3://.../gt_v2 --format url                 # straight to a link
 ```
 
 Paste the layer object into the `layers` array via neuroglancer's `{}` (Edit JSON state)
@@ -22,15 +30,15 @@ bound to one voxel there.
 
 ## Annotating coordinates you already have
 
-`bboxes-json` asks the volume where its data is. When you already know where to look — a
-synapse table, a list of ROIs, points from another tool — `em-vol annotate-json` puts
+`bboxes` asks the volume where its data is. When you already know where to look — a
+synapse table, a list of ROIs, points from another tool — `em-ngl annotate` puts
 those in the same kind of layer.
 
 ```bash
-em-vol annotate-json --volume s3://.../seg --points synapses.csv --out syn.json
-em-vol annotate-json --volume s3://.../seg --boxes rois.csv --lines pre_to_post.csv
-em-vol annotate-json --volume s3://.../seg --point 5700,4500,6800 --name spot
-cat table.csv | em-vol annotate-json --volume s3://.../seg --points -
+em-ngl annotate --volume s3://.../seg --points synapses.csv --out syn.json
+em-ngl annotate --volume s3://.../seg --boxes rois.csv --lines pre_to_post.csv
+em-ngl annotate --volume s3://.../seg --point 5700,4500,6800 --name spot
+cat table.csv | em-ngl annotate --volume s3://.../seg --points -
 ```
 
 Points, boxes, lines and ellipsoids, from CSV files or inline flags, and one layer may
@@ -46,7 +54,7 @@ extra columns needs no preparation:
 Any of them may also carry `id`, `description` and `segments`. `segments` is the useful
 one: whitespace- or comma-separated body ids, and clicking the annotation then selects
 those bodies. Ids are kept as strings, because a 19-digit body id does not survive a JSON
-number — `annotate-json` refuses a `segments` value that arrives as `1.23e+18`, which is
+number — `annotate` refuses a `segments` value that arrives as `1.23e+18`, which is
 what a spreadsheet does to one.
 
 ```{warning}
@@ -189,12 +197,12 @@ store is correct.
 
 ### Adding it to a link
 
-`em-vol ng-url-gen --annotations` takes a precomputed annotation source and adds it as its own
+`em-ngl gen --annotations` takes a precomputed annotation source and adds it as its own
 layer, with a shader and — the load-bearing part — the relationships **bound** to the
 segmentation layer:
 
 ```bash
-em-vol ng-url-gen --seg s3://.../seg_v1 \
+em-ngl gen --seg s3://.../seg_v1 \
     --annotations s3://.../seg_v1/synapses_v1 \
     --segments 61189731 --annotation-split
 ```
@@ -204,7 +212,7 @@ once each relationship is bound to a layer whose selection it can read
 (`linkedSegmentationLayer`, a map from relationship name to layer name). Without the binding
 the layer draws everything and "this body's synapses" is not available at all.
 
-`ng-url-gen` binds every relationship and sets `filterBySegmentation` **on by default**, so the
+`gen` binds every relationship and sets `filterBySegmentation` **on by default**, so the
 annotations track whatever you select. A link with no `--segments` therefore opens showing no
 annotations until you click a body — that is the filter working, and the command says so on
 stderr because an empty viewport is otherwise indistinguishable from a broken layer.
@@ -271,13 +279,31 @@ Three things worth knowing about this shader language:
 ## Sharing a view as a link
 
 ```bash
-em-vol ng-url-gen --image s3://.../em --seg s3://.../gt_v2 \
+em-ngl gen --image s3://.../em --seg s3://.../gt_v2 \
     --layer layer.json --segments 1,2,3 --layout xy-3d --select-last
 ```
 
-The URL goes to stdout. `--layer` takes what `bboxes-json` wrote — either the bare layer
-or a whole state, it uses the layers either way — so the two commands compose without
-knowing about each other.
+The URL goes to stdout; `--format state` gives the JSON instead. `--layer` takes what
+`bboxes` or `annotate` wrote — either the bare layer or a whole state, it uses the layers
+either way — so the commands compose without knowing about each other.
+
+### Adding layers to a view you already have
+
+`--into` takes an existing state, as a URL copied out of the browser or as a JSON file, and
+appends the new layers to it:
+
+```bash
+em-ngl bboxes s3://.../gt_v2 --into 'https://neuroglancer-demo.appspot.com/#!%7B...%7D'
+em-ngl gen --annotations s3://.../synapses_v1 --into state.json --format state
+```
+
+The incoming state's `dimensions`, position and zoom are **kept**, so adding a layer does
+not move your view — and re-deriving `dimensions` would be worse than useless, since a state
+whose dimensions disagree with its layers loads fine and puts everything in the wrong place.
+A layer whose name is already taken is renamed with a `-2` suffix and the rename is
+reported: neuroglancer keys a layer by name, so two sharing one is a collision rather than a
+duplicate. `--into` implies `--format url`, and `em-ngl parse` is the inverse when you want
+to read a link rather than extend it.
 
 `--position` is zyx like every coordinate in these packages. Pass `--position-order xyz`
 to use numbers copied straight out of the viewer, since xyz is what neuroglancer

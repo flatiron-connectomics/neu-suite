@@ -15,8 +15,8 @@ em-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
     --work-dir /mnt/ceph/users/<you>/gt-meshing --stages mesh --mesh-scale 0 \
     --config ... --workers 48
 
-em-vol bboxes-json s3://.../gt_v2 --label gt --out gt_layer.json
-em-vol ng-url-gen --seg s3://.../gt_v2 --layer gt_layer.json --select-last
+em-ngl bboxes s3://.../gt_v2 --label gt --out gt_layer.json
+em-ngl gen --seg s3://.../gt_v2 --layer gt_layer.json --select-last
 ```
 
 ## When background is not 0
@@ -29,7 +29,7 @@ read. Do it there rather than afterwards, because of what happens otherwise:
 **An all-background block of 1s is not all-fill, so it gets stored.** The volume then has a
 chunk object everywhere data was written, whether or not it holds anything — and "which
 chunk objects exist" stops answering "where is the data". That is precisely the question
-`bboxes-json`, `relabel`, `downsample --sparse` and em-seg-morpho's occupancy filter all
+`em-ngl bboxes`, `relabel`, `downsample --sparse` and em-seg-morpho's occupancy filter all
 ask, so they all quietly start answering "everywhere". Background also becomes a body when
 meshed, and an enormous one.
 
@@ -62,7 +62,7 @@ ids, 508 of them used by more than one chunk.** A body numbered 1 was a chimera 
 dozen unrelated cells spanning 57 × 29 × 33 µm, where a single chunk is about 2 µm.
 
 `relabel` walks the occupied regions in order and gives each its own range. It finds the
-regions the same way `bboxes-json` does — from which chunk objects exist — so they are
+regions the same way `em-ngl bboxes` does — from which chunk objects exist — so they are
 pairwise disjoint and chunk-aligned, and it is serial by construction because each range
 begins where the last ended.
 

@@ -25,10 +25,11 @@ GENERATED = HERE / "_generated"
 # has no CLI page — it appears in the design notes instead.
 COMMANDS = [
     ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, copy, "
-                                      "create, write, renumber, annotate"),
+                                      "create, write, renumber"),
     ("em-morpho", "em_seg_morpho.cli", "meshes and skeletons from a segmentation"),
     ("em-annot", "em_annotation.cli", "DVID annotations into tables: synapses and other "
                                       "point annotations, per-body records"),
+    ("em-ngl", "em_ngl.cli", "neuroglancer states, annotation layers and links"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
@@ -41,6 +42,7 @@ INCLUDED = [
     ("em-seg-morpho/README.md", "em-seg-morpho-readme.md"),
     ("em-seg-morpho/docs/DESIGN.md", "em-seg-morpho-design.md"),
     ("em-annotation/README.md", "em-annotation-readme.md"),
+    ("em-ngl/README.md", "em-ngl-readme.md"),
 ]
 
 
@@ -135,6 +137,11 @@ def em_morpho_parser() -> argparse.ArgumentParser:
 def em_annot_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the em-annot page."""
     return documented_parser("em_annotation.cli")
+
+
+def em_ngl_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the em-ngl page."""
+    return documented_parser("em_ngl.cli")
 
 
 def write_cheatsheet(path: Path) -> None:

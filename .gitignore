@@ -1,9 +1,10 @@
-# The four packages are their own repositories, cloned as siblings here. They are
+# The five packages are their own repositories, cloned as siblings here. They are
 # NOT submodules — see .github/workflows/docs.yml for why.
 em-blockrun/
 em-volume-tools/
 em-seg-morpho/
 em-annotation/
+em-ngl/
 
 # Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
 # one cluster's partitions, accounts and paths.
