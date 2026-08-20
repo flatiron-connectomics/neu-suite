@@ -21,8 +21,9 @@ __version__ = "0.1.0"
 
 from typing import Any
 
-from . import cache, sources
+from . import cache, logs, sources
 from .colors import assign_colors, to_rgba
+from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
 from .geometry import BBox, Frame, Mesh, Skeleton, to_xyz
 from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                     build_scene)
@@ -48,7 +49,8 @@ __all__ = [
     "BBox", "Frame", "Mesh", "Skeleton", "to_xyz",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
     "assign_colors", "to_rgba",
-    "cache", "sources",
+    "cache", "logs", "sources",
+    "quiet_stores", "install_quiet_stores", "remove_quiet_stores",
     "body_mesh", "body_meshes", "body_skeleton", "body_skeletons",
     "volume_frame", "skeleton_tube", "synapse_points",
     "box_predicate", "mask_predicate",

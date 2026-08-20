@@ -48,6 +48,23 @@ sources and 2D projections are not. See `EM-VIZ-PLAN.md` in the `em-libraries` r
 | `em_viz.cache` | a three-method protocol; in-memory by default, `yes3` optional. |
 | `em_viz.backends.pygfx` | the only renderer-aware module. |
 
+## Those `AuthCredentialsProvider` lines are not errors
+
+Reading from S3 prints two ERROR-severity lines the first time each prefix is opened —
+tensorstore reporting the credential providers it could not build before falling through
+to the one that works. **The marker of a real problem is `PERMISSION_DENIED` or
+`AccessDenied`**; without one, the read succeeded.
+
+```python
+em_viz.install_quiet_stores()          # for the session; remove_quiet_stores() to undo
+with em_viz.quiet_stores(): ...        # or scoped
+```
+
+A deny-list of known-benign strings, not a severity filter: anything unrecognised passes
+through, and a genuine failure prints even though it looks identical. Nothing in em-viz
+installs it implicitly — filtering fd 2 is process-wide, and a library that reassigns
+its caller's stderr is how an unrelated traceback goes missing.
+
 ## Skeletons are edges, not polylines
 
 A skeleton is vertices plus an edge list, and it renders as **one object per body**

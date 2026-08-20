@@ -182,6 +182,14 @@ def _fetch_many(fetch: Callable, kind: str, volume: str, body_ids: Iterable[int]
                 return body_id, None
             raise
 
+    # No need to pre-open or warm anything before fanning out. `location._kv` splits the
+    # final path segment off as the *key* and opens the store on the **containing
+    # prefix**, and `_open_store` caches per prefix — so every body under `skeleton/`
+    # shares one store already, and there is nothing to hand around. Measured on sample3:
+    # opening a prefix costs two S3 credential-provider log lines and 8 threaded body
+    # reads cost zero, which is what a shared store looks like. (Two threads missing the
+    # unlocked cache at the same instant would duplicate one open; harmless, and not
+    # worth serialising a whole body read to avoid.)
     if threads and threads > 1 and len(ids) > 1:
         with ThreadPoolExecutor(max_workers=min(threads, len(ids))) as pool:
             pairs = list(pool.map(one, ids))
