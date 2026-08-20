@@ -130,6 +130,8 @@ class View:
                  canvas: Any = "auto", background: Optional[tuple] = None,
                  pixel_ratio: Optional[float] = None):
         self.scene_data = scene
+        self._size = tuple(size)
+        self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
                        else canvas)
         # `pixel_ratio=None` is pygfx's default and means "at least 2" — it renders to an
@@ -203,17 +205,38 @@ class View:
         """Internal pixels per logical pixel. ``>= 2`` by default — see the constructor."""
         return float(self.renderer.pixel_ratio)
 
-    def snapshot(self) -> np.ndarray:
+    def snapshot(self, size: Optional[tuple[int, int]] = None) -> np.ndarray:
         """Render once and return the pixels as ``(h, w, 4)`` uint8.
 
-        **The result is `pixel_ratio` times the requested size**, not the requested size:
-        this is pygfx's supersampled internal texture, which is why the image is smooth.
-        Construct the view with ``pixel_ratio=1.0`` if you need pixel-exact output.
-        """
-        self.renderer.render(self.scene, self.camera)
-        return np.asarray(self.renderer.snapshot())
+        **On a Jupyter canvas this renders through a separate offscreen pass**, at the
+        size the view was asked for, rather than reading the live framebuffer. That
+        framebuffer is sized by whatever the *browser* reported, so before the widget
+        has been displayed and laid out it is a placeholder — measured, a view created
+        at ``(900, 700)`` snapshots as **2x2** in a freshly executed notebook, and
+        ``save()`` writes that 2x2 image without complaint. Saving a figure should not
+        depend on a browser having painted it.
 
-    def save(self, path: str) -> str:
+        **The result is `pixel_ratio` times the requested size**, not the requested size:
+        that is pygfx's supersampled internal texture, and it is where the antialiasing
+        comes from. Construct the view with ``pixel_ratio=1.0`` for pixel-exact output.
+        """
+        if size is None and _is_offscreen(self.canvas):
+            self.renderer.render(self.scene, self.camera)
+            return np.asarray(self.renderer.snapshot())
+        return self._offscreen_snapshot(tuple(size) if size else self._size)
+
+    def _offscreen_snapshot(self, size: tuple[int, int]) -> np.ndarray:
+        """Re-render this scene and camera at an exact size, off any live canvas."""
+        from rendercanvas.offscreen import RenderCanvas as Offscreen
+
+        canvas = Offscreen(size=size)
+        renderer = pygfx.renderers.WgpuRenderer(canvas, pixel_ratio=self._pixel_ratio)
+        camera = pygfx.PerspectiveCamera(self.camera.fov)
+        camera.set_state(self.camera.get_state())
+        renderer.render(self.scene, camera)
+        return np.asarray(renderer.snapshot())
+
+    def save(self, path: str, size: Optional[tuple[int, int]] = None) -> str:
         """Write a snapshot to a PNG. Alpha is dropped — a figure wants a flat image."""
         try:
             from imageio import v3 as iio
@@ -223,15 +246,25 @@ class View:
                 "`snapshot()` returns the array if you would rather write it "
                 "yourself.") from exc
 
-        iio.imwrite(path, self.snapshot()[..., :3])
+        iio.imwrite(path, self.snapshot(size)[..., :3])
         return path
 
     def close(self) -> None:
         self.canvas.close()
 
     def _repr_mimebundle_(self, *args, **kwargs):
-        """Let Jupyter display the canvas when the View is the cell's value."""
-        return self.canvas._repr_mimebundle_(*args, **kwargs)
+        """Let Jupyter display the canvas when the View is the cell's value.
+
+        Positional arguments are **dropped**: IPython passes ``include``/``exclude`` as
+        keywords, but the Jupyter canvas accepts ``**kwargs`` only, so forwarding
+        anything positional is a ``TypeError`` in the one place it matters — the cell
+        that was supposed to show the figure. An offscreen canvas has no bundle at all,
+        which is why this degrades to a repr rather than raising.
+        """
+        bundle = getattr(self.canvas, "_repr_mimebundle_", None)
+        if bundle is None:
+            return {"text/plain": repr(self)}
+        return bundle(**kwargs)
 
     def __repr__(self) -> str:
         return f"View({self.scene_data!r})"
@@ -240,6 +273,10 @@ class View:
 def show(scene: Scene, size: tuple[int, int] = DEFAULT_SIZE, **kwargs) -> View:
     """Render a scene and return the :class:`View`. The one call a notebook needs."""
     return View(scene, size=size, **kwargs)
+
+
+def _is_offscreen(canvas: Any) -> bool:
+    return type(canvas).__module__.endswith("offscreen")
 
 
 def in_notebook() -> bool:

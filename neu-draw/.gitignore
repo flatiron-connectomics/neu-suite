@@ -20,3 +20,9 @@ dist/
 # Generated states and links are one person's view of one dataset, not the package's.
 *.state.json
 *.layer.json
+
+# Scratch notebooks. Deliberately untracked: they carry one person's body ids, bucket
+# paths and cell outputs (which for this package are megabytes of rendered PNG), and
+# they are for poking at things rather than for documenting them. A demo worth keeping
+# belongs in docs/, stripped of outputs.
+/notebooks/

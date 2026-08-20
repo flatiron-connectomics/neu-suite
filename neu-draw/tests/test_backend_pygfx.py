@@ -178,6 +178,44 @@ def test_an_empty_scene_still_renders(has_gpu):
         view.close()
 
 
+def test_snapshot_honours_an_explicit_size_off_the_live_canvas(has_gpu):
+    """The Jupyter path: the live framebuffer is sized by whatever the browser reported,
+    so before the widget is laid out it is a placeholder — a view created at (900, 700)
+    snapshotted as 2x2 in a freshly executed notebook, and `save()` wrote it. An explicit
+    size therefore re-renders offscreen instead of reading that framebuffer."""
+    view = backend.show(build_scene(meshes=[_mesh()]), size=(50, 40),
+                        canvas="offscreen", pixel_ratio=1.0)
+    try:
+        assert view.snapshot(size=(200, 120)).shape[:2] == (120, 200)
+        assert view.snapshot().shape[:2] == (40, 50)
+    finally:
+        view.close()
+
+
+def test_an_offscreen_resnapshot_draws_the_same_scene(has_gpu):
+    """The second pass must show the picture, not an empty frame — it builds its own
+    renderer and camera, so a scene or camera it failed to carry over would be blank."""
+    view = backend.show(build_scene(meshes=[_mesh()], skeletons=[_skeleton()]),
+                        size=(80, 80), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        image = view.snapshot(size=(80, 80))
+        assert len(np.unique(image.reshape(-1, 4), axis=0)) > 1
+    finally:
+        view.close()
+
+
+def test_a_view_offers_a_mimebundle_without_raising(has_gpu):
+    """What Jupyter calls to display the cell. The offscreen canvas has no bundle, so
+    this degrades to a repr — and it must never raise, because the failure would land
+    exactly where the figure was meant to appear."""
+    view = backend.show(Scene(), size=(32, 32), canvas="offscreen")
+    try:
+        bundle = view._repr_mimebundle_(include=None, exclude=None)
+        assert isinstance(bundle, dict) and bundle
+    finally:
+        view.close()
+
+
 def test_get_backend_resolves_and_rejects_unknown_names():
     from em_viz.backends import get_backend
 
