@@ -5,6 +5,7 @@ em-volume-tools/
 em-seg-morpho/
 em-annotation/
 em-ngl/
+em-viz/
 
 # Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
 # one cluster's partitions, accounts and paths.
@@ -15,6 +16,8 @@ configs/
 CLAUDE.md
 NOTES-TODO.md
 CLI-CONSOLIDATION-PLAN.md
+EM-VIZ-PLAN.md
+RENAME-PLAN.md
 
 # em-annotation site defaults (em_annotation.config), found by walking up from the working
 # directory. Personal, and it carries a server name and a branch ref.
