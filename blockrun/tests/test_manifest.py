@@ -1,4 +1,4 @@
-from em_blockrun import Manifest
+from blockrun import Manifest
 
 
 def test_record_load_roundtrip_tuple_keys(tmp_path):

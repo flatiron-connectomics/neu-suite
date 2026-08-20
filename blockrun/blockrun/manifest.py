@@ -10,13 +10,13 @@ Keys are generic:
     single 0 when there's only one group).
   - ``key``:   any JSON-serializable task identity — a scalar (e.g. a segment id)
     or a sequence (e.g. a block-grid index tuple).
-  - ``status``: an opaque string. em-volume-tools uses ``written`` / ``empty`` /
+  - ``status``: an opaque string. neu-vol uses ``written`` / ``empty`` /
     ``skipped``; other consumers can use their own (e.g. ``failed``).
 
 A second kind of line records facts **about** a group rather than a task within
 it — ``{"group": g, "meta": {...}}``, written by :meth:`Manifest.record_meta`.
 Its purpose is the denominator: only the driver knows how many tasks a group has,
-and without it a reader can only guess, which is how ``em-vol progress`` came to
+and without it a reader can only guess, which is how ``neu-vol progress`` came to
 divide a count of tasks by a count of chunks. A line carrying no ``status`` is
 never a task, so old readers skip it and old files simply have no meta.
 """

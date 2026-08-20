@@ -1,6 +1,6 @@
 # EXAMPLE SLURM config — copy it, edit the marked lines, point --config at your copy.
 #
-#     em-seg-morpho --config /path/to/my-slurm.yaml ...
+#     neu-morpho --config /path/to/my-slurm.yaml ...
 #
 # Every value below is a placeholder except the memory-manager block at the bottom,
 # which is not site-specific and should be carried over verbatim. dask-jobqueue
@@ -42,7 +42,7 @@ jobqueue:
 
     # name: my-job           # #SBATCH -J, and the <name>-<jobid>.{err,out} log
     #                        # filenames. Left unset on purpose: start_dask fills it
-    #                        # from the calling command (em-vol / em-morpho), so
+    #                        # from the calling command (neu-vol / neu-morpho), so
     #                        # `squeue` says which tool submitted the job without
     #                        # this needing editing per project. Set it to override.
 

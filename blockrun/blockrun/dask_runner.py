@@ -6,7 +6,7 @@ process must stay alive for the whole run; on exit the cluster (and its SLURM jo
 are torn down.
 
 Config loading — bundled templates, layered overrides, key validation — lives in
-:mod:`em_blockrun.dask_config`.
+:mod:`blockrun.dask_config`.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def start_dask(
     ``config_path`` is a bundled name (see :func:`bundled_configs`) or a path, or a
     **sequence of either**, deep-merged left to right — so a site config carries only
     the keys that differ from a template. Unrecognised keys raise rather than merging
-    silently; see :mod:`em_blockrun.dask_config`.
+    silently; see :mod:`blockrun.dask_config`.
 
     The default is the bundled ``dask-local``, so ``start_dask(4)`` works from any
     directory. It used to be the relative path ``"dask-config.yaml"``, which resolved

@@ -1,14 +1,14 @@
-# em-blockrun
+# blockrun
 
 Resumable, chunked **parallel maps on dask** — the same code runs locally on a
 workstation or across Flatiron **Rusty/SLURM** by swapping one YAML config.
 
-Extracted from `em-volume-tools` so it can be shared across projects (volume
+Extracted from `neu-vol` so it can be shared across projects (volume
 conversion, meshing/skeletonization, …). Dependency-light: only `dask`,
 `distributed`, `dask-jobqueue`, `pyyaml`.
 
 ```python
-from em_blockrun import start_dask, iter_blocks, block_map, Manifest
+from blockrun import start_dask, iter_blocks, block_map, Manifest
 
 blocks = list(iter_blocks(shape=(1024, 1024, 1024), chunks=(128, 128, 128)))
 # A bundled template plus your own overlay, deep-merged left to right.
@@ -56,21 +56,21 @@ allowed, not just what the templates happen to show) and canonicalised, so
 - **`iter_blocks` / `Block`** — tile an N-d shape into chunk blocks.
 
 Orchestration background and hard-won SLURM gotchas: see
-`em-volume-tools/docs/dask-slurm-rusty.md`.
+`neu-vol/docs/dask-slurm-rusty.md`.
 
 ## Environment
 
-One conda environment covers this repo and its consumers (`em-volume-tools`,
-`em-seg-morpho`), each installed editable. All runtime deps here are pure Python
+One conda environment covers this repo and its consumers (`neu-vol`,
+`neu-morpho`), each installed editable. All runtime deps here are pure Python
 and come from conda-forge; `--no-deps` keeps pip from re-resolving them.
 
 ```bash
-conda activate em-lib
+conda activate neu-env
 pip install --no-deps -e .
 python -m pytest -q
 ```
 
-The combined spec lives one level up, at `em-libraries/environment.yml`.
+The combined spec lives one level up, at `neu-suite/environment.yml`.
 
 ## License
 

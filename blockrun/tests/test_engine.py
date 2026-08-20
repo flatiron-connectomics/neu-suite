@@ -1,6 +1,6 @@
 import pytest
 
-from em_blockrun import Block, block_map, idempotent, iter_blocks
+from blockrun import Block, block_map, idempotent, iter_blocks
 
 
 def test_iter_blocks_exact_tiling():

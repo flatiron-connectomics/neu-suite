@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "em-blockrun"
+name = "blockrun"
 version = "0.1.0"
 description = "Resumable, chunked parallel maps on dask — locally or on Flatiron Rusty/SLURM."
 readme = "README.md"
@@ -25,8 +25,8 @@ dependencies = [
 dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["em_blockrun"]
-# em_blockrun/configs/*.yaml are package DATA and ship automatically, because
+packages = ["blockrun"]
+# blockrun/configs/*.yaml are package DATA and ship automatically, because
 # hatchling includes every tracked file under `packages`. Consumers resolve them by
 # name through importlib.resources, so a missing template breaks `--config
 # dask-local`. Keep them TRACKED, and never add an unanchored `configs/` pattern to

@@ -12,7 +12,7 @@ import os
 import pytest
 import yaml
 
-from em_blockrun import dask_config as dc
+from blockrun import dask_config as dc
 
 
 # --------------------------------------------------------------------------- #

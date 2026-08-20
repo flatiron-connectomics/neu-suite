@@ -1,6 +1,6 @@
-"""em-blockrun: resumable, chunked parallel maps on dask — locally or on SLURM.
+"""blockrun: resumable, chunked parallel maps on dask — locally or on SLURM.
 
-A small, dependency-light substrate extracted from em-volume-tools for reuse
+A small, dependency-light substrate extracted from neu-vol for reuse
 across projects (volume conversion, meshing/skeletonization, etc.):
 
 - ``start_dask``: one context manager that yields a connected dask Client backed
@@ -10,7 +10,7 @@ across projects (volume conversion, meshing/skeletonization, etc.):
 - ``Manifest``: a single-writer completion log for resume + intent tracking.
 - ``iter_blocks`` / ``Block``: tile an N-d shape into chunk blocks.
 
-See docs and the config templates under ``em_blockrun/configs/``.
+See docs and the config templates under ``blockrun/configs/``.
 """
 
 __version__ = "0.1.0"
@@ -23,7 +23,7 @@ from .manifest import Manifest
 
 # `start_dask` is resolved on first access, not at import (PEP 562). Importing
 # `dask_runner` eagerly costs ~1 s, nearly all of it `dask.distributed`, and it is paid
-# by everything that touches this package — including `em-vol info`, which reads one
+# by everything that touches this package — including `neu-vol info`, which reads one
 # metadata document and never starts a cluster. Nothing else here needs dask:
 # `dask_config` is yaml only, and `engine.block_map` imports `as_completed` inside the
 # branch that has a client. Kept lazy rather than made conditional on being under test:
