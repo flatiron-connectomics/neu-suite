@@ -16,16 +16,19 @@ that knows how to run work on a cluster knows nothing about electron microscopy,
 layer that knows about volumes knows nothing about meshes or biology.
 
 ```text
-blockrun        dask/SLURM substrate. No EM knowledge.
-    ↑              Manifest, block_map, iter_blocks, start_dask, dask configs
-neu-vol    volume I/O: tensorstore backends, storage profiles,
-    ↑              convert / create / write / relabel, source metadata
-    ├─ neu-morpho   per-body meshes (vol2mesh) and skeletons (kimimaro)
-    └─ neu-mark   DVID annotations into tables, and on into neuroglancer
+blockrun            dask/SLURM substrate. No EM knowledge.
+    ↑                  Manifest, block_map, iter_blocks, start_dask, dask configs
+neu-vol             volume I/O: tensorstore backends, storage profiles,
+    ↑                  convert / create / write / relabel, source metadata
+    ├─ neu-morpho      per-body meshes (vol2mesh) and skeletons (TEASAR)
+    ├─ neu-mark        DVID annotations into tables, and on into neuroglancer
+    └─ neu-glance      viewer states, layers, links and shaders
+           ↑
+        neu-draw      local 3D rendering in a notebook, on pygfx
 ```
 
-Nothing lower may import from anything higher, and the two consumers do not import each
-other.
+Nothing lower may import from anything higher, and consumers **at the same tier** do not
+import each other.
 
 ## Which one do I want?
 
@@ -53,7 +56,9 @@ write data and know nothing about neuroglancer.
 :::
 ::::
 
-`blockrun` has no command. It is the library they all run on.
+Two packages have no command. `blockrun` is the library the others run on, and
+`neu-draw` is a notebook library — it draws meshes, skeletons and synapse points
+locally with pygfx, where `neu-glance` sends a state to a remote neuroglancer.
 
 **Start at the [cheat sheet](_generated/cheatsheet.md)** — every subcommand on one page
 with its synopsis. The [CLI reference](cli/index.md) has the full flag-by-flag detail,
@@ -89,4 +94,5 @@ _generated/neu-morpho-readme
 _generated/neu-morpho-skeletonization
 _generated/neu-mark-readme
 _generated/neu-glance-readme
+_generated/neu-draw-readme
 ```

@@ -42,6 +42,7 @@ INCLUDED = [
     ("neu-morpho/docs/skeletonization.md", "neu-morpho-skeletonization.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
+    ("neu-draw/README.md", "neu-draw-readme.md"),
 ]
 
 
