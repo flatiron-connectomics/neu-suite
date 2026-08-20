@@ -1,7 +1,7 @@
 # Viewing the results in neuroglancer
 
-Everything on this page is `em-ngl`, the package that owns the viewer side. em-volume-tools
-writes volumes and em-annotation writes annotation sources; neither knows neuroglancer
+Everything on this page is `neu-glance`, the package that owns the viewer side. neu-vol
+writes volumes and neu-mark writes annotation sources; neither knows neuroglancer
 exists, which is why the shaders and states live somewhere else.
 
 Its three producers share one output stage: `--format {layer,state,url}` chooses what you
@@ -11,13 +11,13 @@ existing state given as a URL or a JSON file.
 ## Finding the data in a sparse volume
 
 A volume holding a few labelled boxes inside a large empty frame is hard to look at — the
-boxes are needles. `em-ngl bboxes` emits an annotation layer with one bounding box
+boxes are needles. `neu-glance bboxes` emits an annotation layer with one bounding box
 per written region, giving a clickable list that jumps between them.
 
 ```bash
-em-ngl bboxes s3://.../gt_v2 --label gt                   # layer JSON to stdout
-em-ngl bboxes s3://.../gt_v2 --out layer.json             # local path or s3://...
-em-ngl bboxes s3://.../gt_v2 --format url                 # straight to a link
+neu-glance bboxes s3://.../gt_v2 --label gt                   # layer JSON to stdout
+neu-glance bboxes s3://.../gt_v2 --out layer.json             # local path or s3://...
+neu-glance bboxes s3://.../gt_v2 --format url                 # straight to a link
 ```
 
 Paste the layer object into the `layers` array via neuroglancer's `{}` (Edit JSON state)
@@ -31,14 +31,14 @@ bound to one voxel there.
 ## Annotating coordinates you already have
 
 `bboxes` asks the volume where its data is. When you already know where to look — a
-synapse table, a list of ROIs, points from another tool — `em-ngl annotate` puts
+synapse table, a list of ROIs, points from another tool — `neu-glance annotate` puts
 those in the same kind of layer.
 
 ```bash
-em-ngl annotate --volume s3://.../seg --points synapses.csv --out syn.json
-em-ngl annotate --volume s3://.../seg --boxes rois.csv --lines pre_to_post.csv
-em-ngl annotate --volume s3://.../seg --point 5700,4500,6800 --name spot
-cat table.csv | em-ngl annotate --volume s3://.../seg --points -
+neu-glance annotate --volume s3://.../seg --points synapses.csv --out syn.json
+neu-glance annotate --volume s3://.../seg --boxes rois.csv --lines pre_to_post.csv
+neu-glance annotate --volume s3://.../seg --point 5700,4500,6800 --name spot
+cat table.csv | neu-glance annotate --volume s3://.../seg --points -
 ```
 
 Points, boxes, lines and ellipsoids, from CSV files or inline flags, and one layer may
@@ -103,22 +103,22 @@ synapses on this body" is a keyed fetch rather than a scan.
 So for a whole volume's worth of synapses the two are complementary rather than
 alternatives: precomputed for the full set with a relationship index on the pre- and
 post-synaptic bodies, and a small local layer for whatever subset you want to click
-through. `em-annot annotation-source` writes the precomputed form — see below.
+through. `neu-mark annotation-source` writes the precomputed form — see below.
 
 ## A synapse layer for a whole dataset
 
-`em-annot annotation-source` writes a `neuroglancer_annotations_v1` source holding one
+`neu-mark annotation-source` writes a `neuroglancer_annotations_v1` source holding one
 **line** per synaptic connection, from the presynaptic site to the postsynaptic one. Lines
 rather than points because a connectome is edges: one endpoint *pair* is one annotation, so
 a T-bar with five partners contributes five lines and each carries its own partner body.
 
 ```bash
-em-annot annotation-source --tables syn/ \
+neu-mark annotation-source --tables syn/ \
     --dst s3://bucket/sample3/seg_v1/synapses_v1 \
     --voxel-size 8,8,8 --verify
 ```
 
-`--tables` is a directory an earlier `em-annot points` run wrote. Those tables are the
+`--tables` is a directory an earlier `neu-mark points` run wrote. Those tables are the
 durable artifact, so rebuilding the source with different bounds, a different `--per-cell`
 or a corrected confidence join costs no refetch. Pass `--src` and `--bodies` instead to
 fetch first.
@@ -197,12 +197,12 @@ store is correct.
 
 ### Adding it to a link
 
-`em-ngl gen --annotations` takes a precomputed annotation source and adds it as its own
+`neu-glance gen --annotations` takes a precomputed annotation source and adds it as its own
 layer, with a shader and — the load-bearing part — the relationships **bound** to the
 segmentation layer:
 
 ```bash
-em-ngl gen --seg s3://.../seg_v1 \
+neu-glance gen --seg s3://.../seg_v1 \
     --annotations s3://.../seg_v1/synapses_v1 \
     --segments 61189731 --annotation-split
 ```
@@ -279,7 +279,7 @@ Three things worth knowing about this shader language:
 ## Sharing a view as a link
 
 ```bash
-em-ngl gen --image s3://.../em --seg s3://.../gt_v2 \
+neu-glance gen --image s3://.../em --seg s3://.../gt_v2 \
     --layer layer.json --segments 1,2,3 --layout xy-3d --select-last
 ```
 
@@ -293,8 +293,8 @@ either way — so the commands compose without knowing about each other.
 appends the new layers to it:
 
 ```bash
-em-ngl bboxes s3://.../gt_v2 --into 'https://neuroglancer-demo.appspot.com/#!%7B...%7D'
-em-ngl gen --annotations s3://.../synapses_v1 --into state.json --format state
+neu-glance bboxes s3://.../gt_v2 --into 'https://neuroglancer-demo.appspot.com/#!%7B...%7D'
+neu-glance gen --annotations s3://.../synapses_v1 --into state.json --format state
 ```
 
 The incoming state's `dimensions`, position and zoom are **kept**, so adding a layer does
@@ -302,7 +302,7 @@ not move your view — and re-deriving `dimensions` would be worse than useless,
 whose dimensions disagree with its layers loads fine and puts everything in the wrong place.
 A layer whose name is already taken is renamed with a `-2` suffix and the rename is
 reported: neuroglancer keys a layer by name, so two sharing one is a collision rather than a
-duplicate. `--into` implies `--format url`, and `em-ngl parse` is the inverse when you want
+duplicate. `--into` implies `--format url`, and `neu-glance parse` is the inverse when you want
 to read a link rather than extend it.
 
 `--position` is zyx like every coordinate in these packages. Pass `--position-order xyz`

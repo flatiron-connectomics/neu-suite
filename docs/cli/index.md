@@ -9,8 +9,8 @@ For a one-page overview instead, see the [cheat sheet](../_generated/cheatsheet.
 ```{toctree}
 :maxdepth: 1
 
-em-vol
-em-morpho
-em-annot
-em-ngl
+neu-vol
+neu-morpho
+neu-mark
+neu-glance
 ```

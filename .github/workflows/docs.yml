@@ -45,13 +45,13 @@ jobs:
       # docs lag the code. main is what everyone runs.
       - name: Check out the packages
         run: |
-          for repo in em-blockrun em-volume-tools em-seg-morpho em-annotation em-ngl; do
+          for repo in blockrun neu-vol neu-morpho neu-mark neu-glance; do
             git clone --depth 1 https://github.com/flatiron-connectomics/$repo.git $repo
           done
           # Which commit of each package this site documents. The docs build against
           # main, so they can be a push ahead of the packages — and when they are, the
           # failure is otherwise an AttributeError with no hint of version skew.
-          for repo in em-blockrun em-volume-tools em-seg-morpho em-annotation em-ngl; do
+          for repo in blockrun neu-vol neu-morpho neu-mark neu-glance; do
             echo "$repo $(git -C $repo log -1 --format='%h %ci %s')"
           done
 
@@ -62,15 +62,15 @@ jobs:
       # No conda, and that is not an accident: importing the CLI modules pulls in dask,
       # distributed, numpy, pandas and pyarrow only — never tensorstore, vol2mesh,
       # dvidutils, kimimaro or neuclease, which are conda-only on flyem-forge and would
-      # force a much slower micromamba job. em-volume-tools' test suite pins that property
-      # so this cannot quietly stop being true, and em_annotation.cli keeps its heavy
+      # force a much slower micromamba job. neu-vol' test suite pins that property
+      # so this cannot quietly stop being true, and neu_mark.cli keeps its heavy
       # imports inside the subcommands for the same reason.
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
-          pip install ./em-blockrun ./em-volume-tools ./em-seg-morpho ./em-annotation \
-                      ./em-ngl
+          pip install ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
+                      ./neu-glance
 
       # -W because the CLI reference is generated: a warning here means a parser stopped
       # rendering, which is exactly the silent drift this site exists to prevent.

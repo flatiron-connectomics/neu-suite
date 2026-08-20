@@ -2,22 +2,22 @@
 
 ## The environment
 
-One conda environment, `em-lib`, covers all three packages, installed editable so a
+One conda environment, `neu-env`, covers all three packages, installed editable so a
 change to any of them is live everywhere.
 
 ```bash
-conda activate em-lib
-em-vol --help
-em-morpho --help
+conda activate neu-env
+neu-vol --help
+neu-morpho --help
 ```
 
 Rebuilding it from scratch, from the specs in this repository:
 
 ```bash
-conda env create -n em-lib -f environment.yml
-conda activate em-lib
+conda env create -n neu-env -f environment.yml
+conda activate neu-env
 pip install -r pypi_requirements.txt
-pip install --no-deps -e ./em-blockrun -e ./em-volume-tools -e ./em-seg-morpho
+pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho
 ```
 
 ```{warning}
@@ -30,7 +30,7 @@ as a segfault rather than an install error.
 **Python 3.12 is required**, and it is `vol2mesh` and `dvidutils` that force it. Both are
 py312-only *and* conda-only on flyem-forge: there is no py313 build and no PyPI
 equivalent, so they can never be pip dependencies. For the same reason they are omitted
-from `em-seg-morpho`'s declared dependencies.
+from `neu-morpho`'s declared dependencies.
 
 The three repositories must stay siblings — they depend on each other by relative
 `../sibling` path.
@@ -51,10 +51,10 @@ directory.
 
 ```bash
 # smoke test in one process first — no dask, no cluster
-em-vol convert --src ... --dst ... --serial --single-level
+neu-vol convert --src ... --dst ... --serial --single-level
 
 # then the real thing, surviving logout
-nohup env PYTHONUNBUFFERED=1 em-vol convert --src ... --dst s3://... \
+nohup env PYTHONUNBUFFERED=1 neu-vol convert --src ... --dst s3://... \
     --config dask-slurm-example --config ~/my-site.yaml --workers 48 > run.log 2>&1 &
 squeue -u "$USER"
 ```

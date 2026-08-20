@@ -1,14 +1,14 @@
 # Converting a source into a multiscale volume
 
-`em-vol convert` builds a new pyramid from a source; `em-vol copy` does the same while
-keeping everything the source already decided; `em-vol downsample` rebuilds the levels
+`neu-vol convert` builds a new pyramid from a source; `neu-vol copy` does the same while
+keeping everything the source already decided; `neu-vol downsample` rebuilds the levels
 above one you already trust. All three are block-mapped over dask and resumable.
 
 ```bash
-em-vol info /path/to/source                 # what is it, which levels exist
-em-vol convert --src /path/to/source --dst s3://bucket/out \
+neu-vol info /path/to/source                 # what is it, which levels exist
+neu-vol convert --src /path/to/source --dst s3://bucket/out \
     --kind segmentation --config dask-slurm-example --workers 48
-em-vol progress s3://bucket/out             # how far along
+neu-vol progress s3://bucket/out             # how far along
 ```
 
 ## Copying a volume, whole or in part
@@ -18,10 +18,10 @@ image/segmentation type come **from the source**, and a source that records none
 is an error rather than a guess.
 
 ```bash
-em-vol copy --src <volume> --dst <destination>                    # the whole thing
-em-vol copy --src <volume> --dst <destination> \
+neu-vol copy --src <volume> --dst <destination>                    # the whole thing
+neu-vol copy --src <volume> --dst <destination> \
     --crop-bbox 5632,4480,6784,5760,4736,7040                     # one box
-em-vol copy --src <volume> --dst <destination> --crop-bbox ... --dry-run
+neu-vol copy --src <volume> --dst <destination> --crop-bbox ... --dry-run
 ```
 
 Use `convert` when you are *changing* something — the format, the chunking, the pyramid
@@ -49,8 +49,8 @@ The complement of a crop. `--mask-bbox` copies **everything except** a box, writ
 an evaluation box out of a training volume, say.
 
 ```bash
-em-vol copy --src V --dst training --mask-bbox 5664,4544,6848,5696,4608,6912
-em-vol copy --src V --dst training --crop-bbox ... --mask-bbox ... --mask-bbox ...
+neu-vol copy --src V --dst training --mask-bbox 5664,4544,6848,5696,4608,6912
+neu-vol copy --src V --dst training --crop-bbox ... --mask-bbox ... --mask-bbox ...
 ```
 
 Repeatable. The masking happens on the **read** side, so every pyramid level inherits the
@@ -104,13 +104,13 @@ aligned origin to use instead.
 
 ### Aligning the box first
 
-`em-vol align-bbox` moves a box onto a grid and prints it back, so the crop never
+`neu-vol align-bbox` moves a box onto a grid and prints it back, so the crop never
 straddles one:
 
 ```bash
-em-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 --to both
-em-vol copy --src V --dst D \
-    --crop-bbox $(em-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 -q)
+neu-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 --to both
+neu-vol copy --src V --dst D \
+    --crop-bbox $(neu-vol align-bbox --volume V --bbox 5600,4470,6790,5770,4740,7050 -q)
 ```
 
 Which grid matters more than which rounding, and there are three:
@@ -139,13 +139,13 @@ spans no whole block.
 `--block z,y,x` aligns to a grid you name and needs no volume at all. `--scale N` takes
 the box in scale-N voxels — converted through the volume's real per-level voxel sizes, so
 an anisotropic pyramid is handled — and reports the result back at that scale when it is
-exactly representable there, which is what `em-morpho --roi` wants.
+exactly representable there, which is what `neu-morpho --roi` wants.
 
 ```{note}
 Growing a box outward can run past the volume, and the result is then trimmed to the
 extent. That trimmed edge sits mid-block and is nonetheless **aligned by definition** —
 the volume's own final block is partial there, so there is no neighbouring data in it to
-lose. `align-bbox` reports the trim and does not report it as misalignment; `em-vol write`
+lose. `align-bbox` reports the trim and does not report it as misalignment; `neu-vol write`
 applies the same rule through the same predicate, so the two cannot drift apart.
 ```
 
@@ -156,7 +156,7 @@ that is a property of the pyramid being repaired rather than a preference. Pass 
 *extend* a pyramid.
 
 A volume recording one level or none is the opposite case — there is no pyramid to match,
-and `em-vol write` and `em-vol relabel` both end by telling you to run `downsample` to
+and `neu-vol write` and `neu-vol relabel` both end by telling you to run `downsample` to
 build one — so there the ordinary conversion default applies instead.
 
 ```{warning}
@@ -182,7 +182,7 @@ ordinary way still visits every task in the grid to discover that. `--sparse` sk
 ones whose input holds no stored chunk:
 
 ```bash
-em-vol downsample <volume> --start-level 0 --kind segmentation --sparse
+neu-vol downsample <volume> --start-level 0 --kind segmentation --sparse
 ```
 
 On a 15401×13544×16648 GT volume with 386 stored level-0 chunks, that is **245,406 tasks
@@ -192,7 +192,7 @@ down to 233** — one listing per level (about half a second) instead of a read 
 with no object *is* all fill: the task's input is entirely fill, its output is entirely
 fill, and an all-fill output is written nowhere. Skipping changes no byte of the result —
 only the read that would have discovered the zeros. This is a different question from the
-occupancy prefilter in `em-morpho`, which asks whether a region *probably* holds labels
+occupancy prefilter in `neu-morpho`, which asks whether a region *probably* holds labels
 and therefore needs dilating.
 
 Three things to know:
@@ -212,11 +212,11 @@ reason for existing is that you want the levels rebuilt.
 
 Progress can be counted two ways and they legitimately disagree on sparse data:
 
-`em-vol progress <volume>`
+`neu-vol progress <volume>`
 : counts from the run manifest — the tasks the run dispatched. Cheap, and it is what
   answers "how far along is my run".
 
-`em-vol progress <volume> --storage`
+`neu-vol progress <volume> --storage`
 : counts stored chunk objects. Authoritative about what exists, but it lists the store,
   and on sparse data it will read as far behind: **an all-fill chunk is never written**,
   so a block that processed correctly may leave no object at all.

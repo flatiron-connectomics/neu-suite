@@ -1,11 +1,11 @@
 # The five packages are their own repositories, cloned as siblings here. They are
 # NOT submodules — see .github/workflows/docs.yml for why.
-em-blockrun/
-em-volume-tools/
-em-seg-morpho/
-em-annotation/
-em-ngl/
-em-viz/
+blockrun/
+neu-vol/
+neu-morpho/
+neu-mark/
+neu-glance/
+neu-draw/
 
 # Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
 # one cluster's partitions, accounts and paths.
@@ -16,12 +16,12 @@ configs/
 CLAUDE.md
 NOTES-TODO.md
 CLI-CONSOLIDATION-PLAN.md
-EM-VIZ-PLAN.md
+NEU-DRAW-PLAN.md
 RENAME-PLAN.md
 
-# em-annotation site defaults (em_annotation.config), found by walking up from the working
+# neu-mark site defaults (neu_mark.config), found by walking up from the working
 # directory. Personal, and it carries a server name and a branch ref.
-em-annotation.toml
+neu-mark.toml
 
 # Dataset content and run artefacts, which are large and belong on ceph, not in git.
 *.log

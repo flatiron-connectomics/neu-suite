@@ -7,13 +7,13 @@ larger volume and arrive at different times. That is `create` then `write`.
 All three run in the calling process. No dask, no manifest, no cluster.
 
 ```bash
-em-vol to-hdf5 --src slices/ --out a.h5 \
+neu-vol to-hdf5 --src slices/ --out a.h5 \
     --voxel-size 8,8,8 --offset 24,128,256      # a piece that knows where it goes
 
-em-vol create /abs/gt.precomputed --like s3://.../image.precomputed \
+neu-vol create /abs/gt.precomputed --like s3://.../image.precomputed \
     --dtype uint64 --kind segmentation          # empty, in the image's exact frame
 
-em-vol write /abs/gt.precomputed --src a.h5 --src b.h5 --src c.h5
+neu-vol write /abs/gt.precomputed --src a.h5 --src b.h5 --src c.h5
 ```
 
 ## `create` lays out an empty volume
@@ -50,7 +50,7 @@ precomputed means xyz — while everything in these packages is zyx. Reversed, t
 lands mirrored through the z=x diagonal, and nothing downstream can tell.
 
 So it is either *recorded* or *asked for*: a source may state its order in an `axes`
-attribute, which is what `em-vol to-hdf5` writes, and then `write` reads it rather than
+attribute, which is what `neu-vol to-hdf5` writes, and then `write` reads it rather than
 assuming. Failing that it falls back to zyx, and `--offset-order xyz` overrides both. The
 provenance, which of the three applied, and any reversal are printed on every run.
 ```
@@ -58,12 +58,12 @@ provenance, which of the three applied, and any reversal are printed on every ru
 ## `to-hdf5` makes a piece worth placing
 
 The inverse of `write`. An image stack off a microscope or an annotation tool is a
-directory of PNGs with no coordinates attached; `em-vol to-hdf5` packs it into one HDF5
+directory of PNGs with no coordinates attached; `neu-vol to-hdf5` packs it into one HDF5
 file **with** its frame and position, so placing it later needs no arguments at all:
 
 ```bash
-em-vol to-hdf5 --src slices/ --out piece.h5 --voxel-size 40,8,8 --offset 24,128,256
-em-vol write <volume> --src piece.h5        # no --offset, no --offset-order
+neu-vol to-hdf5 --src slices/ --out piece.h5 --voxel-size 40,8,8 --offset 24,128,256
+neu-vol write <volume> --src piece.h5        # no --offset, no --offset-order
 ```
 
 What it records: `voxel_offset` in whole voxels on the dataset — the field `write` already
@@ -93,7 +93,7 @@ when the piece is written back.
 `--background 1` on `write`, `to-hdf5` or `convert` replaces those values with 0 **as the
 source is read**. That timing is the point, not a convenience: an all-background block of 1s
 is not all-fill, so without it every such block is *stored*, and the volume stops answering
-"where is the data" by which chunks exist. `em-vol mask-by-value` repairs data that has
+"where is the data" by which chunks exist. `neu-vol mask-by-value` repairs data that has
 already landed — see [the ground-truth guide](ground-truth.md).
 
 ### Bringing a foreign HDF5 file into this layout
@@ -103,7 +103,7 @@ A file written elsewhere often already describes itself — data in `main`, with
 `to-hdf5` at it and pass nothing:
 
 ```bash
-em-vol to-hdf5 --src theirs.h5 --out canonical.h5
+neu-vol to-hdf5 --src theirs.h5 --out canonical.h5
 ```
 
 Everything it records becomes the default: the offset, the voxel size, and a recorded
@@ -117,9 +117,9 @@ knows its position belongs there rather than at the box's own offset.
 `--voxel-size-field` (default `voxel_size`) sets the attribute the scale is written under
 **and** read from, so a file keeps whatever spelling its siblings use and repacking one
 never asks you to retype a scale it already carries. `--offset-field` does the same for
-`voxel_offset` — change it on `em-vol write` too, or `write` will look for the old name.
+`voxel_offset` — change it on `neu-vol write` too, or `write` will look for the old name.
 
-`em-vol write --voxel-size-field` uses it for one thing only: **checking** the piece against
+`neu-vol write --voxel-size-field` uses it for one thing only: **checking** the piece against
 the level it is going into. A region extracted at level 1 and written to level 0 fits,
 places cleanly, and is at the wrong resolution — the shapes, dtype and bounds are all
 consistent, so nothing else here would notice. It warns rather than refuses, since writing
@@ -131,9 +131,9 @@ a deliberately coarser piece is legitimate.
 for annotation or inspection and hands it back afterwards:
 
 ```bash
-em-vol to-hdf5 --src <volume> --out region.h5 --level 1 --crop-bbox 2,2,2,10,10,10
+neu-vol to-hdf5 --src <volume> --out region.h5 --level 1 --crop-bbox 2,2,2,10,10,10
 #   ... annotate region.h5 ...
-em-vol write <volume> --src region.h5 --level 1        # straight back where it came from
+neu-vol write <volume> --src region.h5 --level 1        # straight back where it came from
 ```
 
 `--level` picks which level to read (default 0) and `--crop-bbox` a box within it, in **that
@@ -159,4 +159,4 @@ calling process, that hazard only exists across invocations you launch yourself.
 ## Then a pyramid
 
 `write` is single-scale on purpose: how a patch should look when coarsened is a separate
-decision, and averaging label ids invents ids. Run `em-vol downsample` afterwards.
+decision, and averaging label ids invents ids. Run `neu-vol downsample` afterwards.

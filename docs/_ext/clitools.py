@@ -21,28 +21,28 @@ HERE = Path(__file__).resolve().parent.parent          # docs/
 ROOT = HERE.parent                                     # the workspace root
 GENERATED = HERE / "_generated"
 
-# The console scripts. em-blockrun is a library and declares no [project.scripts], so it
+# The console scripts. blockrun is a library and declares no [project.scripts], so it
 # has no CLI page — it appears in the design notes instead.
 COMMANDS = [
-    ("em-vol", "em_volume_tools.cli", "the volumes themselves: inspect, convert, copy, "
+    ("neu-vol", "neu_vol.cli", "the volumes themselves: inspect, convert, copy, "
                                       "create, write, renumber"),
-    ("em-morpho", "em_seg_morpho.cli", "meshes and skeletons from a segmentation"),
-    ("em-annot", "em_annotation.cli", "DVID annotations into tables: synapses and other "
+    ("neu-morpho", "neu_morpho.cli", "meshes and skeletons from a segmentation"),
+    ("neu-mark", "neu_mark.cli", "DVID annotations into tables: synapses and other "
                                       "point annotations, per-body records"),
-    ("em-ngl", "em_ngl.cli", "neuroglancer states, annotation layers and links"),
+    ("neu-glance", "neu_glance.cli", "neuroglancer states, annotation layers and links"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
 # reviewed next to the code it describes rather than copied by hand into the site.
 INCLUDED = [
-    ("em-blockrun/README.md", "em-blockrun-readme.md"),
-    ("em-volume-tools/README.md", "em-volume-tools-readme.md"),
-    ("em-volume-tools/docs/DESIGN.md", "em-volume-tools-design.md"),
-    ("em-volume-tools/docs/dask-slurm-rusty.md", "dask-slurm-rusty.md"),
-    ("em-seg-morpho/README.md", "em-seg-morpho-readme.md"),
-    ("em-seg-morpho/docs/DESIGN.md", "em-seg-morpho-design.md"),
-    ("em-annotation/README.md", "em-annotation-readme.md"),
-    ("em-ngl/README.md", "em-ngl-readme.md"),
+    ("blockrun/README.md", "blockrun-readme.md"),
+    ("neu-vol/README.md", "neu-vol-readme.md"),
+    ("neu-vol/docs/DESIGN.md", "neu-vol-design.md"),
+    ("neu-vol/docs/dask-slurm-rusty.md", "dask-slurm-rusty.md"),
+    ("neu-morpho/README.md", "neu-morpho-readme.md"),
+    ("neu-morpho/docs/DESIGN.md", "neu-morpho-design.md"),
+    ("neu-mark/README.md", "neu-mark-readme.md"),
+    ("neu-glance/README.md", "neu-glance-readme.md"),
 ]
 
 
@@ -125,23 +125,23 @@ def documented_parser(module: str) -> argparse.ArgumentParser:
 
 
 def em_vol_parser() -> argparse.ArgumentParser:
-    """Target of the ``argparse`` directive on the em-vol page."""
-    return documented_parser("em_volume_tools.cli")
+    """Target of the ``argparse`` directive on the neu-vol page."""
+    return documented_parser("neu_vol.cli")
 
 
 def em_morpho_parser() -> argparse.ArgumentParser:
-    """Target of the ``argparse`` directive on the em-morpho page."""
-    return documented_parser("em_seg_morpho.cli")
+    """Target of the ``argparse`` directive on the neu-morpho page."""
+    return documented_parser("neu_morpho.cli")
 
 
 def em_annot_parser() -> argparse.ArgumentParser:
-    """Target of the ``argparse`` directive on the em-annot page."""
-    return documented_parser("em_annotation.cli")
+    """Target of the ``argparse`` directive on the neu-mark page."""
+    return documented_parser("neu_mark.cli")
 
 
-def em_ngl_parser() -> argparse.ArgumentParser:
-    """Target of the ``argparse`` directive on the em-ngl page."""
-    return documented_parser("em_ngl.cli")
+def neu_glance_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the neu-glance page."""
+    return documented_parser("neu_glance.cli")
 
 
 def write_cheatsheet(path: Path) -> None:
@@ -178,7 +178,7 @@ def write_cheatsheet(path: Path) -> None:
 def _extras(module: str) -> list[str]:
     """Per-command detail worth having on the cheat sheet, taken from the package.
 
-    Only `em-morpho`'s stages so far. They belong here because "which stages do I pass"
+    Only `neu-morpho`'s stages so far. They belong here because "which stages do I pass"
     is the question the cheat sheet exists to answer, and `--stages index,mesh,skel`
     tells you nothing about what those are — but the text is imported rather than
     restated, so the site, `--help` and the code cannot disagree.
@@ -203,7 +203,7 @@ GITHUB = "https://github.com/flatiron-connectomics"
 def _absolutize(text: str, repo: str, from_dir: str) -> str:
     """Point a repo README's relative links at GitHub.
 
-    An included file's links (`LICENSE`, `docs/DESIGN.md`, `../em-blockrun`) resolve
+    An included file's links (`LICENSE`, `docs/DESIGN.md`, `../blockrun`) resolve
     against its own repository, not against this site — so left alone they are dangling
     references that warn on every build and 404 for the reader. Rewriting them to the
     repository they mean makes them work, which is better than suppressing the warning.
@@ -219,7 +219,7 @@ def _absolutize(text: str, repo: str, from_dir: str) -> str:
         if "#" in target:
             target, anchor = target.split("#", 1)
             anchor = "#" + anchor
-        # A sibling repo (`../em-blockrun`) leaves this repo entirely; anything else is
+        # A sibling repo (`../blockrun`) leaves this repo entirely; anything else is
         # relative to the included file's own directory inside it.
         joined = posixpath.normpath(posixpath.join(from_dir, target))
         if joined.startswith("../"):

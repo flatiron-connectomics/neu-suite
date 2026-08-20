@@ -1,49 +1,49 @@
-# em-libraries
+# neu-suite
 
 Documentation and the shared environment for three EM volume packages developed at the
 Flatiron Institute's Center for Computational Neuroscience.
 
-**📖 [Documentation](https://flatiron-connectomics.github.io/em-libraries/)** — start at
+**📖 [Documentation](https://flatiron-connectomics.github.io/neu-suite/)** — start at
 the cheat sheet if you just need to remember a flag.
 
 The packages live in their own repositories and are meant to sit here as siblings:
 
 | repository | what it is |
 | --- | --- |
-| [em-blockrun](https://github.com/flatiron-connectomics/em-blockrun) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
-| [em-volume-tools](https://github.com/flatiron-connectomics/em-volume-tools) | volume I/O and the `em-vol` command |
-| [em-seg-morpho](https://github.com/flatiron-connectomics/em-seg-morpho) | meshes and skeletons, and the `em-morpho` command |
-| [em-annotation](https://github.com/flatiron-connectomics/em-annotation) | DVID annotations into tables and precomputed sources, and the `em-annot` command |
-| [em-ngl](https://github.com/flatiron-connectomics/em-ngl) | neuroglancer states, layers and links, and the `em-ngl` command |
+| [blockrun](https://github.com/flatiron-connectomics/blockrun) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
+| [neu-vol](https://github.com/flatiron-connectomics/neu-vol) | volume I/O and the `neu-vol` command |
+| [neu-morpho](https://github.com/flatiron-connectomics/neu-morpho) | meshes and skeletons, and the `neu-morpho` command |
+| [neu-mark](https://github.com/flatiron-connectomics/neu-mark) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
+| [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
 
-The dependency order is one-way — `em-blockrun ← em-volume-tools ←
-{em-seg-morpho, em-annotation, em-ngl}` — and they depend on each other by relative
+The dependency order is one-way — `blockrun ← neu-vol ←
+{neu-morpho, neu-mark, neu-glance}` — and they depend on each other by relative
 `../sibling` path, so the layout matters:
 
 ```text
-em-libraries/          ← this repository
-├── em-blockrun/       ← cloned separately
-├── em-volume-tools/
-├── em-seg-morpho/
-├── em-annotation/
-└── em-ngl/
+neu-suite/          ← this repository
+├── blockrun/       ← cloned separately
+├── neu-vol/
+├── neu-morpho/
+├── neu-mark/
+└── neu-glance/
 ```
 
-The three consumers do not import each other. In particular **em-ngl does not import
-em-annotation**: it reads a precomputed annotation source's `info` like any other store
+The three consumers do not import each other. In particular **neu-glance does not import
+neu-mark**: it reads a precomputed annotation source's `info` like any other store
 object. That is what keeps the viewer knowledge — shaders, states, links — out of the
 packages that write data.
 
 ## The environment
 
-One conda environment, `em-lib`, covers all five, installed editable.
+One conda environment, `neu-env`, covers all five, installed editable.
 
 ```bash
-conda env create -n em-lib -f environment.yml
-conda activate em-lib
+conda env create -n neu-env -f environment.yml
+conda activate neu-env
 pip install -r pypi_requirements.txt
-pip install --no-deps -e ./em-blockrun -e ./em-volume-tools -e ./em-seg-morpho \
-                      -e ./em-annotation -e ./em-ngl
+pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho \
+                      -e ./neu-mark -e ./neu-glance
 ```
 
 `--no-deps` is load-bearing: without it pip re-resolves conda-provided binaries
@@ -53,7 +53,7 @@ flyem-forge.
 
 ## Building the docs locally
 
-The site does **not** need the `em-lib` environment. Importing the two CLI modules pulls
+The site does **not** need the `neu-env` environment. Importing the two CLI modules pulls
 in only dask, distributed and numpy, so PyPI is enough:
 
 ```bash

@@ -4,19 +4,19 @@ The full path for manually annotated chunks assembled into one volume, meshed, a
 published for viewing.
 
 ```bash
-em-vol create  s3://.../gt_v1 --like s3://.../image --dtype uint64 --kind segmentation
-em-vol write   s3://.../gt_v1 --src chunk1.h5 --src chunk2.h5 ... [--background 1]
-em-vol downsample s3://.../gt_v1 --start-level 0 --config ... --workers 24
+neu-vol create  s3://.../gt_v1 --like s3://.../image --dtype uint64 --kind segmentation
+neu-vol write   s3://.../gt_v1 --src chunk1.h5 --src chunk2.h5 ... [--background 1]
+neu-vol downsample s3://.../gt_v1 --start-level 0 --config ... --workers 24
 
-em-vol relabel s3://.../gt_v1 --out s3://.../gt_v2       # ← do not skip
-em-vol downsample s3://.../gt_v2 --start-level 0 --config ... --workers 24
+neu-vol relabel s3://.../gt_v1 --out s3://.../gt_v2       # ← do not skip
+neu-vol downsample s3://.../gt_v2 --start-level 0 --config ... --workers 24
 
-em-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
+neu-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
     --work-dir /mnt/ceph/users/<you>/gt-meshing --stages mesh --mesh-scale 0 \
     --config ... --workers 48
 
-em-ngl bboxes s3://.../gt_v2 --label gt --out gt_layer.json
-em-ngl gen --seg s3://.../gt_v2 --layer gt_layer.json --select-last
+neu-glance bboxes s3://.../gt_v2 --label gt --out gt_layer.json
+neu-glance gen --seg s3://.../gt_v2 --layer gt_layer.json --select-last
 ```
 
 ## When background is not 0
@@ -29,7 +29,7 @@ read. Do it there rather than afterwards, because of what happens otherwise:
 **An all-background block of 1s is not all-fill, so it gets stored.** The volume then has a
 chunk object everywhere data was written, whether or not it holds anything — and "which
 chunk objects exist" stops answering "where is the data". That is precisely the question
-`em-ngl bboxes`, `relabel`, `downsample --sparse` and em-seg-morpho's occupancy filter all
+`neu-glance bboxes`, `relabel`, `downsample --sparse` and neu-morpho's occupancy filter all
 ask, so they all quietly start answering "everywhere". Background also becomes a body when
 meshed, and an enormous one.
 
@@ -37,11 +37,11 @@ Measured on a 16×32×32 test volume with background 1: **32 stored chunks, of w
 any label.**
 ```
 
-For data that has already landed, `em-vol mask-by-value` repairs it:
+For data that has already landed, `neu-vol mask-by-value` repairs it:
 
 ```bash
-em-vol mask-by-value s3://.../gt_v1 --values 1 --out s3://.../gt_v1_fixed
-em-vol downsample s3://.../gt_v1_fixed --start-level 0        # single-scale, like relabel
+neu-vol mask-by-value s3://.../gt_v1 --values 1 --out s3://.../gt_v1_fixed
+neu-vol downsample s3://.../gt_v1_fixed --start-level 0        # single-scale, like relabel
 ```
 
 Either destination restores the sparsity — writing zeros over a stored chunk removes the
@@ -62,7 +62,7 @@ ids, 508 of them used by more than one chunk.** A body numbered 1 was a chimera 
 dozen unrelated cells spanning 57 × 29 × 33 µm, where a single chunk is about 2 µm.
 
 `relabel` walks the occupied regions in order and gives each its own range. It finds the
-regions the same way `em-ngl bboxes` does — from which chunk objects exist — so they are
+regions the same way `neu-glance bboxes` does — from which chunk objects exist — so they are
 pairwise disjoint and chunk-aligned, and it is serial by construction because each range
 begins where the last ended.
 
@@ -98,6 +98,6 @@ something that is not there.
 ## Watching it
 
 ```bash
-em-morpho progress   <work-dir>      # live, both stages have real denominators
-em-morpho run-report <work-dir>      # self-contained HTML, works on an in-flight run
+neu-morpho progress   <work-dir>      # live, both stages have real denominators
+neu-morpho run-report <work-dir>      # self-contained HTML, works on an in-flight run
 ```

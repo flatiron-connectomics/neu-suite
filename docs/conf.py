@@ -1,7 +1,7 @@
-"""Sphinx configuration for the em-libraries documentation site.
+"""Sphinx configuration for the neu-suite documentation site.
 
 The site assembles three sibling repositories that are deliberately separate packages —
-`em-blockrun`, `em-volume-tools`, `em-seg-morpho` — into one place to read about them,
+`blockrun`, `neu-vol`, `neu-morpho` — into one place to read about them,
 because the thing a user needs (a command) does not correspond to a repository.
 
 **The CLI reference is generated, never written.** `sphinx-argparse` renders the actual
@@ -9,7 +9,7 @@ because the thing a user needs (a command) does not correspond to a repository.
 cannot disagree with `--help`. That is the whole reason this is a Sphinx site rather
 than a hand-maintained page.
 
-Building requires the three packages to be importable, but *not* the full `em-lib`
+Building requires the three packages to be importable, but *not* the full `neu-env`
 conda environment: importing the CLI modules pulls in only dask, distributed and numpy —
 no tensorstore, vol2mesh, dvidutils or kimimaro — so a plain pip install is enough. See
 `.github/workflows/docs.yml`.
@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 
-project = "em-libraries"
+project = "neu-suite"
 author = "Flatiron Institute — Center for Computational Neuroscience"
 copyright = "Flatiron Institute"
 
@@ -40,7 +40,7 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "_ext", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
-html_title = "em-libraries"
+html_title = "neu-suite"
 html_static_path = ["_static"]
 
 # Cropped from the pathway figure on the front page, to the medulla and the R7p neuron in
@@ -48,7 +48,7 @@ html_static_path = ["_static"]
 # the green disc with a yellow mark is the only part of it that survives that downscale.
 html_favicon = "_static/favicon.png"
 html_theme_options = {
-    "source_repository": "https://github.com/flatiron-connectomics/em-libraries/",
+    "source_repository": "https://github.com/flatiron-connectomics/neu-suite/",
     "source_branch": "main",
     "source_directory": "docs/",
 }
