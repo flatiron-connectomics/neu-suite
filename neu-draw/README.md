@@ -9,25 +9,40 @@ neuroglancer states for a *remote* viewer. The axis that separates the two is **
 the rendering happens**, not what is rendered.
 
 ```python
-from em_viz import Skeleton, Frame
+import em_viz
+from em_viz import Mesh, Skeleton, build_scene
 
 skel = Skeleton.from_precomputed(*read_body_skeleton(volume, body_id), name="KC-1")
-skel = skel.crop(inside_the_lobe)      # branches terminate at the region surface
+skel = skel.crop(inside_the_lobe)          # branches end at the region surface
+
+scene = build_scene(meshes=[soma], skeletons=[skel], points={"presyn": coords_zyx_nm})
+view = em_viz.show(scene)                  # displays itself in a notebook
+view.save("kc1.png")                       # or render offscreen anywhere
 ```
 
 ## Status
 
-Early. The geometry layer is in place; the scene layer, the pygfx backend and the source
-adapters are not yet. See `EM-VIZ-PLAN.md` in the `em-libraries` root.
+Early, but it draws. Geometry, colours, scene assembly and the pygfx backend are in
+place; the source adapters and the legend are not. See `EM-VIZ-PLAN.md` in the
+`em-libraries` root.
 
 ## Layout
 
 | module | what it is |
 |---|---|
 | `em_viz.geometry` | `Frame`, `Mesh`, `Skeleton`, `BBox`. nm, zyx, arrays. No I/O, no renderer. |
-| `em_viz.scene` | drawables, colours, camera intent. Pure. *(not yet)* |
+| `em_viz.colors` | palette and colour assignment. Pure — no matplotlib. |
+| `em_viz.scene` | drawables, colours, camera intent. Pure, so a figure is assertable without a GPU. |
+| `em_viz.backends.pygfx` | the only renderer-aware module. |
 | `em_viz.sources` | the only module that reads anything. *(not yet)* |
-| `em_viz.backends` | pygfx. The renderer seam. *(not yet)* |
+
+## Skeletons are edges, not polylines
+
+A skeleton is vertices plus an edge list, and it renders as **one object per body**
+whatever its topology — cycles, self-loops and thousands of disconnected components
+included — because pygfx's `LineSegmentMaterial` consumes an edge list directly. The
+predecessor decomposed each skeleton into branch polylines and emitted one graphic per
+branch, purely because `fastplotlib.add_line_collection` wanted a list of them.
 
 ## Two conventions, both load-bearing
 

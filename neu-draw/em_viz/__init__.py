@@ -19,6 +19,30 @@ safe in a terminal, in CI, and on a worker.
 
 __version__ = "0.1.0"
 
-from .geometry import BBox, Frame, Mesh, Skeleton, to_xyz
+from typing import Any
 
-__all__ = ["__version__", "BBox", "Frame", "Mesh", "Skeleton", "to_xyz"]
+from .colors import assign_colors, to_rgba
+from .geometry import BBox, Frame, Mesh, Skeleton, to_xyz
+from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
+                    build_scene)
+
+
+def show(scene: Scene, *, backend: str = "pygfx", **kwargs) -> Any:
+    """Render a :class:`~em_viz.scene.Scene` and return the backend's view.
+
+    A **function**, not a re-export, so the renderer is imported only when something is
+    actually drawn — see the module docstring. In a notebook the returned view displays
+    itself; elsewhere it renders offscreen and ``.snapshot()`` gives you the pixels.
+    """
+    from .backends import get_backend
+
+    return get_backend(backend).show(scene, **kwargs)
+
+
+__all__ = [
+    "__version__",
+    "BBox", "Frame", "Mesh", "Skeleton", "to_xyz",
+    "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
+    "assign_colors", "to_rgba",
+    "show",
+]

@@ -1,0 +1,37 @@
+"""Renderer backends. Nothing here is imported by ``em_viz`` itself.
+
+A backend turns a :class:`~em_viz.scene.Scene` — pure data — into something on screen.
+Importing one needs a canvas backend and a GPU adapter, neither of which exists on a
+cluster worker or in CI, so the import stays behind this call rather than at package
+level::
+
+    from em_viz.backends import get_backend
+    view = get_backend().show(scene)
+
+There is one backend, pygfx. The seam exists because the predecessor was built on
+fastplotlib and needed a *fork* of it — 764 lines of legend support for 3D graphics that
+upstream does not have — and pinning a library suite to a git commit of a fork is not
+something an ``environment.yml`` can express. pygfx turned out to supply every primitive
+in use directly, so the fork became unnecessary rather than portable. If fastplotlib is
+ever wanted back, it implements this same interface.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+#: Backends by name. A second entry is what makes the seam real rather than aspirational.
+KNOWN = ("pygfx",)
+
+
+def get_backend(name: str = "pygfx") -> Any:
+    """Import and return a backend module, with a useful error when it is missing."""
+    if name not in KNOWN:
+        raise ValueError(f"unknown backend {name!r}; known: {', '.join(KNOWN)}")
+    try:
+        from . import pygfx as backend
+    except ImportError as exc:
+        raise ImportError(
+            f"the {name} backend needs the render extra: "
+            f"pip install 'em-viz[render]'  ({exc})") from exc
+    return backend

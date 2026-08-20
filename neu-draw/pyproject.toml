@@ -28,7 +28,8 @@ dependencies = [
 #   neuclease — DVID only. See the RLE note in EM-VIZ-PLAN.md.
 
 [project.optional-dependencies]
-render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap"]
+# `imageio` is only for `View.save`; `snapshot()` hands back the array either way.
+render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap", "imageio"]
 sources = ["em-seg-morpho", "pandas"]
 dvid = ["neuclease"]
 cache = ["yes3>=0.1"]
