@@ -10,21 +10,32 @@ the rendering happens**, not what is rendered.
 
 ```python
 import em_viz
-from em_viz import Mesh, Skeleton, build_scene
+from em_viz import build_scene, sources
+from em_viz.cache import MemoryCache
 
-skel = Skeleton.from_precomputed(*read_body_skeleton(volume, body_id), name="KC-1")
-skel = skel.crop(inside_the_lobe)          # branches end at the region surface
+volume = "s3://my-bucket/my-dataset/segmentation…"
+cache = MemoryCache()
 
-scene = build_scene(meshes=[soma], skeletons=[skel], points={"presyn": coords_zyx_nm})
+skels = sources.body_skeletons(volume, [10014014, 10017394], cache=cache)
+meshes = sources.body_meshes(volume, [10014014], cache=cache)
+
+scene = build_scene(meshes=list(meshes.values()), skeletons=list(skels.values()))
 view = em_viz.show(scene)                  # displays itself in a notebook
-view.save("kc1.png")                       # or render offscreen anywhere
+view.save("bodies.png")                    # or renders offscreen anywhere
+```
+
+Cropping a skeleton to a region, and drawing it with its real calibre:
+
+```python
+skel = skels[10014014].crop(sources.box_predicate(some_box))   # ends at the surface
+tube = sources.skeleton_tube(skel)                             # radii as a solid tube
 ```
 
 ## Status
 
-Early, but it draws. Geometry, colours, scene assembly and the pygfx backend are in
-place; the source adapters and the legend are not. See `EM-VIZ-PLAN.md` in the
-`em-libraries` root.
+Early, but it works end to end against real precomputed volumes. Geometry, colours,
+scene assembly, the pygfx backend and the source readers are in place; the legend, DVID
+sources and 2D projections are not. See `EM-VIZ-PLAN.md` in the `em-libraries` root.
 
 ## Layout
 
@@ -33,8 +44,9 @@ place; the source adapters and the legend are not. See `EM-VIZ-PLAN.md` in the
 | `em_viz.geometry` | `Frame`, `Mesh`, `Skeleton`, `BBox`. nm, zyx, arrays. No I/O, no renderer. |
 | `em_viz.colors` | palette and colour assignment. Pure — no matplotlib. |
 | `em_viz.scene` | drawables, colours, camera intent. Pure, so a figure is assertable without a GPU. |
+| `em_viz.sources` | the only module that reads anything. |
+| `em_viz.cache` | a three-method protocol; in-memory by default, `yes3` optional. |
 | `em_viz.backends.pygfx` | the only renderer-aware module. |
-| `em_viz.sources` | the only module that reads anything. *(not yet)* |
 
 ## Skeletons are edges, not polylines
 

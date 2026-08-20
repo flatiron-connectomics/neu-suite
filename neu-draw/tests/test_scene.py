@@ -55,6 +55,11 @@ def test_a_duplicate_name_is_a_collision_not_a_second_layer():
         scene.add_mesh(_mesh("a"))
 
 
+def test_rename_makes_room_instead_of_raising():
+    scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("a"), rename=True)
+    assert scene.names == ["a", "a (2)"]
+
+
 def test_geometry_names_carry_into_the_scene_by_default():
     assert Scene().add_mesh(_mesh("KC-7")).names == ["KC-7"]
 
@@ -124,3 +129,28 @@ def test_build_scene_takes_named_point_sets():
 def test_build_scene_of_nothing_is_an_empty_scene():
     scene = build_scene()
     assert len(scene) == 0 and scene.bbox.is_empty()
+
+
+def test_a_bodys_mesh_and_skeleton_are_labelled_by_representation():
+    """The most ordinary request there is, and both are named after the body — so they
+    collide. Found against the real sample3 volume, not in a test."""
+    scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")])
+    assert scene.names == ["1401 mesh", "1401 skeleton"]
+
+
+def test_the_suffix_goes_on_BOTH_so_a_name_does_not_depend_on_ordering():
+    """Suffixing only the second would make "1401" mean the mesh here and the skeleton
+    in a scene assembled the other way round."""
+    scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")])
+    assert "1401" not in scene.names
+
+
+def test_an_unshared_name_is_left_alone():
+    scene = build_scene(meshes=[_mesh("a")], skeletons=[_skeleton("b")])
+    assert scene.names == ["a", "b"]
+
+
+def test_a_point_set_sharing_a_bodys_name_is_disambiguated_too():
+    scene = build_scene(skeletons=[_skeleton("x")],
+                        points={"x": np.array([[0.0, 0, 0]])})
+    assert set(scene.names) == {"x skeleton", "x"}

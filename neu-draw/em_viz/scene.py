@@ -172,30 +172,46 @@ class Scene:
 
     # -- assembly --------------------------------------------------------------
 
-    def add(self, drawable: Drawable) -> "Scene":
-        """Append a drawable, refusing a duplicate name.
+    def add(self, drawable: Drawable, rename: bool = False) -> "Scene":
+        """Append a drawable. A duplicate name raises, or is renamed if asked.
 
         Names key the legend and are how a caller refers to a layer afterwards, so two
         drawables sharing one is a collision rather than a duplicate — the same reason
-        em-ngl renames on collision instead of adding a second layer with one name.
+        em-ngl renames a colliding layer instead of keeping two under one name.
+
+        Raising is the right default for a hand-built scene, but note that the most
+        ordinary thing a caller does — a body's mesh *and* its skeleton — collides,
+        because both are named after the body. :func:`build_scene` handles that by
+        suffixing with the representation; ``rename=True`` is the blunter fallback.
         """
         if drawable.name is not None:
             taken = {d.name for d in self.drawables if d.name is not None}
             if drawable.name in taken:
-                raise ValueError(f"a drawable named {drawable.name!r} is already here")
+                if not rename:
+                    raise ValueError(
+                        f"a drawable named {drawable.name!r} is already here. Names key "
+                        f"the legend, so this is a collision, not a duplicate — pass "
+                        f"rename=True, or give it a name of its own.")
+                stem, n = drawable.name, 2
+                while f"{stem} ({n})" in taken:
+                    n += 1
+                drawable = replace(drawable, name=f"{stem} ({n})")
         self.drawables.append(drawable)
         return self
 
-    def add_mesh(self, mesh: Mesh, **kwargs) -> "Scene":
+    def add_mesh(self, mesh: Mesh, *, rename: bool = False, **kwargs) -> "Scene":
         kwargs.setdefault("name", mesh.name)
-        return self.add(MeshDrawable(mesh, **_normalised(kwargs)))
+        return self.add(MeshDrawable(mesh, **_normalised(kwargs)), rename=rename)
 
-    def add_skeleton(self, skeleton: Skeleton, **kwargs) -> "Scene":
+    def add_skeleton(self, skeleton: Skeleton, *, rename: bool = False,
+                     **kwargs) -> "Scene":
         kwargs.setdefault("name", skeleton.name)
-        return self.add(LinesDrawable(skeleton, **_normalised(kwargs)))
+        return self.add(LinesDrawable(skeleton, **_normalised(kwargs)), rename=rename)
 
-    def add_points(self, positions_zyx_nm: Any, **kwargs) -> "Scene":
-        return self.add(PointsDrawable(positions_zyx_nm, **_normalised(kwargs)))
+    def add_points(self, positions_zyx_nm: Any, *, rename: bool = False,
+                   **kwargs) -> "Scene":
+        return self.add(PointsDrawable(positions_zyx_nm, **_normalised(kwargs)),
+                        rename=rename)
 
     # -- queries ---------------------------------------------------------------
 
@@ -253,18 +269,37 @@ def build_scene(meshes: Iterable[Mesh] = (), skeletons: Iterable[Skeleton] = (),
 
     ``alpha`` defaults by count, reproducing the predecessor's rule: a single body opaque,
     several semi-transparent, because overlapping opaque surfaces hide each other.
+
+    **A body's mesh and its skeleton are both named after the body**, so showing them
+    together would collide. Where that happens the representation is appended to *both*
+    (``"1401 mesh"``, ``"1401 skeleton"``) rather than only to the second — so a name is
+    the same whichever order the scene was assembled in, and the legend says which is
+    which. Names that appear once are left alone.
     """
     scene = Scene(**scene_kwargs)
     meshes, skeletons = list(meshes), list(skeletons)
     if alpha is None:
         alpha = 1.0 if len(meshes) + len(skeletons) <= 1 else 0.8
 
+    counts: dict[Any, int] = {}
+    for item in (*meshes, *skeletons):
+        if item.name is not None:
+            counts[item.name] = counts.get(item.name, 0) + 1
+    for name in (points or {}):
+        counts[name] = counts.get(name, 0) + 1
+
+    def label(item, kind: str) -> Optional[str]:
+        if item.name is None:
+            return None
+        return f"{item.name} {kind}" if counts.get(item.name, 0) > 1 else item.name
+
     for mesh in meshes:
-        scene.add_mesh(mesh, alpha=alpha)
+        scene.add_mesh(mesh, alpha=alpha, name=label(mesh, "mesh"), rename=True)
     for skeleton in skeletons:
-        scene.add_skeleton(skeleton, alpha=alpha)
+        scene.add_skeleton(skeleton, alpha=alpha, name=label(skeleton, "skeleton"),
+                           rename=True)
     for name, positions in (points or {}).items():
-        scene.add_points(positions, name=name,
+        scene.add_points(positions, name=name, rename=True,
                          **({"color": point_color} if point_color is not None else {}))
 
     return scene.recolor(colors, palette=palette)
