@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
-from em_volume_tools import BBox
+from neu_vol import BBox
 
 
 @dataclass
@@ -47,7 +47,7 @@ class Mesh:
     @classmethod
     def from_precomputed(cls, vertices_xyz_nm: Any, faces: Any,
                          name: Optional[str] = None) -> "Mesh":
-        """From what ``em_seg_morpho.readback.read_body_mesh`` returns.
+        """From what ``neu_morpho.readback.read_body_mesh`` returns.
 
         That reader hands back **xyz** — the order the precomputed format stores — so
         this is where the one flip into the package's zyx convention happens.

@@ -1,11 +1,11 @@
-"""Renderer backends. Nothing here is imported by ``em_viz`` itself.
+"""Renderer backends. Nothing here is imported by ``neu_draw`` itself.
 
-A backend turns a :class:`~em_viz.scene.Scene` — pure data — into something on screen.
+A backend turns a :class:`~neu_draw.scene.Scene` — pure data — into something on screen.
 Importing one needs a canvas backend and a GPU adapter, neither of which exists on a
 cluster worker or in CI, so the import stays behind this call rather than at package
 level::
 
-    from em_viz.backends import get_backend
+    from neu_draw.backends import get_backend
     view = get_backend().show(scene)
 
 There is one backend, pygfx. The seam exists because the predecessor was built on
@@ -33,5 +33,5 @@ def get_backend(name: str = "pygfx") -> Any:
     except ImportError as exc:
         raise ImportError(
             f"the {name} backend needs the render extra: "
-            f"pip install 'em-viz[render]'  ({exc})") from exc
+            f"pip install 'neu-draw[render]'  ({exc})") from exc
     return backend

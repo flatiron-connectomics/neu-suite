@@ -8,7 +8,7 @@ looks like a different body. Neither raises.
 import numpy as np
 import pytest
 
-from em_viz.geometry import Frame, to_xyz
+from neu_draw.geometry import Frame, to_xyz
 
 
 def test_anisotropy_is_per_axis_not_a_factor():

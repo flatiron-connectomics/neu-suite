@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from em_viz.geometry import BBox, Mesh
+from neu_draw.geometry import BBox, Mesh
 
 
 def _tetra():

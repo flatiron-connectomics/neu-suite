@@ -1,9 +1,9 @@
 """Reading a real precomputed volume, built by the production writers.
 
-The fixture writes its skeletons with `em_seg_morpho.precomputed.write_body_skeleton`
+The fixture writes its skeletons with `neu_morpho.precomputed.write_body_skeleton`
 and its `info` with `write_skeleton_info` — the same code that produces the volumes this
 reads in anger. Hand-rolling the bytes would prove the reader agrees with the test's
-idea of the format, which is the mistake em-libraries invariant 9 is about.
+idea of the format, which is the mistake neu-suite invariant 9 is about.
 
 The fixture pyramid is deliberately **anisotropic** (`(1, 2, 2)` — halve x and y, leave
 z), because an isotropic one cannot tell a real voxel size from `2 ** level`.
@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 
 osteoid = pytest.importorskip("osteoid", reason="conda-only; absent in CI")
-precomputed = pytest.importorskip("em_seg_morpho.precomputed",
+precomputed = pytest.importorskip("neu_morpho.precomputed",
                                   reason="conda-only; absent in CI")
 
-from em_viz import Frame, Mesh, Skeleton                                  # noqa: E402
-from em_viz import cache as cache_mod                                     # noqa: E402
-from em_viz import sources                                                # noqa: E402
-from em_viz.geometry import BBox                                          # noqa: E402
+from neu_draw import Frame, Mesh, Skeleton                                  # noqa: E402
+from neu_draw import cache as cache_mod                                     # noqa: E402
+from neu_draw import sources                                                # noqa: E402
+from neu_draw.geometry import BBox                                          # noqa: E402
 
 BODIES = (11, 22)
 
@@ -146,7 +146,7 @@ def test_a_second_read_comes_from_the_cache(volume, monkeypatch):
     store = cache_mod.MemoryCache()
     sources.body_skeleton(volume, BODIES[0], cache=store)
 
-    import em_seg_morpho.readback as readback
+    import neu_morpho.readback as readback
 
     def explode(*args, **kwargs):
         raise AssertionError("re-read a body that was already cached")
@@ -178,7 +178,7 @@ def test_fetching_nothing_is_an_empty_dict(volume):
 def volume_with_mesh(volume):
     """Adds a real multi-LOD Draco mesh, written by the production writer."""
     vol2mesh = pytest.importorskip("vol2mesh", reason="conda-only; absent in CI")
-    from em_seg_morpho.config import MeshConfig
+    from neu_morpho.config import MeshConfig
 
     # A tetrahedron, in nm, well inside one octree cell.
     verts_zyx = np.array([[0.0, 0, 0], [0.0, 0, 400.0], [0.0, 400.0, 0],

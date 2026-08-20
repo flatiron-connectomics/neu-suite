@@ -6,7 +6,7 @@ the predecessor crossed — its mask, mesh and skeleton classes each carried a `
 that imported fastplotlib, which is how viewer knowledge ended up inside the data model.
 """
 
-from em_volume_tools import BBox
+from neu_vol import BBox
 
 from .frame import Frame, to_xyz
 from .mesh import Mesh

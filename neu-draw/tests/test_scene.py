@@ -7,8 +7,8 @@ draw?" by drawing it on a GPU.
 import numpy as np
 import pytest
 
-from em_viz.geometry import BBox, Mesh, Skeleton
-from em_viz.scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
+from neu_draw.geometry import BBox, Mesh, Skeleton
+from neu_draw.scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                           VolumeDrawable, build_scene)
 
 
@@ -71,7 +71,7 @@ def test_an_unknown_marker_is_caught_when_the_scene_is_built():
 
 
 def test_the_volume_slot_is_reserved_and_says_so():
-    with pytest.raises(NotImplementedError, match="EM-VIZ-PLAN"):
+    with pytest.raises(NotImplementedError, match="NEU-DRAW-PLAN"):
         VolumeDrawable()
 
 

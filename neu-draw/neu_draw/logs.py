@@ -15,12 +15,12 @@ them off — ``TENSORSTORE_VERBOSE_LOGGING``, ``ABSL_MIN_LOG_LEVEL``, ``AWS_CRT_
 and ``GLOG_minloglevel`` were all checked — because they come from C++ writing straight
 to file descriptor 2, where ``contextlib.redirect_stderr`` cannot see them.
 
-Volume is bounded rather than per-read: ``em_volume_tools.location`` caches an opened
+Volume is bounded rather than per-read: ``neu_vol.location`` caches an opened
 store per prefix, so it is roughly two lines the first time a prefix is touched and
 nothing after. A notebook still accumulates them across cells, hence this.
 
 **Reads are quiet by default**, via :func:`quiet_reads` around each ``sources`` entry
-point. em-volume-tools' own guidance is that only entry points should touch process-wide
+point. neu-vol' own guidance is that only entry points should touch process-wide
 stderr — and from a notebook's point of view ``sources.body_skeletons`` *is* the entry
 point. Expecting a user to remember an incantation before their output is legible is the
 worse trade, especially since forgetting it looks exactly like the filter being broken.
@@ -29,7 +29,7 @@ Three things keep that defensible. The filter is a **deny-list of specific known
 not a severity filter**, so an unrecognised message always passes through and anything
 mentioning denied access or a failure status prints even when it also matches a noise
 pattern. It is **scoped** to the read rather than installed for the session. And it is
-**defeatable**: set ``em_viz.logs.enabled = False`` to see everything.
+**defeatable**: set ``neu_draw.logs.enabled = False`` to see everything.
 
 Only the calling thread ever touches fd 2 — a depth counter makes nested and concurrent
 reads no-ops, because two threads racing ``dup2`` on the same descriptor is a genuine
@@ -63,7 +63,7 @@ def quiet_reads():
     if not enabled or _installed is not None:
         yield
         return
-    from em_volume_tools.logs import quiet_store_logs
+    from neu_vol.logs import quiet_store_logs
 
     with _lock:
         if _depth == 0:
@@ -87,7 +87,7 @@ def quiet_stores(enabled: bool = True):
     >>> with quiet_stores():
     ...     skeletons = sources.body_skeletons(volume, bodies)
     """
-    from em_volume_tools.logs import quiet_store_logs
+    from neu_vol.logs import quiet_store_logs
 
     with quiet_store_logs(enabled):
         yield
@@ -102,7 +102,7 @@ def install_quiet_stores() -> Callable[[], None]:
     """Filter benign store logging for the whole session. Returns an undo.
 
     Rarely needed now that reads filter themselves — this is for covering store access
-    that does not go through ``sources`` (a direct ``em_volume_tools`` call, say).
+    that does not go through ``sources`` (a direct ``neu_vol`` call, say).
     Idempotent: calling it twice does not stack two filters, which would leave fd 2
     pointing at a pipe nobody drains.
 
@@ -112,7 +112,7 @@ def install_quiet_stores() -> Callable[[], None]:
     """
     global _installed
     if _installed is None:
-        from em_volume_tools.logs import quiet_store_logs
+        from neu_vol.logs import quiet_store_logs
 
         _installed = quiet_store_logs(True)
         _installed.__enter__()

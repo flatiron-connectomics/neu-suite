@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
-from em_volume_tools import BBox
+from neu_vol import BBox
 
 from .frame import Frame
 
@@ -71,7 +71,7 @@ class Skeleton:
     @classmethod
     def from_precomputed(cls, vertices_xyz_nm: Any, edges: Any,
                          radii_nm: Any = None, name: Optional[str] = None) -> "Skeleton":
-        """From what ``em_seg_morpho.readback.read_body_skeleton`` returns.
+        """From what ``neu_morpho.readback.read_body_skeleton`` returns.
 
         That reader hands back **xyz** — the order the precomputed format stores — so
         this is where the one flip into zyx happens. It has already rejected the
@@ -142,7 +142,7 @@ class Skeleton:
     def segments(self) -> np.ndarray:
         """``(2M, 3)`` zyx nm — consecutive pairs, one per edge.
 
-        The whole rendering path. Pass through :func:`~em_viz.geometry.to_xyz` and hand
+        The whole rendering path. Pass through :func:`~neu_draw.geometry.to_xyz` and hand
         it to ``pygfx.LineSegmentMaterial``.
         """
         return np.ascontiguousarray(self.vertices_zyx_nm[self.edges.reshape(-1)])

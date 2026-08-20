@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from em_viz import logs
+from neu_draw import logs
 
 BENIGN = (b"E0820 08:36:34.115913 3896997 AuthCredentialsProvider:6146] static: "
           b"Profile credentials provider could not load a profile at .\n")
@@ -133,8 +133,8 @@ def _noise_through(fn):
 
 def test_every_reading_entry_point_filters_itself():
     """The user should not have to know this exists. The sibling CLIs wrap `main()`;
-    em-viz has no CLI, so its entry points are these functions."""
-    from em_viz import sources
+    neu-draw has no CLI, so its entry points are these functions."""
+    from neu_draw import sources
 
     for name in ("volume_info", "scales", "volume_frame", "body_skeleton",
                  "body_mesh", "body_skeletons", "body_meshes"):

@@ -1,7 +1,7 @@
-"""em-viz: interactive 3D rendering of EM segment morphology in Jupyter.
+"""neu-draw: interactive 3D rendering of EM segment morphology in Jupyter.
 
 Meshes, skeletons and synapse points — plus ROI meshes — drawn locally with pygfx. The
-sibling em-ngl builds neuroglancer states for a *remote* viewer; the axis that separates
+sibling neu-glance builds neuroglancer states for a *remote* viewer; the axis that separates
 the two is where the rendering happens, not what is rendered.
 
 Layout, and the reason for it:
@@ -13,7 +13,7 @@ Layout, and the reason for it:
 
 ``geometry`` imports eagerly: it costs a numpy import and nothing else. The **backend
 does not**, and must not — importing a renderer needs a canvas backend, and on a
-headless machine that fails outright rather than degrading. So `import em_viz` stays
+headless machine that fails outright rather than degrading. So `import neu_draw` stays
 safe in a terminal, in CI, and on a worker.
 """
 
@@ -33,7 +33,7 @@ from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,
 
 
 def show(scene: Scene, *, backend: str = "pygfx", **kwargs) -> Any:
-    """Render a :class:`~em_viz.scene.Scene` and return the backend's view.
+    """Render a :class:`~neu_draw.scene.Scene` and return the backend's view.
 
     A **function**, not a re-export, so the renderer is imported only when something is
     actually drawn — see the module docstring. In a notebook the returned view displays

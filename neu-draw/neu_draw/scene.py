@@ -20,7 +20,7 @@ from functools import reduce
 from typing import Any, Hashable, Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
-from em_volume_tools import BBox
+from neu_vol import BBox
 
 from .colors import RGBA, assign_colors, to_rgba
 from .geometry import Mesh, Skeleton
@@ -57,7 +57,7 @@ def resolve_marker(marker: str) -> str:
 
 @dataclass
 class MeshDrawable:
-    """A surface. ``mesh`` is an :class:`~em_viz.geometry.Mesh`, already in nm/zyx."""
+    """A surface. ``mesh`` is an :class:`~neu_draw.geometry.Mesh`, already in nm/zyx."""
     mesh: Mesh
     color: RGBA = (0.5, 0.5, 0.5, 1.0)
     alpha: float = 1.0
@@ -73,7 +73,7 @@ class MeshDrawable:
 class LinesDrawable:
     """A skeleton, drawn as independent segments — one per edge.
 
-    Carries the :class:`~em_viz.geometry.Skeleton` rather than a positions buffer, so
+    Carries the :class:`~neu_draw.geometry.Skeleton` rather than a positions buffer, so
     the backend calls ``segments()`` itself and nothing here decides array layout.
     """
     skeleton: Skeleton
@@ -122,11 +122,11 @@ class VolumeDrawable:
     carry the same information far more cheaply, and a large binary mask needs chunking
     and compression to be workable at all. What this slot is really for is *continuous
     scalar* data: image slices and probability fields, which suit a volume renderer far
-    better than a binary mask ever did. See EM-VIZ-PLAN.md.
+    better than a binary mask ever did. See NEU-DRAW-PLAN.md.
     """
     def __post_init__(self) -> None:
         raise NotImplementedError(
-            "volumetric drawables are not implemented; see EM-VIZ-PLAN.md. Meshes and "
+            "volumetric drawables are not implemented; see NEU-DRAW-PLAN.md. Meshes and "
             "skeletons cover segment morphology, and this slot is reserved for scalar "
             "fields (image slices, probability maps).")
 
@@ -173,7 +173,7 @@ class Scene:
 
         Names key the legend and are how a caller refers to a layer afterwards, so two
         drawables sharing one is a collision rather than a duplicate — the same reason
-        em-ngl renames a colliding layer instead of keeping two under one name.
+        neu-glance renames a colliding layer instead of keeping two under one name.
 
         Raising is the right default for a hand-built scene, but note that the most
         ordinary thing a caller does — a body's mesh *and* its skeleton — collides,

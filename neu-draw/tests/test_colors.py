@@ -2,7 +2,7 @@
 
 import pytest
 
-from em_viz.colors import QUALITATIVE, assign_colors, to_rgba
+from neu_draw.colors import QUALITATIVE, assign_colors, to_rgba
 
 
 def test_the_shorthands_the_old_call_sites_used_still_work():

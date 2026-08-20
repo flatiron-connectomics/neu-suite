@@ -1,7 +1,7 @@
 """The only module that reads anything. Everything else takes arrays.
 
 Reads meshes and skeletons out of a neuroglancer-precomputed volume, resolves a pyramid
-level to a :class:`~em_viz.geometry.Frame`, turns a synapse table into point arrays, and
+level to a :class:`~neu_draw.geometry.Frame`, turns a synapse table into point arrays, and
 builds the ``inside()`` predicates that :meth:`Skeleton.crop` takes.
 
 Two things it refuses to guess.
@@ -39,8 +39,8 @@ def _quiet(fn):
     """Filter benign store logging for the duration of a read.
 
     Attached to every entry point here rather than left to the caller. The sibling CLIs
-    do the same thing by wrapping `main()` (with `--store-logs` to opt out); em-viz has
-    no CLI, so its entry points are these functions. `em_viz.logs.enabled = False` is
+    do the same thing by wrapping `main()` (with `--store-logs` to opt out); neu-draw has
+    no CLI, so its entry points are these functions. `neu_draw.logs.enabled = False` is
     the opt-out, and the filter is a deny-list — a real failure still prints.
     """
     @functools.wraps(fn)
@@ -61,7 +61,7 @@ class MissingSubresource(RuntimeError):
 @_quiet
 def volume_info(volume: str) -> dict:
     """The volume's own ``info``, as a dict."""
-    from em_volume_tools import read_json
+    from neu_vol import read_json
 
     return read_json(volume, "info")
 
@@ -79,7 +79,7 @@ def subresource_dir(volume: str, kind: str, info: Optional[Mapping] = None) -> s
     if not name:
         raise MissingSubresource(
             f"{volume}/info declares no {kind!r}, so there is nothing to read. "
-            f"(em-seg-morpho's `link_subresources` is what adds that key.)")
+            f"(neu-morpho's `link_subresources` is what adds that key.)")
     return str(name)
 
 
@@ -92,7 +92,7 @@ _SCALES: dict[str, list] = {}
 def scales(volume: str, *, refresh: bool = False) -> list:
     """Every pyramid level, finest first, each with its own real voxel size. Memoized."""
     if refresh or volume not in _SCALES:
-        from em_seg_morpho.scales import read_scales
+        from neu_morpho.scales import read_scales
 
         _SCALES[volume] = read_scales(volume)
     return _SCALES[volume]
@@ -100,7 +100,7 @@ def scales(volume: str, *, refresh: bool = False) -> list:
 
 @_quiet
 def volume_frame(volume: str, level: int = 0) -> Frame:
-    """The :class:`~em_viz.geometry.Frame` of one pyramid level.
+    """The :class:`~neu_draw.geometry.Frame` of one pyramid level.
 
     Reads the level's own ``resolution`` from the metadata. **Never ``2 ** level``** —
     real pyramids are anisotropic, and the factor that looks right for sample3 (which
@@ -132,7 +132,7 @@ def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
     if key in store:
         return _named(store[key], name, body_id)
 
-    from em_seg_morpho.readback import read_body_skeleton
+    from neu_morpho.readback import read_body_skeleton
 
     directory = skeleton_dir or subresource_dir(volume, "skeletons", info)
     raw = read_body_skeleton(volume, int(body_id), skeleton_dir=directory)
@@ -157,7 +157,7 @@ def body_mesh(volume: str, body_id: int, *, lod: Optional[int] = None, cache: An
     if key in store:
         return _named(store[key], name, body_id)
 
-    from em_seg_morpho.readback import read_body_mesh
+    from neu_morpho.readback import read_body_mesh
 
     directory = mesh_dir or subresource_dir(volume, "mesh", info)
     raw = read_body_mesh(volume, int(body_id), lod=lod, mesh_dir=directory)
@@ -255,7 +255,7 @@ def skeleton_tube(skeleton: Skeleton, sides: int = 8,
             f"skeleton {skeleton.name!r} carries no radii, so it has no tube. "
             f"Draw it as lines, or read a skeleton whose info declares a 'radius' "
             f"vertex attribute.")
-    from em_seg_morpho.readback import frustum_mesh
+    from neu_morpho.readback import frustum_mesh
     from .geometry import to_xyz
 
     vertices, faces = frustum_mesh(to_xyz(skeleton.vertices_zyx_nm), skeleton.edges,
@@ -274,7 +274,7 @@ def points_from_table(table: Any, *, frame: Optional[Frame] = None,
     """An ``(N, 3)`` zyx nm array from a table with named coordinate columns.
 
     ``columns`` is read **in the order given**, so the default is already zyx and
-    em-annotation's tables need no reordering. Pass ``frame`` when the table holds voxel
+    neu-mark's tables need no reordering. Pass ``frame`` when the table holds voxel
     indices rather than nm — DVID's do; a precomputed annotation source's do not.
 
     Coordinates are always named columns, never a positional array: that is the one
@@ -324,7 +324,7 @@ def mask_predicate(mask_zyx: np.ndarray, frame: Frame) -> Callable[[np.ndarray],
     A dense array is the right representation *here* and would not be for a body mask:
     ROIs live at a coarse level, where the whole volume is small. sample3 at level 5 is
     about 352x281x430, some 43 MB as ``bool`` — while the same volume at level 0 is
-    a million times that, which is why em-viz has no general mask type.
+    a million times that, which is why neu-draw has no general mask type.
 
     Points outside the array are outside the region, not an error: a skeleton normally
     extends past any one ROI, and that is the question being asked.

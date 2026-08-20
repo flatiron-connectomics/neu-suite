@@ -1,4 +1,4 @@
-"""Turn a :class:`~em_viz.scene.Scene` into pygfx objects and draw them.
+"""Turn a :class:`~neu_draw.scene.Scene` into pygfx objects and draw them.
 
 The whole renderer-specific surface of this package. Everything above it — geometry,
 colours, scene assembly — is arrays and dataclasses, which is what lets the interesting
@@ -20,7 +20,7 @@ object per body** whatever its topology. The predecessor decomposed each skeleto
 branch polylines and emitted one graphic per branch — hundreds or thousands for a
 fragmented body — purely because ``fastplotlib.add_line_collection`` wanted a list.
 
-Volume drawables are not implemented; see :class:`~em_viz.scene.VolumeDrawable`.
+Volume drawables are not implemented; see :class:`~neu_draw.scene.VolumeDrawable`.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ class View:
     # -- camera ----------------------------------------------------------------
 
     def frame(self) -> "View":
-        """Fit the camera to the scene, honouring its :class:`~em_viz.scene.Camera`.
+        """Fit the camera to the scene, honouring its :class:`~neu_draw.scene.Camera`.
 
         Passes the built ``Group`` when there is one, so the fit follows the objects'
         *world* transforms rather than the scene's nm bounding box — the two agree today
@@ -236,7 +236,7 @@ class View:
             from imageio import v3 as iio
         except ImportError as exc:                              # pragma: no cover
             raise ImportError(
-                "saving needs imageio: pip install 'em-viz[render]'. "
+                "saving needs imageio: pip install 'neu-draw[render]'. "
                 "`snapshot()` returns the array if you would rather write it "
                 "yourself.") from exc
 
@@ -316,7 +316,7 @@ def _extent(scene: Scene) -> float:
 
 
 def _bounding_sphere(box) -> tuple[float, float, float, float]:
-    """A zyx :class:`~em_volume_tools.BBox` as the ``(x, y, z, radius)`` pygfx wants.
+    """A zyx :class:`~neu_vol.BBox` as the ``(x, y, z, radius)`` pygfx wants.
 
     An empty box becomes a unit sphere at the origin, so a scene with nothing in it
     still opens on something rather than raising.

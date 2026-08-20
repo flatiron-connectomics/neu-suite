@@ -10,9 +10,9 @@ import pytest
 
 pygfx = pytest.importorskip("pygfx", reason="the render extra is not installed")
 
-from em_viz.geometry import Mesh, Skeleton                      # noqa: E402
-from em_viz.scene import MARKERS, PointsDrawable, Scene, build_scene, resolve_marker  # noqa: E402
-from em_viz.backends import pygfx as backend                    # noqa: E402
+from neu_draw.geometry import Mesh, Skeleton                      # noqa: E402
+from neu_draw.scene import MARKERS, PointsDrawable, Scene, build_scene, resolve_marker  # noqa: E402
+from neu_draw.backends import pygfx as backend                    # noqa: E402
 
 
 @pytest.fixture
@@ -217,7 +217,7 @@ def test_a_view_offers_a_mimebundle_without_raising(has_gpu):
 
 
 def test_get_backend_resolves_and_rejects_unknown_names():
-    from em_viz.backends import get_backend
+    from neu_draw.backends import get_backend
 
     assert get_backend("pygfx") is backend
     with pytest.raises(ValueError, match="unknown backend"):

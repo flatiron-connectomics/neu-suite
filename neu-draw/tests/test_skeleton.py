@@ -10,7 +10,7 @@ segment buffer is exactly the edges, in order.
 import numpy as np
 import pytest
 
-from em_viz.geometry import BBox, Frame, Skeleton, to_xyz
+from neu_draw.geometry import BBox, Frame, Skeleton, to_xyz
 
 
 def _chain(n=4, step=10.0):
