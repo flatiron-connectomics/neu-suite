@@ -38,9 +38,8 @@ INCLUDED = [
     ("blockrun/README.md", "blockrun-readme.md"),
     ("blockrun/docs/dask-slurm.md", "dask-slurm.md"),
     ("neu-vol/README.md", "neu-vol-readme.md"),
-    ("neu-vol/docs/DESIGN.md", "neu-vol-design.md"),
     ("neu-morpho/README.md", "neu-morpho-readme.md"),
-    ("neu-morpho/docs/DESIGN.md", "neu-morpho-design.md"),
+    ("neu-morpho/docs/skeletonization.md", "neu-morpho-skeletonization.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
 ]
@@ -203,7 +202,7 @@ GITHUB = "https://github.com/flatiron-connectomics"
 def _absolutize(text: str, repo: str, from_dir: str) -> str:
     """Point a repo README's relative links at GitHub.
 
-    An included file's links (`LICENSE`, `docs/DESIGN.md`, `../blockrun`) resolve
+    An included file's links (`LICENSE`, `docs/skeletonization.md`, `../blockrun`) resolve
     against its own repository, not against this site — so left alone they are dangling
     references that warn on every build and 404 for the reader. Rewriting them to the
     repository they mean makes them work, which is better than suppressing the warning.

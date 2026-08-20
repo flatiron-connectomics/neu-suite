@@ -15,9 +15,14 @@ configs/
 # detail that do not belong in a public repository.
 CLAUDE.md
 NOTES-TODO.md
-CLI-CONSOLIDATION-PLAN.md
 NEU-DRAW-PLAN.md
 RENAME-PLAN.md
+
+# Finished plans and superseded design docs, kept for reference and named
+# <repo>-<doc>-<date-last-true>. Never published, never tracked: they are records of
+# what was decided and measured, and a stale design doc that looks current is worse
+# than none. What is still true lives in the READMEs, the docs site and CLAUDE.md.
+archive/
 
 # neu-mark site defaults (neu_mark.config), found by walking up from the working
 # directory. Personal, and it carries a server name and a branch ref.
