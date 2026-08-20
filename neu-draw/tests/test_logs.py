@@ -112,18 +112,102 @@ def test_removing_when_nothing_is_installed_is_harmless():
 
 
 # --------------------------------------------------------------------------- #
-# the design constraint
+# reads filter themselves
 # --------------------------------------------------------------------------- #
 
-def test_reading_does_not_quietly_reassign_the_callers_stderr():
-    """`sources` must never install this itself. Filtering fd 2 is process-wide, and a
-    library that silently reassigns its caller's stderr is how an unrelated traceback
-    goes missing. A notebook is an entry point and may choose; a read may not choose
-    for it."""
-    import inspect
+def _noise_through(fn):
+    """Run `fn` with fd 2 captured; return what reached the real stderr."""
+    read_fd, write_fd = os.pipe()
+    saved = os.dup(2)
+    os.dup2(write_fd, 2)
+    os.close(write_fd)
+    try:
+        fn()
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+    out = os.read(read_fd, 1 << 20)
+    os.close(read_fd)
+    return out
 
+
+def test_every_reading_entry_point_filters_itself():
+    """The user should not have to know this exists. The sibling CLIs wrap `main()`;
+    em-viz has no CLI, so its entry points are these functions."""
     from em_viz import sources
 
-    source = inspect.getsource(sources)
-    assert "quiet_store" not in source
-    assert logs._installed is None
+    for name in ("volume_info", "scales", "volume_frame", "body_skeleton",
+                 "body_mesh", "body_skeletons", "body_meshes"):
+        fn = getattr(sources, name)
+        assert getattr(fn, "__wrapped__", None) is not None, f"{name} is not wrapped"
+
+
+def test_a_read_drops_the_noise_it_provokes():
+    def noisy():
+        with logs.quiet_reads():
+            os.write(2, BENIGN)
+    assert _noise_through(noisy) == b""
+
+
+def test_a_read_still_reports_a_real_failure():
+    def noisy():
+        with logs.quiet_reads():
+            os.write(2, BENIGN)
+            os.write(2, REAL)
+    assert _noise_through(noisy) == REAL
+
+
+def test_nesting_is_free_and_only_the_outermost_swaps_the_fd():
+    """`body_skeletons` filters, then calls `body_skeleton` which filters too. If the
+    inner one swapped fd 2 again its exit would restore the outer *filter's* pipe."""
+    def nested():
+        with logs.quiet_reads():
+            depth_outer = logs._depth
+            with logs.quiet_reads():
+                assert logs._depth == depth_outer + 1
+                os.write(2, BENIGN)
+            os.write(2, BENIGN)          # still filtered after the inner exits
+    assert _noise_through(nested) == b""
+    assert logs._depth == 0
+
+
+def test_concurrent_reads_do_not_race_the_descriptor():
+    """Worker threads must never each dup2 fd 2 — that loses output rather than
+    filtering it. The depth counter is what keeps it to one swap."""
+    import threading
+
+    def worker():
+        for _ in range(20):
+            with logs.quiet_reads():
+                os.write(2, BENIGN)
+
+    def run():
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert _noise_through(run) == b""
+    assert logs._depth == 0
+
+
+def test_the_escape_hatch_shows_everything():
+    """For debugging a store problem, where the benign lines are the diagnosis."""
+    logs.enabled = False
+    try:
+        def noisy():
+            with logs.quiet_reads():
+                os.write(2, BENIGN)
+        assert _noise_through(noisy) == BENIGN
+    finally:
+        logs.enabled = True
+
+
+def test_a_session_wide_install_makes_the_per_read_filter_a_no_op():
+    logs.install_quiet_stores()
+    try:
+        with logs.quiet_reads():
+            assert logs._depth == 0        # deferred to the installed one
+    finally:
+        logs.remove_quiet_stores()

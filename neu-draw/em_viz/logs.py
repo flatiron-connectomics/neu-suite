@@ -19,23 +19,65 @@ Volume is bounded rather than per-read: ``em_volume_tools.location`` caches an o
 store per prefix, so it is roughly two lines the first time a prefix is touched and
 nothing after. A notebook still accumulates them across cells, hence this.
 
-**Nothing in em-viz calls these implicitly.** Filtering fd 2 is process-wide, and a
-library that quietly reassigns its caller's stderr is the kind of thing that makes an
-unrelated traceback vanish. A notebook or script is an entry point and may decide this
-for itself; ``sources`` may not decide it for them.
+**Reads are quiet by default**, via :func:`quiet_reads` around each ``sources`` entry
+point. em-volume-tools' own guidance is that only entry points should touch process-wide
+stderr — and from a notebook's point of view ``sources.body_skeletons`` *is* the entry
+point. Expecting a user to remember an incantation before their output is legible is the
+worse trade, especially since forgetting it looks exactly like the filter being broken.
 
-The filter itself is ``em_volume_tools.logs``, and it is a **deny-list of specific known
-strings, not a severity filter** — an unrecognised message always passes through, and
-anything mentioning denied access or a failure status is printed even if it also matches
-a noise pattern.
+Three things keep that defensible. The filter is a **deny-list of specific known strings,
+not a severity filter**, so an unrecognised message always passes through and anything
+mentioning denied access or a failure status prints even when it also matches a noise
+pattern. It is **scoped** to the read rather than installed for the session. And it is
+**defeatable**: set ``em_viz.logs.enabled = False`` to see everything.
+
+Only the calling thread ever touches fd 2 — a depth counter makes nested and concurrent
+reads no-ops, because two threads racing ``dup2`` on the same descriptor is a genuine
+way to lose output rather than merely filter it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Any, Callable, Optional
 
+#: Set to False to see raw store logging, including the benign lines.
+enabled = True
+
 _installed: Optional[Any] = None
+_scoped: Optional[Any] = None
+_depth = 0
+_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def quiet_reads():
+    """Filter benign store logging for one read. Used by every ``sources`` entry point.
+
+    A no-op when :data:`enabled` is false, when a session-wide filter is already
+    installed, or when an outer read is already filtering — so nesting is free and the
+    fd is only ever swapped by the thread that got there first.
+    """
+    global _depth, _scoped
+    if not enabled or _installed is not None:
+        yield
+        return
+    from em_volume_tools.logs import quiet_store_logs
+
+    with _lock:
+        if _depth == 0:
+            _scoped = quiet_store_logs(True)
+            _scoped.__enter__()
+        _depth += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _depth -= 1
+            if _depth == 0 and _scoped is not None:
+                _scoped, done = None, _scoped
+                done.__exit__(None, None, None)
 
 
 @contextlib.contextmanager
@@ -51,12 +93,22 @@ def quiet_stores(enabled: bool = True):
         yield
 
 
-def install_quiet_stores() -> Callable[[], None]:
-    """Filter benign store logging for the rest of the session. Returns an undo.
+def installed() -> bool:
+    """Whether the filter is currently active in this process."""
+    return _installed is not None
 
-    For the top of a notebook, where wrapping every cell in a ``with`` is worse than the
-    noise. Idempotent — calling it twice does not stack two filters, which would leave
-    fd 2 pointing at a pipe nobody drains.
+
+def install_quiet_stores() -> Callable[[], None]:
+    """Filter benign store logging for the whole session. Returns an undo.
+
+    Rarely needed now that reads filter themselves — this is for covering store access
+    that does not go through ``sources`` (a direct ``em_volume_tools`` call, say).
+    Idempotent: calling it twice does not stack two filters, which would leave fd 2
+    pointing at a pipe nobody drains.
+
+    **Per-process state, so a kernel restart clears it.** That is precisely why reads no
+    longer depend on it: "never ran" and "ran but broken" look identical in the output,
+    and the first is far more likely.
     """
     global _installed
     if _installed is None:

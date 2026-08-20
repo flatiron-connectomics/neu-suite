@@ -25,14 +25,10 @@ from em_volume_tools import BBox
 from .colors import RGBA, assign_colors, to_rgba
 from .geometry import Mesh, Skeleton
 
-#: Marker shapes a points drawable may ask for — pygfx's ``MarkerShape`` vocabulary,
-#: written out so this module needs no renderer. Checked here because pygfx rejects an
-#: unknown marker at *draw* time, by which point the scene is already built and the
-#: traceback points at the backend rather than at the call that asked for it.
-#:
-#: **There is no plain "triangle"** — the four are directional. Writing the obvious name
-#: is exactly the mistake this list exists to catch, and it caught it once already.
-#: ``test_backend_pygfx`` cross-checks this tuple against the live enum.
+#: pygfx's ``MarkerShape`` vocabulary, written out so this module needs no renderer, and
+#: checked here because pygfx rejects an unknown marker only at *draw* time. **There is
+#: no plain "triangle"** — the four are directional. ``test_backend_pygfx`` cross-checks
+#: this against the live enum.
 MARKERS = (
     "circle", "square", "diamond", "ring", "cross", "plus", "tick",
     "triangle_up", "triangle_down", "triangle_left", "triangle_right",

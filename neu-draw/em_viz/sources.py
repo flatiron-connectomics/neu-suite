@@ -20,20 +20,34 @@ anything coming from the voxel grid does.
 
 from __future__ import annotations
 
+import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
 
 from . import cache as _cache
+from .logs import quiet_reads
 from .geometry import BBox, Frame, Mesh, Skeleton
 
-#: Reading one body off S3 is ~1-2 s and almost all of it is waiting, so fetches are
-#: threaded. Threads rather than processes: the work is IO, the results are big arrays
-#: that would have to be pickled back, and tensorstore's S3 credential bootstrap is
-#: per-process (em-libraries invariant 8) — a thread pool inherits it, a process pool
-#: would each have to redo it.
+#: Threads, not processes: the work is IO-bound, and tensorstore's S3 credential
+#: bootstrap is per-process (invariant 8), which a thread pool inherits for free.
 DEFAULT_THREADS = 8
+
+
+def _quiet(fn):
+    """Filter benign store logging for the duration of a read.
+
+    Attached to every entry point here rather than left to the caller. The sibling CLIs
+    do the same thing by wrapping `main()` (with `--store-logs` to opt out); em-viz has
+    no CLI, so its entry points are these functions. `em_viz.logs.enabled = False` is
+    the opt-out, and the filter is a deny-list — a real failure still prints.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with quiet_reads():
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 class MissingSubresource(RuntimeError):
@@ -44,6 +58,7 @@ class MissingSubresource(RuntimeError):
 # metadata
 # --------------------------------------------------------------------------- #
 
+@_quiet
 def volume_info(volume: str) -> dict:
     """The volume's own ``info``, as a dict."""
     from em_volume_tools import read_json
@@ -68,13 +83,22 @@ def subresource_dir(volume: str, kind: str, info: Optional[Mapping] = None) -> s
     return str(name)
 
 
-def scales(volume: str) -> list:
-    """Every pyramid level, finest first, each with its own real voxel size."""
-    from em_seg_morpho.scales import read_scales
-
-    return read_scales(volume)
+#: Pyramid metadata per volume. A volume's scales cannot change under a live session,
+#: and `volume_frame(v, 0)`, `(v, 1)`, `(v, 2)` would otherwise re-read `info` each time.
+_SCALES: dict[str, list] = {}
 
 
+@_quiet
+def scales(volume: str, *, refresh: bool = False) -> list:
+    """Every pyramid level, finest first, each with its own real voxel size. Memoized."""
+    if refresh or volume not in _SCALES:
+        from em_seg_morpho.scales import read_scales
+
+        _SCALES[volume] = read_scales(volume)
+    return _SCALES[volume]
+
+
+@_quiet
 def volume_frame(volume: str, level: int = 0) -> Frame:
     """The :class:`~em_viz.geometry.Frame` of one pyramid level.
 
@@ -94,6 +118,7 @@ def volume_frame(volume: str, level: int = 0) -> Frame:
 # bodies
 # --------------------------------------------------------------------------- #
 
+@_quiet
 def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
                   name: Optional[str] = None, skeleton_dir: Optional[str] = None,
                   info: Optional[Mapping] = None) -> Optional[Skeleton]:
@@ -118,6 +143,7 @@ def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
     return _named(skeleton, name, body_id)
 
 
+@_quiet
 def body_mesh(volume: str, body_id: int, *, lod: Optional[int] = None, cache: Any = None,
               name: Optional[str] = None, mesh_dir: Optional[str] = None,
               info: Optional[Mapping] = None) -> Optional[Mesh]:
@@ -143,6 +169,7 @@ def body_mesh(volume: str, body_id: int, *, lod: Optional[int] = None, cache: An
     return _named(mesh, name, body_id)
 
 
+@_quiet
 def body_skeletons(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                    names: Optional[Mapping[int, str]] = None,
                    threads: int = DEFAULT_THREADS, skip_missing: bool = True,
@@ -152,6 +179,7 @@ def body_skeletons(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                        names=names, threads=threads, skip_missing=skip_missing, **kwargs)
 
 
+@_quiet
 def body_meshes(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                 names: Optional[Mapping[int, str]] = None,
                 threads: int = DEFAULT_THREADS, skip_missing: bool = True,
@@ -182,14 +210,6 @@ def _fetch_many(fetch: Callable, kind: str, volume: str, body_ids: Iterable[int]
                 return body_id, None
             raise
 
-    # No need to pre-open or warm anything before fanning out. `location._kv` splits the
-    # final path segment off as the *key* and opens the store on the **containing
-    # prefix**, and `_open_store` caches per prefix — so every body under `skeleton/`
-    # shares one store already, and there is nothing to hand around. Measured on sample3:
-    # opening a prefix costs two S3 credential-provider log lines and 8 threaded body
-    # reads cost zero, which is what a shared store looks like. (Two threads missing the
-    # unlocked cache at the same instant would duplicate one open; harmless, and not
-    # worth serialising a whole body read to avoid.)
     if threads and threads > 1 and len(ids) > 1:
         with ThreadPoolExecutor(max_workers=min(threads, len(ids))) as pool:
             pairs = list(pool.map(one, ids))

@@ -72,10 +72,8 @@ def _mesh(drawable: MeshDrawable) -> pygfx.Mesh:
         "positions": to_xyz(mesh.vertices_zyx_nm),
         "indices": np.ascontiguousarray(mesh.faces, dtype=np.uint32),
     }
-    # Normals go in the CONSTRUCTOR. Assigning `geometry.normals = arr` afterwards
-    # stores the bare ndarray instead of wrapping it in a `Buffer`, so it never reaches
-    # the GPU — and the only symptom is an unhelpful "multi-dimensional sub-views are
-    # not implemented" the next time anything reads it back.
+    # In the CONSTRUCTOR: assigning `geometry.normals` afterwards stores the bare
+    # ndarray rather than wrapping it in a `Buffer`, so it never reaches the GPU.
     if mesh.normals_zyx is not None:
         fields["normals"] = to_xyz(mesh.normals_zyx)
     return pygfx.Mesh(pygfx.Geometry(**fields),
@@ -134,11 +132,7 @@ class View:
         self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
                        else canvas)
-        # `pixel_ratio=None` is pygfx's default and means "at least 2" — it renders to an
-        # internal texture at twice the logical size and downsamples, which is where the
-        # antialiasing comes from. Worth knowing because `snapshot()` returns that
-        # internal texture, so `size=(900, 700)` yields an 1800x1400 image. Pass 1.0 for
-        # pixel-exact output; see `.pixel_ratio`.
+        # None is pygfx's default and means "at least 2" (supersampling). See `snapshot`.
         self.renderer = pygfx.renderers.WgpuRenderer(self.canvas,
                                                      pixel_ratio=pixel_ratio)
 
