@@ -10,7 +10,7 @@ A four-neuron pathway carrying visual information from the eye to the central co
 and skeletons built with these packages from a proofread segmentation.
 ```
 
-Python packages for working with large EM volumes on Flatiron's clusters. They are separate
+Python packages for working with large EM volumes, locally or on a SLURM cluster. They are separate
 repositories with a strict one-way dependency, and the split is deliberate: the substrate
 that knows how to run work on a cluster knows nothing about electron microscopy, and the
 layer that knows about volumes knows nothing about meshes or biology.
@@ -83,11 +83,11 @@ guides/viewing
 :caption: Reference
 
 _generated/blockrun-readme
+_generated/dask-slurm
 _generated/neu-vol-readme
 _generated/neu-vol-design
 _generated/neu-morpho-readme
 _generated/neu-morpho-design
 _generated/neu-mark-readme
 _generated/neu-glance-readme
-_generated/dask-slurm-rusty
 ```

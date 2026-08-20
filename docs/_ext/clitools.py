@@ -36,9 +36,9 @@ COMMANDS = [
 # reviewed next to the code it describes rather than copied by hand into the site.
 INCLUDED = [
     ("blockrun/README.md", "blockrun-readme.md"),
+    ("blockrun/docs/dask-slurm.md", "dask-slurm.md"),
     ("neu-vol/README.md", "neu-vol-readme.md"),
     ("neu-vol/docs/DESIGN.md", "neu-vol-design.md"),
-    ("neu-vol/docs/dask-slurm-rusty.md", "dask-slurm-rusty.md"),
     ("neu-morpho/README.md", "neu-morpho-readme.md"),
     ("neu-morpho/docs/DESIGN.md", "neu-morpho-design.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
