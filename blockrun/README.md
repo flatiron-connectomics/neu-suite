@@ -1,7 +1,7 @@
 # blockrun
 
 Resumable, chunked **parallel maps on dask** — the same code runs locally on a
-workstation or across Flatiron **Rusty/SLURM** by swapping one YAML config.
+workstation or across a **SLURM** cluster by swapping one YAML config.
 
 Extracted from `neu-vol` so it can be shared across projects (volume
 conversion, meshing/skeletonization, …). Dependency-light: only `dask`,
@@ -56,7 +56,7 @@ allowed, not just what the templates happen to show) and canonicalised, so
 - **`iter_blocks` / `Block`** — tile an N-d shape into chunk blocks.
 
 Orchestration background and hard-won SLURM gotchas: see
-`neu-vol/docs/dask-slurm-rusty.md`.
+[`docs/dask-slurm.md`](docs/dask-slurm.md).
 
 ## Environment
 

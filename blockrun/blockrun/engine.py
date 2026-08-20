@@ -3,7 +3,7 @@
 Volume operations are expressed as a map over **output chunks**: tile the output
 grid into :class:`Block`s, and run a per-block function that reads the input
 region it needs, transforms it, and writes its output chunk. Blocks are the
-``items`` for the dask.bag pattern in docs/dask-slurm-rusty.md.
+``items`` for the map pattern in docs/dask-slurm.md.
 
 Design rules (docs/DESIGN.md §4): tasks are idempotent (skip already-written
 blocks -> resume-by-relaunch), workers write to the store and return small status
