@@ -5,7 +5,7 @@ grid into :class:`Block`s, and run a per-block function that reads the input
 region it needs, transforms it, and writes its output chunk. Blocks are the
 ``items`` for the map pattern in docs/dask-slurm.md.
 
-Design rules (docs/DESIGN.md §4): tasks are idempotent (skip already-written
+Design rules: tasks are idempotent (skip already-written
 blocks -> resume-by-relaunch), workers write to the store and return small status
 tuples (never large arrays through the scheduler).
 """
