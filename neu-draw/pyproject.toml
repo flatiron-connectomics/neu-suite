@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "em-viz"
+version = "0.1.0"
+description = "Interactive 3D rendering of EM segment morphology — meshes, skeletons and synapses — in Jupyter, on pygfx."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# In the shared conda env numpy comes from conda-forge, so install with
+# `pip install --no-deps -e .` to keep pip from re-resolving it.
+dependencies = [
+    "numpy",
+    "em-volume-tools",     # BBox, volume metadata, store reads
+]
+# Deliberately NOT declared as hard requirements:
+#   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `geometry` and `scene`
+#     are pure array and dataclass work; importing the package must not need a GPU, a
+#     canvas backend, or a display. Importing fastplotlib on a headless box fails
+#     outright for want of glfw/Qt, and that is the failure this split exists to avoid.
+#   em-seg-morpho — the SOURCES extra. Reading precomputed meshes and skeletons needs it
+#     (and through it vol2mesh and osteoid, which are conda-only); building a scene from
+#     arrays you already hold does not.
+#   pandas — only the table-shaped source adapters want it.
+#   neuclease — DVID only. See the RLE note in EM-VIZ-PLAN.md.
+
+[project.optional-dependencies]
+render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap"]
+sources = ["em-seg-morpho", "pandas"]
+dvid = ["neuclease"]
+cache = ["yes3>=0.1"]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["em_viz"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,100 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what the shared em-lib environment uses; 3.11 is the floor
+        # pyproject declares, and testing it is what keeps that honest.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Sibling packages, not on PyPI. Both are public, so no token is needed — but pip
+      # would still try PyPI for the `em-volume-tools` requirement, so they have to be
+      # installed from source FIRST, and in dependency order.
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/em-blockrun
+          path: .siblings/em-blockrun
+
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/em-volume-tools
+          path: .siblings/em-volume-tools
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # No conda, as in every repo here, and this package is arranged so that costs it
+      # nothing: `geometry` is numpy and dataclasses. The extras that DO need conda-only
+      # packages (`sources` → vol2mesh via em-seg-morpho, `dvid` → neuclease) and the one
+      # that needs a GPU (`render`) are all deliberately left uninstalled here. A test
+      # that reaches for any of them must guard with `pytest.importorskip` — an unguarded
+      # conda-only import ERRORS at collection rather than skipping, which is what turned
+      # em-volume-tools' CI red the first time it ran.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ./.siblings/em-blockrun ./.siblings/em-volume-tools
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: The renderer really is absent
+        # The import-isolation tests assert that `import em_viz` pulls in no renderer.
+        # They only prove something on a machine where importing one would FAIL — which
+        # is this one, and is not the developer workstation, where pygfx is installed and
+        # the assertion could pass for the wrong reason.
+        run: |
+          python -c "
+          import importlib.util, sys
+          for mod in ('pygfx', 'fastplotlib'):
+              assert importlib.util.find_spec(mod) is None, f'{mod} is installed; the isolation test proves nothing here'
+          import em_viz
+          print('em_viz imports with no renderer available:', em_viz.__version__)
+          "
+
+  # Ask the documentation site to rebuild, so the published reference follows this
+  # commit. `main` only, and only once the tests pass.
+  docs:
+    needs: pytest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebuild flatiron-connectomics/em-libraries
+        env:
+          # The workflow's own GITHUB_TOKEN is scoped to THIS repository and cannot
+          # dispatch to another one, so this needs a separate token with contents:write on
+          # em-libraries. When it is absent the step says so and succeeds — a docs refresh
+          # that did not happen must not turn a green test run red, and the site rebuilds
+          # on its nightly schedule regardless.
+          TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::DOCS_DISPATCH_TOKEN is not set; skipping. The site will pick this commit up on its next scheduled build."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/flatiron-connectomics/em-libraries/dispatches \
+            -d "{\"event_type\":\"package-updated\",\"client_payload\":{\"repo\":\"$GITHUB_REPOSITORY\",\"sha\":\"$GITHUB_SHA\"}}"
+          echo "::notice::asked em-libraries to rebuild its docs for $GITHUB_SHA"
