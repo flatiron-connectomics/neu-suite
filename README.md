@@ -1,7 +1,7 @@
 # neu-suite
 
-Documentation and the shared environment for three EM volume packages developed at the
-Flatiron Institute's Center for Computational Neuroscience.
+Documentation and the shared environment for a suite of EM volume packages developed at
+the Flatiron Institute's Center for Computational Neuroscience.
 
 **📖 [Documentation](https://flatiron-connectomics.github.io/neu-suite/)** — start at
 the cheat sheet if you just need to remember a flag.
@@ -15,10 +15,11 @@ The packages live in their own repositories and are meant to sit here as sibling
 | [neu-morpho](https://github.com/flatiron-connectomics/neu-morpho) | meshes and skeletons, and the `neu-morpho` command |
 | [neu-mark](https://github.com/flatiron-connectomics/neu-mark) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
 | [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
+| [neu-draw](https://github.com/flatiron-connectomics/neu-draw) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
 
 The dependency order is one-way — `blockrun ← neu-vol ←
-{neu-morpho, neu-mark, neu-glance}` — and they depend on each other by relative
-`../sibling` path, so the layout matters:
+{neu-morpho, neu-mark, neu-glance} ← neu-draw` — and they depend on each other by
+relative `../sibling` path, so the layout matters:
 
 ```text
 neu-suite/          ← this repository
@@ -26,17 +27,22 @@ neu-suite/          ← this repository
 ├── neu-vol/
 ├── neu-morpho/
 ├── neu-mark/
-└── neu-glance/
+├── neu-glance/
+└── neu-draw/
 ```
 
-The three consumers do not import each other. In particular **neu-glance does not import
-neu-mark**: it reads a precomputed annotation source's `info` like any other store
-object. That is what keeps the viewer knowledge — shaders, states, links — out of the
-packages that write data.
+Consumers **at the same tier** do not import each other. In particular **neu-glance does
+not import neu-mark**: it reads a precomputed annotation source's `info` like any other
+store object. That is what keeps the viewer knowledge — shaders, states, links — out of
+the packages that write data.
+
+**neu-glance and neu-draw are not rivals**; the axis between them is *where the rendering
+happens*. neu-glance emits a state for a remote neuroglancer, neu-draw draws pixels in
+the notebook.
 
 ## The environment
 
-One conda environment, `neu-env`, covers all five, installed editable.
+One conda environment, `neu-env`, covers every package, installed editable.
 
 ```bash
 conda env create -n neu-env -f environment.yml
@@ -66,4 +72,4 @@ cheat sheet is generated from them at build time, so neither can drift away from
 `--help`. Nothing under `docs/_generated/` is committed.
 
 CI publishes to GitHub Pages on every push to `main`, and on a `repository_dispatch` of
-type `package-updated` from any of the three package repositories.
+type `package-updated` from any of the package repositories.
