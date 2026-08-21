@@ -1,9 +1,9 @@
 """Pure geometry: nm, zyx, no I/O and no renderer.
 
 Nothing in this subpackage reads a store, opens a canvas, or imports pygfx. That is what
-makes it testable on a headless box with nothing installed but numpy, and it is the line
-the predecessor crossed — its mask, mesh and skeleton classes each carried a ``.render``
-that imported fastplotlib, which is how viewer knowledge ended up inside the data model.
+makes it testable on a headless box with nothing installed but numpy. Keep it that way:
+a ``.render`` method on a geometry class is how viewer knowledge ends up inside the data
+model.
 """
 
 from neu_vol import BBox

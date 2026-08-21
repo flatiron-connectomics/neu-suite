@@ -1,14 +1,12 @@
 """A skeleton as vertices and edges, in nm, zyx.
 
-**No polylines.** The predecessor decomposed a skeleton into branch paths with adjacency
-lists, edge-id bookkeeping and a terminal/junction/interior walk order — roughly 365
-lines, most of it retrofitted once it became clear how disconnected the segmentations
-really are. None of that was about the data or about rendering: it was there because
-``fastplotlib.add_line_collection`` takes a *list of polylines*, so a skeleton had to be
-walked into paths before it could be drawn.
+**No polylines.** Decomposing a skeleton into branch paths needs adjacency lists, edge-id
+bookkeeping and a terminal/junction/interior walk order — several hundred lines that say
+nothing about the data, and that grow once it becomes clear how disconnected real
+segmentations are.
 
-pygfx has no such requirement. ``LineSegmentMaterial`` "renders line segments between
-each two subsequent points", so an edge list draws directly::
+None of it is necessary here. pygfx's ``LineSegmentMaterial`` "renders line segments
+between each two subsequent points", so an edge list draws directly::
 
     positions = to_xyz(skeleton.segments())
     pygfx.Line(pygfx.Geometry(positions=positions), pygfx.LineSegmentMaterial(...))

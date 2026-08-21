@@ -19,8 +19,8 @@ dependencies = [
 # Deliberately NOT declared as hard requirements:
 #   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `geometry` and `scene`
 #     are pure array and dataclass work; importing the package must not need a GPU, a
-#     canvas backend, or a display. Importing fastplotlib on a headless box fails
-#     outright for want of glfw/Qt, and that is the failure this split exists to avoid.
+#     canvas backend, or a display. A renderer import on a headless box fails outright
+#     for want of glfw/Qt, and that is the failure this split exists to avoid.
 #   neu-morpho — the SOURCES extra. Reading precomputed meshes and skeletons needs it
 #     (and through it vol2mesh and osteoid, which are conda-only); building a scene from
 #     arrays you already hold does not.

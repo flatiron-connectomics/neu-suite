@@ -16,9 +16,8 @@ points        ``Points`` + ``PointsMarkerMaterial``
 
 ``LineSegmentMaterial`` is the one that shapes the design: it "renders line segments
 between each two subsequent points", so a skeleton's edge list draws directly, as **one
-object per body** whatever its topology. The predecessor decomposed each skeleton into
-branch polylines and emitted one graphic per branch — hundreds or thousands for a
-fragmented body — purely because ``fastplotlib.add_line_collection`` wanted a list.
+object per body** whatever its topology. A renderer wanting a list of polylines instead
+would need one graphic per branch — hundreds or thousands for a fragmented body.
 
 Volume drawables are not implemented; see :class:`~neu_draw.scene.VolumeDrawable`.
 """

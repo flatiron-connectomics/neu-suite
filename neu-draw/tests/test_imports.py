@@ -2,8 +2,8 @@
 
 The renderer seam only works if it is real. `import neu_draw` happens in terminals, in CI
 and on cluster workers, none of which have a display — and importing a renderer there
-does not degrade, it raises: fastplotlib on a headless box fails outright for want of a
-glfw or Qt backend, and that is the failure this split exists to prevent.
+does not degrade, it raises: on a headless box it fails outright for want of a glfw or Qt
+backend, and that is the failure this split exists to prevent.
 
 Asserting it here rather than trusting the layout, because the regression is one stray
 top-level import away and nothing else would notice.
@@ -23,7 +23,7 @@ def test_importing_neu_draw_pulls_in_no_renderer():
     out = _import_in_a_fresh_interpreter("""
 import sys
 import neu_draw
-banned = [m for m in ("pygfx", "wgpu", "rendercanvas", "fastplotlib")
+banned = [m for m in ("pygfx", "wgpu", "rendercanvas")
           if m in sys.modules]
 assert not banned, f"importing neu_draw pulled in {banned}"
 print("clean")

@@ -8,12 +8,9 @@ level::
     from neu_draw.backends import get_backend
     view = get_backend().show(scene)
 
-There is one backend, pygfx. The seam exists because the predecessor was built on
-fastplotlib and needed a *fork* of it — 764 lines of legend support for 3D graphics that
-upstream does not have — and pinning a library suite to a git commit of a fork is not
-something an ``environment.yml`` can express. pygfx turned out to supply every primitive
-in use directly, so the fork became unnecessary rather than portable. If fastplotlib is
-ever wanted back, it implements this same interface.
+There is one backend, pygfx, which supplies every primitive in use directly. The seam
+exists to keep the renderer import lazy, and so that a second backend could implement
+the same interface.
 """
 
 from __future__ import annotations
