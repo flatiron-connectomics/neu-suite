@@ -70,7 +70,8 @@ pip install --no-deps -e .
 python -m pytest -q
 ```
 
-The combined spec lives one level up, at `neu-suite/environment.yml`.
+The [neu-suite](https://github.com/flatiron-connectomics/neu-suite) README describes how
+to build the shared environment.
 
 ## License
 
