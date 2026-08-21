@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "blockrun"
 version = "0.1.0"
-description = "Resumable, chunked parallel maps on dask — locally or on Flatiron Rusty/SLURM."
+description = "Resumable, chunked parallel maps on dask — locally or across a SLURM cluster."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
