@@ -1,8 +1,8 @@
 """The only module that reads anything. Everything else takes arrays.
 
 Reads meshes and skeletons out of a neuroglancer-precomputed volume, resolves a pyramid
-level to a :class:`~neu_lib.Frame`, turns a synapse table into point arrays, and
-builds the ``inside()`` predicates that :meth:`Skeleton.crop` takes.
+level to a :class:`~neu_lib.Frame`, and turns a synapse table into point arrays. The
+region predicates and the tube builder are pure geometry and live in ``neu_lib``.
 
 Two things it refuses to guess.
 
@@ -246,33 +246,6 @@ def _named(obj, name: Optional[str], body_id: int):
 # derived geometry
 # --------------------------------------------------------------------------- #
 
-def skeleton_tube(skeleton: Skeleton, sides: int = 8,
-                  name: Optional[str] = None) -> Mesh:
-    """A skeleton as a solid tube, one truncated cone per edge, using its radii.
-
-    The alternative to a line: ``LineSegmentMaterial`` draws a constant screen-space
-    thickness, so it says nothing about calibre. This makes the per-vertex radius
-    visible, and a radius that does not fit inside the body shows up as the tube
-    breaking the surface.
-
-    Built in **xyz** and flipped back on the way out, so the triangle winding matches
-    what a precomputed mesh's would be — the round trip through
-    :meth:`Mesh.from_precomputed` is what keeps the normals facing outward.
-    """
-    if skeleton.radii_nm is None:
-        raise ValueError(
-            f"skeleton {skeleton.name!r} carries no radii, so it has no tube. "
-            f"Draw it as lines, or read a skeleton whose info declares a 'radius' "
-            f"vertex attribute.")
-    from neu_morpho.readback import frustum_mesh
-    from neu_lib import to_xyz
-
-    vertices, faces = frustum_mesh(to_xyz(skeleton.vertices_zyx_nm), skeleton.edges,
-                                   skeleton.radii_nm, sides=sides)
-    return Mesh.from_precomputed(vertices, faces,
-                                 name=name if name is not None else skeleton.name)
-
-
 # --------------------------------------------------------------------------- #
 # points
 # --------------------------------------------------------------------------- #
@@ -319,40 +292,6 @@ def synapse_points(table: Any, *, frame: Optional[Frame] = None,
 # --------------------------------------------------------------------------- #
 # region predicates
 # --------------------------------------------------------------------------- #
-
-def box_predicate(box: BBox) -> Callable[[np.ndarray], np.ndarray]:
-    """``inside()`` for a nm bounding box. The simplest region there is."""
-    def inside(points_zyx_nm: np.ndarray) -> np.ndarray:
-        return box.contains(np.asarray(points_zyx_nm))
-    return inside
-
-
-def mask_predicate(mask_zyx: np.ndarray, frame: Frame) -> Callable[[np.ndarray], np.ndarray]:
-    """``inside()`` for a dense boolean region at some resolution.
-
-    A dense array is the right representation *here* and would not be for a body mask:
-    ROIs live at a coarse level, where the whole volume is small. sample3 at level 5 is
-    about 352x281x430, some 43 MB as ``bool`` — while the same volume at level 0 is
-    a million times that, which is why neu-draw has no general mask type.
-
-    Points outside the array are outside the region, not an error: a skeleton normally
-    extends past any one ROI, and that is the question being asked.
-    """
-    mask = np.asarray(mask_zyx, dtype=bool)
-    if mask.ndim != 3:
-        raise ValueError(f"mask must be 3-D zyx, got shape {mask.shape}")
-
-    def inside(points_zyx_nm: np.ndarray) -> np.ndarray:
-        voxels = np.floor(frame.to_voxel(np.asarray(points_zyx_nm))).astype(np.int64)
-        ok = np.all((voxels >= 0) & (voxels < np.asarray(mask.shape)), axis=1)
-        out = np.zeros(len(voxels), dtype=bool)
-        if ok.any():
-            inside_voxels = voxels[ok]
-            out[ok] = mask[inside_voxels[:, 0], inside_voxels[:, 1],
-                           inside_voxels[:, 2]]
-        return out
-    return inside
-
 
 def _has_column(table: Any, column: str) -> bool:
     try:

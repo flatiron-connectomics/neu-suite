@@ -18,7 +18,7 @@ osteoid = pytest.importorskip("osteoid", reason="conda-only; absent in CI")
 precomputed = pytest.importorskip("neu_morpho.precomputed",
                                   reason="conda-only; absent in CI")
 
-from neu_draw import Frame, Mesh, Skeleton                                  # noqa: E402
+from neu_draw import Frame, Mesh, Skeleton, skeleton_tube                     # noqa: E402
 from neu_draw import cache as cache_mod                                     # noqa: E402
 from neu_draw import sources                                                # noqa: E402
 from neu_lib import BBox                                          # noqa: E402
@@ -235,16 +235,10 @@ def test_a_volume_with_no_mesh_key_raises_rather_than_returning_none(volume):
 
 def test_a_tube_wraps_the_skeleton_and_keeps_its_frame(volume):
     skel = sources.body_skeleton(volume, BODIES[0])
-    tube = sources.skeleton_tube(skel, sides=8)
+    tube = skeleton_tube(skel, sides=8)
     assert isinstance(tube, Mesh) and len(tube.faces) > 0
     # The tube surrounds the centreline, so its box contains the skeleton's.
     assert tube.bbox.union(skel.bbox) == tube.bbox
-
-
-def test_a_skeleton_without_radii_has_no_tube(volume):
-    bare = Skeleton(np.zeros((2, 3)), np.array([[0, 1]]), name="bare")
-    with pytest.raises(ValueError, match="carries no radii"):
-        sources.skeleton_tube(bare)
 
 
 # --------------------------------------------------------------------------- #
@@ -280,38 +274,6 @@ def test_synapses_split_by_kind():
 def test_a_table_with_no_kind_column_is_one_point_set():
     out = sources.synapse_points({"z": [0], "y": [0], "x": [0]})
     assert set(out) == {"points"}
-
-
-# --------------------------------------------------------------------------- #
-# region predicates
-# --------------------------------------------------------------------------- #
-
-def test_a_box_predicate_feeds_straight_into_crop():
-    skel = Skeleton(np.array([[0.0, 0, 0], [0.0, 0, 1000.0]]), np.array([[0, 1]]))
-    inside = sources.box_predicate(BBox((-10, -10, -10), (10, 10, 500)))
-    out = skel.crop(inside, tolerance_nm=1.0)
-    assert len(out.vertices_zyx_nm) == 2                 # one kept + one boundary
-    assert out.vertices_zyx_nm[1][2] == pytest.approx(500.0, abs=2.0)
-
-
-def test_a_mask_predicate_resolves_points_through_its_own_frame():
-    mask = np.zeros((4, 4, 4), dtype=bool)
-    mask[0, 0, 0] = True
-    inside = sources.mask_predicate(mask, Frame((100.0, 100.0, 100.0)))
-    assert inside(np.array([[50.0, 50.0, 50.0]])).tolist() == [True]
-    assert inside(np.array([[150.0, 50.0, 50.0]])).tolist() == [False]
-
-
-def test_points_outside_the_mask_array_are_outside_the_region():
-    """A skeleton normally leaves any one ROI, so this is the question being asked —
-    not an out-of-bounds error."""
-    inside = sources.mask_predicate(np.ones((2, 2, 2), bool), Frame((10.0, 10.0, 10.0)))
-    assert inside(np.array([[-100.0, 0, 0], [1e6, 0, 0]])).tolist() == [False, False]
-
-
-def test_a_mask_must_be_three_dimensional():
-    with pytest.raises(ValueError, match="3-D zyx"):
-        sources.mask_predicate(np.ones((4, 4), bool), Frame.identity())
 
 
 # --------------------------------------------------------------------------- #

@@ -26,11 +26,11 @@ from typing import Any
 from . import cache, logs, sources
 from .colors import assign_colors, to_rgba
 from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
-from neu_lib import BBox, Frame, Mesh, Skeleton, to_xyz
+from neu_lib import (BBox, Frame, Mesh, Skeleton, box_predicate,
+                     mask_predicate, skeleton_tube, to_xyz, union)
 from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                     build_scene)
 from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,
-                      box_predicate, mask_predicate, skeleton_tube,
                       synapse_points, volume_frame)
 
 
@@ -49,6 +49,7 @@ def show(scene: Scene, *, backend: str = "pygfx", **kwargs) -> Any:
 __all__ = [
     "__version__",
     "BBox", "Frame", "Mesh", "Skeleton", "to_xyz",
+    "box_predicate", "mask_predicate", "skeleton_tube", "union",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
     "assign_colors", "to_rgba",
     "cache", "logs", "sources",

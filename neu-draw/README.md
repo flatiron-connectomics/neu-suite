@@ -27,8 +27,8 @@ view.save("bodies.png")                      # or renders offscreen anywhere
 Cropping a skeleton to a region, and drawing it with its real calibre:
 
 ```python
-skel = skels[10014014].crop(sources.box_predicate(some_box))   # ends at the surface
-tube = sources.skeleton_tube(skel)                             # radii as a solid tube
+skel = skels[10014014].crop(neu_draw.box_predicate(some_box))  # ends at the surface
+tube = neu_draw.skeleton_tube(skel)                            # radii as a solid tube
 ```
 
 A skeleton is vertices plus an edge list, and renders as **one object per body**
@@ -94,7 +94,7 @@ sources and 2D projections are not.
 
 | module | what it is |
 |---|---|
-| `neu_draw.geometry` | `Frame`, `Mesh`, `Skeleton`, `BBox`. nm, zyx, arrays. No I/O, no renderer. |
+| (from `neu_lib`) | `BBox`, `Frame`, `Mesh`, `Skeleton`, the region predicates, `skeleton_tube`. nm, zyx, arrays; re-exported here so a notebook can say `neu_draw.Skeleton` |
 | `neu_draw.colors` | palette and colour assignment |
 | `neu_draw.scene` | drawables, colours, camera intent — no renderer |
 | `neu_draw.sources` | the only module that reads anything |
