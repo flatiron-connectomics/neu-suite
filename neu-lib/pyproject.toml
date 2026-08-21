@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neu-lib"
+version = "0.1.0"
+description = "Shared vocabulary for the neu-* suite: boxes, grid arithmetic, frames, meshes and skeletons."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# NUMPY ONLY, and that is the whole reason this package exists as its own
+# distribution rather than living in neu-vol. No tensorstore, no dask, nothing
+# conda-only — so the shared types stay reachable from every tier of the suite
+# without dragging I/O down with them, and this builds on 3.11 as well as 3.12
+# (the rest of the suite is pinned to 3.12 by vol2mesh and dvidutils).
+#
+# If something here ever needs to read a store, it belongs in neu-vol instead.
+dependencies = [
+    "numpy>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["neu_lib"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
