@@ -45,13 +45,13 @@ jobs:
       # docs lag the code. main is what everyone runs.
       - name: Check out the packages
         run: |
-          for repo in blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
+          for repo in neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
             git clone --depth 1 https://github.com/flatiron-connectomics/$repo.git $repo
           done
           # Which commit of each package this site documents. The docs build against
           # main, so they can be a push ahead of the packages — and when they are, the
           # failure is otherwise an AttributeError with no hint of version skew.
-          for repo in blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
+          for repo in neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
             echo "$repo $(git -C $repo log -1 --format='%h %ci %s')"
           done
 
@@ -72,7 +72,7 @@ jobs:
           # neu-draw is cloned but deliberately NOT installed: only its README is
           # included, it has no CLI to introspect, and installing it would pull pygfx
           # and wgpu into a job that renders no pixels.
-          pip install ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
+          pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
                       ./neu-glance
 
       # -W because the CLI reference is generated: a warning here means a parser stopped

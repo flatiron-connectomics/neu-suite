@@ -18,7 +18,7 @@ conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
     vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
     numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
-pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho
+pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho
 ```
 
 ```{warning}

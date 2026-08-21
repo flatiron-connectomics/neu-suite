@@ -10,6 +10,7 @@ The packages live in their own repositories and are meant to sit here as sibling
 
 | repository | what it is |
 | --- | --- |
+| [neu-lib](https://github.com/flatiron-connectomics/neu-lib) | the shared vocabulary: boxes, grid arithmetic, frames, meshes, skeletons. **numpy only.** Library, no command. |
 | [blockrun](https://github.com/flatiron-connectomics/blockrun) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
 | [neu-vol](https://github.com/flatiron-connectomics/neu-vol) | volume I/O and the `neu-vol` command |
 | [neu-morpho](https://github.com/flatiron-connectomics/neu-morpho) | meshes and skeletons, and the `neu-morpho` command |
@@ -17,19 +18,25 @@ The packages live in their own repositories and are meant to sit here as sibling
 | [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
 | [neu-draw](https://github.com/flatiron-connectomics/neu-draw) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
 
-The dependency order is one-way — `blockrun ← neu-vol ←
+The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
 {neu-morpho, neu-mark, neu-glance} ← neu-draw` — and they depend on each other by
 relative `../sibling` path, so the layout matters:
 
 ```text
 neu-suite/          ← this repository
-├── blockrun/       ← cloned separately
+├── neu-lib/        ← cloned separately
+├── blockrun/
 ├── neu-vol/
 ├── neu-morpho/
 ├── neu-mark/
 ├── neu-glance/
 └── neu-draw/
 ```
+
+`neu-lib` and `blockrun` sit side by side at the bottom and know nothing about each
+other: one is types, the other is orchestration. **`neu-lib` depends on numpy alone**,
+which is why the shared types are reachable from every tier without dragging an I/O
+stack down with them — and why it is the one package that still builds on Python 3.11.
 
 Consumers **at the same tier** do not import each other. In particular **neu-glance does
 not import neu-mark**: it reads a precomputed annotation source's `info` like any other
@@ -52,7 +59,7 @@ conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
     vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
     numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
-pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho \
+pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
                       -e ./neu-mark -e ./neu-glance
 ```
 

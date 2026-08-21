@@ -6,6 +6,7 @@ neu-morpho/
 neu-mark/
 neu-glance/
 neu-draw/
+neu-lib/
 
 # Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
 # one cluster's partitions, accounts and paths.

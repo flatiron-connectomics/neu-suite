@@ -35,6 +35,7 @@ COMMANDS = [
 # Markdown that lives in the repos and is included here verbatim, so it is written and
 # reviewed next to the code it describes rather than copied by hand into the site.
 INCLUDED = [
+    ("neu-lib/README.md", "neu-lib-readme.md"),
     ("blockrun/README.md", "blockrun-readme.md"),
     ("blockrun/docs/dask-slurm.md", "dask-slurm.md"),
     ("neu-vol/README.md", "neu-vol-readme.md"),

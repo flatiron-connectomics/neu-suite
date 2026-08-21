@@ -16,8 +16,8 @@ that knows how to run work on a cluster knows nothing about electron microscopy,
 layer that knows about volumes knows nothing about meshes or biology.
 
 ```text
-blockrun            dask/SLURM substrate. No EM knowledge.
-    ↑                  Manifest, block_map, iter_blocks, start_dask, dask configs
+neu-lib   blockrun  vocabulary (BBox, Frame, Mesh, Skeleton — numpy only)
+    ↑         ↑        and the dask/SLURM substrate. Neither knows about the other.
 neu-vol             volume I/O: tensorstore backends, storage profiles,
     ↑                  convert / create / write / relabel, source metadata
     ├─ neu-morpho      per-body meshes (vol2mesh) and skeletons (TEASAR)
@@ -56,9 +56,10 @@ write data and know nothing about neuroglancer.
 :::
 ::::
 
-Two packages have no command. `blockrun` is the library the others run on, and
-`neu-draw` is a notebook library — it draws meshes, skeletons and synapse points
-locally with pygfx, where `neu-glance` sends a state to a remote neuroglancer.
+Three packages have no command. `neu-lib` holds the types they all share and `blockrun`
+is the substrate they all run on; `neu-draw` is a notebook library — it draws meshes,
+skeletons and synapse points locally with pygfx, where `neu-glance` sends a state to a
+remote neuroglancer.
 
 **Start at the [cheat sheet](_generated/cheatsheet.md)** — every subcommand on one page
 with its synopsis. The [CLI reference](cli/index.md) has the full flag-by-flag detail,
@@ -87,6 +88,7 @@ guides/viewing
 :maxdepth: 1
 :caption: Reference
 
+_generated/neu-lib-readme
 _generated/blockrun-readme
 _generated/dask-slurm
 _generated/neu-vol-readme
