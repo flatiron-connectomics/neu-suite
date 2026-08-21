@@ -20,21 +20,29 @@ Two conventions run through all of it, and both fail silently when broken:
 from .frame import Frame, to_xyz
 from .grid import MODES, BBox, align_box, clamp_box, lcm_grid, misaligned_axes
 from .mesh import Mesh
+from .predicates import box_predicate, mask_predicate, union
 from .scale import ScaleInfo
-from .skeleton import Skeleton
+from .skeleton import InsideFn, Skeleton
+from .tube import frustum_mesh, skeleton_tube
 
 __version__ = "0.1.0"
 
 __all__ = [
     "BBox",
     "Frame",
+    "InsideFn",
     "MODES",
     "Mesh",
     "ScaleInfo",
     "Skeleton",
     "align_box",
+    "box_predicate",
     "clamp_box",
+    "frustum_mesh",
     "lcm_grid",
+    "mask_predicate",
     "misaligned_axes",
+    "skeleton_tube",
     "to_xyz",
+    "union",
 ]

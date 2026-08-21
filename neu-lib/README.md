@@ -12,7 +12,8 @@ on Python 3.11 as well as 3.12 (the rest of the suite is pinned to 3.12 by `vol2
 in `neu-vol` instead.**
 
 ```python
-from neu_lib import BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box, to_xyz
+from neu_lib import (BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box,
+                     box_predicate, mask_predicate, skeleton_tube, to_xyz)
 ```
 
 | name | what it is |
@@ -24,6 +25,8 @@ from neu_lib import BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box, to_xyz
 | `Mesh` | vertices and faces, nm, zyx |
 | `Skeleton` | vertices and an **edge list** (not polylines), nm, zyx, with `crop` / `exclude` |
 | `ScaleInfo` | one pyramid level: index, shape, key, and the `Frame` that places its voxels |
+| `box_predicate` / `mask_predicate` / `union` | build the `inside()` that `Skeleton.crop` and `.exclude` take |
+| `skeleton_tube` / `frustum_mesh` | a skeleton as a solid tube, one truncated cone per edge |
 
 ## Two conventions, both load-bearing
 
@@ -46,6 +49,22 @@ them, and getting it wrong drops the far face on every axis while looking fine.
 **zyx in memory, xyz at the boundary.** Every array here is zyx, and `to_xyz` is the only
 conversion. Reversed, geometry mirrors through the z=x diagonal, which reads as plausible
 data in the wrong place rather than as an error.
+
+## Regions
+
+`Skeleton.crop(inside)` and `.exclude(inside)` take a **callable** — given an `(N, 3)`
+array of zyx nm points, which are in the region — and that is the whole interface. Keeping
+it a plain function is what lets a caller supply a region this package has never heard of:
+a mesh hull, a distance field, a polygon.
+
+`box_predicate` and `mask_predicate` cover the two ordinary cases, and `union` composes
+them. `union` matters more than it looks: excluding a soma *and* a nucleus is two masks,
+and merging them into one array would force them to share a resolution and an origin,
+which they need not — a compartment read in a small box around the thing that localises it
+has its own frame.
+
+**A point outside a region's own extent is outside the region, not an error.** A skeleton
+normally runs past any one ROI or compartment mask, and that is the question being asked.
 
 ## Which grid?
 
