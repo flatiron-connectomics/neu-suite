@@ -29,7 +29,7 @@ from typing import Any, Optional
 import numpy as np
 import pygfx
 
-from ..geometry import to_xyz
+from neu_lib import to_xyz
 from ..scene import LinesDrawable, MeshDrawable, PointsDrawable, Scene
 
 #: Nothing in a scene is at the origin — a body sits wherever it sits in the volume, tens

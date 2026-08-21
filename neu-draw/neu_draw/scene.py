@@ -20,10 +20,9 @@ from functools import reduce
 from typing import Any, Hashable, Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
-from neu_vol import BBox
+from neu_lib import BBox, Mesh, Skeleton
 
 from .colors import RGBA, assign_colors, to_rgba
-from .geometry import Mesh, Skeleton
 
 #: pygfx's ``MarkerShape`` vocabulary, written out so this module needs no renderer, and
 #: checked here because pygfx rejects an unknown marker only at *draw* time. **There is
@@ -57,7 +56,7 @@ def resolve_marker(marker: str) -> str:
 
 @dataclass
 class MeshDrawable:
-    """A surface. ``mesh`` is an :class:`~neu_draw.geometry.Mesh`, already in nm/zyx."""
+    """A surface. ``mesh`` is an :class:`~neu_lib.Mesh`, already in nm/zyx."""
     mesh: Mesh
     color: RGBA = (0.5, 0.5, 0.5, 1.0)
     alpha: float = 1.0
@@ -73,7 +72,7 @@ class MeshDrawable:
 class LinesDrawable:
     """A skeleton, drawn as independent segments — one per edge.
 
-    Carries the :class:`~neu_draw.geometry.Skeleton` rather than a positions buffer, so
+    Carries the :class:`~neu_lib.Skeleton` rather than a positions buffer, so
     the backend calls ``segments()`` itself and nothing here decides array layout.
     """
     skeleton: Skeleton

@@ -54,11 +54,16 @@ print(neu_draw.__version__)
     assert out == "0.1.0"
 
 
-def test_bbox_is_the_shared_one_not_a_local_copy():
-    """One notion of a box across the suite. A second would diverge on the half-open
-    rule, which is exactly the kind of disagreement nothing surfaces."""
-    from neu_vol.grid import BBox as shared
+def test_the_shared_types_are_neu_libs_own_not_local_copies():
+    """One notion of each across the suite. A second would diverge on the half-open
+    rule, or on zyx, which is exactly the kind of disagreement nothing surfaces.
 
-    from neu_draw.geometry import BBox
+    What this package re-exports at its top level is a convenience for notebooks, and
+    it must stay an alias rather than becoming a fork.
+    """
+    import neu_lib
 
-    assert BBox is shared
+    import neu_draw
+
+    for name in ("BBox", "Frame", "Mesh", "Skeleton", "to_xyz"):
+        assert getattr(neu_draw, name) is getattr(neu_lib, name), name

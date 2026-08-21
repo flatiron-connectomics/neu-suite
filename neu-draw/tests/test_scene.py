@@ -7,7 +7,7 @@ draw?" by drawing it on a GPU.
 import numpy as np
 import pytest
 
-from neu_draw.geometry import BBox, Mesh, Skeleton
+from neu_lib import BBox, Mesh, Skeleton
 from neu_draw.scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                           VolumeDrawable, build_scene)
 

@@ -1,7 +1,7 @@
 """The only module that reads anything. Everything else takes arrays.
 
 Reads meshes and skeletons out of a neuroglancer-precomputed volume, resolves a pyramid
-level to a :class:`~neu_draw.geometry.Frame`, turns a synapse table into point arrays, and
+level to a :class:`~neu_lib.Frame`, turns a synapse table into point arrays, and
 builds the ``inside()`` predicates that :meth:`Skeleton.crop` takes.
 
 Two things it refuses to guess.
@@ -28,7 +28,7 @@ import numpy as np
 
 from . import cache as _cache
 from .logs import quiet_reads
-from .geometry import BBox, Frame, Mesh, Skeleton
+from neu_lib import BBox, Frame, Mesh, Skeleton
 
 #: Threads, not processes: the work is IO-bound, and tensorstore's S3 credential
 #: bootstrap is per-process (invariant 8), which a thread pool inherits for free.
@@ -100,7 +100,7 @@ def scales(volume: str, *, refresh: bool = False) -> list:
 
 @_quiet
 def volume_frame(volume: str, level: int = 0) -> Frame:
-    """The :class:`~neu_draw.geometry.Frame` of one pyramid level.
+    """The :class:`~neu_lib.Frame` of one pyramid level.
 
     Reads the level's own ``resolution`` from the metadata. **Never ``2 ** level``** —
     real pyramids are anisotropic, and the factor that looks right for sample3 (which
@@ -256,7 +256,7 @@ def skeleton_tube(skeleton: Skeleton, sides: int = 8,
             f"Draw it as lines, or read a skeleton whose info declares a 'radius' "
             f"vertex attribute.")
     from neu_morpho.readback import frustum_mesh
-    from .geometry import to_xyz
+    from neu_lib import to_xyz
 
     vertices, faces = frustum_mesh(to_xyz(skeleton.vertices_zyx_nm), skeleton.edges,
                                    skeleton.radii_nm, sides=sides)

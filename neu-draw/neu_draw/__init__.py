@@ -6,14 +6,16 @@ the two is where the rendering happens, not what is rendered.
 
 Layout, and the reason for it:
 
-* ``geometry`` — nm, zyx, arrays. No I/O, no renderer.
+* ``neu_lib`` — ``BBox``, ``Frame``, ``Mesh``, ``Skeleton``: nm, zyx, arrays, no I/O
+  and no renderer. Shared with the rest of the suite, and re-exported here because a
+  notebook wants ``neu_draw.Skeleton``. Aliases, never a fork — a test pins that.
 * ``scene`` — drawables, colours and camera intent. Pure.
 * ``sources`` — the only module that reads anything.
 * ``backends`` — pygfx. The renderer seam.
 
-``geometry`` imports eagerly: it costs a numpy import and nothing else. The **backend
-does not**, and must not — importing a renderer needs a canvas backend, and on a
-headless machine that fails outright rather than degrading. So `import neu_draw` stays
+The geometry types import eagerly: they cost a numpy import and nothing else. The
+**backend does not**, and must not — importing a renderer needs a canvas backend, and on
+a headless machine that fails outright rather than degrading. So `import neu_draw` stays
 safe in a terminal, in CI, and on a worker.
 """
 
@@ -24,7 +26,7 @@ from typing import Any
 from . import cache, logs, sources
 from .colors import assign_colors, to_rgba
 from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
-from .geometry import BBox, Frame, Mesh, Skeleton, to_xyz
+from neu_lib import BBox, Frame, Mesh, Skeleton, to_xyz
 from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                     build_scene)
 from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,

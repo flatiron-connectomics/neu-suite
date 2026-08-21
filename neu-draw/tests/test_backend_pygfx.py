@@ -10,7 +10,7 @@ import pytest
 
 pygfx = pytest.importorskip("pygfx", reason="the render extra is not installed")
 
-from neu_draw.geometry import Mesh, Skeleton                      # noqa: E402
+from neu_lib import Mesh, Skeleton                      # noqa: E402
 from neu_draw.scene import MARKERS, PointsDrawable, Scene, build_scene, resolve_marker  # noqa: E402
 from neu_draw.backends import pygfx as backend                    # noqa: E402
 

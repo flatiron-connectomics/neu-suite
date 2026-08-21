@@ -21,7 +21,7 @@ precomputed = pytest.importorskip("neu_morpho.precomputed",
 from neu_draw import Frame, Mesh, Skeleton                                  # noqa: E402
 from neu_draw import cache as cache_mod                                     # noqa: E402
 from neu_draw import sources                                                # noqa: E402
-from neu_draw.geometry import BBox                                          # noqa: E402
+from neu_lib import BBox                                          # noqa: E402
 
 BODIES = (11, 22)
 

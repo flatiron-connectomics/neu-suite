@@ -14,7 +14,8 @@ authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org"
 # `pip install --no-deps -e .` to keep pip from re-resolving it.
 dependencies = [
     "numpy",
-    "neu-vol",     # BBox, volume metadata, store reads
+    "neu-lib",     # BBox, Frame, Mesh, Skeleton. numpy-only.
+    "neu-vol",     # volume metadata and store reads
 ]
 # Deliberately NOT declared as hard requirements:
 #   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `geometry` and `scene`
