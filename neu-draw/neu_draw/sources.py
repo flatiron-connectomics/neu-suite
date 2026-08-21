@@ -90,9 +90,14 @@ _SCALES: dict[str, list] = {}
 
 @_quiet
 def scales(volume: str, *, refresh: bool = False) -> list:
-    """Every pyramid level, finest first, each with its own real voxel size. Memoized."""
+    """Every pyramid level, finest first, each with its own real voxel size. Memoized.
+
+    From ``neu_vol``, which is where volume metadata belongs. It used to come from
+    ``neu_morpho.scales``, i.e. this package imported a *meshing* library to learn a
+    voxel size — one of the three reasons neu-draw depended on neu-morpho at all.
+    """
     if refresh or volume not in _SCALES:
-        from neu_morpho.scales import read_scales
+        from neu_vol import read_scales
 
         _SCALES[volume] = read_scales(volume)
     return _SCALES[volume]
@@ -102,14 +107,18 @@ def scales(volume: str, *, refresh: bool = False) -> list:
 def volume_frame(volume: str, level: int = 0) -> Frame:
     """The :class:`~neu_lib.Frame` of one pyramid level.
 
-    Reads the level's own ``resolution`` from the metadata. **Never ``2 ** level``** —
-    real pyramids are anisotropic, and the factor that looks right for sample3 (which
-    is isotropic) is wrong for the common ``(1, 2, 2)`` shape.
+    The level **carries** its frame, so this only picks one out; it no longer rebuilds
+    a frame from a bare voxel size, which is what used to silently drop the level's
+    origin and place everything as though the volume started at nm zero.
+
+    The voxel size is always the level's own. **Never ``2 ** level``** — real pyramids
+    are anisotropic, and the factor that looks right for sample3 (which is isotropic) is
+    wrong for the common ``(1, 2, 2)`` shape.
     """
     levels = scales(volume)
     for scale in levels:
         if scale.index == level:
-            return Frame(voxel_size_nm=tuple(scale.voxel_size))
+            return scale.frame
     raise IndexError(
         f"{volume} has no level {level}; it has {[s.index for s in levels]}")
 
