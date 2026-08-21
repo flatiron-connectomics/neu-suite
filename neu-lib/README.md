@@ -23,7 +23,7 @@ from neu_lib import BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box, to_xyz
 | `to_xyz` | the single zyx→xyz conversion, for a renderer |
 | `Mesh` | vertices and faces, nm, zyx |
 | `Skeleton` | vertices and an **edge list** (not polylines), nm, zyx, with `crop` / `exclude` |
-| `ScaleInfo` | one pyramid level: index, shape, voxel size, key |
+| `ScaleInfo` | one pyramid level: index, shape, key, and the `Frame` that places its voxels |
 
 ## Two conventions, both load-bearing
 
@@ -33,8 +33,10 @@ each caller.
 **Physical nanometres are the one model space, expressed per axis.** A geometry object
 never carries an integer level, and a factor is never derived from `2 ** level`. Real
 pyramids are anisotropic — halving x and y while leaving z alone is ordinary — so a level
-index means nothing without the source's own voxel sizes. Resolving an index to a `Frame`
-belongs to whatever layer read the metadata.
+index means nothing without the source's own voxel sizes. Reading those belongs to
+whatever layer can open a store: `neu_vol.read_scales` returns a `ScaleInfo` per level,
+each already carrying its `Frame`, so nothing downstream rebuilds a transform from a
+bare voxel size — which is how a level's origin got dropped for as long as it did.
 
 **Boxes are half-open, `[lo, hi)`.** A `hi` already sitting on a block boundary must not
 move; ceiling it anyway grows every correctly-sized box by a whole block. The same rule is

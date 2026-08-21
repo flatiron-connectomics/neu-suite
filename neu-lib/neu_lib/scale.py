@@ -28,15 +28,41 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .frame import Frame
+
 
 @dataclass(frozen=True)
 class ScaleInfo:
-    """One pyramid level, in canonical zyx."""
+    """One pyramid level, in canonical zyx.
+
+    The level **carries** its :class:`~neu_lib.frame.Frame` rather than a bare voxel
+    size, so "what does a voxel at this level mean in nm" has exactly one answer and
+    callers stop rebuilding one. The two types stay separate because each has callers
+    that need only it: a synapse table or an SWC in voxel units wants a ``Frame`` and has
+    no level, while building a read spec wants ``index`` and ``key`` and converts no
+    coordinates.
+
+    Carrying the frame is also what lets a level's **origin** survive. It used to be
+    dropped on the floor: the reader took ``resolution`` and ``size`` and never looked at
+    ``voxel_offset``, so every level came back claiming to start at nm zero. Harmless on
+    a volume written from the origin, wrong for anything cropped — and invisible either
+    way, since nothing raises.
+    """
 
     index: int
     shape: tuple[int, int, int]              # voxels (z, y, x)
-    voxel_size: tuple[float, float, float]   # nm (z, y, x)
+    frame: Frame                             # voxel -> nm for this level
     key: str = ""                            # precomputed scale key, if any
+
+    @property
+    def voxel_size(self) -> tuple[float, float, float]:
+        """nm per voxel (z, y, x) — the frame's, spelled the way a level reads."""
+        return self.frame.voxel_size_nm
+
+    @property
+    def origin_nm(self) -> tuple[float, float, float]:
+        """Where this level's voxel ``(0, 0, 0)`` sits, in nm."""
+        return self.frame.origin_nm
 
     def factor_from(self, finest: "ScaleInfo") -> tuple[float, float, float]:
         """Full-res voxels per voxel of this scale (NOT assumed to be 2**index)."""
