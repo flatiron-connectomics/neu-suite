@@ -12,7 +12,7 @@ neu-vol relabel s3://.../gt_v1 --out s3://.../gt_v2       # ← do not skip
 neu-vol downsample s3://.../gt_v2 --start-level 0 --config ... --workers 24
 
 neu-morpho run --src s3://.../gt_v2 --dst s3://.../gt_v2 \
-    --work-dir /mnt/ceph/users/<you>/gt-meshing --stages mesh --mesh-scale 0 \
+    --work-dir /path/to/gt-meshing --stages mesh --mesh-scale 0 \
     --config ... --workers 48
 
 neu-glance bboxes s3://.../gt_v2 --label gt --out gt_layer.json
