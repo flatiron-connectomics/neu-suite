@@ -28,9 +28,17 @@ archive/
 # directory. Personal, and it carries a server name and a branch ref.
 neu-mark.toml
 
-# Dataset content and run artefacts, which are large and belong on ceph, not in git.
+# Dataset content and run artefacts, which are large and belong on bulk storage, not in
+# git. These were tracked once by accident and had to be purged from history — the S3
+# bucket names in gt_vol_creation.txt are deliberately not public. Note `*.log` was
+# already here and did its job; the leak came in as `.txt` and `.jsonl`, so match on the
+# NAMES, not only on extensions, and never stage with `git add -A` at this root.
 *.log
+*.progress.jsonl
 data/
+gt_vol_creation.txt
+erik-notes-todo.txt
+*-explicit-*.txt
 
 # Build output and the generated pages. Generating them is the point: a committed copy
 # could disagree with the code, which is the failure this site is designed to prevent.
