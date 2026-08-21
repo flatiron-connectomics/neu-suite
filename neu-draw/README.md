@@ -13,7 +13,7 @@ import neu_draw
 from neu_draw import build_scene, sources
 from neu_draw.cache import MemoryCache
 
-volume = "s3://my-bucket/my-dataset/segmentation…"
+volume = "s3://my-bucket/my-dataset/segmentation"   # or a local precomputed path
 cache = MemoryCache()
 
 skels = sources.body_skeletons(volume, [10014014, 10017394], cache=cache)
