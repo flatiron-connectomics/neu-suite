@@ -63,3 +63,7 @@ __pycache__/
 *.pyc
 .venv/
 .ipynb_checkpoints/
+
+# Editor state, ignored in every package repo here too.
+.vscode/
+.idea/
