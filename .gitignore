@@ -11,6 +11,9 @@ neu-draw/
 # one cluster's partitions, accounts and paths.
 configs/
 
+# Dataset-specific scripts. They name real volumes and ground-truth sets.
+scripts/
+
 # Working notes and agent context. These carry ceph paths, usernames and in-flight run
 # detail that do not belong in a public repository.
 CLAUDE.md
