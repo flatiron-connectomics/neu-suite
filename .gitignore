@@ -40,6 +40,13 @@ gt_vol_creation.txt
 erik-notes-todo.txt
 *-explicit-*.txt
 
+# The environment specs describe one internal environment, so they are not published.
+# `docs/requirements.txt` is the exception and MUST stay tracked — the docs CI job
+# installs from it.
+environment.yml
+pypi_requirements.txt
+neu-vol-cv-environment.yml
+
 # Build output and the generated pages. Generating them is the point: a committed copy
 # could disagree with the code, which is the failure this site is designed to prevent.
 docs/_build/

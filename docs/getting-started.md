@@ -11,12 +11,13 @@ neu-vol --help
 neu-morpho --help
 ```
 
-Rebuilding it from scratch, from the specs in this repository:
+Building one from scratch:
 
 ```bash
-conda env create -n neu-env -f environment.yml
+conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
+    vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
+    numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
-pip install -r pypi_requirements.txt
 pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho
 ```
 

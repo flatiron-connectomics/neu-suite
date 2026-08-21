@@ -42,20 +42,32 @@ the notebook.
 
 ## The environment
 
-One conda environment, `neu-env`, covers every package, installed editable.
+One conda environment covers every package, installed editable. **Python 3.12 is
+required**, and it is `vol2mesh` and `dvidutils` that force it — both are py312-only
+*and* conda-only on the `flyem-forge` channel, with no PyPI equivalent, so pip can
+never resolve them and a conda environment has to provide them.
 
 ```bash
-conda env create -n neu-env -f environment.yml
+conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
+    vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
+    numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
-pip install -r pypi_requirements.txt
 pip install --no-deps -e ./blockrun -e ./neu-vol -e ./neu-morpho \
                       -e ./neu-mark -e ./neu-glance
 ```
 
-`--no-deps` is load-bearing: without it pip re-resolves conda-provided binaries
-(tensorstore, h5py) from PyPI and invites an ABI mismatch. Python 3.12 is required, and
-it is `vol2mesh` and `dvidutils` that force it — both are py312-only and conda-only on
-flyem-forge.
+`--no-deps` is load-bearing: the `pyproject.toml` files declare real runtime deps, and
+without it pip re-resolves conda-provided binaries (tensorstore, h5py) from PyPI and
+invites an ABI mismatch.
+
+Add `neuclease` from `flyem-forge` for DVID sources — it needs `libdvid-cpp`, `vigra`
+and `dvidutils`, none of which exist on PyPI, which is why there is no `dvid` pip extra
+and cannot be one. `cloud-volume` is deliberately **not** in this environment: it pins
+`DracoPy<2` and would downgrade the DracoPy behind neu-morpho's mesh serialisation, so
+it belongs in a separate one.
+
+The exact pinned specs for the environment used to develop this are not published —
+they describe one machine's environment rather than a supported matrix.
 
 ## Building the docs locally
 
