@@ -32,6 +32,10 @@ archive/
 # directory. Personal, and it carries a server name and a branch ref.
 neu-mark.toml
 
+# Where the data is. The ONE file allowed to name object-store locations, so that no
+# committed doc, script or notebook has to. Same rule as neu-mark.toml.
+datasets.toml
+
 # Dataset content and run artefacts, which are large and belong on bulk storage, not in
 # git. These were tracked once by accident and had to be purged from history — the S3
 # bucket names in gt_vol_creation.txt are deliberately not public. Note `*.log` was
