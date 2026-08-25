@@ -54,6 +54,30 @@ class MissingSubresource(RuntimeError):
     """The volume's ``info`` declares no meshes or no skeletons."""
 
 
+def _structural_errors():
+    """Exception types that mean the SOURCE is wrong, not that a body is absent.
+
+    ``skip_missing`` exists to tolerate bodies a volume happens not to hold. It must not
+    also absorb "this volume's meshes are in a format the reader cannot decode" or "the
+    volume declares no meshes at all", because those produce exactly the same outcome —
+    every body reported missing, an empty dict, no error — while meaning something
+    completely different and needing a fix rather than a shrug. That conflation is what
+    made a sharded source look like a volume with no meshes.
+
+    ``TypeError`` is in the set for a related reason: it means the CALL is wrong, not the
+    data. Every body in a batch is fetched with the same arguments, so a bad keyword fails
+    identically for all of them and produces an empty dict that reads as "this volume holds
+    nothing". That is how ``body_skeletons(..., require_radii=False)`` looked before
+    ``body_skeleton`` accepted the argument — a silent empty result for a source whose
+    skeletons were all present and readable.
+
+    Imported lazily so a neu-draw import does not pull in neu-morpho.
+    """
+    from neu_morpho.readback import UnsupportedSubresource
+
+    return (MissingSubresource, UnsupportedSubresource, TypeError)
+
+
 # --------------------------------------------------------------------------- #
 # metadata
 # --------------------------------------------------------------------------- #
@@ -130,21 +154,27 @@ def volume_frame(volume: str, level: int = 0) -> Frame:
 @_quiet
 def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
                   name: Optional[str] = None, skeleton_dir: Optional[str] = None,
-                  info: Optional[Mapping] = None) -> Optional[Skeleton]:
+                  info: Optional[Mapping] = None,
+                  require_radii: bool = True) -> Optional[Skeleton]:
     """One body's skeleton, or ``None`` if the volume holds none for it.
 
     Vertices arrive xyz (the order the format stores) and are flipped to zyx once, by
     :meth:`Skeleton.from_precomputed`.
+
+    ``require_radii=False`` accepts a source that publishes **centrelines only**, where
+    every radius is the ``-1`` sentinel — FlyEM's male-CNS is one, so this is needed to
+    read it at all rather than being an obscure corner.
     """
     store = _cache.resolve(cache)
-    key = ("skeleton", volume, int(body_id))
+    key = ("skeleton", volume, int(body_id), require_radii)
     if key in store:
         return _named(store[key], name, body_id)
 
     from neu_morpho.readback import read_body_skeleton
 
     directory = skeleton_dir or subresource_dir(volume, "skeletons", info)
-    raw = read_body_skeleton(volume, int(body_id), skeleton_dir=directory)
+    raw = read_body_skeleton(volume, int(body_id), skeleton_dir=directory,
+                             require_radii=require_radii)
     if raw is None:
         return None
     skeleton = Skeleton.from_precomputed(*raw, name=str(body_id))
@@ -183,7 +213,12 @@ def body_skeletons(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                    names: Optional[Mapping[int, str]] = None,
                    threads: int = DEFAULT_THREADS, skip_missing: bool = True,
                    **kwargs) -> dict[int, Skeleton]:
-    """Skeletons for many bodies, fetched concurrently. Missing bodies are omitted."""
+    """Skeletons for many bodies, fetched concurrently. Missing bodies are omitted.
+
+    ``skip_missing`` covers bodies the volume does not hold, and **only** that: a volume
+    declaring no skeletons, or holding them in a format this reader cannot decode, raises
+    either way. Both would otherwise return an empty dict and look like a clean answer.
+    """
     return _fetch_many(body_skeleton, "skeleton", volume, body_ids, cache=cache,
                        names=names, threads=threads, skip_missing=skip_missing, **kwargs)
 
@@ -193,7 +228,12 @@ def body_meshes(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                 names: Optional[Mapping[int, str]] = None,
                 threads: int = DEFAULT_THREADS, skip_missing: bool = True,
                 **kwargs) -> dict[int, Mesh]:
-    """Meshes for many bodies, fetched concurrently. Missing bodies are omitted."""
+    """Meshes for many bodies, fetched concurrently. Missing bodies are omitted.
+
+    ``skip_missing`` covers bodies the volume does not hold, and **only** that: a volume
+    declaring no meshes, or holding them in a format this reader cannot decode, raises
+    either way. Both would otherwise return an empty dict and look like a clean answer.
+    """
     return _fetch_many(body_mesh, "mesh", volume, body_ids, cache=cache, names=names,
                        threads=threads, skip_missing=skip_missing, **kwargs)
 
@@ -210,10 +250,14 @@ def _fetch_many(fetch: Callable, kind: str, volume: str, body_ids: Iterable[int]
     shared = dict(kwargs)
     shared.setdefault("info", volume_info(volume))
 
+    structural = _structural_errors()
+
     def one(body_id: int):
         try:
             return body_id, fetch(volume, body_id, cache=store,
                                   name=(names or {}).get(body_id), **shared)
+        except structural:
+            raise                       # never a missing body; see _structural_errors
         except Exception:
             if skip_missing:
                 return body_id, None

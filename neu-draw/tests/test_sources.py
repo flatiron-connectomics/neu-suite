@@ -294,3 +294,80 @@ def test_caching_can_be_turned_off_explicitly():
 def test_something_that_is_not_a_cache_says_what_is_missing():
     with pytest.raises(TypeError, match="__contains__"):
         cache_mod.resolve(object())
+
+
+# --------------------------------------------------------------------------- #
+# skip_missing must not absorb a structural failure
+# --------------------------------------------------------------------------- #
+
+def test_a_batch_still_raises_when_the_volume_declares_no_meshes(volume):
+    """The whole point of the distinction: `skip_missing` is about BODIES. A volume that
+    declares no meshes returns `{}` under the old behaviour, which reads as a clean answer
+    and is why a sharded source looked like a volume holding nothing."""
+    import json as _json
+    import pathlib
+
+    root = pathlib.Path(volume)
+    info = _json.loads((root / "info").read_text())
+    del info["mesh"]
+    (root / "info").write_text(_json.dumps(info))
+
+    with pytest.raises(sources.MissingSubresource):
+        sources.body_meshes(volume, BODIES, skip_missing=True)
+
+
+def test_a_batch_still_raises_on_a_mesh_format_it_cannot_decode(volume_with_mesh):
+    """An unreadable format fails exactly like an empty volume — every body absent — so it
+    has to be refused rather than counted as missing bodies."""
+    import json as _json
+    import pathlib
+
+    from neu_morpho.readback import UnsupportedSubresource
+
+    mesh_info = pathlib.Path(volume_with_mesh) / "mesh" / "info"
+    info = _json.loads(mesh_info.read_text())
+    info["@type"] = "neuroglancer_legacy_mesh"
+    mesh_info.write_text(_json.dumps(info))
+
+    with pytest.raises(UnsupportedSubresource, match="legacy"):
+        sources.body_meshes(volume_with_mesh, BODIES, skip_missing=True)
+    with pytest.raises(UnsupportedSubresource):
+        sources.body_mesh(volume_with_mesh, BODIES[0])
+
+
+def test_a_batch_still_raises_on_a_skeleton_format_it_cannot_decode(volume):
+    import json as _json
+    import pathlib
+
+    from neu_morpho.readback import UnsupportedSubresource
+
+    skel_info = pathlib.Path(volume) / "skeleton" / "info"
+    info = _json.loads(skel_info.read_text())
+    info["@type"] = "neuroglancer_something_else"
+    skel_info.write_text(_json.dumps(info))
+
+    with pytest.raises(UnsupportedSubresource):
+        sources.body_skeletons(volume, BODIES, skip_missing=True)
+
+
+def test_genuinely_absent_bodies_are_still_skipped(volume):
+    """The behaviour that must NOT change: narrowing skip_missing to exclude structural
+    failures has to leave ordinary missing bodies alone."""
+    got = sources.body_skeletons(volume, [*BODIES, 999_999], skip_missing=True)
+    assert set(got) == set(BODIES)
+    assert sources.body_skeletons(volume, [999_998, 999_999], skip_missing=True) == {}
+
+
+def test_require_radii_reaches_the_reader_through_a_batch(volume):
+    """A centreline-only source needs this flag to be readable at all, so it has to
+    survive the batch wrapper — it used to be rejected as an unexpected keyword."""
+    got = sources.body_skeletons(volume, BODIES, require_radii=False)
+    assert set(got) == set(BODIES)
+    assert sources.body_skeleton(volume, BODIES[0], require_radii=False) is not None
+
+
+def test_a_bad_keyword_raises_instead_of_returning_an_empty_dict(volume):
+    """Same arguments for every body, so a bad one is never about a missing body — it
+    produced `{}` for a volume whose skeletons were all present and readable."""
+    with pytest.raises(TypeError):
+        sources.body_skeletons(volume, BODIES, skip_missing=True, no_such_option=1)
