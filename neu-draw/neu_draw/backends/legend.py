@@ -139,7 +139,7 @@ class LegendEntry:
     cell type are one row, and clicking it acts on all forty.
 
     Holds the drawables (whose ``visible`` and ``color`` are the truth) alongside the
-    ``WorldObject``s built for them, paired by position, so a toggle changes both together
+    ``WorldObject`` built for each of them, paired by position, so a toggle changes both together
     and neither can drift.
     """
 
@@ -384,7 +384,7 @@ class LegendOverlay:
     **One row per distinct label**, in first-appearance order — see
     :func:`~neu_draw.scene.label_of`. A drawable with neither label nor name gets no row.
 
-    Drawables are paired with their ``WorldObject``s **by position**, because
+    Drawables are paired with their ``WorldObject`` counterparts **by position**, because
     :func:`~neu_draw.backends.pygfx.build` makes exactly one object per drawable in order.
     Looking them up by name would be the obvious alternative and is wrong here: a drawable
     may carry a label and no name at all, and that is a legitimate way to put an anonymous
