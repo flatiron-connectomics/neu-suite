@@ -157,23 +157,27 @@ scroll it. The strip never takes more than 45% of the canvas.
 
 ## The toolbar, and saved viewpoints
 
-In a notebook `show()` puts five buttons above the canvas — no argument needed, and
+In a notebook `show()` puts seven buttons above the canvas — no argument needed, and
 nothing to remember after a kernel restart:
 
 | button | what it does |
 |---|---|
-| **Center** | re-fit the camera to everything visible |
-| **Save view** | remember this camera, for *any* later figure |
-| **Restore** | go to the remembered camera |
-| **Capture** | write the PNG named in the box beside the buttons |
+| **Center** | re-fit the camera to everything *currently visible* |
+| **Reset** | back to the view this figure opened with — everything shown, no highlights |
+| **Save** | remember this camera as `views["saved"]`, for *any* later figure |
+| **Restore** | go to `views["saved"]` |
+| **Last** | go to `views["last"]` — where the last **closed** figure was |
+| **Capture** | write the PNG named in the box below the buttons |
 | **Close** | close the canvas, leaving the image it last showed in its place |
 
 Every one is also a method, so a notebook or a script can do the same:
 
 ```python
 view.center()
+view.reset()
 view.save_view()                 # or save_view("dorsal"), for as many slots as you like
 view.restore_view("dorsal")      # returns None, not an error, if nothing is there
+view.restore_view("last")
 view.save("figure.png")
 ```
 
@@ -181,9 +185,29 @@ view.save("figure.png")
 save an angle in order to use it in the *next* figure, by which time the one you saved it
 from is gone. It records the canvas size along with the camera, because a perspective
 camera's field of view follows the rect's aspect ratio, so the same camera in a differently
-shaped canvas is a different picture. **Close** writes its viewpoint to `views["last"]` on
-the way out, since wanting the angle back after looking at the snapshot is the ordinary
-case and nobody remembers to save first.
+shaped canvas is a different picture.
+
+**`View.close()` writes `views["last"]` on the way out**, so wanting the angle back after a
+figure is gone needs no foresight — and it is in `close()` rather than in the Close button,
+so a `view.close()` from a cell counts too. Two slots and two buttons, deliberately: they
+answer different questions ("the angle I chose" against "wherever I happened to be"), and
+one button picking between them would leave it unclear which you got.
+
+To skip the button entirely — re-run a cell and come back on the same angle:
+
+```python
+view = neu_draw.show(scene, viewpoint="last")     # or "saved", or a ViewState you held
+```
+
+An empty slot just means the figure keeps its own framing, so that is safe in the first
+cell of a session.
+
+**Reset is not Center.** `center()` fits *what is visible now*, so after hiding half the
+bodies it frames the remainder; `reset()` un-hides whatever you hid, drops every highlight,
+and returns to the camera the figure opened at — including a `viewpoint=` it was opened
+with. It deliberately leaves **colours** alone: hiding and highlighting are transient
+exploration, but `legend.recolor` is an authored change, and a button that silently reverted
+it would be destroying work rather than tidying up.
 
 `toolbar=False` gives the bare canvas; `toolbar=True` insists and raises if ipywidgets is
 missing or the canvas is not a widget. Offscreen and desktop renders quietly get no

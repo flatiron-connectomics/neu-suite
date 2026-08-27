@@ -1,9 +1,16 @@
 """Buttons above a rendered view, in a notebook. ipywidgets, not an in-canvas UI.
 
-Five actions, which are the ones the fastplotlib predecessor's subplot toolbar had:
-**centre** the camera on what is visible, **save** and **restore** a viewpoint,
-**capture** a PNG, and **close** the figure — replacing the live canvas with the image it
-last showed, so the notebook keeps a picture where the widget was.
+Seven actions: **centre** the camera on what is visible, **reset** to the view the figure
+opened with, **save** a viewpoint and go back to it (**restore**) or to wherever the
+**last** closed figure was, **capture** a PNG, and **close** the figure — replacing the
+live canvas with the image it last showed, so the notebook keeps a picture where the widget
+was.
+
+**Two viewpoint slots, two buttons.** They answer different questions — "the angle I chose"
+against "wherever I happened to be" — and a single button picking between them would leave
+it unclear which you got. `Close` writes the `last` slot on the way out (in `View.close`, so
+a `view.close()` from a cell counts too), which is what makes re-running a cell and pressing
+`Last` reproduce the angle. `show(scene, viewpoint="last")` does it without the button.
 
 ## Why ipywidgets and not imgui
 
@@ -43,7 +50,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from .viewstate import LAST
+from .viewstate import LAST, SAVED
 
 #: ``strftime`` pattern for the generated part of a capture filename. Sorts
 #: lexicographically, which is the only real requirement.
@@ -120,13 +127,21 @@ class Toolbar:
         self._buttons = {
             "center": self._button("Center", "crosshairs",
                                    "fit the camera to everything visible", self._center),
-            "save": self._button("Save view", "bookmark",
-                                 "remember this viewpoint for any other figure",
-                                 self._save_view),
+            "reset": self._button("Reset", "sync",
+                                  "back to the view this figure opened with: everything "
+                                  "shown, no highlights", self._reset),
+            "save": self._button("Save", "bookmark",
+                                 f"remember this viewpoint as views[{SAVED!r}], for this "
+                                 f"figure or any later one", self._save_view),
             "restore": self._button("Restore", "undo",
-                                    "go to the remembered viewpoint", self._restore_view),
+                                    f"go to the viewpoint saved in views[{SAVED!r}]",
+                                    self._restore_view),
+            "last": self._button("Last", "history",
+                                 f"go to where the last CLOSED figure was — "
+                                 f"views[{LAST!r}], written on the way out",
+                                 self._restore_last),
             "capture": self._button("Capture", "camera",
-                                    "write the PNG named in the box", self._capture),
+                                    "write the PNG named in the box below", self._capture),
             "close": self._button("Close", "power-off",
                                   "close the canvas, leaving its last image behind",
                                   self._close),
@@ -136,9 +151,14 @@ class Toolbar:
         # Replacing a child of the outer VBox would work too, but this keeps the bar's
         # position fixed and the swap a single-element assignment.
         self._stage = widgets.Box([canvas])
+        # Seven buttons no longer fit beside a path box, so the path moved to its own row
+        # with the status line. `row wrap` because a narrow canvas should stack the buttons
+        # rather than clip the last two — and it is the last two, Capture and Close, that
+        # you would most notice missing.
         self.widget = widgets.VBox([
-            widgets.HBox([*self._buttons.values(), self.path]),
-            self.status,
+            widgets.HBox(list(self._buttons.values()),
+                         layout=widgets.Layout(flex_flow="row wrap", width="100%")),
+            widgets.HBox([self.path, self.status]),
             self._stage,
         ])
 
@@ -154,7 +174,7 @@ class Toolbar:
         """
         widgets = self._widgets
         button = widgets.Button(description=label, icon=icon, tooltip=tooltip,
-                                layout=widgets.Layout(width="118px"))
+                                layout=widgets.Layout(width="98px", flex="0 0 auto"))
         button.on_click(lambda _button: self._guarded(handler))
         return button
 
@@ -180,6 +200,11 @@ class Toolbar:
         self.view.center()
         self._say("centred on the visible drawables")
 
+    def _reset(self) -> None:
+        self.view.reset()
+        self._say("back to the opening view — everything shown, no highlights "
+                  "(colours are left as you set them)")
+
     def _save_view(self) -> None:
         state = self.view.save_view()
         self._say(f"viewpoint saved ({state.size[0]}x{state.size[1]}) — "
@@ -187,9 +212,22 @@ class Toolbar:
 
     def _restore_view(self) -> None:
         if self.view.restore_view() is None:
-            self._say("nothing saved yet — press 'Save view' first", error=True)
+            self._say("nothing saved yet — press 'Save' first", error=True)
         else:
             self._say("restored the saved viewpoint")
+
+    def _restore_last(self) -> None:
+        """The other half of what 'Close' records, and the reason 'Close' records it.
+
+        Kept as a **second button** rather than folded into 'Restore' with a fallback: the
+        two slots answer different questions ("the angle I chose" against "wherever I was"),
+        and one button silently picking between them would make it unclear which you got.
+        """
+        if self.view.restore_view(LAST) is None:
+            self._say("no closed figure to go back to yet — 'Close' records one",
+                      error=True)
+        else:
+            self._say(f"restored views[{LAST!r}], where the last closed figure was")
 
     def _capture(self) -> None:
         path = self.path.value.strip()
@@ -204,20 +242,21 @@ class Toolbar:
     def _close(self) -> None:
         """Close the canvas and leave the image it last showed in its place.
 
-        The viewpoint goes into the :data:`~neu_draw.viewstate.LAST` slot **before** the
-        canvas dies, since after that there is no camera to ask — reopening where you
-        left off is the reason to press this rather than deleting the cell.
+        ``View.close`` records the viewpoint into :data:`~neu_draw.viewstate.LAST` on its
+        way out, so the next figure's 'Last' button — or ``show(scene,
+        viewpoint="last")`` — reopens on this angle. That is the reason to press this
+        rather than deleting the cell.
         """
         if self._closed:
             self._say("already closed")
             return
 
         image = self.view.snapshot()
-        state = self.view.save_view(LAST)
+        size = self.view.logical_size()
         self.view.close()
         self._closed = True
 
-        self._stage.children = (self._still(image, state.size),)
+        self._stage.children = (self._still(image, size),)
         # Every button off, including 'restore': there is no canvas left to draw the
         # restored angle on, and a control that responds by doing nothing visible is
         # worse than one that is plainly spent. The viewpoint is in the store for the
@@ -225,7 +264,8 @@ class Toolbar:
         for button in self._buttons.values():
             button.disabled = True
         self.path.disabled = True
-        self._say(f"closed; the viewpoint is in views[{LAST!r}]")
+        self._say(f"closed. The viewpoint is in views[{LAST!r}] — press 'Last' in the next "
+                  f"figure, or open it with show(scene, viewpoint='{LAST}')")
 
     def _still(self, image, size: tuple[int, int]) -> Any:
         """The snapshot as an ``Image`` widget, or a note saying why not.

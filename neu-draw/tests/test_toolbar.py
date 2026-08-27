@@ -87,9 +87,10 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     automatic: a feature you have to remember to switch on looks identical to a broken
     one after a kernel restart."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
-    bar, status, stage = view.ui.widget.children
-    assert [b.description for b in bar.children[:5]] == [
-        "Center", "Save view", "Restore", "Capture", "Close"]
+    bar, entry, stage = view.ui.widget.children
+    assert [b.description for b in bar.children] == [
+        "Center", "Reset", "Save", "Restore", "Last", "Capture", "Close"]
+    assert entry.children == (view.ui.path, view.ui.status)
     assert stage.children == (view.canvas,)
 
 
@@ -139,6 +140,24 @@ def test_save_and_restore_report_through_the_status_line(view):
     assert "restored" in view.ui.status.value
 
 
+def test_last_and_restore_are_separate_buttons_on_separate_slots(view):
+    """They answer different questions — "the angle I chose" against "wherever I happened
+    to be" — and one button choosing between them would leave it unclear which you got."""
+    view.ui._save_view()
+    view.ui._restore_last()
+    assert "no closed figure" in view.ui.status.value
+
+    viewstate.views[viewstate.LAST] = view.save_view("scratch")
+    view.ui._restore_last()
+    assert "last closed figure" in view.ui.status.value
+
+
+def test_reset_reports_that_it_left_colours_alone(view):
+    view.ui._reset()
+    assert "opening view" in view.ui.status.value
+    assert "colours" in view.ui.status.value
+
+
 def test_capture_writes_the_named_file_and_reseeds_the_box(view, tmp_path):
     pytest.importorskip("imageio")
     view.ui.path.value = str(tmp_path / "left_lobe.png")
@@ -174,10 +193,12 @@ def test_closing_leaves_the_last_image_where_the_canvas_was(view):
 
 def test_closing_records_the_viewpoint_it_is_about_to_lose(view):
     """The reason to press it rather than delete the cell: the angle survives, so the
-    next figure can open where this one left off."""
+    next figure can open where this one left off — via 'Last' or `viewpoint="last"`, both
+    of which the status line names."""
     pytest.importorskip("imageio")
     view.ui._close()
     assert viewstate.LAST in viewstate.views
+    assert "Last" in view.ui.status.value and "viewpoint=" in view.ui.status.value
 
 
 def test_closing_twice_is_harmless(view):

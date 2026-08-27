@@ -24,14 +24,14 @@ Volume drawables are not implemented; see :class:`~neu_draw.scene.VolumeDrawable
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import numpy as np
 import pygfx
 
 from neu_lib import to_xyz
 from ..scene import LinesDrawable, MeshDrawable, PointsDrawable, Scene
-from ..viewstate import SAVED, ViewState, views
+from ..viewstate import LAST, SAVED, ViewState, views
 
 #: Nothing in a scene is at the origin — a body sits wherever it sits in the volume, tens
 #: of microns out — so the camera must be framed from the data, never left at a default.
@@ -148,11 +148,16 @@ class View:
     def __init__(self, scene: Scene, size: tuple[int, int] = DEFAULT_SIZE,
                  canvas: Any = "auto", background: Optional[tuple] = None,
                  pixel_ratio: Optional[float] = None, toolbar: Any = "auto",
-                 legend: Optional[bool] = None):
+                 legend: Optional[bool] = None,
+                 viewpoint: Optional[Union[str, ViewState]] = None):
         self.scene_data = scene
         self.ui = None
         self.legend = None
         self._size = tuple(size)
+        # What "reset" goes back to. Captured before anything can be toggled, because
+        # `Scene` is mutable and a scene may deliberately arrive with something hidden —
+        # so "everything visible" is not the same thing as "how this opened".
+        self._initial_visible = [bool(d.visible) for d in scene.drawables]
         self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
                        else canvas)
@@ -187,6 +192,12 @@ class View:
             self.camera,
             register_events=self.legend.main if self.legend else self.renderer)
         self.frame()
+        if viewpoint is not None:
+            self.restore_view(viewpoint)
+        # The viewpoint `reset()` returns to — after the fit and after any `viewpoint`, so
+        # it is what the figure actually opened showing rather than what it would have.
+        self._opening = ViewState(camera=dict(self.camera.get_state()),
+                                  size=self.logical_size())
 
         if scene.axes_visible:
             self.scene.add(pygfx.AxesHelper(size=_extent(scene) * 0.2 or 1.0))
@@ -247,10 +258,43 @@ class View:
 
         The one action a "centre view" button needs, and the reason it is separate is
         that :meth:`frame` runs during construction, before there is a draw to request.
+
+        Note this fits **what is visible now**, so after hiding half the bodies it frames
+        the remainder. :meth:`reset` is the one that goes back to the opening picture.
         """
         self.frame()
         self.request_draw()
         return self
+
+    def reset(self) -> "View":
+        """Back to the view this figure opened with.
+
+        Un-hides whatever was hidden, drops every highlight, and returns to the camera the
+        figure opened at — which is not necessarily a fit, since ``viewpoint=`` may have
+        placed it somewhere else.
+
+        **Colours are deliberately left alone.** Visibility and highlights are transient
+        exploration, so undoing them is a convenience; ``legend.recolor`` is an authored
+        change to the scene, and a button that silently reverted it would be destroying
+        work rather than tidying up.
+        """
+        for drawable, visible in zip(self.scene_data.drawables, self._initial_visible):
+            drawable.visible = visible
+        if self.legend is not None:
+            self.legend.clear_highlights()          # refreshes every entry as it goes
+        self._sync_visibility()
+        self.camera.set_state(self._opening.camera)
+        self.request_draw()
+        return self
+
+    def _sync_visibility(self) -> None:
+        """Push ``drawable.visible`` onto the built objects.
+
+        Index correspondence, because :func:`build` makes exactly one object per drawable
+        in order — including the unnamed ones, which have no legend entry to go through.
+        """
+        for drawable, obj in zip(self.scene_data.drawables, self.group.children):
+            obj.visible = bool(drawable.visible)
 
     # -- viewpoints ------------------------------------------------------------
 
@@ -278,17 +322,23 @@ class View:
         views[name] = state
         return state
 
-    def restore_view(self, name: str = SAVED, *, size: bool = True) -> Optional[ViewState]:
+    def restore_view(self, name: Union[str, ViewState] = SAVED, *,
+                     size: bool = True) -> Optional[ViewState]:
         """Apply a saved viewpoint. ``None`` — not an error — if that slot is empty.
 
         An empty slot is the ordinary state of a fresh session, and a button that raises
-        the first time it is pressed is worse than one that says nothing was saved.
+        the first time it is pressed is worse than one that says nothing was saved. It is
+        also why ``show(scene, viewpoint="last")`` is safe on the first cell of a session:
+        no ``last`` yet just means the figure keeps its own framing.
+
+        ``name`` may be a :class:`~neu_draw.viewstate.ViewState` outright, so a viewpoint
+        can be held in an ordinary variable rather than a named slot.
 
         ``size`` also restores the canvas size, because the aspect ratio is part of what
         a viewpoint means; pass ``size=False`` to keep the canvas as it is and accept a
         differently framed version of the same angle.
         """
-        state = views.get(name)
+        state = name if isinstance(name, ViewState) else views.get(name)
         if state is None:
             return None
         if size and state.size[0] and hasattr(self.canvas, "set_logical_size"):
@@ -374,6 +424,20 @@ class View:
         return path
 
     def close(self) -> None:
+        """Close the canvas, recording where the camera was into ``views["last"]``.
+
+        **Here rather than in the toolbar**, so that `view.close()` from a notebook counts
+        too — the slot is only useful if it is reliably populated, and "I closed the figure
+        and now want that angle back" does not depend on which route closed it.
+
+        The record happens first: after the canvas is gone there is nothing to ask. It is
+        also guarded, because a `close()` that raises on the way out is worse than a lost
+        viewpoint — this runs in every test's `finally`.
+        """
+        try:
+            self.save_view(LAST)
+        except Exception:                                       # pragma: no cover
+            pass
         self.canvas.close()
 
     # -- the legend ------------------------------------------------------------
