@@ -49,7 +49,8 @@ def test_an_empty_scene_has_an_empty_box_rather_than_raising():
 
 
 def test_a_duplicate_name_is_a_collision_not_a_second_layer():
-    """Names key the legend and every later reference, so two sharing one is an error."""
+    """A name is identity — every later reference resolves through it — so two sharing one
+    is an error. Sharing a legend ROW is a different thing and is what `label` is for."""
     scene = Scene().add_mesh(_mesh("a"))
     with pytest.raises(ValueError, match="already here"):
         scene.add_mesh(_mesh("a"))
@@ -125,8 +126,9 @@ def test_set_color_normalises_and_reports_an_unknown_name():
 # --------------------------------------------------------------------------- #
 
 def test_rename_changes_the_name_a_caller_refers_to_the_layer_by():
-    """There is one name, not a name and a separate legend label: a display label held
-    alongside would let the two disagree, so that `scene.get(<the label>)` raises."""
+    """Renaming is for identity, not for the legend's text: it changes what `get` and
+    `set_color` answer to, and only moves the row along with it for a drawable that has no
+    label of its own. `relabel` is the one that changes what a row says."""
     scene = Scene().add_mesh(_mesh("1401")).add_mesh(_mesh("1402"))
     scene.rename("1401", "MeCN-01 (L)")
     assert scene.names == ["MeCN-01 (L)", "1402"]
@@ -135,7 +137,7 @@ def test_rename_changes_the_name_a_caller_refers_to_the_layer_by():
 
 def test_renaming_onto_a_name_in_use_is_a_collision():
     scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("b"))
-    with pytest.raises(ValueError, match="already here"):
+    with pytest.raises(ValueError, match="collision"):
         scene.rename("a", "b")
 
 

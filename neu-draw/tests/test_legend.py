@@ -131,7 +131,7 @@ def test_one_entry_per_named_drawable_in_scene_order(has_gpu):
                         points={"presyn": np.array([[0.0, 0, 0]])})
     view = backend.show(scene, size=(400, 300), canvas="offscreen")
     try:
-        assert view.legend.names == ["1401 mesh", "1401 skeleton", "presyn"]
+        assert view.legend.labels == ["1401 mesh", "1401 skeleton", "presyn"]
     finally:
         view.close()
 
@@ -143,7 +143,7 @@ def test_the_glyph_says_what_kind_of_thing_the_row_is(has_gpu):
                         points={"presyn": np.array([[0.0, 0, 0]])})
     view = backend.show(scene, size=(400, 300), canvas="offscreen")
     try:
-        kinds = {e.drawable.name: type(e.glyph).__name__ for e in view.legend}
+        kinds = {e.text: type(e.glyph).__name__ for e in view.legend}
         assert kinds == {"1401 mesh": "Mesh", "1401 skeleton": "Line",
                          "presyn": "Points"}
     finally:
@@ -157,7 +157,7 @@ def test_a_hidden_drawable_still_gets_an_entry(has_gpu):
     scene.get("body 1").visible = False
     view = backend.show(scene, size=(400, 300), canvas="offscreen")
     try:
-        assert view.legend.names == ["body 0", "body 1"]
+        assert view.legend.labels == ["body 0", "body 1"]
         assert view.legend["body 1"].label.material.color != Legend().text_color
     finally:
         view.close()
@@ -167,7 +167,7 @@ def test_an_unnamed_drawable_gets_no_entry(has_gpu):
     scene = Scene().add_mesh(_mesh("named")).add_points(np.array([[0.0, 0, 0]]))
     view = backend.show(scene, size=(400, 300), canvas="offscreen")
     try:
-        assert view.legend.names == ["named"]
+        assert view.legend.labels == ["named"]
     finally:
         view.close()
 
@@ -187,6 +187,197 @@ def test_an_unknown_entry_name_says_what_there_is(has_gpu):
     try:
         with pytest.raises(KeyError, match="body 0"):
             view.legend["body 7"]
+    finally:
+        view.close()
+
+
+# --------------------------------------------------------------------------- #
+# groups: many drawables, one row
+# --------------------------------------------------------------------------- #
+
+def test_drawables_sharing_a_label_share_one_row(has_gpu):
+    """The whole point: forty bodies of a cell type are one entry, not forty."""
+    scene = build_scene(meshes=[_mesh(f"body {i}", i * 300.0) for i in range(5)],
+                        labels={"body 0": "Tm2", "body 1": "Tm2", "body 2": "LC6"})
+    view = backend.show(scene, size=(500, 400), canvas="offscreen")
+    try:
+        assert view.legend.labels == ["Tm2", "LC6", "body 3", "body 4"]
+        assert view.legend["Tm2"].names == ["body 0", "body 1"]
+        assert scene.names == [f"body {i}" for i in range(5)]   # identities untouched
+    finally:
+        view.close()
+
+
+def test_a_grouped_row_says_how_many_it_covers(has_gpu):
+    """Without the count, "Tm2" and "presyn" look like the same kind of thing, and hiding
+    one is a much larger action than hiding the other."""
+    scene = build_scene(meshes=[_mesh(f"b{i}", i * 300.0) for i in range(3)],
+                        labels={"b0": "Tm2", "b1": "Tm2"})
+    view = backend.show(scene, size=(500, 400), canvas="offscreen")
+    try:
+        assert view.legend["Tm2"].row_text == "Tm2 (2)"
+        assert view.legend["b2"].row_text == "b2"
+    finally:
+        view.close()
+
+
+def test_a_body_mesh_and_its_skeleton_land_in_the_same_group(has_gpu):
+    """`labels` is keyed on the item's OWN name, before build_scene's mesh/skeleton
+    suffix, because "label this body's geometry as Tm2" has to cover both."""
+    scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")],
+                        labels={"1401": "Tm2"})
+    view = backend.show(scene, size=(500, 400), canvas="offscreen")
+    try:
+        assert view.legend.labels == ["Tm2"]
+        assert view.legend["Tm2"].names == ["1401 mesh", "1401 skeleton"]
+    finally:
+        view.close()
+
+
+def test_an_int_keyed_label_map_finds_a_string_named_body(has_gpu):
+    """A body id arrives as an int about as often as a string, and a label map that
+    silently matched nothing would look exactly like a legend bug."""
+    scene = build_scene(meshes=[_mesh("10014014")], labels={10014014: "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        assert view.legend.labels == ["Tm2"]
+    finally:
+        view.close()
+
+
+def test_a_mixed_group_gets_the_neutral_square(has_gpu):
+    """A type group normally holds meshes AND skeletons, and a line glyph on it would be a
+    claim about the row that is only a third true."""
+    scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")],
+                        labels={"1401": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        assert type(view.legend["Tm2"].glyph).__name__ == "Mesh"
+        assert view.legend["Tm2"].kinds == {"MeshDrawable", "LinesDrawable"}
+    finally:
+        view.close()
+
+
+def test_a_group_of_one_kind_keeps_that_kinds_glyph(has_gpu):
+    scene = build_scene(skeletons=[_skeleton("a"), _skeleton("b")],
+                        labels={"a": "Tm2", "b": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        assert type(view.legend["Tm2"].glyph).__name__ == "Line"
+    finally:
+        view.close()
+
+
+def test_clicking_a_group_hides_every_member(has_gpu):
+    scene = build_scene(meshes=[_mesh(f"b{i}", i * 300.0) for i in range(3)],
+                        labels={"b0": "Tm2", "b1": "Tm2"})
+    view = backend.show(scene, size=(500, 400), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        view.snapshot()
+        strip = view.legend.rects_for(view.logical_size())[1]
+        _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 0.5)
+
+        assert [d.visible for d in scene] == [False, False, True]
+        assert [o.visible for o in view.group.children] == [False, False, True]
+    finally:
+        view.close()
+
+
+def test_a_partly_hidden_group_shows_a_third_state(has_gpu):
+    """Reachable without anyone clicking a row — hide one body by name, or reset a scene
+    that started with something hidden. A row showing either extreme would be lying about
+    half its members."""
+    scene = build_scene(meshes=[_mesh("a"), _mesh("b", 300.0)],
+                        labels={"a": "Tm2", "b": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        entry = view.legend["Tm2"]
+        assert entry.visibility == "all"
+        plates = {"all": tuple(entry.plate.material.color)}
+
+        scene.get("a").visible = False
+        entry.refresh()
+        assert entry.visibility == "some"
+        plates["some"] = tuple(entry.plate.material.color)
+
+        scene.get("b").visible = False
+        entry.refresh()
+        assert entry.visibility == "none"
+        plates["none"] = tuple(entry.plate.material.color)
+
+        assert len(set(plates.values())) == 3
+    finally:
+        view.close()
+
+
+def test_toggling_a_partly_hidden_group_hides_the_rest(has_gpu):
+    """Anything showing means hide. Inverting each member would turn the group inside out,
+    which is not what clicking one row is asking for."""
+    scene = build_scene(meshes=[_mesh("a"), _mesh("b", 300.0)],
+                        labels={"a": "Tm2", "b": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        scene.get("a").visible = False
+        assert view.legend.toggle("Tm2") is False
+        assert [d.visible for d in scene] == [False, False]
+        assert view.legend.toggle("Tm2") is True
+        assert [d.visible for d in scene] == [True, True]
+    finally:
+        view.close()
+
+
+def test_recolouring_a_group_moves_every_member(has_gpu):
+    scene = build_scene(meshes=[_mesh("a"), _mesh("b", 300.0)],
+                        labels={"a": "Tm2", "b": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.recolor("Tm2", "tab:pink")
+        pink = pytest.approx((0.8902, 0.4667, 0.7608), abs=1e-3)
+        assert [tuple(d.color)[:3] for d in scene] == [pink, pink]
+        assert tuple(view.group.children[1].material.color)[:3] == pink
+    finally:
+        view.close()
+
+
+def test_highlighting_a_group_lights_every_member(has_gpu):
+    scene = build_scene(meshes=[_mesh("a"), _mesh("b", 300.0), _mesh("c", 600.0)],
+                        labels={"a": "Tm2", "b": "Tm2"})
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("Tm2")
+        white = pytest.approx(Legend().highlight_color[:3], abs=1e-3)
+        lit = [tuple(o.material.color)[:3] for o in view.group.children]
+        assert lit[0] == white and lit[1] == white and lit[2] != white
+    finally:
+        view.close()
+
+
+def test_a_group_labelled_scene_gets_one_colour_per_label(has_gpu):
+    """Otherwise the palette hands out one colour per body and the row's single swatch can
+    only show one of them, which is most of the value of grouping thrown away."""
+    scene = build_scene(meshes=[_mesh(f"b{i}", i * 300.0) for i in range(4)],
+                        labels={"b0": "Tm2", "b1": "Tm2", "b2": "LC6", "b3": "LC6"})
+    assert scene.get("b0").color == scene.get("b1").color
+    assert scene.get("b2").color == scene.get("b3").color
+    assert scene.get("b0").color != scene.get("b2").color
+
+
+def test_colouring_per_drawable_can_still_be_asked_for(has_gpu):
+    scene = build_scene(meshes=[_mesh("a"), _mesh("b", 300.0)],
+                        labels={"a": "Tm2", "b": "Tm2"}, color_by="name")
+    assert scene.get("a").color != scene.get("b").color
+
+
+def test_an_unnamed_drawable_can_still_join_a_labelled_row(has_gpu):
+    """Which is why the legend pairs drawables with world objects by POSITION rather than
+    looking them up by name: a labelled drawable need not have one."""
+    scene = Scene().add_mesh(_mesh("named"), label="Tm2")
+    scene.add_points(np.array([[0.0, 0, 0]]), label="Tm2")
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        assert view.legend.labels == ["Tm2"]
+        assert len(view.legend["Tm2"].drawables) == 2
+        assert view.legend["Tm2"].names == ["named"]
     finally:
         view.close()
 
@@ -513,12 +704,15 @@ def test_hiding_a_highlighted_entry_still_hides_it(has_gpu):
         view.close()
 
 
-def test_a_highlight_survives_a_rename_and_a_relayout(has_gpu):
+def test_a_highlight_survives_a_relabel_and_a_relayout(has_gpu):
+    """Relabelling **rebuilds** the rows, since it can merge and split them — so the
+    highlight has to be carried across by label, or pressing a button and then relabelling
+    would silently drop it."""
     view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
     try:
         view.legend.highlight("body 1")
-        view.legend.rename("body 1", "a much longer name than before")
-        assert view.legend.highlighted == ["a much longer name than before"]
+        view.legend.relabel("body 1", "a much longer label than before")
+        assert view.legend.highlighted == ["a much longer label than before"]
     finally:
         view.close()
 
@@ -536,37 +730,65 @@ def test_an_explicit_highlight_colour_is_honoured(has_gpu):
 
 
 # --------------------------------------------------------------------------- #
-# renaming and recolouring from a notebook
+# relabelling and recolouring from a notebook
 # --------------------------------------------------------------------------- #
 
-def test_renaming_an_entry_renames_the_drawable(has_gpu):
-    """One name, not a name and a separate display label. A label held alongside the name
-    would let the two disagree: you relabel the row and `scene.get(that_label)` raises."""
+def test_relabelling_a_row_leaves_the_drawables_names_alone(has_gpu):
+    """The difference from the `rename` this replaced. A row's text is a LABEL once a row
+    can hold several drawables, so changing it must not touch identity — `scene.get` keeps
+    answering to the name you built the scene with."""
     view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
     try:
-        view.legend.rename("body 0", "MeCN-01 (L)")
-        assert view.legend.names == ["MeCN-01 (L)", "body 1"]
-        assert view.scene_data.get("MeCN-01 (L)") is not None
+        view.legend.relabel("body 0", "MeCN-01 (L)")
+        assert view.legend.labels == ["MeCN-01 (L)", "body 1"]
+        assert view.scene_data.names == ["body 0", "body 1"]
+        assert view.scene_data.get("body 0").label == "MeCN-01 (L)"
         assert view.legend["MeCN-01 (L)"].label_width > 0
     finally:
         view.close()
 
 
-def test_renaming_onto_an_existing_name_is_refused(has_gpu):
-    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+def test_relabelling_takes_a_mapping(has_gpu):
+    view = backend.show(_scene(3), size=(600, 400), canvas="offscreen")
     try:
-        with pytest.raises(ValueError, match="already here"):
-            view.legend.rename("body 0", "body 1")
+        view.legend.relabel({"body 0": "Tm2", "body 2": "LC6"})
+        assert view.legend.labels == ["Tm2", "body 1", "LC6"]
     finally:
         view.close()
 
 
-def test_a_longer_name_widens_the_strip(has_gpu):
+def test_relabelling_two_rows_to_one_label_merges_them(has_gpu):
+    """Relabel *is* the grouping operation, so merging after the fact needs no extra API."""
+    view = backend.show(_scene(3), size=(600, 400), canvas="offscreen")
+    try:
+        view.legend.relabel({"body 0": "Tm2", "body 1": "Tm2"})
+        assert view.legend.labels == ["Tm2", "body 2"]
+        assert view.legend["Tm2"].names == ["body 0", "body 1"]
+    finally:
+        view.close()
+
+
+def test_a_longer_label_widens_the_strip(has_gpu):
     view = backend.show(_scene(2), size=(600, 400), canvas="offscreen")
     try:
         before = view.legend.width
-        view.legend.rename("body 0", "an extremely long descriptive cell name")
+        view.legend.relabel("body 0", "an extremely long descriptive cell name")
         assert view.legend.width > before
+    finally:
+        view.close()
+
+
+def test_a_direct_scene_rename_is_picked_up_by_refresh(has_gpu):
+    """The bug Erik hit: `legend.labels` reported the new name while the canvas still drew
+    the old text, because `refresh` only re-read materials and a row's text is baked into a
+    `pygfx.Text`. It rebuilds the rows now."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        before = view.legend["body 0"].label_width
+        view.scene_data.rename("body 0", "a considerably longer name")
+        view.legend.refresh()
+        assert view.legend.labels == ["a considerably longer name", "body 1"]
+        assert view.legend["a considerably longer name"].label_width > before
     finally:
         view.close()
 
@@ -576,12 +798,12 @@ def test_recolouring_moves_the_object_and_the_swatch_together(has_gpu):
     try:
         view.legend.recolor("body 0", "tab:pink")
         entry = view.legend["body 0"]
-        assert entry.drawable.color == pytest.approx((0.8902, 0.4667, 0.7608, 1.0),
+        assert entry.drawables[0].color == pytest.approx((0.8902, 0.4667, 0.7608, 1.0),
                                                      abs=1e-3)
         assert tuple(entry.glyph.material.color)[:3] == pytest.approx(
-            entry.drawable.color[:3], abs=1e-3)
-        assert tuple(entry.world_object.material.color)[:3] == pytest.approx(
-            entry.drawable.color[:3], abs=1e-3)
+            entry.drawables[0].color[:3], abs=1e-3)
+        assert tuple(entry.world_objects[0].material.color)[:3] == pytest.approx(
+            entry.drawables[0].color[:3], abs=1e-3)
     finally:
         view.close()
 
@@ -592,9 +814,9 @@ def test_recolouring_one_entry_leaves_the_others_alone(has_gpu):
     are assigning a scene and wrong when you are adjusting one entry of a figure."""
     view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
     try:
-        others = [view.legend[n].drawable.color for n in ("body 1", "body 2")]
+        others = [view.legend[n].drawables[0].color for n in ("body 1", "body 2")]
         view.legend.recolor("body 0", "w")
-        assert [view.legend[n].drawable.color for n in ("body 1", "body 2")] == others
+        assert [view.legend[n].drawables[0].color for n in ("body 1", "body 2")] == others
     finally:
         view.close()
 

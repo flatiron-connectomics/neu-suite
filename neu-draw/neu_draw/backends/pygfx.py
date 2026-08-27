@@ -452,13 +452,14 @@ class View:
         the same argument as the toolbar's default: a legend you have to remember to
         request is one that is usually missing.
 
-        **A scene with no named drawables gets no strip**, rather than an empty one taking
-        45% of the canvas.
+        **A scene with nothing to label gets no strip**, rather than an empty one taking
+        45% of the canvas. "Nothing to label" is no *labels* rather than no names, since a
+        drawable may carry a label and no name.
         """
         spec = self.scene_data.legend
         if legend is False or spec is None or not spec.visible:
             return
-        if not self.scene_data.names:
+        if not self.scene_data.labels:
             return
         from .legend import LegendOverlay
 

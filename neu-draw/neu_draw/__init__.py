@@ -38,7 +38,7 @@ from .viewstate import ViewState, views
 from neu_lib import (BBox, Frame, Mesh, Skeleton, Vec3, box_predicate,
                      mask_predicate, skeleton_tube, to_xyz, union)
 from .scene import (Camera, Legend, LinesDrawable, MeshDrawable, PointsDrawable,
-                    Scene, build_scene)
+                    Scene, build_scene, label_of)
 from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,
                       synapse_points, volume_frame)
 
@@ -60,7 +60,7 @@ __all__ = [
     "BBox", "Frame", "Mesh", "Skeleton", "Vec3", "to_xyz",
     "box_predicate", "mask_predicate", "skeleton_tube", "union",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
-    "Camera", "Legend",
+    "Camera", "Legend", "label_of",
     "assign_colors", "to_rgba",
     "ViewState", "views", "viewstate",
     "cache", "layout", "logs", "sources",

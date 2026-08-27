@@ -54,6 +54,25 @@ def resolve_marker(marker: str) -> str:
     return name
 
 
+def label_of(drawable: Any) -> Optional[str]:
+    """A drawable's legend row, which is its ``label`` or, failing that, its ``name``.
+
+    **Names are unique; labels are not, and that is the whole point of having both.**
+    A drawable's ``name`` is its identity — what :meth:`Scene.get` resolves, what keys the
+    world object, what :meth:`Scene.set_color` addresses — so two drawables sharing one is
+    a collision. A ``label`` is a *classification*: forty bodies of one cell type share a
+    label, get one legend row and one colour, and are still forty individually addressable
+    drawables underneath.
+
+    That is why grouping could not be done by relaxing the name rule. A many-to-one
+    relation cannot be an identity, so it needs a field of its own; and it is a field on
+    the drawable rather than a map on the :class:`Legend` so that renaming a drawable
+    cannot orphan its label, and so ``offset_by`` and ``baked`` carry it along for free.
+    """
+    label = getattr(drawable, "label", None)
+    return label if label is not None else getattr(drawable, "name", None)
+
+
 #: Where on a drawable's box an alignment measures from.
 ANCHORS = ("center", "min", "max")
 
@@ -129,6 +148,7 @@ class MeshDrawable(Placed):
     color: RGBA = (0.5, 0.5, 0.5, 1.0)
     alpha: float = 1.0
     name: Optional[str] = None
+    label: Optional[str] = None
     visible: bool = True
     offset_zyx_nm: Vec3 = Vec3.zero()
 
@@ -156,6 +176,7 @@ class LinesDrawable(Placed):
     alpha: float = 1.0
     thickness: float = 1.5
     name: Optional[str] = None
+    label: Optional[str] = None
     visible: bool = True
     offset_zyx_nm: Vec3 = Vec3.zero()
 
@@ -180,6 +201,7 @@ class PointsDrawable(Placed):
     size: float = 8.0
     marker: str = "circle"
     name: Optional[str] = None
+    label: Optional[str] = None
     visible: bool = True
     offset_zyx_nm: Vec3 = Vec3.zero()
 
@@ -248,9 +270,10 @@ LEGEND_LOCATIONS = ("right", "left")
 class Legend:
     """Whether to draw a legend, where, and how it looks. Intent, not objects.
 
-    One entry per **named** drawable, in scene order, including hidden ones — a hidden
-    drawable with no entry is one nobody can turn back on, which is the whole point of
-    having a clickable legend.
+    One row per distinct **label** — :func:`label_of`, i.e. a drawable's ``label`` or else
+    its ``name`` — in first-appearance order, including hidden ones, since a hidden drawable
+    with no row is one nobody can turn back on. Several drawables sharing a label share a
+    row: forty bodies of a cell type are one entry, one colour and one click.
 
     Sizes are in **logical pixels**, not world units: the legend is a fixed-size panel
     docked beside the scene, so it does not grow or shrink as the camera moves. ``width``
@@ -312,9 +335,14 @@ class Scene:
     def add(self, drawable: Drawable, rename: bool = False) -> "Scene":
         """Append a drawable. A duplicate name raises, or is renamed if asked.
 
-        Names key the legend and are how a caller refers to a layer afterwards, so two
-        drawables sharing one is a collision rather than a duplicate — the same reason
-        neu-glance renames a colliding layer instead of keeping two under one name.
+        A name is a drawable's **identity** — how a caller refers to a layer afterwards,
+        and what :meth:`get` and :meth:`set_color` resolve — so two drawables sharing one
+        is a collision rather than a duplicate, the same reason neu-glance renames a
+        colliding layer instead of keeping two under one name.
+
+        **Sharing a legend row is a different thing and is perfectly legal**: give both a
+        ``label`` (see :func:`label_of`). Uniqueness applies to the name only, and the
+        auto-rename below leaves any label alone, so grouped drawables keep their row.
 
         Raising is the right default for a hand-built scene, but note that the most
         ordinary thing a caller does — a body's mesh *and* its skeleton — collides,
@@ -326,9 +354,10 @@ class Scene:
             if drawable.name in taken:
                 if not rename:
                     raise ValueError(
-                        f"a drawable named {drawable.name!r} is already here. Names key "
-                        f"the legend, so this is a collision, not a duplicate — pass "
-                        f"rename=True, or give it a name of its own.")
+                        f"a drawable named {drawable.name!r} is already here. A name is "
+                        f"identity, so this is a collision, not a duplicate — pass "
+                        f"rename=True, or give it a name of its own. To put two drawables "
+                        f"on ONE legend row, give them the same `label` instead.")
                 stem, n = drawable.name, 2
                 while f"{stem} ({n})" in taken:
                     n += 1
@@ -455,7 +484,21 @@ class Scene:
 
     @property
     def names(self) -> list[str]:
+        """Every drawable's name, in scene order. Unique by construction."""
         return [d.name for d in self.drawables if d.name is not None]
+
+    @property
+    def labels(self) -> list[str]:
+        """The legend's rows: each distinct :func:`label_of`, in first-appearance order.
+
+        Shorter than :attr:`names` whenever anything is grouped, which is the point.
+        """
+        seen: dict[str, None] = {}
+        for drawable in self.drawables:
+            label = label_of(drawable)
+            if label is not None:
+                seen.setdefault(label, None)
+        return list(seen)
 
     def __len__(self) -> int:
         return len(self.drawables)
@@ -469,21 +512,57 @@ class Scene:
                 return drawable
         raise KeyError(f"no drawable named {name!r}; have {self.names}")
 
-    def rename(self, old: str, new: str) -> "Scene":
-        """Give a drawable a different name — which is also its legend label.
+    def by_label(self, label: str) -> list[Drawable]:
+        """Every drawable in one legend row. A list, because a row is a group."""
+        found = [d for d in self.drawables if label_of(d) == label]
+        if not found:
+            raise KeyError(f"no drawable labelled {label!r}; have {self.labels}")
+        return found
 
-        **There is one name, not a name and a separate label.** A drawable's name keys the
-        legend *and* is how :meth:`get` and :meth:`recolor` refer to it, so a display label
-        held alongside it would be a second binding that the two could disagree on: you
-        rename the entry to ``"LC6 (L)"`` and ``scene.get("LC6 (L)")`` still raises. The
-        collision rule is :meth:`add`'s, for the same reason.
+    def rename(self, old: Union[str, Mapping[str, str]],
+               new: Optional[str] = None) -> "Scene":
+        """Change drawables' **names** — their identity, which stays unique.
+
+        Takes a mapping or a single ``(old, new)`` pair. A mapping is applied **as one
+        batch**, checked against the resulting name set rather than one rename at a time,
+        so a swap (``{"a": "b", "b": "a"}``) is legal and an incremental version of the
+        same thing would wrongly report a collision on the first step.
+
+        This is not how you change a legend row's text — see :meth:`relabel`. Renaming is
+        for identity: it changes what :meth:`get` and :meth:`set_color` answer to, and it
+        only moves the legend row along with it for a drawable that has no label of its own.
         """
-        drawable = self.get(old)
-        if new != old and new in self.names:
+        mapping = dict(old) if isinstance(old, Mapping) else {old: new}
+        drawables = [self.get(name) for name in mapping]
+
+        after = [mapping.get(d.name, d.name) for d in self.drawables
+                 if d.name is not None]
+        clashes = {n for n in after if after.count(n) > 1}
+        if clashes:
             raise ValueError(
-                f"a drawable named {new!r} is already here. Names key the legend, so this "
-                f"is a collision, not a duplicate.")
-        drawable.name = new
+                f"renaming would leave {len(clashes)} name(s) shared: "
+                f"{sorted(clashes)}. Names are a drawable's identity, so this is a "
+                f"collision — a shared legend row is what `relabel` is for.")
+
+        for drawable in drawables:
+            drawable.name = mapping[drawable.name]
+        return self
+
+    def relabel(self, names: Union[str, Mapping[str, str]],
+                label: Optional[str] = None) -> "Scene":
+        """Set drawables' legend **labels**, keyed on their names.
+
+        Takes a mapping or a single ``(name, label)`` pair. **Giving two drawables the same
+        label merges their legend rows**, so this is the grouping operation as much as the
+        renaming one:
+
+            scene.relabel({"1401 mesh": "Tm2", "1402 mesh": "Tm2"})
+
+        A label of ``None`` puts a drawable back on a row of its own.
+        """
+        mapping = dict(names) if isinstance(names, Mapping) else {names: label}
+        for name, value in mapping.items():
+            self.get(name).label = value
         return self
 
     def set_color(self, name: str, color: Any) -> "Scene":
@@ -499,17 +578,31 @@ class Scene:
         return self
 
     def recolor(self, colors: Optional[Mapping[Hashable, Any] | Any] = None,
-                palette: Optional[Sequence[Any]] = None) -> "Scene":
-        """Reassign every named drawable's colour in one pass.
+                palette: Optional[Sequence[Any]] = None,
+                by: str = "name") -> "Scene":
+        """Reassign every drawable's colour in one pass.
 
         Colours are chosen over the **whole set at once** rather than as each drawable
         is added, which is the only way a palette can guarantee distinct neighbours —
         assigning on `add` cannot know what is coming.
+
+        ``by="label"`` assigns **one colour per legend row** instead of one per drawable,
+        which is what a grouped scene wants: forty bodies of a type share a colour, and the
+        row's swatch then tells the truth. Without it the palette hands out forty different
+        colours and the swatch can only show one of them, which is most of the value of
+        grouping thrown away. Drawables with no label of their own fall back to their name
+        (:func:`label_of`), so a partly-labelled scene groups what is labelled and leaves
+        the rest alone. ``colors`` is keyed by whichever of the two you are assigning by.
         """
-        chosen = assign_colors(self.names, explicit=colors, palette=palette)
+        if by not in ("name", "label"):
+            raise ValueError(f"`by` is 'name' or 'label', not {by!r}")
+        key = (lambda d: d.name) if by == "name" else label_of
+
+        chosen = assign_colors(self.names if by == "name" else self.labels,
+                               explicit=colors, palette=palette)
         for i, drawable in enumerate(self.drawables):
-            if drawable.name in chosen:
-                self.drawables[i] = replace(drawable, color=chosen[drawable.name])
+            if key(drawable) in chosen:
+                self.drawables[i] = replace(drawable, color=chosen[key(drawable)])
         return self
 
     def __repr__(self) -> str:
@@ -525,6 +618,8 @@ def build_scene(meshes: Iterable[Mesh] = (), skeletons: Iterable[Skeleton] = (),
                 colors: Optional[Mapping[Hashable, Any] | Any] = None,
                 palette: Optional[Sequence[Any]] = None,
                 alpha: Optional[float] = None,
+                labels: Optional[Mapping[Hashable, str]] = None,
+                color_by: Optional[str] = None,
                 point_color: Any = None, **scene_kwargs) -> Scene:
     """Assemble a scene and colour it in one call.
 
@@ -536,6 +631,18 @@ def build_scene(meshes: Iterable[Mesh] = (), skeletons: Iterable[Skeleton] = (),
     (``"1401 mesh"``, ``"1401 skeleton"``) rather than only to the second — so a name is
     the same whichever order the scene was assembled in, and the legend says which is
     which. Names that appear once are left alone.
+
+    ``labels`` groups the legend: **keyed on each item's OWN name** — the body id, before
+    any ``mesh``/``skeleton`` suffix — so one entry covers every representation of that
+    body, which is what "label this body's geometry as Tm2" has to mean. Keys are matched
+    by value and by ``str()``, since a body id arrives as an ``int`` about as often as a
+    string. Unlisted items keep a row of their own.
+
+        build_scene(meshes=ms, skeletons=sks, labels={10014014: "Tm2", 10017394: "Tm2"})
+
+    **Passing ``labels`` also switches colouring to one colour per label** — see
+    :meth:`Scene.recolor`; forty palette colours behind a swatch that can show one is most
+    of the value of grouping thrown away. ``color_by="name"`` overrides that.
     """
     scene = Scene(**scene_kwargs)
     meshes, skeletons = list(meshes), list(skeletons)
@@ -549,21 +656,32 @@ def build_scene(meshes: Iterable[Mesh] = (), skeletons: Iterable[Skeleton] = (),
     for name in (points or {}):
         counts[name] = counts.get(name, 0) + 1
 
-    def label(item, kind: str) -> Optional[str]:
+    # Both the raw key and its string form, so {10014014: "Tm2"} finds a mesh named
+    # "10014014" and vice versa. A body id is an int as often as it is a string, and a
+    # label map that silently matched nothing would look exactly like a legend bug.
+    wanted: dict[Any, str] = {}
+    for key, value in (labels or {}).items():
+        wanted[key] = value
+        wanted[str(key)] = value
+
+    def name_for(item, kind: str) -> Optional[str]:
         if item.name is None:
             return None
         return f"{item.name} {kind}" if counts.get(item.name, 0) > 1 else item.name
 
     for mesh in meshes:
-        scene.add_mesh(mesh, alpha=alpha, name=label(mesh, "mesh"), rename=True)
+        scene.add_mesh(mesh, alpha=alpha, name=name_for(mesh, "mesh"),
+                       label=wanted.get(mesh.name), rename=True)
     for skeleton in skeletons:
-        scene.add_skeleton(skeleton, alpha=alpha, name=label(skeleton, "skeleton"),
-                           rename=True)
+        scene.add_skeleton(skeleton, alpha=alpha, name=name_for(skeleton, "skeleton"),
+                           label=wanted.get(skeleton.name), rename=True)
     for name, positions in (points or {}).items():
-        scene.add_points(positions, name=name, rename=True,
+        scene.add_points(positions, name=name, label=wanted.get(name), rename=True,
                          **({"color": point_color} if point_color is not None else {}))
 
-    return scene.recolor(colors, palette=palette)
+    if color_by is None:
+        color_by = "label" if labels else "name"
+    return scene.recolor(colors, palette=palette, by=color_by)
 
 
 def _normalized(kwargs: dict) -> dict:

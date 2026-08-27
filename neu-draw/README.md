@@ -93,12 +93,11 @@ offsets into the geometry, for when the arrangement is the output rather than th
 
 ## The legend
 
-Every named drawable gets a row: a glyph saying what kind of thing it is, and its name.
+Each row is a glyph saying what kind of thing it holds, and a label.
 
-- **Left-click a row to hide that drawable**, click again to bring it back. Hidden rows are
-  dimmed rather than removed, since a hidden drawable with no row is one nobody can turn
-  back on.
-- **Right-click a row to highlight it** — that body turns white in the scene and its row
+- **Left-click a row to hide it**, click again to bring it back. Hidden rows are dimmed
+  rather than removed, since a hidden drawable with no row is one nobody can turn back on.
+- **Right-click a row to highlight it** — those bodies turn white in the scene and the row
   lights up, until you right-click again.
 
 Those are the two questions a crowded scene raises: *what does it look like without this*,
@@ -107,14 +106,15 @@ and *which one of these is this*.
 It is on by default and docked to the right. From a notebook:
 
 ```python
-view.legend.rename("1401 mesh", "MeCN-01 (L)")   # relabel, from either end
-view.legend.recolor("MeCN-01 (L)", "tab:pink")   # the object AND its swatch
+view.legend.relabel("1401 mesh", "MeCN-01 (L)")  # change what a row says
+view.legend.relabel({"a": "Tm2", "b": "Tm2"})    # a mapping — and this MERGES the two rows
+view.legend.recolor("Tm2", "tab:pink")           # every body on the row, and its swatch
 view.legend.toggle("presyn")                     # what left-clicking the row does
 view.legend.set_visible("presyn", False)
 
-view.legend.highlight("MeCN-01 (L)")             # what right-clicking does
-view.legend.highlight("1401 skeleton", exclusive=True)   # …and drop the others
-view.legend.highlighted                          # ['1401 skeleton']
+view.legend.highlight("Tm2")                     # what right-clicking does
+view.legend.highlight("LC6", exclusive=True)     # …and drop the others
+view.legend.highlighted                          # ['LC6']
 view.legend.clear_highlights()
 
 view.center()                                    # re-fit to what is left showing
@@ -131,10 +131,53 @@ surface must not turn it opaque, since being translucent is often why you could 
 `Legend(highlight_color=...)` is the knob for a figure whose own palette collides with
 white — a body that is already white lights up only its row.
 
-**There is one name, not a name and a separate label.** Renaming an entry renames the
-drawable, so `scene.get("MeCN-01 (L)")` keeps working — a display label held alongside the
-name is a second binding the two can disagree on. `recolor` changes exactly the one entry;
-`Scene.recolor` (no name) is the different operation that assigns over the whole set.
+### Names and labels
+
+**A row is a group, and several drawables can share one.** That needs two ideas, because
+one cannot do both jobs:
+
+| | what it is | unique? | addressed by |
+|---|---|---|---|
+| `name` | a drawable's **identity** | yes — a duplicate raises | `scene.get(name)`, `scene.set_color` |
+| `label` | its **legend row**, defaulting to the name | no | `legend[label]`, `scene.by_label` |
+
+So forty bodies of a cell type are one row, one colour and one click, and are still forty
+individually addressable drawables underneath. Grouping could not be done by relaxing the
+name rule: a many-to-one relation cannot be an identity.
+
+```python
+scene = build_scene(meshes=meshes, skeletons=skels,
+                    labels={10014014: "Tm2", 10017394: "Tm2", 10022881: "LC6"})
+# → two rows reading "Tm2 (4)" and "LC6 (2)", not six
+```
+
+`labels` is keyed on each item's **own** name — the body id, before `build_scene`'s
+`mesh`/`skeleton` suffix — so one entry covers every representation of that body, which is
+what "label this body's geometry as Tm2" has to mean. Keys match by value or by `str()`,
+since a body id is an `int` as often as a string. Unlisted items keep a row of their own.
+
+**Passing `labels` also switches colouring to one colour per label**, because forty palette
+colours behind a swatch that can show one is most of the value of grouping thrown away.
+`build_scene(..., color_by="name")` opts out; `Scene.recolor(by="label")` does it after the
+fact.
+
+Afterwards, from either side:
+
+```python
+scene.relabel({"1401 mesh": "Tm2"})      # keyed on drawable NAMES, for bulk assignment
+view.legend.relabel({"Tm2": "Tm2 (L)"})  # keyed on the row text you can see
+scene.rename({"a": "b", "b": "a"})       # identity, still unique; a mapping applies as a batch
+```
+
+`relabel` sets the label and leaves names alone, so `scene.get("1401 mesh")` keeps working.
+It replaced a `rename` method on the legend: once a row can hold several drawables its text
+is a label and not a name, and renaming one member would not change the row at all.
+
+A group's swatch is the **first member's** colour, since one swatch cannot show forty — and
+where the point of grouping is that a type shares a colour, they agree anyway. A group of
+mixed kinds (a type group normally holds meshes *and* skeletons) gets a plain square rather
+than a line or a marker claiming to speak for all of it. A **partly** hidden group gets a
+third row appearance, distinct from both on and off, and left-clicking it hides the rest.
 
 **The legend is drawn in the canvas, not beside it, and that is the whole design
 constraint.** A figure without its legend is not the figure, so it has to be part of what
