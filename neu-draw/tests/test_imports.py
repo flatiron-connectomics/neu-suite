@@ -44,6 +44,21 @@ print("clean")
     assert out == "clean"
 
 
+def test_importing_neu_draw_pulls_in_no_notebook_front_end():
+    """`toolbar` is the one module that needs ipywidgets, and it is reached only when a
+    view is actually shown. The saved-viewpoint store it shares state with is pure, so
+    `neu_draw.views` costs nothing on a worker."""
+    out = _import_in_a_fresh_interpreter("""
+import sys
+import neu_draw
+banned = [m for m in ("ipywidgets", "imageio", "neu_draw.toolbar") if m in sys.modules]
+assert not banned, f"importing neu_draw pulled in {banned}"
+assert neu_draw.views == {}
+print("clean")
+""")
+    assert out == "clean"
+
+
 def test_the_geometry_types_are_reachable_from_the_top_level():
     out = _import_in_a_fresh_interpreter("""
 import neu_draw

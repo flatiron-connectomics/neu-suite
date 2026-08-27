@@ -29,8 +29,11 @@ dependencies = [
 #   neuclease — DVID only. See the RLE note in NEU-DRAW-PLAN.md.
 
 [project.optional-dependencies]
-# `imageio` is only for `View.save`; `snapshot()` hands back the array either way.
-render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap", "imageio"]
+# `imageio` is for `View.save` and for the image the toolbar's "close" leaves behind;
+# `snapshot()` hands back the array either way. `ipywidgets` is only the toolbar, and
+# arrives with jupyter-rfb regardless — declared because `neu_draw.toolbar` imports it
+# by name, and a transitive dependency is not a promise.
+render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap", "imageio", "ipywidgets"]
 sources = ["neu-morpho", "pandas"]
 dvid = ["neuclease"]
 cache = ["yes3>=0.1"]

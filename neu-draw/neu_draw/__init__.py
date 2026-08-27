@@ -14,7 +14,11 @@ Layout, and the reason for it:
   independent of ``scene`` on purpose: the arithmetic of a row or a grid is testable
   without building one.
 * ``sources`` — the only module that reads anything.
+* ``viewstate`` — saved camera viewpoints, kept outside any one view so they outlive it.
+  Pure.
 * ``backends`` — pygfx. The renderer seam.
+* ``toolbar`` — ipywidgets buttons above the canvas. Reached only when a view is shown,
+  so nothing here pays for a notebook front end.
 
 The geometry types import eagerly: they cost a numpy import and nothing else. The
 **backend does not**, and must not — importing a renderer needs a canvas backend, and on
@@ -26,9 +30,10 @@ __version__ = "0.1.0"
 
 from typing import Any
 
-from . import cache, layout, logs, sources
+from . import cache, layout, logs, sources, viewstate
 from .colors import assign_colors, to_rgba
 from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
+from .viewstate import ViewState, views
 from neu_lib import (BBox, Frame, Mesh, Skeleton, Vec3, box_predicate,
                      mask_predicate, skeleton_tube, to_xyz, union)
 from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
@@ -55,6 +60,7 @@ __all__ = [
     "box_predicate", "mask_predicate", "skeleton_tube", "union",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
     "assign_colors", "to_rgba",
+    "ViewState", "views", "viewstate",
     "cache", "layout", "logs", "sources",
     "quiet_stores", "install_quiet_stores", "remove_quiet_stores",
     "body_mesh", "body_meshes", "body_skeleton", "body_skeletons",

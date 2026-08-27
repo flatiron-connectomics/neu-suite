@@ -91,6 +91,41 @@ row. `key=` sorts the layout without reordering the scene, so a legend built fro
 `scene.names` still matches. Hidden drawables reserve no slot. `Scene.bake()` folds the
 offsets into the geometry, for when the arrangement is the output rather than the view.
 
+## The toolbar, and saved viewpoints
+
+In a notebook `show()` puts five buttons above the canvas — no argument needed, and
+nothing to remember after a kernel restart:
+
+| button | what it does |
+|---|---|
+| **Center** | re-fit the camera to everything visible |
+| **Save view** | remember this camera, for *any* later figure |
+| **Restore** | go to the remembered camera |
+| **Capture** | write the PNG named in the box beside the buttons |
+| **Close** | close the canvas, leaving the image it last showed in its place |
+
+Every one is also a method, so a notebook or a script can do the same:
+
+```python
+view.center()
+view.save_view()                 # or save_view("dorsal"), for as many slots as you like
+view.restore_view("dorsal")      # returns None, not an error, if nothing is there
+view.save("figure.png")
+```
+
+**A viewpoint is kept outside the view, in `neu_draw.views`, and that is the point** — you
+save an angle in order to use it in the *next* figure, by which time the one you saved it
+from is gone. It records the canvas size along with the camera, because a perspective
+camera's field of view follows the rect's aspect ratio, so the same camera in a differently
+shaped canvas is a different picture. **Close** writes its viewpoint to `views["last"]` on
+the way out, since wanting the angle back after looking at the snapshot is the ordinary
+case and nobody remembers to save first.
+
+`toolbar=False` gives the bare canvas; `toolbar=True` insists and raises if ipywidgets is
+missing or the canvas is not a widget. Offscreen and desktop renders quietly get no
+toolbar, which is why the buttons never appear in a `snapshot()` — **the legend is drawn
+in the canvas instead**, precisely so that it does.
+
 ## Install
 
 Part of the [neu-suite](https://github.com/flatiron-connectomics/neu-suite) suite, whose
@@ -144,7 +179,9 @@ sources and 2D projections are not.
 | `neu_draw.scene` | drawables, colours, camera intent — no renderer |
 | `neu_draw.sources` | the only module that reads anything |
 | `neu_draw.cache` | a three-method protocol; in-memory by default, `yes3` optional |
+| `neu_draw.viewstate` | saved camera viewpoints, outliving the view they came from |
 | `neu_draw.backends.pygfx` | the only renderer-aware module |
+| `neu_draw.toolbar` | the notebook buttons; the only module that needs ipywidgets |
 
 ## Tests
 

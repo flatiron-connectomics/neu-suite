@@ -31,6 +31,7 @@ import pygfx
 
 from neu_lib import to_xyz
 from ..scene import LinesDrawable, MeshDrawable, PointsDrawable, Scene
+from ..viewstate import SAVED, ViewState, views
 
 #: Nothing in a scene is at the origin — a body sits wherever it sits in the volume, tens
 #: of microns out — so the camera must be framed from the data, never left at a default.
@@ -132,8 +133,9 @@ class View:
 
     def __init__(self, scene: Scene, size: tuple[int, int] = DEFAULT_SIZE,
                  canvas: Any = "auto", background: Optional[tuple] = None,
-                 pixel_ratio: Optional[float] = None):
+                 pixel_ratio: Optional[float] = None, toolbar: Any = "auto"):
         self.scene_data = scene
+        self.ui = None
         self._size = tuple(size)
         self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
@@ -167,6 +169,7 @@ class View:
             self.scene.add(pygfx.AxesHelper(size=_extent(scene) * 0.2 or 1.0))
 
         self.canvas.request_draw(self._draw)
+        self._install_toolbar(toolbar)
 
     # -- camera ----------------------------------------------------------------
 
@@ -195,7 +198,66 @@ class View:
         self.camera.zoom = intent.zoom
         return self
 
+    def center(self) -> "View":
+        """Re-fit the camera and redraw — :meth:`frame` plus the repaint.
+
+        The one action a "centre view" button needs, and the reason it is separate is
+        that :meth:`frame` runs during construction, before there is a draw to request.
+        """
+        self.frame()
+        self.request_draw()
+        return self
+
+    # -- viewpoints ------------------------------------------------------------
+
+    def logical_size(self) -> tuple[int, int]:
+        """The canvas size in logical pixels, falling back to the size asked for.
+
+        **A Jupyter canvas reports (1, 1) until the browser has laid the widget out**, so
+        the live value is a placeholder in a freshly executed notebook — the same trap
+        :meth:`snapshot` documents. Anything below a few pixels is therefore treated as
+        "not yet known" rather than believed.
+        """
+        try:
+            width, height = self.canvas.get_logical_size()
+        except Exception:                                       # pragma: no cover
+            return self._size
+        return (int(width), int(height)) if width > 4 and height > 4 else self._size
+
+    def save_view(self, name: str = SAVED) -> ViewState:
+        """Record this camera into :data:`neu_draw.views`, and return what was stored.
+
+        The store outlives the view (see :mod:`neu_draw.viewstate`), so the saved angle
+        is available to the next figure — which is the whole reason to save one.
+        """
+        state = ViewState(camera=dict(self.camera.get_state()), size=self.logical_size())
+        views[name] = state
+        return state
+
+    def restore_view(self, name: str = SAVED, *, size: bool = True) -> Optional[ViewState]:
+        """Apply a saved viewpoint. ``None`` — not an error — if that slot is empty.
+
+        An empty slot is the ordinary state of a fresh session, and a button that raises
+        the first time it is pressed is worse than one that says nothing was saved.
+
+        ``size`` also restores the canvas size, because the aspect ratio is part of what
+        a viewpoint means; pass ``size=False`` to keep the canvas as it is and accept a
+        differently framed version of the same angle.
+        """
+        state = views.get(name)
+        if state is None:
+            return None
+        if size and state.size[0] and hasattr(self.canvas, "set_logical_size"):
+            self.canvas.set_logical_size(*state.size)
+        self.camera.set_state(state.camera)
+        self.request_draw()
+        return state
+
     # -- output ----------------------------------------------------------------
+
+    def request_draw(self) -> None:
+        """Ask the canvas to repaint, using the draw function already installed."""
+        self.canvas.request_draw()
 
     def _draw(self) -> None:
         self.renderer.render(self.scene, self.camera)
@@ -252,8 +314,33 @@ class View:
     def close(self) -> None:
         self.canvas.close()
 
+    # -- the notebook toolbar --------------------------------------------------
+
+    def _install_toolbar(self, toolbar: Any) -> None:
+        """Attach a :class:`~neu_draw.toolbar.Toolbar`, if one is wanted and possible.
+
+        ``"auto"`` — the default — means **a toolbar wherever one can exist**, so a
+        notebook gets the buttons without anyone having to ask for them, and an offscreen
+        render is unaffected. That follows the package's existing rule for store logging:
+        a user should not have to invoke anything to get the usable behaviour, because
+        forgetting the call after a kernel restart looks exactly like the feature being
+        broken. Pass ``toolbar=False`` for the bare canvas, or ``True`` to insist and get
+        the exception if ipywidgets is missing.
+
+        Imported here rather than at module scope: ipywidgets is a notebook dependency,
+        and the backend already loads on a worker with no front-end at all.
+        """
+        if not toolbar:
+            return
+        from ..toolbar import attach
+
+        self.ui = attach(self, required=toolbar != "auto")
+
     def _repr_mimebundle_(self, *args, **kwargs):
-        """Let Jupyter display the canvas when the View is the cell's value.
+        """Let Jupyter display the view when it is the cell's value.
+
+        The **toolbar's** widget where there is one, and the bare canvas otherwise — so
+        wrapping the canvas in a button bar changes nothing about how a view is shown.
 
         Positional arguments are **dropped**: IPython passes ``include``/``exclude`` as
         keywords, but the Jupyter canvas accepts ``**kwargs`` only, so forwarding
@@ -261,7 +348,9 @@ class View:
         that was supposed to show the figure. An offscreen canvas has no bundle at all,
         which is why this degrades to a repr rather than raising.
         """
-        bundle = getattr(self.canvas, "_repr_mimebundle_", None)
+        widget = getattr(self.ui, "widget", None)
+        bundle = getattr(widget if widget is not None else self.canvas,
+                         "_repr_mimebundle_", None)
         if bundle is None:
             return {"text/plain": repr(self)}
         return bundle(**kwargs)
