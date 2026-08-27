@@ -122,10 +122,14 @@ def test_alpha_multiplies_the_colours_own_alpha():
     assert mesh.material.color[3] == pytest.approx(0.5 * 128 / 255, abs=1e-3)
 
 
-def test_a_hidden_drawable_is_not_built():
+def test_a_hidden_drawable_is_built_and_switched_off():
+    """It used to be skipped, which is cheaper and was right while nothing could change
+    its mind. A legend whose rows toggle visibility needs an object to toggle, and an
+    entry with nothing behind it is one nobody can turn back on."""
     scene = Scene().add_mesh(_mesh("shown")).add_mesh(_mesh("hidden"))
     scene.get("hidden").visible = False
-    assert [o.name for o in backend.build(scene).children] == ["shown"]
+    built = {o.name: o.visible for o in backend.build(scene).children}
+    assert built == {"shown": True, "hidden": False}
 
 
 def test_mesh_normals_are_passed_through_when_present():

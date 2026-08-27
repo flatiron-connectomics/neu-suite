@@ -91,6 +91,47 @@ row. `key=` sorts the layout without reordering the scene, so a legend built fro
 `scene.names` still matches. Hidden drawables reserve no slot. `Scene.bake()` folds the
 offsets into the geometry, for when the arrangement is the output rather than the view.
 
+## The legend
+
+Every named drawable gets a row: a glyph saying what kind of thing it is, and its name.
+**Left-click a row to hide that drawable, click again to bring it back.** Rows for hidden
+drawables are dimmed rather than removed, since a hidden drawable with no row is one
+nobody can turn back on.
+
+It is on by default and docked to the right. From a notebook:
+
+```python
+view.legend.rename("1401 mesh", "MeCN-01 (L)")   # relabel, from either end
+view.legend.recolor("MeCN-01 (L)", "tab:pink")   # the object AND its swatch
+view.legend.toggle("presyn")                     # what clicking the row does
+view.legend.set_visible("presyn", False)
+view.center()                                    # re-fit to what is left showing
+```
+
+**There is one name, not a name and a separate label.** Renaming an entry renames the
+drawable, so `scene.get("MeCN-01 (L)")` keeps working — a display label held alongside the
+name is a second binding the two can disagree on. `recolor` changes exactly the one entry;
+`Scene.recolor` (no name) is the different operation that assigns over the whole set.
+
+**The legend is drawn in the canvas, not beside it, and that is the whole design
+constraint.** A figure without its legend is not the figure, so it has to be part of what
+`snapshot()` and `save()` produce — which rules out widgets and settles everything else:
+pygfx objects rendered in a second pass into a strip, clicks resolved by the renderer's own
+pick buffer, and the camera controller registered on a *viewport* limited to the scene's
+rect so that clicking a row does not also spin the camera.
+
+Sizes are logical pixels, so the panel does not grow or shrink with the camera:
+
+```python
+neu_draw.show(scene, legend=False)                          # off entirely
+Scene(legend=Legend(location="left", font_size=16))
+Scene(legend=Legend(width=200, panel_color="w", text_color="k"))   # for a light figure
+```
+
+Entries wrap into columns when a single column would not fit, and the whole legend shrinks
+if even that is not enough — it is never clipped, because in a figure there is nobody to
+scroll it. The strip never takes more than 45% of the canvas.
+
 ## The toolbar, and saved viewpoints
 
 In a notebook `show()` puts five buttons above the canvas — no argument needed, and
@@ -123,8 +164,8 @@ case and nobody remembers to save first.
 
 `toolbar=False` gives the bare canvas; `toolbar=True` insists and raises if ipywidgets is
 missing or the canvas is not a widget. Offscreen and desktop renders quietly get no
-toolbar, which is why the buttons never appear in a `snapshot()` — **the legend is drawn
-in the canvas instead**, precisely so that it does.
+toolbar, which is why the buttons never appear in a `snapshot()` — the legend is drawn in
+the canvas instead, precisely so that it does.
 
 ## Install
 
@@ -169,8 +210,8 @@ anything unrecognised still prints. **The marker of a real problem is
 ## Status
 
 Early, but it works end to end against real precomputed volumes. Geometry, colours,
-scene assembly, the pygfx backend and the source readers are in place; the legend, DVID
-sources and 2D projections are not.
+scene assembly, the pygfx backend, the source readers, the clickable legend and the
+notebook toolbar are in place; DVID sources and 2D projections are not.
 
 | module | what it is |
 |---|---|
@@ -180,7 +221,8 @@ sources and 2D projections are not.
 | `neu_draw.sources` | the only module that reads anything |
 | `neu_draw.cache` | a three-method protocol; in-memory by default, `yes3` optional |
 | `neu_draw.viewstate` | saved camera viewpoints, outliving the view they came from |
-| `neu_draw.backends.pygfx` | the only renderer-aware module |
+| `neu_draw.backends.pygfx` | the renderer seam — build, camera, canvas, snapshots |
+| `neu_draw.backends.legend` | the clickable legend, drawn in the canvas |
 | `neu_draw.toolbar` | the notebook buttons; the only module that needs ipywidgets |
 
 ## Tests

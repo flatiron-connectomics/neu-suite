@@ -16,7 +16,8 @@ Layout, and the reason for it:
 * ``sources`` — the only module that reads anything.
 * ``viewstate`` — saved camera viewpoints, kept outside any one view so they outlive it.
   Pure.
-* ``backends`` — pygfx. The renderer seam.
+* ``backends`` — pygfx. The renderer seam, plus the clickable legend, which is drawn
+  **in** the canvas so that it is part of every snapshot.
 * ``toolbar`` — ipywidgets buttons above the canvas. Reached only when a view is shown,
   so nothing here pays for a notebook front end.
 
@@ -36,8 +37,8 @@ from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
 from .viewstate import ViewState, views
 from neu_lib import (BBox, Frame, Mesh, Skeleton, Vec3, box_predicate,
                      mask_predicate, skeleton_tube, to_xyz, union)
-from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
-                    build_scene)
+from .scene import (Camera, Legend, LinesDrawable, MeshDrawable, PointsDrawable,
+                    Scene, build_scene)
 from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,
                       synapse_points, volume_frame)
 
@@ -59,6 +60,7 @@ __all__ = [
     "BBox", "Frame", "Mesh", "Skeleton", "Vec3", "to_xyz",
     "box_predicate", "mask_predicate", "skeleton_tube", "union",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
+    "Camera", "Legend",
     "assign_colors", "to_rgba",
     "ViewState", "views", "viewstate",
     "cache", "layout", "logs", "sources",

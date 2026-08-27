@@ -102,6 +102,81 @@ def test_a_colour_passed_to_add_is_normalised_immediately():
     assert Scene().add_mesh(_mesh(), color="r").get("body-1").color == (1.0, 0, 0, 1.0)
 
 
+def test_set_color_changes_one_drawable_and_no_other():
+    """The difference from `recolor`, and the reason both exist. `recolor` chooses over
+    the whole set, so one explicit colour re-draws every other name from the top of the
+    palette — right when assigning a scene, wrong when adjusting one entry of a figure."""
+    scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("b")).recolor()
+    others = scene.get("b").color
+
+    scene.set_color("a", "tab:pink")
+    assert scene.get("a").color == pytest.approx((0.8902, 0.4667, 0.7608, 1.0), abs=1e-3)
+    assert scene.get("b").color == others
+
+
+def test_set_color_normalises_and_reports_an_unknown_name():
+    scene = Scene().add_mesh(_mesh("a"))
+    with pytest.raises(KeyError, match="no drawable named"):
+        scene.set_color("b", "r")
+
+
+# --------------------------------------------------------------------------- #
+# renaming
+# --------------------------------------------------------------------------- #
+
+def test_rename_changes_the_name_a_caller_refers_to_the_layer_by():
+    """There is one name, not a name and a separate legend label: a display label held
+    alongside would let the two disagree, so that `scene.get(<the label>)` raises."""
+    scene = Scene().add_mesh(_mesh("1401")).add_mesh(_mesh("1402"))
+    scene.rename("1401", "MeCN-01 (L)")
+    assert scene.names == ["MeCN-01 (L)", "1402"]
+    assert scene.get("MeCN-01 (L)").color == scene.drawables[0].color
+
+
+def test_renaming_onto_a_name_in_use_is_a_collision():
+    scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("b"))
+    with pytest.raises(ValueError, match="already here"):
+        scene.rename("a", "b")
+
+
+def test_renaming_a_drawable_to_its_own_name_is_allowed():
+    """Otherwise the collision check would refuse a no-op, and a caller writing
+    `rename(old, new)` in a loop would have to special-case it."""
+    scene = Scene().add_mesh(_mesh("a"))
+    assert scene.rename("a", "a").names == ["a"]
+
+
+def test_renaming_something_that_is_not_there_says_what_is():
+    scene = Scene().add_mesh(_mesh("a"))
+    with pytest.raises(KeyError, match="no drawable named"):
+        scene.rename("z", "y")
+
+
+# --------------------------------------------------------------------------- #
+# legend intent
+# --------------------------------------------------------------------------- #
+
+def test_a_legend_is_wanted_by_default():
+    """The field has defaulted to visible since it existed; the backend simply ignored it
+    until there was a legend to draw. So an existing scene gets one without asking."""
+    assert Scene().legend.visible is True
+
+
+def test_only_the_two_vertical_legend_locations_exist():
+    from neu_draw.scene import Legend
+
+    assert Legend(location="left").location == "left"
+    with pytest.raises(ValueError, match="unknown legend location"):
+        Legend(location="bottom")
+
+
+def test_a_nonsense_font_size_is_refused_where_it_is_written():
+    from neu_draw.scene import Legend
+
+    with pytest.raises(ValueError, match="font_size must be positive"):
+        Legend(font_size=0)
+
+
 # --------------------------------------------------------------------------- #
 # build_scene
 # --------------------------------------------------------------------------- #

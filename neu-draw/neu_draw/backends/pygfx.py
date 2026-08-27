@@ -47,9 +47,13 @@ def build(scene: Scene) -> pygfx.Group:
     """
     group = pygfx.Group()
     for drawable in scene:
-        if not drawable.visible:
-            continue
         obj = _build_one(drawable)
+        # A hidden drawable is BUILT and switched off, not skipped. It used to be skipped,
+        # which is cheaper and was fine while nothing could change its mind — but a legend
+        # whose rows toggle visibility needs an object to toggle, and an entry with nothing
+        # behind it is one nobody can turn back on. `frame()` filters on `visible` for the
+        # same reason: `get_bounding_box` does not.
+        obj.visible = bool(drawable.visible)
         if drawable.name is not None:
             obj.name = str(drawable.name)
         # The drawable's offset becomes the object's own transform rather than being added
@@ -133,9 +137,11 @@ class View:
 
     def __init__(self, scene: Scene, size: tuple[int, int] = DEFAULT_SIZE,
                  canvas: Any = "auto", background: Optional[tuple] = None,
-                 pixel_ratio: Optional[float] = None, toolbar: Any = "auto"):
+                 pixel_ratio: Optional[float] = None, toolbar: Any = "auto",
+                 legend: Optional[bool] = None):
         self.scene_data = scene
         self.ui = None
+        self.legend = None
         self._size = tuple(size)
         self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
@@ -160,9 +166,16 @@ class View:
         self.group = build(scene)
         self.scene.add(self.group)
 
+        self._install_legend(legend)
+
         self.camera = pygfx.PerspectiveCamera(50)
-        self.controller = pygfx.TrackballController(self.camera,
-                                                    register_events=self.renderer)
+        # Registered on the **main viewport**, not the renderer, when there is a legend:
+        # a controller starts a drag only for events inside the viewport it was given, so
+        # this is the whole of what keeps a click on a legend row from also spinning the
+        # camera. See `backends/legend.py` for why a pointer handler could not do it.
+        self.controller = pygfx.TrackballController(
+            self.camera,
+            register_events=self.legend.main if self.legend else self.renderer)
         self.frame()
 
         if scene.axes_visible:
@@ -174,29 +187,50 @@ class View:
     # -- camera ----------------------------------------------------------------
 
     def frame(self) -> "View":
-        """Fit the camera to the scene, honouring its :class:`~neu_draw.scene.Camera`.
+        """Fit the camera to what is **visible**, honouring the scene's ``Camera``.
 
-        Passes the built ``Group`` when there is one, so the fit follows the objects'
-        *world* transforms rather than the scene's nm bounding box — the two agree today
-        because nothing applies a transform, and the group stays right if anything ever
-        does. Otherwise a bounding **sphere** ``(x, y, z, radius)``, the only other thing
-        ``show_object`` accepts, which is needed for an explicit ``camera.target`` (a
-        BBox) and for an empty scene, which has no bounding sphere and would raise.
+        Always a bounding **sphere** ``(x, y, z, radius)``, computed from the built
+        objects' *world* bounding boxes — so the fit follows their transforms rather than
+        the scene's nm boxes, which is what an offset drawable needs, and it can be
+        computed for a case ``show_object`` cannot take at all (an empty scene has no
+        bounding sphere and would raise).
 
-        Either way the fit is **conservative**: pygfx frames the bounding sphere, so a
-        long thin neurite leaves slack around its short axes. That is the safe direction
-        to err — nothing is ever cropped out — and ``Camera.zoom`` is the way in.
+        **Hidden objects are excluded, and this is the part that is easy to get wrong.**
+        ``get_bounding_box`` walks every child regardless of ``visible``, so handing
+        ``show_object`` the whole group would frame a body the legend has just switched
+        off — the camera pulls back for something nobody can see. That used not to matter
+        because a hidden drawable was never built.
+
+        The fit is **conservative**: pygfx frames the bounding sphere, so a long thin
+        neurite leaves slack around its short axes. That is the safe direction to err —
+        nothing is ever cropped out — and ``Camera.zoom`` is the way in.
         """
         intent = self.scene_data.camera
         if intent.target is not None:
-            target: Any = _bounding_sphere(intent.target)
-        elif self.scene_data.bbox.is_empty():
-            target = _bounding_sphere(self.scene_data.bbox)
+            target = _bounding_sphere(intent.target)
         else:
-            target = self.group
+            target = _visible_sphere(self.group)
+            if target is None:
+                target = _bounding_sphere(self.scene_data.bbox)
+
+        # The scene renders into the rect left over beside the legend, and a perspective
+        # camera's fit depends on that rect's aspect. Setting it first means the very
+        # first frame is framed for where it will actually be drawn, rather than for the
+        # whole canvas and then corrected.
+        width, height = self._main_size()
+        if width > 0 and height > 0:
+            self.camera.set_view_size(width, height)
+
         self.camera.show_object(target, view_dir=intent.view_angle, up=intent.up)
         self.camera.zoom = intent.zoom
         return self
+
+    def _main_size(self) -> tuple[float, float]:
+        """The size of the rect the scene itself renders into, legend strip excluded."""
+        if self.legend is None:
+            return tuple(float(v) for v in self.logical_size())
+        main, _ = self.legend.rects_for(self.logical_size())
+        return float(main[2]), float(main[3])
 
     def center(self) -> "View":
         """Re-fit the camera and redraw — :meth:`frame` plus the repaint.
@@ -260,7 +294,25 @@ class View:
         self.canvas.request_draw()
 
     def _draw(self) -> None:
-        self.renderer.render(self.scene, self.camera)
+        self._paint(self.renderer, self.camera)
+
+    def _paint(self, renderer: Any, camera: Any) -> None:
+        """One frame: the scene, then the legend strip beside it.
+
+        Two ``render`` calls into two rects, with only the second flushing. pygfx clears
+        on the **first** render since a flush and not afterwards, so the pair composes
+        without either half knowing about the other.
+
+        ``renderer`` is a parameter because ``_offscreen_snapshot`` builds one of its own
+        at an exact size, and the legend has to go through that pass too — a saved figure
+        without its legend is not the figure.
+        """
+        if self.legend is None:
+            renderer.render(self.scene, camera)
+            return
+        main, strip = self.legend.rects_for(renderer.logical_size)
+        renderer.render(self.scene, camera, rect=main, flush=False)
+        self.legend.draw(renderer, rect=strip)
 
     @property
     def pixel_ratio(self) -> float:
@@ -283,7 +335,7 @@ class View:
         comes from. Construct the view with ``pixel_ratio=1.0`` for pixel-exact output.
         """
         if size is None and _is_offscreen(self.canvas):
-            self.renderer.render(self.scene, self.camera)
+            self._paint(self.renderer, self.camera)
             return np.asarray(self.renderer.snapshot())
         return self._offscreen_snapshot(tuple(size) if size else self._size)
 
@@ -295,7 +347,7 @@ class View:
         renderer = pygfx.renderers.WgpuRenderer(canvas, pixel_ratio=self._pixel_ratio)
         camera = pygfx.PerspectiveCamera(self.camera.fov)
         camera.set_state(self.camera.get_state())
-        renderer.render(self.scene, camera)
+        self._paint(renderer, camera)
         return np.asarray(renderer.snapshot())
 
     def save(self, path: str, size: Optional[tuple[int, int]] = None) -> str:
@@ -313,6 +365,30 @@ class View:
 
     def close(self) -> None:
         self.canvas.close()
+
+    # -- the legend ------------------------------------------------------------
+
+    def _install_legend(self, legend: Optional[bool]) -> None:
+        """Build the legend strip, unless it is turned off or there is nothing to label.
+
+        ``None`` — the default — follows the scene's own
+        :class:`~neu_draw.scene.Legend`, whose ``visible`` has defaulted to ``True`` since
+        the field existed; the backend ignored it until there was a legend to draw. So a
+        scene from :func:`~neu_draw.scene.build_scene` gets one without asking, which is
+        the same argument as the toolbar's default: a legend you have to remember to
+        request is one that is usually missing.
+
+        **A scene with no named drawables gets no strip**, rather than an empty one taking
+        45% of the canvas.
+        """
+        spec = self.scene_data.legend
+        if legend is False or spec is None or not spec.visible:
+            return
+        if not self.scene_data.names:
+            return
+        from .legend import LegendOverlay
+
+        self.legend = LegendOverlay(self.scene_data, self.group, self.renderer)
 
     # -- the notebook toolbar --------------------------------------------------
 
@@ -408,6 +484,25 @@ def _make_canvas(size: tuple[int, int], kind: str = "auto") -> Any:
 def _extent(scene: Scene) -> float:
     box = scene.bbox
     return 0.0 if box.is_empty() else float(max(box.shape))
+
+
+def _visible_sphere(group: pygfx.Group) -> Optional[tuple[float, float, float, float]]:
+    """A bounding sphere over the group's **visible** children, in world xyz.
+
+    ``WorldObject.get_bounding_box`` deliberately ignores ``visible`` — it answers "how
+    much space could this take up", not "what is on screen" — so this is the filter, and
+    it is the only thing standing between a legend toggle and a camera that pulls back
+    for a body that is switched off. ``None`` when nothing is showing.
+    """
+    boxes = [child.get_world_bounding_box() for child in group.children if child.visible]
+    boxes = [box for box in boxes if box is not None]
+    if not boxes:
+        return None
+    lo = np.min([box[0] for box in boxes], axis=0)
+    hi = np.max([box[1] for box in boxes], axis=0)
+    center = (lo + hi) / 2.0
+    radius = float(np.linalg.norm(hi - lo) / 2.0) or 1.0
+    return (float(center[0]), float(center[1]), float(center[2]), radius)
 
 
 def _bounding_sphere(box) -> tuple[float, float, float, float]:

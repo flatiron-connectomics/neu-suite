@@ -239,11 +239,56 @@ class Camera:
     zoom: float = 1.0
 
 
+#: Which edge the legend strip is docked against. Only the two vertical ones, because a
+#: body name is long and a row of them would be unreadable at any width worth giving up.
+LEGEND_LOCATIONS = ("right", "left")
+
+
 @dataclass
 class Legend:
-    """Whether to draw a legend, and where. Backends may ignore it."""
+    """Whether to draw a legend, where, and how it looks. Intent, not objects.
+
+    One entry per **named** drawable, in scene order, including hidden ones — a hidden
+    drawable with no entry is one nobody can turn back on, which is the whole point of
+    having a clickable legend.
+
+    Sizes are in **logical pixels**, not world units: the legend is a fixed-size panel
+    docked beside the scene, so it does not grow or shrink as the camera moves. ``width``
+    of ``None`` measures the longest label and uses that, which is right nearly always and
+    is why it is not a required argument.
+
+    ``visible`` defaults to ``True`` and the pygfx backend now honours it, so a scene built
+    by :func:`build_scene` gets a legend without asking. ``Scene(legend=Legend(visible=
+    False))`` — or ``show(scene, legend=False)`` — is the way out.
+    """
     visible: bool = True
     location: str = "right"
+    font_size: float = 13.0
+    width: Optional[float] = None
+    #: Label colour. Light, because the default panel is dark.
+    text_color: RGBA = (0.93, 0.93, 0.93, 1.0)
+    #: The per-row plate behind each entry, which is also the click target. Slightly
+    #: translucent over the panel, so rows read as bands and look like things you can hit.
+    row_color: RGBA = (0.30, 0.30, 0.34, 0.55)
+    #: The strip's own background. ``None`` takes the scene's ``background`` where it has
+    #: one and a near-black otherwise. **Opaque on purpose**: the strip is docked beside
+    #: the scene rather than laid over it, so there is nothing behind it to show through —
+    #: a translucent panel would instead composite against the *page*, and come out
+    #: washed out in a light-themed notebook and fine in a dark one.
+    panel_color: Optional[RGBA] = None
+
+    def __post_init__(self) -> None:
+        if self.location not in LEGEND_LOCATIONS:
+            raise ValueError(
+                f"unknown legend location {self.location!r}; known: "
+                f"{', '.join(LEGEND_LOCATIONS)}. A legend of body names needs a column, "
+                f"so 'top' and 'bottom' are deliberately not offered.")
+        if self.font_size <= 0:
+            raise ValueError(f"font_size must be positive, got {self.font_size}")
+        self.text_color = to_rgba(self.text_color)
+        self.row_color = to_rgba(self.row_color)
+        if self.panel_color is not None:
+            self.panel_color = to_rgba(self.panel_color)
 
 
 @dataclass
@@ -417,6 +462,35 @@ class Scene:
             if drawable.name == name:
                 return drawable
         raise KeyError(f"no drawable named {name!r}; have {self.names}")
+
+    def rename(self, old: str, new: str) -> "Scene":
+        """Give a drawable a different name — which is also its legend label.
+
+        **There is one name, not a name and a separate label.** A drawable's name keys the
+        legend *and* is how :meth:`get` and :meth:`recolor` refer to it, so a display label
+        held alongside it would be a second binding that the two could disagree on: you
+        rename the entry to ``"LC6 (L)"`` and ``scene.get("LC6 (L)")`` still raises. The
+        collision rule is :meth:`add`'s, for the same reason.
+        """
+        drawable = self.get(old)
+        if new != old and new in self.names:
+            raise ValueError(
+                f"a drawable named {new!r} is already here. Names key the legend, so this "
+                f"is a collision, not a duplicate.")
+        drawable.name = new
+        return self
+
+    def set_color(self, name: str, color: Any) -> "Scene":
+        """Recolour **one** drawable, leaving every other colour exactly where it is.
+
+        Not the same operation as :meth:`recolor`, which chooses over the whole set at
+        once: passing it a single explicit colour re-draws every *other* name from the top
+        of the palette, so fixing one body's colour would shuffle the rest. That is the
+        right behaviour when you are assigning the whole scene and the wrong behaviour when
+        you are adjusting one entry in a figure you have been staring at.
+        """
+        self.get(name).color = to_rgba(color)
+        return self
 
     def recolor(self, colors: Optional[Mapping[Hashable, Any] | Any] = None,
                 palette: Optional[Sequence[Any]] = None) -> "Scene":
