@@ -1,9 +1,15 @@
 """The legend: a clickable strip of entries, drawn **in the canvas** beside the scene.
 
 One row per named drawable — a plate, a glyph matching what the thing is, and its name.
-Left-click a row and that drawable disappears; click again and it comes back. Rows for
-hidden drawables are dimmed rather than removed, because a hidden drawable with no entry
-is one nobody can turn back on.
+**Left-click a row to hide that drawable; right-click to highlight it.** Rows for hidden
+drawables are dimmed rather than removed, because a hidden drawable with no entry is one
+nobody can turn back on.
+
+Those are the two questions a crowded scene actually raises — *what does it look like
+without this* and *which one of these is this* — and the highlight answers the second
+without touching the data: it is a display override, so ``drawable.color`` still says what
+colour the body is. The predecessor swapped the real colour and stashed the original, which
+holds until anything else reads it and a temporary highlight has become the body's colour.
 
 ## Why in the canvas, when the toolbar is ipywidgets
 
@@ -62,6 +68,7 @@ import pygfx
 
 from ..colors import RGBA, to_rgba
 from ..scene import Legend, LinesDrawable, MeshDrawable, PointsDrawable, Scene
+from .pygfx import display_color
 
 #: Blank space inside the strip, in px.
 PAD = 9.0
@@ -80,6 +87,9 @@ MIN_WIDTH = 80.0
 MAX_WIDTH_FRACTION = 0.45
 #: How far a hidden entry's colours are pulled toward black.
 DIM = 0.35
+#: Alpha of the highlight tint on a highlighted row's plate. Enough to read as lit, not
+#: enough to stop the label being legible against it.
+HIGHLIGHT_ROW_ALPHA = 0.38
 #: The panel behind the strip when neither the legend nor the scene names a colour.
 DEFAULT_PANEL: RGBA = (0.07, 0.07, 0.09, 1.0)
 #: Where the legend's camera sits. Everything it draws is at z in [0, 1] in front of it;
@@ -128,6 +138,8 @@ class LegendEntry:
         self.drawable = drawable
         self.world_object = world_object
         self.spec = spec
+        #: Right-clicked. A **display** state and nothing more — see :meth:`refresh`.
+        self.highlighted = False
 
         size = spec.font_size
         # The plate is sized in `layout()`, once every label has been measured; it starts
@@ -181,19 +193,50 @@ class LegendEntry:
     # -- state -----------------------------------------------------------------
 
     def refresh(self) -> None:
-        """Re-read the drawable: its colour, its name, and whether it is showing."""
+        """Push this entry's state onto the objects: colour, highlight, visibility.
+
+        **The highlight is a display override and the drawable is never touched**, which is
+        the same rule the placement offsets follow (see ``scene.Placed``) and it is what
+        makes the feature safe to leave switched on. The predecessor swapped the graphic's
+        real colour and stashed the original in the field that also held the swatch colour;
+        that works until something else reads the colour — ``Scene.recolor``, a saved
+        figure, ``bake()`` — and then a temporary highlight has quietly become the body's
+        colour. Here ``drawable.color`` still answers "what colour is this body", so
+        recolouring a highlighted entry is meaningful and takes effect when the highlight
+        comes off.
+
+        Everything is recomputed from scratch on every call, so the order in which
+        highlight, visibility and colour were set never matters.
+        """
         shown = bool(self.drawable.visible)
+        base = to_rgba(self.drawable.color)
+        drawn = self.spec.highlight_color if self.highlighted else base
+
+        if self.world_object is not None:
+            # `display_color` keeps the drawable's own alpha, so highlighting a translucent
+            # surface does not also turn it opaque — being translucent is often exactly why
+            # it could not be found.
+            self.world_object.material.color = display_color(self.drawable, drawn)
+            self.world_object.visible = shown
+
         # Full opacity for the glyph whatever the drawable's alpha. A scene alpha is about
         # overlapping surfaces not hiding each other; a 0.2 swatch is just illegible.
-        color = (*to_rgba(self.drawable.color)[:3], 1.0)
-
-        self.glyph.material.color = color if shown else _dim(color)
+        glyph = (*drawn[:3], 1.0)
+        self.glyph.material.color = glyph if shown else _dim(glyph)
         self.label.material.color = (self.spec.text_color if shown
                                      else _dim(self.spec.text_color, 0.55))
-        self.plate.material.color = (self.spec.row_color if shown
-                                     else _dim(self.spec.row_color, 0.6))
-        if self.world_object is not None:
-            self.world_object.visible = shown
+        self.plate.material.color = self._plate_color(shown)
+
+    def _plate_color(self, shown: bool) -> RGBA:
+        """The row's plate: tinted when highlighted, dimmed when hidden.
+
+        The row has to say so itself, because the swatch cannot: once two entries are
+        highlighted their swatches are both the highlight colour, and nothing then
+        distinguishes "temporarily lit" from "this body really is white".
+        """
+        if self.highlighted:
+            return (*self.spec.highlight_color[:3], HIGHLIGHT_ROW_ALPHA)
+        return self.spec.row_color if shown else _dim(self.spec.row_color, 0.6)
 
     def set_label(self, text: str) -> None:
         # `Text.set_text`, not `Text.geometry.set_text`: in pygfx 0.17 a Text's glyph
@@ -205,6 +248,11 @@ class LegendEntry:
         self.drawable.visible = not self.drawable.visible
         self.refresh()
         return bool(self.drawable.visible)
+
+    def toggle_highlight(self) -> bool:
+        self.highlighted = not self.highlighted
+        self.refresh()
+        return self.highlighted
 
 
 def _glyph(drawable: Any, size: float) -> pygfx.WorldObject:
@@ -413,11 +461,20 @@ class LegendOverlay:
     # -- interaction -----------------------------------------------------------
 
     def _bind(self, entry: LegendEntry) -> None:
-        """Left-click the row's plate to toggle the drawable it stands for."""
+        """Left-click a row to hide it; **right-click to highlight it**.
+
+        The pair the predecessor settled on, and the division is between the two questions
+        you actually ask of a crowded scene: *what does it look like without this* (hide)
+        and *which one of these is this* (highlight). A middle click does nothing.
+        """
         def on_click(event) -> None:
-            if getattr(event, "button", 1) != 1:
+            button = getattr(event, "button", 1)
+            if button == 1:
+                entry.toggle()
+            elif button == 2:
+                entry.toggle_highlight()
+            else:
                 return
-            entry.toggle()
             self._request_draw()
 
         entry.plate.add_event_handler(on_click, "click")
@@ -460,17 +517,15 @@ class LegendOverlay:
         return self
 
     def recolor(self, name: str, color: Any) -> "LegendOverlay":
-        """Recolour one drawable **and** its swatch, leaving the rest of the scene alone."""
+        """Recolour one drawable **and** its swatch, leaving the rest of the scene alone.
+
+        On a **highlighted** entry this changes the colour underneath and leaves the
+        highlight showing, so the new colour appears when the highlight comes off. That
+        follows from the highlight being a display override rather than a colour swap, and
+        it is the behaviour that cannot lose work either way round.
+        """
         self.scene_data.set_color(name, color)
-        entry = self.entry(name)
-        if entry.world_object is not None:
-            # The drawn object keeps its per-drawable alpha, exactly as `build` applied it.
-            # The swatch does not, and `refresh` is what re-reads it — so this is the whole
-            # of the object side, and setting the glyph here as well would only fight it
-            # (and would wrongly un-dim a hidden entry until the next refresh).
-            r, g, b, a = entry.drawable.color
-            entry.world_object.material.color = (r, g, b, a * float(entry.drawable.alpha))
-        entry.refresh()
+        self.entry(name).refresh()
         self._request_draw()
         return self
 
@@ -487,6 +542,46 @@ class LegendOverlay:
         self._request_draw()
         return state
 
+    # -- highlighting ----------------------------------------------------------
+
+    @property
+    def highlighted(self) -> list[str]:
+        """The names currently drawn in the highlight colour."""
+        return [e.drawable.name for e in self.entries if e.highlighted]
+
+    def highlight(self, *names: str, exclusive: bool = False) -> "LegendOverlay":
+        """Draw these entries in the highlight colour, leaving their real colours alone.
+
+        ``exclusive=True`` drops every other highlight first, which is the "where is this
+        one" case; the default adds to whatever is already lit, matching what right-clicking
+        rows one after another does.
+        """
+        if exclusive:
+            self.clear_highlights()
+        for name in names:
+            self.entry(name).highlighted = True
+            self.entry(name).refresh()
+        self._request_draw()
+        return self
+
+    def unhighlight(self, *names: str) -> "LegendOverlay":
+        """Put these entries back to their own colours. No names means all of them."""
+        chosen = [self.entry(n) for n in names] if names else list(self.entries)
+        for entry in chosen:
+            entry.highlighted = False
+            entry.refresh()
+        self._request_draw()
+        return self
+
+    def clear_highlights(self) -> "LegendOverlay":
+        return self.unhighlight()
+
+    def toggle_highlight(self, name: str) -> bool:
+        """What right-clicking a row does."""
+        state = self.entry(name).toggle_highlight()
+        self._request_draw()
+        return state
+
     def refresh(self) -> "LegendOverlay":
         """Re-read every drawable, for when a scene was changed behind the legend's back."""
         for entry in self.entries:
@@ -497,5 +592,7 @@ class LegendOverlay:
 
     def __repr__(self) -> str:
         shown = sum(1 for e in self.entries if e.drawable.visible)
-        return (f"LegendOverlay({shown}/{len(self.entries)} shown, "
+        lit = len(self.highlighted)
+        return (f"LegendOverlay({shown}/{len(self.entries)} shown"
+                f"{f', {lit} highlighted' if lit else ''}, "
                 f"{self.spec.location}, {self.width:.0f}px, {self.columns} col)")

@@ -115,16 +115,26 @@ def _points(drawable: PointsDrawable) -> pygfx.Points:
     )
 
 
-def _material_kwargs(drawable: Any) -> dict:
-    """Colour and transparency, uniformly.
+def display_color(drawable: Any, override: Optional[tuple] = None) -> tuple:
+    """The colour a drawable's material carries: its own, times its ``alpha``.
 
     ``alpha`` multiplies whatever the colour already carried rather than replacing it,
     so a per-drawable alpha and an ``#rrggbbaa`` colour compose instead of one silently
-    winning. ``alpha_mode`` is left at pygfx's ``auto``: it picks depth-write behaviour
-    from the alpha, which is the right default for translucent overlapping surfaces.
+    winning.
+
+    ``override`` substitutes a different **hue** while keeping that arithmetic — which is
+    what the legend's highlight needs, and the reason this is a named function rather than
+    two lines inline. A highlight that also reset the alpha would turn a translucent
+    surface opaque, and the surface being translucent is often why you cannot find it.
     """
-    r, g, b, a = drawable.color
-    return {"color": (r, g, b, a * float(drawable.alpha))}
+    r, g, b, a = drawable.color if override is None else override
+    return (r, g, b, a * float(drawable.alpha))
+
+
+def _material_kwargs(drawable: Any) -> dict:
+    """Colour for a new material. ``alpha_mode`` is left at pygfx's ``auto``: it picks
+    depth-write behaviour from the alpha, which is right for translucent surfaces."""
+    return {"color": display_color(drawable)}
 
 
 class View:

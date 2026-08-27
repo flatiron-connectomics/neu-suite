@@ -359,15 +359,15 @@ def test_a_click_in_the_legend_does_not_also_spin_the_camera(has_gpu):
         view.close()
 
 
-def test_a_right_click_leaves_the_row_alone(has_gpu):
-    """Reserved rather than overloaded: the predecessor put a highlight-colour toggle on
-    button 2, and taking the name now would make that a behaviour change later."""
+def test_a_middle_click_does_nothing(has_gpu):
+    """Left is hide, right is highlight, and nothing else is claimed."""
     view = backend.show(_scene(2), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
     try:
         view.snapshot()
         strip = view.legend.rects_for(view.logical_size())[1]
-        _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 0.5, button=2)
+        _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 0.5, button=3)
         assert view.scene_data.get("body 0").visible is True
+        assert view.legend.highlighted == []
     finally:
         view.close()
 
@@ -383,6 +383,154 @@ def test_centering_after_a_toggle_frames_only_what_is_left(has_gpu):
         view.legend.set_visible("far", False)
         view.center()
         assert float(np.linalg.norm(view.camera.local.position)) < both / 2
+    finally:
+        view.close()
+
+
+# --------------------------------------------------------------------------- #
+# highlighting
+# --------------------------------------------------------------------------- #
+
+def test_right_clicking_a_row_highlights_it(has_gpu):
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        view.snapshot()
+        strip = view.legend.rects_for(view.logical_size())[1]
+        x, row_h = strip[0] + strip[2] / 2, view.legend.row_height
+
+        _click(view, x, row_h * 1.5, button=2)
+        assert view.legend.highlighted == ["body 1"]
+
+        _click(view, x, row_h * 1.5, button=2)
+        assert view.legend.highlighted == []
+    finally:
+        view.close()
+
+
+def test_a_highlight_never_touches_the_drawables_own_colour(has_gpu):
+    """The property the whole design rests on, and where the predecessor differed: it
+    swapped the graphic's real colour and stashed the original. That holds until something
+    else reads the colour — `Scene.recolor`, `bake()`, a saved scene — and then a temporary
+    highlight has quietly become the body's colour."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        before = view.scene_data.get("body 0").color
+        view.legend.highlight("body 0")
+        assert view.scene_data.get("body 0").color == before
+        assert tuple(view.group.children[0].material.color)[:3] == pytest.approx(
+            Legend().highlight_color[:3], abs=1e-3)
+    finally:
+        view.close()
+
+
+def test_the_highlight_keeps_the_drawables_alpha(has_gpu):
+    """Turning a translucent surface opaque would change what you can see through, and
+    being translucent is often exactly why it could not be found."""
+    scene = Scene().add_mesh(_mesh("faint"), alpha=0.4)
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("faint")
+        assert tuple(view.group.children[0].material.color)[3] == pytest.approx(0.4)
+    finally:
+        view.close()
+
+
+def test_dropping_the_highlight_restores_the_real_colour(has_gpu):
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        own = view.scene_data.get("body 0").color
+        view.legend.highlight("body 0").unhighlight("body 0")
+        assert tuple(view.group.children[0].material.color)[:3] == pytest.approx(
+            own[:3], abs=1e-3)
+        assert tuple(view.legend["body 0"].glyph.material.color)[:3] == pytest.approx(
+            own[:3], abs=1e-3)
+    finally:
+        view.close()
+
+
+def test_several_rows_can_be_lit_at_once_and_cleared_together(has_gpu):
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("body 0", "body 2")
+        assert view.legend.highlighted == ["body 0", "body 2"]
+        view.legend.clear_highlights()
+        assert view.legend.highlighted == []
+    finally:
+        view.close()
+
+
+def test_an_exclusive_highlight_drops_the_others(has_gpu):
+    """The "where is this one" case, as against right-clicking rows one after another."""
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("body 0", "body 1")
+        view.legend.highlight("body 2", exclusive=True)
+        assert view.legend.highlighted == ["body 2"]
+    finally:
+        view.close()
+
+
+def test_the_row_says_it_is_highlighted_and_not_only_the_swatch(has_gpu):
+    """Once two entries are lit their swatches are both the highlight colour, and nothing
+    then separates "temporarily lit" from "this body really is white"."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        plain = tuple(view.legend["body 0"].plate.material.color)
+        view.legend.highlight("body 0")
+        assert tuple(view.legend["body 0"].plate.material.color) != plain
+        assert tuple(view.legend["body 1"].plate.material.color) == plain
+    finally:
+        view.close()
+
+
+def test_recolouring_a_highlighted_entry_takes_effect_when_it_is_dropped(has_gpu):
+    """Because the highlight is an override rather than a swap, neither operation can lose
+    the other's work."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("body 0")
+        view.legend.recolor("body 0", "tab:pink")
+
+        assert tuple(view.group.children[0].material.color)[:3] == pytest.approx(
+            Legend().highlight_color[:3], abs=1e-3)
+        view.legend.unhighlight("body 0")
+        assert tuple(view.group.children[0].material.color)[:3] == pytest.approx(
+            (0.8902, 0.4667, 0.7608), abs=1e-3)
+    finally:
+        view.close()
+
+
+def test_hiding_a_highlighted_entry_still_hides_it(has_gpu):
+    """The two states are independent, and `refresh` recomputes both from scratch — so the
+    order they were set in cannot matter."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("body 0").set_visible("body 0", False)
+        assert view.group.children[0].visible is False
+        view.legend.set_visible("body 0", True)
+        assert view.legend.highlighted == ["body 0"]
+    finally:
+        view.close()
+
+
+def test_a_highlight_survives_a_rename_and_a_relayout(has_gpu):
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("body 1")
+        view.legend.rename("body 1", "a much longer name than before")
+        assert view.legend.highlighted == ["a much longer name than before"]
+    finally:
+        view.close()
+
+
+def test_an_explicit_highlight_colour_is_honoured(has_gpu):
+    """The knob for a figure whose own palette collides with white."""
+    scene = build_scene(meshes=[_mesh("a")], legend=Legend(highlight_color="tab:cyan"))
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        view.legend.highlight("a")
+        assert tuple(view.group.children[0].material.color)[:3] == pytest.approx(
+            (0.0902, 0.7451, 0.8118), abs=1e-3)
     finally:
         view.close()
 

@@ -270,6 +270,11 @@ class Legend:
     #: The per-row plate behind each entry, which is also the click target. Slightly
     #: translucent over the panel, so rows read as bands and look like things you can hit.
     row_color: RGBA = (0.30, 0.30, 0.34, 0.55)
+    #: What a **right-clicked** entry is drawn in, until it is right-clicked again. White,
+    #: which is what the fastplotlib predecessor used. It must differ from the drawable's
+    #: own colour to show up in the scene — a body that is already white will only light up
+    #: its legend row — so this is the knob for a figure whose palette collides with it.
+    highlight_color: RGBA = (1.0, 1.0, 1.0, 1.0)
     #: The strip's own background. ``None`` takes the scene's ``background`` where it has
     #: one and a near-black otherwise. **Opaque on purpose**: the strip is docked beside
     #: the scene rather than laid over it, so there is nothing behind it to show through —
@@ -287,6 +292,7 @@ class Legend:
             raise ValueError(f"font_size must be positive, got {self.font_size}")
         self.text_color = to_rgba(self.text_color)
         self.row_color = to_rgba(self.row_color)
+        self.highlight_color = to_rgba(self.highlight_color)
         if self.panel_color is not None:
             self.panel_color = to_rgba(self.panel_color)
 

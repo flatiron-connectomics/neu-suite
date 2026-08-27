@@ -94,19 +94,42 @@ offsets into the geometry, for when the arrangement is the output rather than th
 ## The legend
 
 Every named drawable gets a row: a glyph saying what kind of thing it is, and its name.
-**Left-click a row to hide that drawable, click again to bring it back.** Rows for hidden
-drawables are dimmed rather than removed, since a hidden drawable with no row is one
-nobody can turn back on.
+
+- **Left-click a row to hide that drawable**, click again to bring it back. Hidden rows are
+  dimmed rather than removed, since a hidden drawable with no row is one nobody can turn
+  back on.
+- **Right-click a row to highlight it** — that body turns white in the scene and its row
+  lights up, until you right-click again.
+
+Those are the two questions a crowded scene raises: *what does it look like without this*,
+and *which one of these is this*.
 
 It is on by default and docked to the right. From a notebook:
 
 ```python
 view.legend.rename("1401 mesh", "MeCN-01 (L)")   # relabel, from either end
 view.legend.recolor("MeCN-01 (L)", "tab:pink")   # the object AND its swatch
-view.legend.toggle("presyn")                     # what clicking the row does
+view.legend.toggle("presyn")                     # what left-clicking the row does
 view.legend.set_visible("presyn", False)
+
+view.legend.highlight("MeCN-01 (L)")             # what right-clicking does
+view.legend.highlight("1401 skeleton", exclusive=True)   # …and drop the others
+view.legend.highlighted                          # ['1401 skeleton']
+view.legend.clear_highlights()
+
 view.center()                                    # re-fit to what is left showing
 ```
+
+**A highlight is a display override and never touches the drawable's colour** — the same
+rule the placement offsets follow. `scene.get(name).color` still says what colour the body
+is, so recolouring a highlighted entry is meaningful and shows up when the highlight comes
+off, and a saved scene never has a temporary highlight baked into it. (The fastplotlib
+predecessor swapped the real colour and stashed the original, which holds right up until
+something else reads it.) The drawable's alpha is preserved too: highlighting a translucent
+surface must not turn it opaque, since being translucent is often why you could not find it.
+
+`Legend(highlight_color=...)` is the knob for a figure whose own palette collides with
+white — a body that is already white lights up only its row.
 
 **There is one name, not a name and a separate label.** Renaming an entry renames the
 drawable, so `scene.get("MeCN-01 (L)")` keeps working — a display label held alongside the
