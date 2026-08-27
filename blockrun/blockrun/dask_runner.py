@@ -57,6 +57,7 @@ def start_dask(
     The config's first ``jobqueue`` key selects the cluster type:
       - ``"local"``: a LocalCluster with ``num_workers`` single-threaded workers.
       - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs.
+
     Tears the cluster (and SLURM jobs) down on exit.
 
     ``effective_config_path`` (a directory or file) records the merged result. Worth
