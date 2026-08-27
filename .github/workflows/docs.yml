@@ -65,13 +65,21 @@ jobs:
       # force a much slower micromamba job. neu-vol' test suite pins that property
       # so this cannot quietly stop being true, and neu_mark.cli keeps its heavy
       # imports inside the subcommands for the same reason.
+      #
+      # The API reference needs none of this: sphinx-autoapi PARSES the checked-out
+      # source, so every module of all seven packages is documented whether or not it
+      # imports here — including the conda-only ones, whose docstrings would otherwise
+      # be the half of the reference that silently went missing.
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
-          # neu-draw is cloned but deliberately NOT installed: only its README is
-          # included, it has no CLI to introspect, and installing it would pull pygfx
-          # and wgpu into a job that renders no pixels.
+          # neu-draw is cloned but deliberately NOT installed: it has no CLI to
+          # introspect, and installing it would pull pygfx and wgpu into a job that
+          # renders no pixels. Its README and its whole API reference come from the
+          # clone. Verified by building with neu_draw, pygfx, wgpu, rendercanvas and
+          # ipywidgets all made unimportable: -W still passes and all 12 of its pages
+          # keep their content.
           pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
                       ./neu-glance
 

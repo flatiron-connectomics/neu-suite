@@ -1,9 +1,14 @@
-# Documentation build only. Deliberately NOT the neu-env environment: importing the two
-# CLI modules pulls in dask, distributed and numpy and nothing else — no tensorstore,
-# vol2mesh, dvidutils or kimimaro — so the site builds from PyPI alone, with no conda
-# and no flyem-forge. A test in neu-vol pins that property.
+# Documentation build only. Deliberately NOT the neu-env environment: nothing here
+# needs conda or flyem-forge. Importing the four CLI modules pulls in dask, distributed,
+# numpy, pandas and pyarrow and nothing else — never tensorstore, vol2mesh, dvidutils,
+# kimimaro or neuclease — and the API reference imports nothing at all, because
+# sphinx-autoapi parses the source. A test in neu-vol pins the first property.
 sphinx>=8
 myst-parser>=4
 sphinx-argparse>=0.5
 furo>=2024.8.6
 sphinx-design>=0.6
+sphinx-copybutton>=0.5
+# Parses rather than imports, which is what lets the API reference cover the conda-only
+# modules and neu-draw, none of which are installed in the docs job.
+sphinx-autoapi>=3.8

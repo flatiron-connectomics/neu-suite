@@ -59,6 +59,9 @@ neu-vol-cv-environment.yml
 # could disagree with the code, which is the failure this site is designed to prevent.
 docs/_build/
 docs/_generated/
+# autoapi writes the parsed API pages into the source tree and removes them again when
+# the build finishes; a build that crashes partway leaves them behind.
+docs/api/
 
 # Analysis notebooks
 notebooks/

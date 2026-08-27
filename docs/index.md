@@ -65,6 +65,10 @@ remote neuroglancer.
 with its synopsis. The [CLI reference](cli/index.md) has the full flag-by-flag detail,
 generated from the parsers themselves so it always matches `--help`.
 
+Calling them from Python instead — from a notebook, or from your own script — is the
+[API reference](_generated/api-index.md): every module of all seven packages, parsed
+from the source.
+
 ```{toctree}
 :maxdepth: 2
 :caption: Using them
@@ -76,12 +80,20 @@ cli/index
 
 ```{toctree}
 :maxdepth: 2
+:caption: API
+
+_generated/api-index
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Guides
 
 guides/converting
 guides/small-pieces
 guides/ground-truth
 guides/viewing
+guides/rendering
 ```
 
 ```{toctree}
@@ -94,6 +106,7 @@ _generated/dask-slurm
 _generated/neu-vol-readme
 _generated/neu-morpho-readme
 _generated/neu-morpho-skeletonization
+_generated/neu-morpho-measure-calibration
 _generated/neu-mark-readme
 _generated/neu-glance-readme
 _generated/neu-draw-readme

@@ -25,7 +25,7 @@ GENERATED = HERE / "_generated"
 # has no CLI page — it appears in the design notes instead.
 COMMANDS = [
     ("neu-vol", "neu_vol.cli", "the volumes themselves: inspect, convert, copy, "
-                                      "create, write, renumber"),
+                                      "downsample, create, write, renumber, pack"),
     ("neu-morpho", "neu_morpho.cli", "meshes and skeletons from a segmentation"),
     ("neu-mark", "neu_mark.cli", "DVID annotations into tables: synapses and other "
                                       "point annotations, per-body records"),
@@ -41,10 +41,181 @@ INCLUDED = [
     ("neu-vol/README.md", "neu-vol-readme.md"),
     ("neu-morpho/README.md", "neu-morpho-readme.md"),
     ("neu-morpho/docs/skeletonization.md", "neu-morpho-skeletonization.md"),
+    ("neu-morpho/docs/measure-calibration.md", "neu-morpho-measure-calibration.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
     ("neu-draw/README.md", "neu-draw-readme.md"),
 ]
+
+
+# The importable package inside each repository, **in dependency order** — which is the
+# order the API reference lists them in, and the reason it is declared here rather than
+# in `conf.py`: the repositories are what this file already knows about, and the
+# generated landing page, the toctree and the parsed source must not disagree about
+# which packages exist or how they are layered.
+PACKAGES = [
+    ("neu-lib", "neu_lib",
+     "The vocabulary every tier shares. numpy and nothing else.",
+     "`BBox`, `Frame`, `Mesh`, `Skeleton`, `ScaleInfo`, `align_box`, `skeleton_tube`"),
+    ("blockrun", "blockrun",
+     "The dask/SLURM substrate. Knows nothing about electron microscopy.",
+     "`block_map`, `iter_blocks`, `Manifest`, `start_dask`"),
+    ("neu-vol", "neu_vol",
+     "Volume I/O: tensorstore backends, storage profiles, the conversion ops, "
+     "source metadata.",
+     "`convert`, `open_backend`, `scale_spec`, `read_scales`, `describe`, `location`"),
+    ("neu-morpho", "neu_morpho",
+     "Per-body meshes and skeletons, published into the volume — and read back out "
+     "of it.",
+     "`readback`, `measure`, `precomputed`, `occupancy`"),
+    ("neu-mark", "neu_mark",
+     "DVID annotations into tables, and on into neuroglancer.",
+     "`notebook`, `tables`, `explore`, `rule`, `segprops`, `annsource`"),
+    ("neu-glance", "neu_glance",
+     "Everything a remote viewer consumes: states, layers, links, shaders.",
+     "`state.build_state`, `layers`, `shaders`, `sources`"),
+    ("neu-draw", "neu_draw",
+     "Local 3D rendering in a notebook, on pygfx.",
+     "`show`, `build_scene`, `Scene`, `sources`, `Legend`"),
+]
+
+
+def package_dirs() -> list[Path]:
+    """The package directories `autoapi` parses, skipping any repo not checked out.
+
+    A missing one must not fail the build: the site is assembled from seven independent
+    clones, and a partial checkout is a normal state to build in locally. Which is
+    exactly why the API landing page is generated rather than written — a hand-written
+    toctree would cite the page of a package that was never parsed, and `-W` turns that
+    into a failed build for anyone without all seven.
+    """
+    return [ROOT / repo / pkg for repo, pkg, _blurb, _entry in PACKAGES
+            if (ROOT / repo / pkg).is_dir()]
+
+
+def present_packages() -> list[tuple[str, str, str, str]]:
+    """`PACKAGES`, filtered to what is actually here, in dependency order."""
+    return [row for row in PACKAGES if (ROOT / row[0] / row[1]).is_dir()]
+
+
+def write_api_index(path: Path) -> None:
+    """The API reference's landing page: prose, cards, and the toctree of what was parsed.
+
+    Generated for the reason `package_dirs` gives — the toctree must list exactly the
+    packages that were parsed, and nothing else.
+    """
+    present = present_packages()
+    out = [
+        "# API reference",
+        "",
+        "Every module of every package, with its classes, functions and docstrings.",
+        "",
+        "This is **parsed from the source, never imported**, which is worth knowing "
+        "because it is what makes the reference complete. Half of this suite cannot be "
+        "installed from PyPI at all — `tensorstore`, `vol2mesh`, `dvidutils`, "
+        "`kimimaro` and `neuclease` are conda-only, and `neu-draw` needs a GPU stack "
+        "the documentation build has no use for. An importing reference would have to "
+        "either stub all of that out or quietly omit whatever failed to import; this "
+        "one reads the files.",
+        "",
+        "```{admonition} What it is not",
+        ":class: note",
+        "",
+        "A curated public API. Everything is here, private helpers and all, because "
+        "these packages are read as often as they are called — the reason a function "
+        "does what it does is usually in its docstring, and that is the thing worth "
+        "coming here for. For the surface that is meant to be *called*, start from each "
+        "package's README, or from the table below.",
+        "",
+        "The one deliberate omission is the `cli` modules. Those are documented by the "
+        "[CLI reference](../cli/index.md), rendered from the real `ArgumentParser` "
+        "objects, which is a better page than an API listing of argparse plumbing.",
+        "```",
+        "",
+        "## The packages, in dependency order",
+        "",
+        "Nothing lower may import from anything higher, and packages at the same tier "
+        "do not import each other.",
+        "",
+        "::::{grid} 2",
+    ]
+    for _repo, pkg, blurb, entry in present:
+        out += [f":::{{grid-item-card}} {{doc}}`{pkg} <../api/{pkg}/index>`",
+                blurb, "", f"**Start at** {entry}", ":::"]
+    out += ["::::", ""]
+
+    # Keyed on the package each row points into, so a partial checkout drops the row
+    # rather than emitting a `{doc}` reference to a page that was never generated.
+    starts = [
+        ("neu_lib", "do box or grid arithmetic",
+         "{doc}`neu_lib.grid <../api/neu_lib/grid/index>` — `BBox`, `align_box`, "
+         "`lcm_grid`"),
+        ("neu_lib", "turn voxels into nanometres",
+         "{doc}`neu_lib.frame <../api/neu_lib/frame/index>` — `Frame`, `to_xyz`"),
+        ("blockrun", "run something per block, resumably",
+         "{doc}`blockrun.engine <../api/blockrun/engine/index>` — `block_map`, "
+         "`iter_blocks` — with {doc}`blockrun.manifest <../api/blockrun/manifest/index>`"),
+        ("neu_vol", "open a volume and read a region",
+         "{doc}`neu_vol.backends <../api/neu_vol/backends/index>` — `open_backend`, "
+         "and `scale_spec` for the level"),
+        ("neu_vol", "ask what a volume *is*",
+         "{doc}`neu_vol.source_metadata <../api/neu_vol/source_metadata/index>`, "
+         "{doc}`neu_vol.scales <../api/neu_vol/scales/index>`"),
+        ("neu_vol", "read or write a store, local or `s3://`",
+         "{doc}`neu_vol.location <../api/neu_vol/location/index>`"),
+        ("neu_vol", "convert or copy a source",
+         "{doc}`neu_vol.ops.convert <../api/neu_vol/ops/convert/index>`"),
+        ("neu_morpho", "read published meshes and skeletons back",
+         "{doc}`neu_morpho.readback <../api/neu_morpho/readback/index>`"),
+        ("neu_morpho", "measure morphology of published output",
+         "{doc}`neu_morpho.measure <../api/neu_morpho/measure/index>`"),
+        ("neu_mark", "pull DVID annotations into DataFrames",
+         "{doc}`neu_mark.notebook <../api/neu_mark/notebook/index>`"),
+        ("neu_mark", "inspect and parse neuron names",
+         "{doc}`neu_mark.explore <../api/neu_mark/explore/index>`, "
+         "{doc}`neu_mark.rules <../api/neu_mark/rules/index>`"),
+        ("neu_glance", "build a neuroglancer state or layer",
+         "{doc}`neu_glance.state <../api/neu_glance/state/index>`, "
+         "{doc}`neu_glance.layers <../api/neu_glance/layers/index>`"),
+        ("neu_draw", "draw meshes and skeletons in a notebook",
+         "{doc}`neu_draw.scene <../api/neu_draw/scene/index>` — `build_scene`, `Scene` "
+         "— then `neu_draw.show`"),
+    ]
+    here = {pkg for _repo, pkg, _b, _e in present}
+    out += [
+        "## Where to start, by what you are doing",
+        "",
+        "| you want to | reach for |",
+        "| --- | --- |",
+    ]
+    out += [f"| {want} | {where} |" for pkg, want, where in starts if pkg in here]
+    out += [
+        "",
+        "## Two conventions that run through all of it",
+        "",
+        "Both fail *silently* when broken, so they are worth knowing before reading any "
+        "signature:",
+        "",
+        "- **zyx in memory, xyz on disk.** Every region argument, `Mesh.vertices_zyx` "
+        "and kimimaro's vertices are zyx. Both precomputed formats *store* xyz, and the "
+        "flip happens at the boundary. Getting it wrong mirrors output through the z=x "
+        "diagonal.",
+        "- **One model space: physical nanometres**, via each level's real voxel size — "
+        "never an assumed `2 ** level` factor, because real pyramids are anisotropic.",
+        "",
+        "---",
+        "",
+        "Looking for a module by name? The {ref}`module index <modindex>` lists every "
+        "one alphabetically, and the search box knows every docstring.",
+        "",
+        "```{toctree}",
+        ":maxdepth: 2",
+        ":hidden:",
+        "",
+    ]
+    out += [f"../api/{pkg}/index" for _repo, pkg, _b, _e in present]
+    out += ["```", ""]
+    path.write_text("\n".join(out))
 
 
 def _subcommands(parser: argparse.ArgumentParser):
@@ -95,8 +266,13 @@ def _rst_safe(text: str) -> str:
     """
     lines, out, i = text.splitlines(), [], 0
     while i < len(lines):
+        # A run already introduced by `::` needs nothing added, and adding it anyway
+        # renders the marker itself as the first line of the code block. No help text
+        # does this today; it is cheap to be idempotent and the failure is silent.
+        introduced = any(ln.strip() for ln in reversed(out)) and next(
+            ln for ln in reversed(out) if ln.strip()).rstrip().endswith("::")
         starts_block = (lines[i][:1] == " " and lines[i].strip()
-                        and (not out or not out[-1].strip()))
+                        and (not out or not out[-1].strip()) and not introduced)
         if not starts_block:
             out.append(lines[i])
             i += 1
@@ -156,7 +332,7 @@ def write_cheatsheet(path: Path) -> None:
     out = [
         "# Cheat sheet",
         "",
-        "Every subcommand of both commands, with its synopsis. Generated from the "
+        "Every subcommand of all four commands, with its synopsis. Generated from the "
         "argparse parsers at build time, so it always matches `--help`.",
         "",
     ]
@@ -252,11 +428,33 @@ def copy_included(dest: Path) -> None:
                 f"built.\n")
 
 
+def _hide_source_links(app, pagename, _templatename, context, _doctree) -> None:
+    """Drop the "view source" / "edit this page" links from generated pages.
+
+    The theme emits them for every page from `source_repository` alone, so a page with
+    no committed source gets a link to a file that is not in the repository — a 404 that
+    looks exactly like a working link. That is true of the cheat sheet, of every included
+    README, and of all ~130 pages of the API reference, whose `.rst` exists only for the
+    duration of the build.
+
+    The theme's own gate is `page_source_suffix`, so clearing it takes the template's
+    "no source" branch rather than fighting it. The hand-written pages keep their links,
+    which is the point: those are the ones worth editing.
+    """
+    prefixes = (f"{GENERATED.name}/", f"{app.config.autoapi_root}/")
+    if pagename.startswith(prefixes):
+        context["page_source_suffix"] = ""
+        context["show_source"] = False
+        context["has_source"] = False
+
+
 def setup(app):
     def generate(_app):
         GENERATED.mkdir(exist_ok=True)
         write_cheatsheet(GENERATED / "cheatsheet.md")
+        write_api_index(GENERATED / "api-index.md")
         copy_included(GENERATED)
 
     app.connect("builder-inited", generate)
+    app.connect("html-page-context", _hide_source_links)
     return {"parallel_read_safe": True, "parallel_write_safe": True}
