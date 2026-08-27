@@ -20,7 +20,7 @@ from functools import reduce
 from typing import Any, Hashable, Iterable, Mapping, Optional, Sequence, Union
 
 import numpy as np
-from neu_lib import BBox, Mesh, Skeleton
+from neu_lib import BBox, Mesh, Skeleton, Vec3
 
 from .colors import RGBA, assign_colors, to_rgba
 
@@ -54,22 +54,98 @@ def resolve_marker(marker: str) -> str:
     return name
 
 
+#: Where on a drawable's box an alignment measures from.
+ANCHORS = ("center", "min", "max")
+
+
+def anchor_of(box: BBox, anchor: str = "center") -> Vec3:
+    """The point of ``box`` an alignment refers to."""
+    if anchor not in ANCHORS:
+        raise ValueError(f"unknown anchor {anchor!r}; known: {', '.join(ANCHORS)}")
+    if anchor == "min":
+        return Vec3.of(box.lo)
+    if anchor == "max":
+        return Vec3.of(box.hi)
+    return Vec3.of(box.center)
+
+
+class Placed:
+    """Where a drawable is *shown*, as distinct from where its data says it is.
+
+    **The offset is a display transform and the geometry is never touched**, which is the
+    whole point. Physical nanometres are the suite's one model space (see the ``neu_lib``
+    module docstring), so shifting a mesh's vertices to line it up against another dataset
+    would make ``mesh.bbox`` report where it is being *drawn* rather than where the tissue
+    is — and two datasets in one scene is exactly when you still need the real coordinates
+    to be real. It is also free: nudging a million-vertex mesh copies nothing.
+
+    The renderer already expected this. ``backends/pygfx.build`` makes one ``WorldObject``
+    per drawable, and the camera fit was written against the group's *world* transforms
+    with a note saying the two "agree today because nothing applies a transform, and the
+    group stays right if anything ever does". This is that.
+
+    :meth:`~Scene.bake` is the way back out, for when the shifted coordinates are the
+    output rather than the view.
+    """
+
+    #: Subclasses supply this; it is the box of the geometry as stored.
+    @property
+    def data_bbox(self) -> BBox:                                  # pragma: no cover
+        raise NotImplementedError
+
+    @property
+    def bbox(self) -> BBox:
+        """Where it is drawn — the data box moved by the offset, so a camera framed on
+        this frames what is on screen."""
+        return self.data_bbox.translate(self.offset_zyx_nm)       # type: ignore[attr-defined]
+
+    def offset_by(self, delta: Any) -> "Placed":
+        """A copy shifted by ``delta`` **in addition to** any offset it already carries."""
+        current = self.offset_zyx_nm                              # type: ignore[attr-defined]
+        return replace(self, offset_zyx_nm=current + Vec3.of(delta))  # type: ignore[type-var]
+
+    def placed_at(self, offset: Any) -> "Placed":
+        """A copy with the offset set outright, discarding any it had."""
+        return replace(self, offset_zyx_nm=Vec3.of(offset))       # type: ignore[type-var]
+
+    def centered(self, at: Any = (0.0, 0.0, 0.0), *, anchor: str = "center") -> "Placed":
+        """A copy moved so its ``anchor`` sits at ``at`` — the origin unless told otherwise."""
+        return self.offset_by(Vec3.of(at) - anchor_of(self.bbox, anchor))
+
+    def aligned_to(self, other: Any, *, anchor: str = "center") -> "Placed":
+        """A copy moved so its ``anchor`` coincides with ``other``'s.
+
+        ``other`` is anything with a ``bbox`` — another drawable, or a whole
+        :class:`Scene` — so "put this cell where that one is" is one call.
+        """
+        target = other.bbox if hasattr(other, "bbox") else other
+        return self.offset_by(anchor_of(target, anchor) - anchor_of(self.bbox, anchor))
+
+
 @dataclass
-class MeshDrawable:
+class MeshDrawable(Placed):
     """A surface. ``mesh`` is an :class:`~neu_lib.Mesh`, already in nm/zyx."""
     mesh: Mesh
     color: RGBA = (0.5, 0.5, 0.5, 1.0)
     alpha: float = 1.0
     name: Optional[str] = None
     visible: bool = True
+    offset_zyx_nm: Vec3 = Vec3.zero()
+
+    def __post_init__(self) -> None:
+        self.offset_zyx_nm = Vec3.of(self.offset_zyx_nm)
 
     @property
-    def bbox(self) -> BBox:
+    def data_bbox(self) -> BBox:
         return self.mesh.bbox
+
+    def baked(self) -> "MeshDrawable":
+        return replace(self, mesh=self.mesh.translate(self.offset_zyx_nm),
+                       offset_zyx_nm=Vec3.zero())
 
 
 @dataclass
-class LinesDrawable:
+class LinesDrawable(Placed):
     """A skeleton, drawn as independent segments — one per edge.
 
     Carries the :class:`~neu_lib.Skeleton` rather than a positions buffer, so
@@ -81,14 +157,22 @@ class LinesDrawable:
     thickness: float = 1.5
     name: Optional[str] = None
     visible: bool = True
+    offset_zyx_nm: Vec3 = Vec3.zero()
+
+    def __post_init__(self) -> None:
+        self.offset_zyx_nm = Vec3.of(self.offset_zyx_nm)
 
     @property
-    def bbox(self) -> BBox:
+    def data_bbox(self) -> BBox:
         return self.skeleton.bbox
+
+    def baked(self) -> "LinesDrawable":
+        return replace(self, skeleton=self.skeleton.translate(self.offset_zyx_nm),
+                       offset_zyx_nm=Vec3.zero())
 
 
 @dataclass
-class PointsDrawable:
+class PointsDrawable(Placed):
     """Synapses, or any other point set. zyx nm, like everything else."""
     positions_zyx_nm: np.ndarray
     color: RGBA = (0.5, 0.5, 0.5, 1.0)
@@ -97,6 +181,7 @@ class PointsDrawable:
     marker: str = "circle"
     name: Optional[str] = None
     visible: bool = True
+    offset_zyx_nm: Vec3 = Vec3.zero()
 
     def __post_init__(self) -> None:
         arr = np.ascontiguousarray(self.positions_zyx_nm, dtype=np.float32)
@@ -105,12 +190,18 @@ class PointsDrawable:
             raise ValueError(f"positions must be (N, 3) zyx, got shape {arr.shape}")
         self.positions_zyx_nm = arr
         self.marker = resolve_marker(self.marker)
+        self.offset_zyx_nm = Vec3.of(self.offset_zyx_nm)
 
     @property
-    def bbox(self) -> BBox:
+    def data_bbox(self) -> BBox:
         if not len(self.positions_zyx_nm):
             return BBox.empty(3)
         return BBox.from_points(self.positions_zyx_nm)
+
+    def baked(self) -> "PointsDrawable":
+        return replace(self,
+                       positions_zyx_nm=self.positions_zyx_nm + self.offset_zyx_nm.array,
+                       offset_zyx_nm=Vec3.zero())
 
 
 @dataclass
@@ -196,23 +287,118 @@ class Scene:
 
     def add_mesh(self, mesh: Mesh, *, rename: bool = False, **kwargs) -> "Scene":
         kwargs.setdefault("name", mesh.name)
-        return self.add(MeshDrawable(mesh, **_normalised(kwargs)), rename=rename)
+        return self.add(MeshDrawable(mesh, **_normalized(kwargs)), rename=rename)
 
     def add_skeleton(self, skeleton: Skeleton, *, rename: bool = False,
                      **kwargs) -> "Scene":
         kwargs.setdefault("name", skeleton.name)
-        return self.add(LinesDrawable(skeleton, **_normalised(kwargs)), rename=rename)
+        return self.add(LinesDrawable(skeleton, **_normalized(kwargs)), rename=rename)
 
     def add_points(self, positions_zyx_nm: Any, *, rename: bool = False,
                    **kwargs) -> "Scene":
-        return self.add(PointsDrawable(positions_zyx_nm, **_normalised(kwargs)),
+        return self.add(PointsDrawable(positions_zyx_nm, **_normalized(kwargs)),
                         rename=rename)
+
+    # -- placement -------------------------------------------------------------
+
+    def _mapped(self, fn) -> "Scene":
+        """A copy with every drawable replaced by ``fn(drawable)``.
+
+        A new Scene rather than a mutation, unlike :meth:`add`: assembly is naturally
+        imperative, while "show me these two lined up" is a thing you try several ways, and
+        each attempt should leave the last one intact.
+        """
+        return replace(self, drawables=[fn(d) for d in self.drawables])
+
+    def offset_by(self, delta: Any) -> "Scene":
+        """Shift every drawable by ``delta``, keeping their relative positions."""
+        return self._mapped(lambda d: d.offset_by(delta))
+
+    def centered(self, at: Any = (0.0, 0.0, 0.0), *, anchor: str = "center") -> "Scene":
+        """Move the scene **as a whole** so its own anchor sits at ``at``.
+
+        Note this is not the same as centring each drawable, which would pile them all on
+        top of each other; the shift is computed once from the scene's box and applied to
+        everything, so the arrangement is preserved.
+        """
+        return self.offset_by(Vec3.of(at) - anchor_of(self.bbox, anchor))
+
+    def aligned_to(self, other: Any, *, anchor: str = "center") -> "Scene":
+        """Move the scene as a whole so its anchor coincides with ``other``'s."""
+        target = other.bbox if hasattr(other, "bbox") else other
+        return self.offset_by(anchor_of(target, anchor) - anchor_of(self.bbox, anchor))
+
+    # -- laying out a SET, as opposed to placing one thing ----------------------
+
+    def _laid_out(self, offsets_for, *, key=None) -> "Scene":
+        """Apply a layout to the visible drawables, in ``key`` order.
+
+        **Hidden drawables keep their offset and reserve no slot**, matching
+        :attr:`bbox`, which also ignores them: a gap in a row for something nobody can see
+        reads as a missing object.
+        """
+        indices = [i for i, d in enumerate(self.drawables) if d.visible]
+        if key is not None:
+            indices.sort(key=lambda i: key(self.drawables[i]))
+        offsets = offsets_for([self.drawables[i].bbox for i in indices])
+
+        moved = list(self.drawables)
+        for i, delta in zip(indices, offsets):
+            moved[i] = moved[i].offset_by(delta)
+        return replace(self, drawables=moved)
+
+    def superimpose(self, *, anchor: str = "center", axes: Any = None,
+                    at: Any = None, key=None) -> "Scene":
+        """Put every drawable's ``anchor`` on the same point — the first one's, by default.
+
+        ``axes`` restricts which axes move, which is the whole reason it is a parameter:
+        ``axes="z"`` aligns depth and leaves the rest where the data put them, so a
+        meaningful axis survives being lined up on another.
+        """
+        from .layout import superimpose_offsets
+
+        return self._laid_out(
+            lambda boxes: superimpose_offsets(boxes, anchor=anchor, axes=axes, at=at),
+            key=key)
+
+    def arrange(self, *, along: Any = "x", anchor: str = "center",
+                spacing: Optional[float] = None, gap: float = 0.1,
+                wrap: Optional[int] = None, down: Any = "z", origin: Any = None,
+                align_cross: bool = True, key=None) -> "Scene":
+        """Lay the drawables out along an axis, wrapping into a grid if ``wrap`` is given.
+
+        Packed by each object's own extent unless ``spacing`` gives a fixed pitch in nm.
+        Compose it with :meth:`superimpose` to keep one axis honest::
+
+            scene.superimpose(axes="z").arrange(along="x")
+
+        ``key`` sorts the drawables first — ``key=lambda d: -d.bbox.size`` puts the large
+        ones at the front, which is usually what a gallery wants.
+        """
+        from .layout import arrange_offsets
+
+        return self._laid_out(
+            lambda boxes: arrange_offsets(
+                boxes, along=along, anchor=anchor, spacing=spacing, gap=gap, wrap=wrap,
+                down=down, origin=origin, align_cross=align_cross),
+            key=key)
+
+    def bake(self) -> "Scene":
+        """Fold every offset into the geometry, leaving all offsets zero.
+
+        For when the shifted coordinates are the **output** — writing the arrangement out
+        as meshes, say — rather than only the view. Everything else should leave the offset
+        where it is: it costs nothing to carry, and once baked, the geometry no longer
+        reports where the tissue actually is.
+        """
+        return self._mapped(lambda d: d.baked())
 
     # -- queries ---------------------------------------------------------------
 
     @property
     def bbox(self) -> BBox:
-        """Union over visible drawables, in nm. What the camera frames."""
+        """Union over visible drawables, in nm — **including their offsets**, since it is
+        what the camera frames and the camera shows where things are drawn."""
         boxes = [d.bbox for d in self.drawables if d.visible]
         return reduce(BBox.union, boxes, BBox.empty(3))
 
@@ -300,7 +486,7 @@ def build_scene(meshes: Iterable[Mesh] = (), skeletons: Iterable[Skeleton] = (),
     return scene.recolor(colors, palette=palette)
 
 
-def _normalised(kwargs: dict) -> dict:
+def _normalized(kwargs: dict) -> dict:
     if "color" in kwargs and kwargs["color"] is not None:
         kwargs["color"] = to_rgba(kwargs["color"])
     else:

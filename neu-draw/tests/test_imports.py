@@ -65,5 +65,5 @@ def test_the_shared_types_are_neu_libs_own_not_local_copies():
 
     import neu_draw
 
-    for name in ("BBox", "Frame", "Mesh", "Skeleton", "to_xyz"):
+    for name in ("BBox", "Frame", "Mesh", "Skeleton", "Vec3", "to_xyz"):
         assert getattr(neu_draw, name) is getattr(neu_lib, name), name

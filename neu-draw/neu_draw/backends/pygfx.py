@@ -51,6 +51,13 @@ def build(scene: Scene) -> pygfx.Group:
         obj = _build_one(drawable)
         if drawable.name is not None:
             obj.name = str(drawable.name)
+        # The drawable's offset becomes the object's own transform rather than being added
+        # to its vertices: the geometry keeps saying where the tissue is, and re-placing a
+        # large mesh costs nothing. `.local.position` is **xyz**, like every other
+        # coordinate handed to pygfx.
+        offset = getattr(drawable, "offset_zyx_nm", None)
+        if offset is not None and tuple(offset) != (0.0, 0.0, 0.0):
+            obj.local.position = offset.xyz
         group.add(obj)
     return group
 

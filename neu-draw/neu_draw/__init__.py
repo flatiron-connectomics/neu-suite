@@ -10,6 +10,9 @@ Layout, and the reason for it:
   and no renderer. Shared with the rest of the suite, and re-exported here because a
   notebook wants ``neu_draw.Skeleton``. Aliases, never a fork — a test pins that.
 * ``scene`` — drawables, colours and camera intent. Pure.
+* ``layout`` — where a set of objects is placed, as boxes in and offsets out. Pure, and
+  independent of ``scene`` on purpose: the arithmetic of a row or a grid is testable
+  without building one.
 * ``sources`` — the only module that reads anything.
 * ``backends`` — pygfx. The renderer seam.
 
@@ -23,10 +26,10 @@ __version__ = "0.1.0"
 
 from typing import Any
 
-from . import cache, logs, sources
+from . import cache, layout, logs, sources
 from .colors import assign_colors, to_rgba
 from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
-from neu_lib import (BBox, Frame, Mesh, Skeleton, box_predicate,
+from neu_lib import (BBox, Frame, Mesh, Skeleton, Vec3, box_predicate,
                      mask_predicate, skeleton_tube, to_xyz, union)
 from .scene import (LinesDrawable, MeshDrawable, PointsDrawable, Scene,
                     build_scene)
@@ -48,11 +51,11 @@ def show(scene: Scene, *, backend: str = "pygfx", **kwargs) -> Any:
 
 __all__ = [
     "__version__",
-    "BBox", "Frame", "Mesh", "Skeleton", "to_xyz",
+    "BBox", "Frame", "Mesh", "Skeleton", "Vec3", "to_xyz",
     "box_predicate", "mask_predicate", "skeleton_tube", "union",
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
     "assign_colors", "to_rgba",
-    "cache", "logs", "sources",
+    "cache", "layout", "logs", "sources",
     "quiet_stores", "install_quiet_stores", "remove_quiet_stores",
     "body_mesh", "body_meshes", "body_skeleton", "body_skeletons",
     "volume_frame", "skeleton_tube", "synapse_points",

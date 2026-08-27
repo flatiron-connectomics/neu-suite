@@ -46,6 +46,51 @@ than raising:
 - **zyx in memory, xyz at the boundary.** Every array here is zyx. `to_xyz` is the
   single conversion, called once per drawable in the backend.
 
+`Vec3` is the coordinate type those conventions apply to — three floats in zyx that do
+arithmetic (`b.bbox.center - a.bbox.center`) and are accepted anywhere a sequence is, so
+nothing that already took a tuple had to change.
+
+## Placing and arranging
+
+Cells from different datasets have real, unrelated coordinates. Lining them up is a
+property of the **drawable**, not of the geometry:
+
+```python
+scene.get("cellB").aligned_to(scene.get("cellA"))     # centres coincide
+scene.get("cellB").offset_by((0, 0, 5_000))           # nudge, in nm
+```
+
+**The offset is a display transform and the vertices are never touched.** Physical
+nanometres are the one model space, so moving the data would make `mesh.bbox` report where
+a thing is *drawn* rather than where the tissue is — and two datasets in one scene is
+exactly when the real coordinates still need to be real. It is also free: re-placing a
+million-vertex mesh copies nothing, because the backend sets the object's transform.
+
+A whole set is laid out with two methods, which are the same operation — put each object's
+anchor on a target point — differing only in how the targets are generated:
+
+```python
+scene.superimpose(anchor="min")             # every object's corner on one point
+scene.arrange(along="x")                    # a row, packed by each object's own extent
+scene.arrange(along="x", spacing=20_000)    # a row on a fixed 20 µm pitch
+scene.arrange(along="x", wrap=5, down="z")  # a 5-wide grid
+```
+
+They compose, and that is the useful part:
+
+```python
+scene.superimpose(axes="z").arrange(along="x", align_cross=False)
+```
+
+Align on depth, spread horizontally, leave y at its true coordinates. **A layout that
+regularises all three axes throws away whatever the axes meant** — if soma depth or layer
+position carries information, tiling in every direction destroys it.
+
+`anchor` is `center`, `min` or `max` throughout, so `arrange(anchor="min")` bottom-aligns a
+row. `key=` sorts the layout without reordering the scene, so a legend built from
+`scene.names` still matches. Hidden drawables reserve no slot. `Scene.bake()` folds the
+offsets into the geometry, for when the arrangement is the output rather than the view.
+
 ## Install
 
 Part of the [neu-suite](https://github.com/flatiron-connectomics/neu-suite) suite, whose

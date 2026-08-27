@@ -89,6 +89,32 @@ def test_positions_reach_pygfx_as_xyz():
     assert line.geometry.positions.data[0].tolist() == [3.0, 2.0, 1.0]
 
 
+def test_an_offset_becomes_a_transform_and_never_touches_the_vertices():
+    """The property the whole placement design rests on. If the offset were folded into the
+    geometry here, `mesh.bbox` would report where a thing is DRAWN rather than where the
+    tissue is — and the camera fit was already written against world transforms in
+    anticipation of this, so the two must not disagree."""
+    scene = Scene().add_mesh(_mesh())
+    moved = scene.offset_by((0.0, 0.0, 500.0))          # zyx: +500 in x
+    (obj,) = backend.build(moved).children
+
+    assert tuple(obj.local.position) == (500.0, 0.0, 0.0)          # xyz at the boundary
+    assert obj.geometry.positions.data[0].tolist() == [0.0, 0.0, 0.0]   # untouched
+
+
+def test_an_unmoved_drawable_gets_no_transform():
+    """Left at the identity, so nothing changes for every scene that never places anything."""
+    (obj,) = backend.build(Scene().add_mesh(_mesh())).children
+    assert tuple(obj.local.position) == (0.0, 0.0, 0.0)
+
+
+def test_every_drawable_kind_carries_its_transform():
+    scene = Scene().add_mesh(_mesh()).add_skeleton(_skeleton()).add_points(
+        np.array([[0.0, 0, 0]]), name="pts")
+    built = backend.build(scene.offset_by((1.0, 2.0, 3.0)))
+    assert all(tuple(o.local.position) == (3.0, 2.0, 1.0) for o in built.children)
+
+
 def test_alpha_multiplies_the_colours_own_alpha():
     """So a per-drawable alpha and an #rrggbbaa colour compose, instead of one winning."""
     scene = Scene().add_mesh(_mesh(), color="#ff000080", alpha=0.5)
