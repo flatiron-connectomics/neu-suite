@@ -212,6 +212,37 @@ class BBox:
         """Voxel count. Zero exactly when the box is empty."""
         return math.prod(self.shape)
 
+    # -- as arrays, for arithmetic ---------------------------------------------
+    #
+    # `lo` and `hi` are tuples, which do not subtract — so lining two objects up meant
+    # writing `tuple(a - b for a, b in zip(...))` by hand every time. These are the same
+    # numbers in a form that does arithmetic. They stay rank-agnostic like the rest of this
+    # class; `Vec3.of(box.center)` names them when the caller knows it is 3D.
+
+    @property
+    def lo_array(self) -> Any:
+        """``lo`` as an int64 array."""
+        import numpy as np
+
+        return np.asarray(self.lo, dtype=np.int64)
+
+    @property
+    def hi_array(self) -> Any:
+        """``hi`` as an int64 array."""
+        import numpy as np
+
+        return np.asarray(self.hi, dtype=np.int64)
+
+    @property
+    def center(self) -> Any:
+        """The midpoint, as a float array — **not** rounded to a voxel.
+
+        Float because a box of odd extent has no integer centre, and rounding here would
+        make ``a.center - b.center`` off by up to a voxel per axis in a way that only shows
+        as a slight misregistration between two objects.
+        """
+        return (self.lo_array + self.hi_array) / 2.0
+
     def is_empty(self) -> bool:
         return any(b <= a for a, b in zip(self.lo, self.hi))
 
@@ -256,11 +287,21 @@ class BBox:
             return BBox.empty(self.ndim)
         return BBox(lo, hi)
 
-    def translate(self, offset: Sequence[int]) -> "BBox":
+    def translate(self, offset: Sequence[float]) -> "BBox":
+        """Move the box. A fractional offset is **floored**, not truncated.
+
+        ``int()`` truncates toward zero, so a box shifted by ``-1.5`` moved by ``-1`` while
+        one shifted by ``+1.5`` moved by ``+1``, and ``±0.5`` moved by nothing at all — the
+        same displacement landing differently depending on its sign. Harmless while every
+        offset was an integer, which stopped being true once centring produced fractional
+        ones (a box of odd extent has no integer centre). Flooring keeps a half-open integer
+        box consistent with the grid arithmetic above, which floors throughout.
+        """
         if len(offset) != self.ndim:
             raise ValueError(f"rank mismatch: offset={tuple(offset)} box ndim={self.ndim}")
-        return BBox(tuple(a + int(d) for a, d in zip(self.lo, offset)),
-                    tuple(b + int(d) for b, d in zip(self.hi, offset)))
+        shift = [math.floor(d) for d in offset]
+        return BBox(tuple(a + d for a, d in zip(self.lo, shift)),
+                    tuple(b + d for b, d in zip(self.hi, shift)))
 
     def contains(self, points: Any) -> Any:
         """Whether each point falls in ``[lo, hi)``.

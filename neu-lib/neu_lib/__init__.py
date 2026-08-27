@@ -24,6 +24,7 @@ from .predicates import box_predicate, mask_predicate, union
 from .scale import ScaleInfo
 from .skeleton import InsideFn, Skeleton
 from .tube import frustum_mesh, skeleton_tube
+from .vec import Vec3
 
 __version__ = "0.1.0"
 
@@ -35,6 +36,7 @@ __all__ = [
     "Mesh",
     "ScaleInfo",
     "Skeleton",
+    "Vec3",
     "align_box",
     "box_predicate",
     "clamp_box",
