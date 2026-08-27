@@ -1,10 +1,10 @@
 """Buttons above a rendered view, in a notebook. ipywidgets, not an in-canvas UI.
 
-Seven actions: **centre** the camera on what is visible, **reset** to the view the figure
-opened with, **save** a viewpoint and go back to it (**restore**) or to wherever the
-**last** closed figure was, **capture** a PNG, and **close** the figure — replacing the
-live canvas with the image it last showed, so the notebook keeps a picture where the widget
-was.
+Eight actions: **centre** the camera on what is visible, **reset** to the view the figure
+opened with, **refresh** from a scene edited in a cell, **save** a viewpoint and go back to
+it (**restore**) or to wherever the **last** closed figure was, **capture** a PNG, and
+**close** the figure — replacing the live canvas with the image it last showed, so the
+notebook keeps a picture where the widget was.
 
 **Two viewpoint slots, two buttons.** They answer different questions — "the angle I chose"
 against "wherever I happened to be" — and a single button picking between them would leave
@@ -127,9 +127,12 @@ class Toolbar:
         self._buttons = {
             "center": self._button("Center", "crosshairs",
                                    "fit the camera to everything visible", self._center),
-            "reset": self._button("Reset", "sync",
+            "reset": self._button("Reset", "undo-alt",
                                   "back to the view this figure opened with: everything "
                                   "shown, no highlights", self._reset),
+            "refresh": self._button("Refresh", "sync",
+                                    "re-read the scene — for a field you set directly, "
+                                    "like scene.get(name).label", self._refresh),
             "save": self._button("Save", "bookmark",
                                  f"remember this viewpoint as views[{SAVED!r}], for this "
                                  f"figure or any later one", self._save_view),
@@ -151,7 +154,7 @@ class Toolbar:
         # Replacing a child of the outer VBox would work too, but this keeps the bar's
         # position fixed and the swap a single-element assignment.
         self._stage = widgets.Box([canvas])
-        # Seven buttons no longer fit beside a path box, so the path moved to its own row
+        # Eight buttons no longer fit beside a path box, so the path moved to its own row
         # with the status line. `row wrap` because a narrow canvas should stack the buttons
         # rather than clip the last two — and it is the last two, Capture and Close, that
         # you would most notice missing.
@@ -204,6 +207,17 @@ class Toolbar:
         self.view.reset()
         self._say("back to the opening view — everything shown, no highlights "
                   "(colours are left as you set them)")
+
+    def _refresh(self) -> None:
+        """Rarely needed, and worth a button anyway.
+
+        The scene's own methods schedule a repaint, and every frame re-reads the scene — so
+        `scene.relabel(...)` already lands instantly. What this covers is a field set
+        directly on a drawable, which a plain dataclass cannot report.
+        """
+        self.view.refresh()
+        self._say(f"re-read the scene: {len(self.view.legend or ())} legend row(s)"
+                  if self.view.legend is not None else "re-read the scene")
 
     def _save_view(self) -> None:
         state = self.view.save_view()

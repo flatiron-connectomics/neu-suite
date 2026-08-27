@@ -408,6 +408,8 @@ class LegendOverlay:
         self.scene = pygfx.Scene()
         self.scene.add(self.backdrop)
         self.entries: list[LegendEntry] = []
+        self._structure_at: tuple = ()
+        self._state_at: tuple = ()
         self.build_entries()
 
         self.camera = pygfx.OrthographicCamera(1.0, 1.0, maintain_aspect=False)
@@ -445,6 +447,7 @@ class LegendOverlay:
         lit = {i for e in self.entries if e.highlighted for i in e.indices}
         for entry in self.entries:
             self.scene.remove(entry.group)
+        self._structure_at, self._state_at = self._structure(), self._state()
 
         groups: dict[str, list[int]] = {}
         for index, drawable in enumerate(self.scene_data.drawables):
@@ -465,6 +468,51 @@ class LegendOverlay:
             self.entries.append(entry)
             self.scene.add(entry.group)
             self._bind(entry)
+
+    def _structure(self) -> tuple:
+        """What the rows ARE: one label per drawable, in order.
+
+        Membership and order both follow from the sequence, so a merge, a split, a rename,
+        an added drawable and a reordering all show up as a different value.
+        """
+        return tuple(label_of(d) for d in self.scene_data.drawables)
+
+    def _state(self) -> tuple:
+        """What the rows LOOK like: each drawable's visibility and colour."""
+        return tuple((bool(d.visible), tuple(d.color)) for d in self.scene_data.drawables)
+
+    def sync(self) -> bool:
+        """Catch up with the scene if it has changed since the last look. Cheap when not.
+
+        **This is what makes an edit take effect without anyone asking.** A ``Scene`` is a
+        plain mutable dataclass, so ``scene.get("a").label = "Tm2"`` cannot notify anyone —
+        adding change tracking to every field would mean properties on all of them, and
+        half-automatic notification is worse than none, because you learn to rely on it and
+        then meet the case it misses. Re-reading the truth instead misses nothing.
+
+        Two fingerprints, two responses, because the work they need is not the same: a
+        changed *structure* needs the rows rebuilt (new ``pygfx.Text`` layouts, a re-measured
+        strip), while a changed *state* only needs materials reassigned. Comparing tuples of
+        a few dozen strings per frame is nothing; rebuilding text layouts per frame would not
+        be.
+
+        Returns whether anything was done, and is called from :meth:`draw` — so a snapshot
+        is also correct, which is why ``view.save(...)`` right after a relabel writes the new
+        text.
+        """
+        structure = self._structure()
+        if structure != self._structure_at:
+            self.build_entries()
+            self.layout()
+            return True
+
+        state = self._state()
+        if state != self._state_at:
+            for entry in self.entries:
+                entry.refresh()
+            self._state_at = state
+            return True
+        return False
 
     # -- geometry --------------------------------------------------------------
 
@@ -557,10 +605,12 @@ class LegendOverlay:
         its own at an exact size — the legend has to go through that pass too, or a saved
         figure would come out without it.
 
-        Re-lays out only when the column count has actually changed, so a resize adapts
-        while an ordinary frame allocates nothing.
+        Re-reads the scene first (:meth:`sync`) and re-lays out only when the column count
+        has actually changed, so an edit made anywhere takes effect and an ordinary frame
+        still allocates nothing.
         """
         renderer = renderer if renderer is not None else self.renderer
+        self.sync()
         size = renderer.logical_size
         columns, _ = self.plan(size)
         if columns != self.columns:

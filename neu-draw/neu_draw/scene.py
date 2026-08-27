@@ -330,6 +330,37 @@ class Scene:
     background: Optional[RGBA] = None
     axes_visible: bool = False
 
+    def __post_init__(self) -> None:
+        # Not a dataclass field on purpose: it must stay out of `__init__`, out of `__eq__`
+        # and out of the repr, and a scene derived through `replace()` — an arrangement you
+        # are trying several ways — should start unbound rather than inherit a listener
+        # belonging to some other view.
+        self._listeners: list = []
+
+    # -- change notification ---------------------------------------------------
+
+    def on_change(self, callback) -> "Scene":
+        """Call ``callback()`` whenever a mutating method here changes the scene.
+
+        **The notification carries nothing**, deliberately: it says "something changed",
+        and the listener works out what. That is what keeps this pure — a renderer can ask
+        to be woken and then re-read the scene itself, and this module never learns what a
+        renderer is.
+
+        It covers the *methods* (:meth:`add`, :meth:`rename`, :meth:`relabel`,
+        :meth:`set_color`, :meth:`recolor`), which is what a notebook usually calls. It
+        cannot cover ``scene.get("a").visible = False`` — that is a plain attribute on a
+        plain dataclass, and making it observable would mean properties on every field.
+        The backend closes that gap from the other side by re-reading the scene each frame;
+        see ``LegendOverlay.draw``.
+        """
+        self._listeners.append(callback)
+        return self
+
+    def _changed(self) -> None:
+        for callback in list(self._listeners):
+            callback()
+
     # -- assembly --------------------------------------------------------------
 
     def add(self, drawable: Drawable, rename: bool = False) -> "Scene":
@@ -363,6 +394,7 @@ class Scene:
                     n += 1
                 drawable = replace(drawable, name=f"{stem} ({n})")
         self.drawables.append(drawable)
+        self._changed()
         return self
 
     def add_mesh(self, mesh: Mesh, *, rename: bool = False, **kwargs) -> "Scene":
@@ -546,6 +578,7 @@ class Scene:
 
         for drawable in drawables:
             drawable.name = mapping[drawable.name]
+        self._changed()
         return self
 
     def relabel(self, names: Union[str, Mapping[str, str]],
@@ -563,6 +596,7 @@ class Scene:
         mapping = dict(names) if isinstance(names, Mapping) else {names: label}
         for name, value in mapping.items():
             self.get(name).label = value
+        self._changed()
         return self
 
     def set_color(self, name: str, color: Any) -> "Scene":
@@ -575,6 +609,7 @@ class Scene:
         you are adjusting one entry in a figure you have been staring at.
         """
         self.get(name).color = to_rgba(color)
+        self._changed()
         return self
 
     def recolor(self, colors: Optional[Mapping[Hashable, Any] | Any] = None,
@@ -603,6 +638,7 @@ class Scene:
         for i, drawable in enumerate(self.drawables):
             if key(drawable) in chosen:
                 self.drawables[i] = replace(drawable, color=chosen[key(drawable)])
+        self._changed()
         return self
 
     def __repr__(self) -> str:

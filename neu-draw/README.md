@@ -173,6 +173,30 @@ scene.rename({"a": "b", "b": "a"})       # identity, still unique; a mapping app
 It replaced a `rename` method on the legend: once a row can hold several drawables its text
 is a label and not a name, and renaming one member would not change the row at all.
 
+### Edits take effect where you make them
+
+**Nothing needs re-running `show()`, and in the usual cases nothing needs a refresh either.**
+Three routes, in the order you are likely to meet them:
+
+| what you did | when it shows |
+|---|---|
+| `view.legend.relabel(...)`, `.recolor(...)`, `.toggle(...)` | immediately |
+| `scene.relabel(...)`, `.rename(...)`, `.set_color(...)`, `.recolor(...)`, `.add(...)` | immediately — the scene asks for a repaint |
+| `scene.get("a").label = "Tm2"` / `.visible = False` / `.color = ...` | on the next frame drawn, or now with `view.refresh()` / the **Refresh** button |
+
+The last row is the one that cannot be automatic: a `Scene` is a plain mutable dataclass, so
+assigning a field cannot notify anybody, and making every field observable would mean
+properties on all of them. Half-automatic notification would be worse than none — you would
+learn to rely on it and then meet the case it misses. So the backend closes the gap from the
+other side: **every frame re-reads the scene** and rebuilds the rows if the labels changed,
+or reassigns materials if only colours and visibility did. That is two cheap tuple
+comparisons per frame, and it means no edit can stay invisible for longer than one repaint —
+including in `snapshot()`, so `view.save("f.png")` straight after a relabel writes the new
+text.
+
+`view.refresh()` (and the **Refresh** button) forces it now, for when you have set fields
+directly and nothing is going to draw a frame on its own.
+
 A group's swatch is the **first member's** colour, since one swatch cannot show forty — and
 where the point of grouping is that a type shares a colour, they agree anyway. A group of
 mixed kinds (a type group normally holds meshes *and* skeletons) gets a plain square rather
@@ -200,13 +224,14 @@ scroll it. The strip never takes more than 45% of the canvas.
 
 ## The toolbar, and saved viewpoints
 
-In a notebook `show()` puts seven buttons above the canvas — no argument needed, and
+In a notebook `show()` puts eight buttons above the canvas — no argument needed, and
 nothing to remember after a kernel restart:
 
 | button | what it does |
 |---|---|
 | **Center** | re-fit the camera to everything *currently visible* |
 | **Reset** | back to the view this figure opened with — everything shown, no highlights |
+| **Refresh** | re-read the scene, for a field you set directly on a drawable |
 | **Save** | remember this camera as `views["saved"]`, for *any* later figure |
 | **Restore** | go to `views["saved"]` |
 | **Last** | go to `views["last"]` — where the last **closed** figure was |
@@ -218,6 +243,7 @@ Every one is also a method, so a notebook or a script can do the same:
 ```python
 view.center()
 view.reset()
+view.refresh()
 view.save_view()                 # or save_view("dorsal"), for as many slots as you like
 view.restore_view("dorsal")      # returns None, not an error, if nothing is there
 view.restore_view("last")

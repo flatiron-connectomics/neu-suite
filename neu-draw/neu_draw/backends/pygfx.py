@@ -153,6 +153,7 @@ class View:
         self.scene_data = scene
         self.ui = None
         self.legend = None
+        self._closed = False
         self._size = tuple(size)
         # What "reset" goes back to. Captured before anything can be toggled, because
         # `Scene` is mutable and a scene may deliberately arrive with something hidden —
@@ -203,6 +204,11 @@ class View:
             self.scene.add(pygfx.AxesHelper(size=_extent(scene) * 0.2 or 1.0))
 
         self.canvas.request_draw(self._draw)
+        # Ask to be woken when the scene changes, so `scene.relabel(...)` in a cell repaints
+        # without anyone calling anything. The notification carries nothing: it schedules a
+        # frame, and the frame re-reads the scene (`LegendOverlay.sync`). That split is what
+        # keeps `scene.py` free of any notion of a renderer.
+        scene.on_change(self.request_draw)
         self._install_toolbar(toolbar)
 
     # -- camera ----------------------------------------------------------------
@@ -282,18 +288,21 @@ class View:
             drawable.visible = visible
         if self.legend is not None:
             self.legend.clear_highlights()          # refreshes every entry as it goes
-        self._sync_visibility()
+        self._sync_objects()
         self.camera.set_state(self._opening.camera)
         self.request_draw()
         return self
 
-    def _sync_visibility(self) -> None:
-        """Push ``drawable.visible`` onto the built objects.
+    def _sync_objects(self) -> None:
+        """Push each drawable's colour and visibility onto the object built for it.
 
         Index correspondence, because :func:`build` makes exactly one object per drawable
-        in order — including the unnamed ones, which have no legend entry to go through.
+        in order — **including the unnamed and unlabelled ones**, which are on no legend row
+        and so would be missed by going through the legend. Any highlight override is
+        re-applied afterwards by ``legend.refresh()``, which runs second for that reason.
         """
         for drawable, obj in zip(self.scene_data.drawables, self.group.children):
+            obj.material.color = display_color(drawable)
             obj.visible = bool(drawable.visible)
 
     # -- viewpoints ------------------------------------------------------------
@@ -350,8 +359,30 @@ class View:
     # -- output ----------------------------------------------------------------
 
     def request_draw(self) -> None:
-        """Ask the canvas to repaint, using the draw function already installed."""
+        """Ask the canvas to repaint, using the draw function already installed.
+
+        A no-op once closed. Worth guarding rather than letting it raise: this is a
+        scene-change listener, and a scene outlives the views built from it — so editing a
+        scene after closing its figure is ordinary, not a mistake.
+        """
+        if self._closed:
+            return
         self.canvas.request_draw()
+
+    def refresh(self) -> "View":
+        """Re-read the scene and repaint. The "catch up now" button.
+
+        Rarely needed: the mutating methods on :class:`~neu_draw.scene.Scene` schedule a
+        repaint themselves, and every frame re-reads the scene anyway. What it is for is the
+        route neither of those catches at the moment you want it — a field set directly
+        (``scene.get("a").label = "Tm2"``, ``.visible = False``) in a context where nothing
+        else is going to draw a frame.
+        """
+        self._sync_objects()
+        if self.legend is not None:
+            self.legend.refresh()
+        self.request_draw()
+        return self
 
     def _draw(self) -> None:
         self._paint(self.renderer, self.camera)
@@ -438,6 +469,7 @@ class View:
             self.save_view(LAST)
         except Exception:                                       # pragma: no cover
             pass
+        self._closed = True
         self.canvas.close()
 
     # -- the legend ------------------------------------------------------------

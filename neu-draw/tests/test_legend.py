@@ -793,6 +793,107 @@ def test_a_direct_scene_rename_is_picked_up_by_refresh(has_gpu):
         view.close()
 
 
+# --------------------------------------------------------------------------- #
+# keeping up with a scene edited from a cell
+# --------------------------------------------------------------------------- #
+
+def test_a_scene_method_repaints_without_anyone_asking(has_gpu):
+    """`Scene.relabel` schedules the frame and the frame re-reads the scene, so an edit in
+    a notebook cell lands with no `refresh()` and no re-run of `show()`. The two halves are
+    checked separately: that the edit asks for a repaint, and that the repaint catches up."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        asked = []
+        view.scene_data.on_change(lambda: asked.append(1))
+        assert view.request_draw in view.scene_data._listeners
+
+        view.scene_data.relabel({"body 0": "Tm2"})
+        assert asked == [1]                      # the repaint was requested…
+        assert view.legend.sync() is True        # …and the frame catches up
+        assert view.legend.labels == ["Tm2", "body 1"]
+    finally:
+        view.close()
+
+
+def test_a_field_set_directly_is_caught_by_the_next_frame(has_gpu):
+    """A `Scene` is a plain mutable dataclass, so `drawable.label = ...` cannot notify
+    anyone. The legend re-reads the truth each frame instead, which misses nothing —
+    half-automatic notification would be worse, because you would learn to rely on it."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        view.scene_data.drawables[0].label = "Tm2"
+        view.scene_data.drawables[1].label = "Tm2"
+        view.snapshot()                          # any frame at all
+        assert view.legend.labels == ["Tm2"]
+        assert view.legend["Tm2"].row_text == "Tm2 (2)"
+    finally:
+        view.close()
+
+
+def test_a_visibility_change_is_caught_without_a_rebuild(has_gpu):
+    """Two fingerprints, two responses: a changed *structure* needs the rows rebuilt (new
+    text layouts, a re-measured strip), a changed *state* only needs materials reassigned.
+    Doing the expensive one for a colour change would be a per-frame cost for nothing."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        entry = view.legend["body 0"]
+        view.scene_data.drawables[0].visible = False
+        assert view.legend.sync() is True
+        assert view.legend["body 0"] is entry            # same row object: no rebuild
+        assert view.group.children[0].visible is False
+    finally:
+        view.close()
+
+
+def test_an_unchanged_scene_costs_nothing_per_frame(has_gpu):
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen")
+    try:
+        assert view.legend.sync() is False
+        assert view.legend.sync() is False
+    finally:
+        view.close()
+
+
+def test_a_snapshot_taken_straight_after_an_edit_is_current(has_gpu):
+    """`sync` runs from `draw`, so `view.save(...)` right after a relabel writes the new
+    text — the saved figure cannot lag behind the scene."""
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        before = view.snapshot().copy()
+        view.scene_data.relabel({"body 0": "a very much longer label indeed"})
+        assert not np.array_equal(view.snapshot(), before)
+        assert view.legend.labels == ["a very much longer label indeed", "body 1"]
+    finally:
+        view.close()
+
+
+def test_view_refresh_catches_up_on_everything_at_once(has_gpu):
+    """Including drawables on no legend row, which is why it does not go through the
+    legend alone."""
+    scene = Scene().add_mesh(_mesh("named"))
+    scene.add_points(np.array([[0.0, 0, 0]]))            # unnamed, unlabelled: no row
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        scene.drawables[1].visible = False
+        scene.drawables[1].color = (1.0, 0.0, 0.0, 1.0)
+        view.refresh()
+        assert view.group.children[1].visible is False
+        assert tuple(view.group.children[1].material.color)[:3] == pytest.approx(
+            (1.0, 0.0, 0.0), abs=1e-3)
+    finally:
+        view.close()
+
+
+def test_editing_a_scene_after_its_view_closed_is_harmless(has_gpu):
+    """A scene outlives the views built from it, and it holds a listener that pokes a
+    canvas — so this is ordinary, not a mistake."""
+    scene = _scene(2)
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    view.close()
+    scene.relabel({"body 0": "Tm2"})                      # must not raise
+    assert scene.labels == ["Tm2", "body 1"]
+
+
 def test_recolouring_moves_the_object_and_the_swatch_together(has_gpu):
     view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
     try:

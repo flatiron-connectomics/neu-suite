@@ -89,7 +89,7 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     assert isinstance(view.ui, toolbar_mod.Toolbar)
     bar, entry, stage = view.ui.widget.children
     assert [b.description for b in bar.children] == [
-        "Center", "Reset", "Save", "Restore", "Last", "Capture", "Close"]
+        "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Close"]
     assert entry.children == (view.ui.path, view.ui.status)
     assert stage.children == (view.canvas,)
 
