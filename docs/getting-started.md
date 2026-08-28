@@ -2,7 +2,7 @@
 
 ## The environment
 
-One conda environment, `neu-env`, covers all seven packages, installed editable so a
+One conda environment, `neu-env`, covers all eight packages, installed editable so a
 change to any of them is live everywhere.
 
 ```bash
@@ -36,7 +36,7 @@ py312-only *and* conda-only on flyem-forge: there is no py313 build and no PyPI
 equivalent, so they can never be pip dependencies. For the same reason they are omitted
 from `neu-morpho`'s declared dependencies.
 
-The seven repositories must stay siblings — they depend on each other by relative
+The eight repositories must stay siblings — they depend on each other by relative
 `../sibling` path.
 
 ```{note}

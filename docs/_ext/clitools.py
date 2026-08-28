@@ -45,6 +45,7 @@ INCLUDED = [
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
     ("neu-draw/README.md", "neu-draw-readme.md"),
+    ("neu-proc/README.md", "neu-proc-readme.md"),
 ]
 
 
@@ -74,6 +75,10 @@ PACKAGES = [
     ("neu-glance", "neu_glance",
      "Everything a remote viewer consumes: states, layers, links, shaders.",
      "`state.build_state`, `layers`, `shaders`, `sources`"),
+    ("neu-proc", "neu_proc",
+     "Array processing: filters, label tools and distance transforms. Only the pure "
+     "array-in-array-out half so far.",
+     "`dilate`, `dust`, `ops.kernels`, `ops.backend`"),
     ("neu-draw", "neu_draw",
      "Local 3D rendering in a notebook, on pygfx.",
      "`show`, `build_scene`, `Scene`, `sources`, `Legend`"),
@@ -83,11 +88,11 @@ PACKAGES = [
 def package_dirs() -> list[Path]:
     """The package directories `autoapi` parses, skipping any repo not checked out.
 
-    A missing one must not fail the build: the site is assembled from seven independent
+    A missing one must not fail the build: the site is assembled from eight independent
     clones, and a partial checkout is a normal state to build in locally. Which is
     exactly why the API landing page is generated rather than written — a hand-written
     toctree would cite the page of a package that was never parsed, and `-W` turns that
-    into a failed build for anyone without all seven.
+    into a failed build for anyone without all eight.
     """
     return [ROOT / repo / pkg for repo, pkg, _blurb, _entry in PACKAGES
             if (ROOT / repo / pkg).is_dir()]

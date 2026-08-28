@@ -22,7 +22,8 @@ neu-vol             volume I/O: tensorstore backends, storage profiles,
     ↑                  convert / create / write / relabel, source metadata
     ├─ neu-morpho      per-body meshes (vol2mesh) and skeletons (TEASAR)
     ├─ neu-mark        DVID annotations into tables, and on into neuroglancer
-    └─ neu-glance      viewer states, layers, links and shaders
+    ├─ neu-glance      viewer states, layers, links and shaders
+    └─ neu-proc        array processing: filters, label tools, distance transforms
            ↑
         neu-draw      local 3D rendering in a notebook, on pygfx
 ```
@@ -56,17 +57,19 @@ write data and know nothing about neuroglancer.
 :::
 ::::
 
-Three packages have no command. `neu-lib` holds the types they all share and `blockrun`
+Four packages have no command. `neu-lib` holds the types they all share and `blockrun`
 is the substrate they all run on; `neu-draw` is a notebook library — it draws meshes,
 skeletons and synapse points locally with pygfx, where `neu-glance` sends a state to a
-remote neuroglancer.
+remote neuroglancer. `neu-proc` is the newest and the least finished: array-in, array-out
+processing functions, with the blockwise machinery that will make them correct across
+block boundaries designed but not built.
 
 **Start at the [cheat sheet](_generated/cheatsheet.md)** — every subcommand on one page
 with its synopsis. The [CLI reference](cli/index.md) has the full flag-by-flag detail,
 generated from the parsers themselves so it always matches `--help`.
 
 Calling them from Python instead — from a notebook, or from your own script — is the
-[API reference](_generated/api-index.md): every module of all seven packages, parsed
+[API reference](_generated/api-index.md): every module of all eight packages, parsed
 from the source.
 
 ```{toctree}
@@ -110,4 +113,5 @@ _generated/neu-morpho-measure-calibration
 _generated/neu-mark-readme
 _generated/neu-glance-readme
 _generated/neu-draw-readme
+_generated/neu-proc-readme
 ```

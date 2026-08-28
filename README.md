@@ -16,11 +16,12 @@ The packages live in their own repositories and are meant to sit here as sibling
 | [neu-morpho](https://github.com/flatiron-connectomics/neu-morpho) | meshes and skeletons, and the `neu-morpho` command |
 | [neu-mark](https://github.com/flatiron-connectomics/neu-mark) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
 | [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
+| [neu-proc](https://github.com/flatiron-connectomics/neu-proc) | array processing: filters, label tools, distance transforms. Library only, no command. |
 | [neu-draw](https://github.com/flatiron-connectomics/neu-draw) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
 
 The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
-{neu-morpho, neu-mark, neu-glance} ← neu-draw` — and they depend on each other by
-relative `../sibling` path, so the layout matters:
+{neu-morpho, neu-mark, neu-glance, neu-proc} ← neu-draw` — and they depend on each other
+by relative `../sibling` path, so the layout matters:
 
 ```text
 neu-suite/          ← this repository
@@ -30,6 +31,7 @@ neu-suite/          ← this repository
 ├── neu-morpho/
 ├── neu-mark/
 ├── neu-glance/
+├── neu-proc/
 └── neu-draw/
 ```
 
@@ -47,6 +49,12 @@ the packages that write data.
 happens*. neu-glance emits a state for a remote neuroglancer, neu-draw draws pixels in
 the notebook.
 
+**neu-proc is the newest and the least finished.** Only the pure half exists — array in,
+array out — and that is a phasing choice rather than a stub: an op that works on one array
+is the reference the blockwise runner will be checked against. It is also the one package
+whose every dependency is pip-installable, so its CI runs every test rather than skipping
+the conda-only paths.
+
 ## The environment
 
 One conda environment covers every package, installed editable. **Python 3.12 is
@@ -60,7 +68,7 @@ conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
     numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
 pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-                      -e ./neu-mark -e ./neu-glance
+                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc
 ```
 
 `--no-deps` is load-bearing: the `pyproject.toml` files declare real runtime deps, and
