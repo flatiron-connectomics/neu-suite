@@ -320,13 +320,36 @@ neu-vol to-hdf5 --src <volume> --out region.h5 --level 1 --crop-bbox 2,2,2,10,10
 neu-glance serve --seg region.h5           # opens in the right place, at the right scale
 ```
 
+### Building the layers
+
+Three constructors, following one rule — **infer what the source records, require what it
+does not**:
+
+```python
+ServedLayer.from_hdf5("gt.h5", "/z07901", "segmentation")     # frame from the file
+ServedLayer.from_volume("s3://my-bucket/seg_v1", level=1,     # kind from its info
+                        crop=((0, 0, 0), (64, 512, 512)))
+ServedLayer.from_array(prob, "probability", voxel_size=(40, 8, 8))
+ServedLayer.from_source("gt.h5:/z07901", "segmentation")      # the form the CLI takes
+```
+
+A frame, a dataset name and the channel axis are all written down somewhere — in an HDF5
+file's attributes, a precomputed `info`, or the array's own rank — so reading them is not
+guessing, and dropping them is the silent failure. `kind` is asked for instead: an HDF5 file
+has nowhere agreed-on to record it, and reading it off the dtype is exactly the mistake
+neuroglancer itself makes. A volume that records `info["type"]` is the exception, so
+`from_volume` usually needs nothing but a path.
+
+`from_source` is what `neu-glance serve` calls, so the notebook path and the command cannot
+drift apart.
+
 ### Reading the viewer back into Python
 
 The server runs **in your kernel**, so this is not one-way. From a notebook:
 
 ```python
 from neu_glance import serve, ServedLayer
-srv = serve([ServedLayer(labels, kind="segmentation", frame=frame)])
+srv = serve([ServedLayer.from_hdf5("region.h5", kind="segmentation")])
 srv                                  # renders the clickable link
 srv.boxes()                          # boxes you drew, as (lo, hi) in zyx voxels
 srv.selected_segments()              # label ids you clicked
