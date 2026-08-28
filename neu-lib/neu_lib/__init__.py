@@ -21,6 +21,7 @@ from .frame import Frame, to_xyz
 from .grid import MODES, BBox, align_box, clamp_box, lcm_grid, misaligned_axes
 from .mesh import Mesh
 from .predicates import box_predicate, mask_predicate, union
+from .piece import Piece
 from .scale import ScaleInfo
 from .skeleton import InsideFn, Skeleton
 from .tube import frustum_mesh, skeleton_tube
@@ -34,6 +35,7 @@ __all__ = [
     "InsideFn",
     "MODES",
     "Mesh",
+    "Piece",
     "ScaleInfo",
     "Skeleton",
     "Vec3",

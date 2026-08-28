@@ -12,7 +12,7 @@ on Python 3.11 as well as 3.12 (the rest of the suite is pinned to 3.12 by `vol2
 in `neu-vol` instead.**
 
 ```python
-from neu_lib import (BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box,
+from neu_lib import (BBox, Frame, Mesh, Piece, ScaleInfo, Skeleton, align_box,
                      box_predicate, mask_predicate, skeleton_tube, to_xyz)
 ```
 
@@ -21,12 +21,51 @@ from neu_lib import (BBox, Frame, Mesh, ScaleInfo, Skeleton, align_box,
 | `BBox` | a half-open box `[lo, hi)`, rank-agnostic, immutable and hashable |
 | `align_box` / `clamp_box` / `misaligned_axes` / `lcm_grid` | the same arithmetic on plain tuples, per axis |
 | `Frame` | voxel indices → physical nm, per axis, with an origin |
+| `Piece` | an array **and** the frame that says where it is |
 | `to_xyz` | the single zyx→xyz conversion, for a renderer |
 | `Mesh` | vertices and faces, nm, zyx |
 | `Skeleton` | vertices and an **edge list** (not polylines), nm, zyx, with `crop` / `exclude` |
 | `ScaleInfo` | one pyramid level: index, shape, key, and the `Frame` that places its voxels |
 | `box_predicate` / `mask_predicate` / `union` | build the `inside()` that `Skeleton.crop` and `.exclude` take |
 | `skeleton_tube` / `frustum_mesh` | a skeleton as a solid tube, one truncated cone per edge |
+
+## `Piece`: an array and where it is
+
+`ScaleInfo` pairs a *shape* with a `Frame` and answers "what does a voxel at this level
+mean". `Piece` pairs the *data* with one and answers "where is this box, and what is in
+it":
+
+```python
+piece.shape          # (364, 244, 244)
+piece.bbox           # BBox in the frame's voxels — where it sits in its parent
+piece.bounds_nm      # the same box in nm, as floats
+piece.crop(box)      # a sub-piece, its origin shifted to match
+```
+
+It exists because every place that read a crop used to carry the array here and the voxel
+size and origin there, and each such pair is a chance to drop the origin — which puts the
+data at nm zero instead of on top of what it came from, silently.
+
+**One coordinate space, and it is the frame's voxels.** `bbox` and `crop` both speak it,
+not array indices: a piece read from voxel 7819 of a level reports `lo = 7819`, because
+that is the number that places it back or compares it with a sibling. Array indices are
+always `0..shape` and answer nothing.
+
+**`bbox` is integers, `bounds_nm` is floats, and they are named apart on purpose.** `BBox`
+has integer bounds and every grid operation on it assumes that, so a box in nanometres
+cannot be one without truncating.
+
+`Frame.voxel_box(bounds_nm)` is the conversion between frames, and the reason nanometres
+are the shared model space — two levels of one volume, or a crop and its parent, have
+different voxel sizes *and* different origins, so no voxel box transfers between them:
+
+```python
+gt.bbox.lo                                    # (7819, 8979, 3479) at 8 nm
+level2.voxel_box(gt.bounds_nm).lo             # (1954, 2244, 869)  at 32 nm
+```
+
+It grows the box **outward** by default, so the result contains what was asked for rather
+than dropping a face when the levels do not divide evenly.
 
 ## Two conventions, both load-bearing
 

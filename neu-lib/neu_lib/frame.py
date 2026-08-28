@@ -82,6 +82,42 @@ class Frame:
         out = arr * np.asarray(self.voxel_size_nm) + np.asarray(self.origin_nm)
         return out[0] if single else out
 
+    def voxel_box(self, bounds_nm, *, outward: bool = True) -> "BBox":
+        """A physical ``(lo, hi)`` in nanometres, as a box in **this** frame's voxels.
+
+        The conversion between two levels of the same data, and between a crop and the
+        volume it came from — which is the only way to say "the same place" across frames,
+        since nanometres are the one shared model space (and the reason a voxel index alone
+        is meaningless here).
+
+        ``outward`` floors ``lo`` and ceils ``hi``, so the result **contains** the physical
+        box. That matters when the target is coarser than the box's own frame: a 200-voxel
+        box at 8 nm is 25 voxels at 64 nm exactly, but shifted by one it covers 26, and
+        rounding to nearest would drop a face. Pass ``outward=False`` for the nearest
+        enclosing-to-truncated box when an exact multiple is required and a mismatch should
+        be visible as a smaller box.
+        """
+        import math
+
+        from .grid import BBox
+
+        lo_nm, hi_nm = bounds_nm
+        if len(lo_nm) != len(self.voxel_size_nm) or len(hi_nm) != len(lo_nm):
+            raise ValueError(
+                f"bounds must be a ({len(self.voxel_size_nm)},) pair in nm, got "
+                f"{tuple(lo_nm)} / {tuple(hi_nm)}")
+        lo, hi = [], []
+        for a, (start, stop) in enumerate(zip(lo_nm, hi_nm)):
+            v, origin = self.voxel_size_nm[a], self.origin_nm[a]
+            first, last = (start - origin) / v, (stop - origin) / v
+            if outward:
+                lo.append(math.floor(first + 1e-9))
+                hi.append(math.ceil(last - 1e-9))
+            else:
+                lo.append(int(round(first)))
+                hi.append(int(round(last)))
+        return BBox(lo=tuple(lo), hi=tuple(hi))
+
     def to_voxel(self, points_nm: Sequence | np.ndarray) -> np.ndarray:
         """nm → fractional voxel indices. Not rounded: rounding is the caller's policy."""
         arr = np.asarray(points_nm, dtype=np.float64)
