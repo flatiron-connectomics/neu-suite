@@ -42,9 +42,41 @@ piece.bounds_nm      # the same box in nm, as floats
 piece.crop(box)      # a sub-piece, its origin shifted to match
 ```
 
+It also carries `kind` (what the voxels mean — `image` / `probability` /
+`segmentation`, which decides whether coarsening may average or must take a mode) and
+`name` (what it is called; `neu_vol.read_piece` sets both from the source).
+
 It exists because every place that read a crop used to carry the array here and the voxel
 size and origin there, and each such pair is a chance to drop the origin — which puts the
 data at nm zero instead of on top of what it came from, silently.
+
+### Transforming one
+
+```python
+out = piece.apply(gaussian_filter, sigma=2)                   # frame, kind, name survive
+out = piece.apply(threshold, kind="segmentation")             # ...unless you say otherwise
+out = piece.copy(); out.array[mask] = 0                       # or edit a copy in place
+```
+
+`apply` calls `fn(array, *args, **kwargs)` and returns a new piece. Two guards, and they
+are the same shape — each is an observable signal that a transform did something the
+metadata cannot follow:
+
+- **A changed spatial shape needs `frame=`.** Shape and frame are two halves of one
+  statement about where the voxels are: a 2× downsample halves the shape *and* doubles the
+  voxel size, so carrying the old frame through would place the result at half its real
+  size. The factor is not guessed — real pyramids are anisotropic, and a crop changes the
+  origin instead of the size.
+- **A changed dtype needs `kind=`**, one of the three, or `"same"` if the meaning is
+  unchanged, or `None` if it is no longer known. Nothing can *detect* a change of meaning —
+  `(a > 0.5).astype("float32")` changes neither shape nor dtype — but a dtype change is the
+  signal that is available, and it catches the two that occur: a probability map thresholded
+  to a mask, and a mask labelled. Full dtype equality, not `dtype.kind`, because `uint8 →
+  uint32` is exactly the connected-components case.
+
+`copy(**changes)` is the same thing without a function, and it **copies the array** —
+`dataclasses.replace` would re-pair the same one, so an in-place edit on what looks like a
+copy would reach into the original and into whatever that was a view of.
 
 **One coordinate space, and it is the frame's voxels.** `bbox` and `crop` both speak it,
 not array indices: a piece read from voxel 7819 of a level reports `lo = 7819`, because

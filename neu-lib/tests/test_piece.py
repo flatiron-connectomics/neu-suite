@@ -172,3 +172,183 @@ def test_voxel_box_accounts_for_the_TARGETS_own_origin():
 def test_voxel_box_checks_the_rank():
     with pytest.raises(ValueError, match="pair in nm"):
         Frame(voxel_size_nm=(8, 8, 8)).voxel_box(((0, 0), (1, 1)))
+
+
+# --------------------------------------------------------------------------- #
+# name — a label, not identity
+# --------------------------------------------------------------------------- #
+def test_the_name_rides_along_and_survives_every_derivation():
+    """It exists for the same reason `kind` does: whoever read the piece knew where it came
+    from, and a consumer three calls later does not."""
+    p = _piece()
+    assert p.name is None, "optional, and absent is fine"
+    named = p.with_name("gt/vol_03700")
+    assert named.name == "gt/vol_03700"
+    assert named.crop(((12, 24, 34), (16, 28, 38))).name == "gt/vol_03700"
+    assert named.with_kind("image").name == "gt/vol_03700"
+    assert named.with_frame(Frame(voxel_size_nm=(1, 1, 1))).name == "gt/vol_03700"
+    assert "gt/vol_03700" in repr(named)
+
+
+def test_a_derivation_keeps_everything_it_was_not_asked_to_change():
+    """`replace` rather than a fresh Piece, so a field added later cannot be silently
+    dropped by one of these three."""
+    p = Piece(array=np.zeros((4, 4, 4)), frame=Frame(voxel_size_nm=(8, 8, 8)),
+              kind="segmentation", name="a")
+    assert p.with_name("b").kind == "segmentation"
+    assert p.with_kind("image").name == "a"
+    assert p.with_frame(Frame(voxel_size_nm=(2, 2, 2))).kind == "segmentation"
+
+
+# --------------------------------------------------------------------------- #
+# copy — for an array transform that keeps everything else
+# --------------------------------------------------------------------------- #
+def test_copy_copies_the_ARRAY_which_is_the_point():
+    """`dataclasses.replace` re-pairs the *same* array with new metadata, so an in-place
+    edit on what looks like a copy reaches back into the original — and into whatever the
+    original was itself a view of. That is the whole reason this method exists."""
+    p = _piece()
+    c = p.copy()
+    assert c.array is not p.array
+    c.array[0, 0, 0] = 999
+    assert p.array[0, 0, 0] != 999, "the original must not move"
+    # everything else rides along
+    assert c.frame == p.frame and c.kind == p.kind and c.name == p.name
+
+
+def test_copy_takes_a_transformed_array_without_copying_it_again():
+    """Passing `array=` means you brought your own, so there is nothing to protect."""
+    p = _piece()
+    out = p.array.astype("float32") / 2
+    c = p.copy(array=out, kind="probability")
+    assert c.array is out, "no needless copy of a fresh array"
+    assert c.dtype == np.dtype("float32") and c.kind == "probability"
+    assert c.frame == p.frame and c.name == p.name
+
+
+def test_copy_replaces_any_field_and_still_validates():
+    p = _piece().with_name("gt/a").with_kind("segmentation")
+    assert p.copy(name="other").name == "other"
+    assert p.copy(kind=None).kind is None
+    assert p.copy(frame=Frame(voxel_size_nm=(1, 1, 1))).voxel_size_nm == (1.0, 1.0, 1.0)
+    # a bad value is refused rather than producing a piece nothing can interpret
+    with pytest.raises(ValueError, match="kind must be one of"):
+        p.copy(kind="labels")
+    with pytest.raises(ValueError, match="3-D or 4-D"):
+        p.copy(array=np.zeros((4, 4)))
+
+
+def test_copy_names_the_fields_when_given_something_else():
+    """`voxel_size` is the likely typo — it belongs to the frame, not the piece — and a bare
+    TypeError about an unexpected keyword would not say so."""
+    p = _piece()
+    with pytest.raises(TypeError, match="belong to the frame"):
+        p.copy(voxel_size=(8, 8, 8))
+    with pytest.raises(TypeError, match="has no field"):
+        p.copy(nope=1)
+
+
+def test_copy_shares_the_frame_which_is_safe():
+    """Frozen and only numbers, so there is nothing to protect against."""
+    p = _piece()
+    assert p.copy().frame is p.frame
+
+
+# --------------------------------------------------------------------------- #
+# apply — a transform that keeps the frame
+# --------------------------------------------------------------------------- #
+def test_apply_keeps_the_frame_name_and_kind_through_a_transform():
+    """The reason the type exists: an array on its own forgets where it is after the first
+    operation."""
+    p = _piece().with_name("aff/data").with_kind("probability")
+    out = p.apply(lambda a: a * 2)
+    assert out.frame == p.frame and out.name == p.name and out.kind == p.kind
+    np.testing.assert_array_equal(out.array, p.array * 2)
+    assert out.array is not p.array
+
+
+def test_apply_forwards_arguments_so_a_plain_array_function_just_works():
+    ndimage = pytest.importorskip("scipy.ndimage")
+    p = _piece(dtype="float32")
+    out = p.apply(ndimage.gaussian_filter, sigma=1)
+    assert out.spatial_shape == p.spatial_shape and out.frame == p.frame
+
+
+def test_a_transform_that_changes_the_DTYPE_must_say_what_the_result_is():
+    """Nothing can detect a change of meaning — `(a > 0.5).astype("float32")` changes
+    neither shape nor dtype — but a dtype change is the signal that IS available, and it
+    catches the two that matter: a probability map thresholded to a mask, and a mask
+    labelled. Inheriting "probability" through either would later authorise averaging label
+    ids into ids that were never in the data."""
+    p = _piece(dtype="float32").with_kind("probability")
+
+    with pytest.raises(ValueError, match="changed the dtype"):
+        p.apply(lambda a: (a > 0).astype("uint8"))
+
+    out = p.apply(lambda a: (a > 0).astype("uint8"), kind="segmentation")
+    assert out.kind == "segmentation" and out.dtype == np.dtype("uint8")
+    # "same" is the explicit acknowledgement, None is "no longer known"
+    assert p.apply(lambda a: a.astype("float64"), kind="same").kind == "probability"
+    assert p.apply(lambda a: a.astype("float64"), kind=None).kind is None
+    # ...and an unchanged dtype inherits silently, which is the ordinary filter case
+    assert p.apply(lambda a: a * 1).kind == "probability"
+
+
+def test_the_dtype_guard_compares_FULL_dtypes_not_just_the_kind_character():
+    """`uint8 -> uint32` is the connected-components case — a mask becoming labels — which
+    `dtype.kind` would miss since both are unsigned. A false alarm costs twelve characters;
+    a miss is silent."""
+    p = _piece(dtype="uint8").with_kind("segmentation")
+    with pytest.raises(ValueError, match="uint8 to uint32"):
+        p.apply(lambda a: a.astype("uint32"))
+    assert p.apply(lambda a: a.astype("uint32"), kind="same").kind == "segmentation"
+
+
+def test_None_is_a_legal_kind_and_distinct_from_not_saying():
+    """Which is why the default is a sentinel rather than None: `kind=None` means "no longer
+    known", and that has to be sayable."""
+    p = _piece(dtype="float32").with_kind("image")
+    assert p.apply(lambda a: a.astype("uint8"), kind=None).kind is None
+    assert p.apply(lambda a: a * 1).kind == "image", "not saying is not the same as None"
+
+
+def test_a_transform_that_changes_the_SHAPE_must_supply_the_frame():
+    """Shape and frame are two halves of one statement about where the voxels are. A 2x
+    downsample halves the shape and doubles the voxel size; carrying the old frame through
+    would place the result at half its real size, silently. The factor is not guessed —
+    real pyramids are anisotropic, and a crop changes the origin instead of the size."""
+    p = _piece()
+    with pytest.raises(ValueError, match="changed the spatial shape"):
+        p.apply(lambda a: a[::2, ::2, ::2])
+
+    coarser = Frame(voxel_size_nm=(80.0, 16.0, 16.0), origin_nm=p.origin_nm)
+    out = p.apply(lambda a: a[::2, ::2, ::2], frame=coarser)
+    assert out.spatial_shape == (4, 8, 8)
+    assert out.voxel_size_nm == (80.0, 16.0, 16.0)
+
+
+def test_a_channel_reduction_counts_as_a_shape_change():
+    """Rank 4 -> 3 drops the channel axis, and the guard compares SPATIAL shapes so it is
+    not fooled by the rank changing on its own."""
+    p = Piece(array=np.zeros((3, 4, 4, 4)), frame=Frame(voxel_size_nm=(8, 8, 8)))
+    out = p.apply(lambda a: a.max(axis=0))      # 3 channels -> 1, spatial unchanged
+    assert out.spatial_shape == (4, 4, 4) and not out.channel_axis
+    with pytest.raises(ValueError, match="changed the spatial shape"):
+        p.apply(lambda a: a[:, ::2, ::2, ::2])
+
+
+def test_apply_name_is_inherited_renamed_or_CLEARED():
+    """`name=None` clears rather than meaning "not specified" — the same sentinel treatment
+    `kind` gets, so neither override argument has a value that quietly does nothing."""
+    p = _piece().with_name("aff/data")
+    assert p.apply(lambda a: a * 1).name == "aff/data"
+    assert p.apply(lambda a: a * 1, name="mask").name == "mask"
+    assert p.apply(lambda a: a * 1, name=None).name is None
+
+
+def test_apply_chains():
+    p = _piece(dtype="float32").with_kind("probability")
+    out = (p.apply(lambda a: a + 1)
+            .apply(lambda a: (a > 1).astype("uint8"), kind="segmentation", name="mask"))
+    assert out.kind == "segmentation" and out.name == "mask"
+    assert out.frame == p.frame

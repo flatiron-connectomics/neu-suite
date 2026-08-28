@@ -13,6 +13,7 @@ from, and nothing raises.
     piece.bounds_nm      # the same box in nm, as floats
     piece.crop(box)      # a sub-piece, its origin shifted to match
     piece.kind           # "segmentation" — what the voxels mean, where the source said
+    piece.name           # "gt/vol_03700" — what it is called, where the source said
 
 ``kind`` is optional and rides along because it is a fact about the **data**, not about
 any renderer: it decides whether coarsening may average or must take a mode, and averaging
@@ -35,7 +36,7 @@ differ so nobody expects box arithmetic on the physical one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from typing import Any, Sequence
 
 import numpy as np
@@ -51,6 +52,11 @@ from .grid import BBox
 #: cannot end up with two lists.
 KINDS = ("image", "probability", "segmentation")
 
+#: ``Piece.apply``'s default for ``kind``, distinct from ``None`` because ``None`` is itself
+#: a legal value meaning "no longer known". Not exported: the three things a caller writes
+#: are a member of :data:`KINDS`, ``"same"``, or ``None``.
+_UNSET = object()
+
 
 @dataclass(frozen=True)
 class Piece:
@@ -59,6 +65,11 @@ class Piece:
     ``frame.origin_nm`` is where the array's ``(0, 0, 0)`` sits in the shared nm space, so
     a piece cropped out of a volume stays in that volume's frame. That is the whole point
     of the type: the array and the origin cannot get separated.
+
+    ``name`` is what this piece is *called* — a label, not identity, and nothing here
+    depends on it being unique or even present. It rides along for the same reason ``kind``
+    does: whoever read the piece knew where it came from, and a consumer three calls later
+    does not. :func:`neu_vol.read_piece` fills it in from the source.
 
     Frozen like the rest of neu-lib's types, so a piece can be passed around without
     anyone worrying about who owns it — but note the **array itself is not copied and not
@@ -69,6 +80,7 @@ class Piece:
     array: np.ndarray
     frame: Frame
     kind: str | None = None
+    name: str | None = None
 
     def __post_init__(self) -> None:
         arr = np.asanyarray(self.array)
@@ -201,23 +213,132 @@ class Piece:
             local = (slice(0, self.channels),) + local
         origin = tuple(float(o) + (want.lo[a] - mine.lo[a]) * self.voxel_size_nm[a]
                        for a, o in enumerate(self.origin_nm))
-        return Piece(array=self.array[local],
-                     frame=replace(self.frame, origin_nm=origin), kind=self.kind)
+        return replace(self, array=self.array[local],
+                       frame=replace(self.frame, origin_nm=origin))
 
     def with_frame(self, frame: Frame) -> "Piece":
         """The same array in a different frame — for a source that recorded none."""
-        return Piece(array=self.array, frame=frame, kind=self.kind)
+        return replace(self, frame=frame)
 
     def with_kind(self, kind: str | None) -> "Piece":
         """The same array and frame, saying what the voxels mean."""
-        return Piece(array=self.array, frame=self.frame, kind=kind)
+        return replace(self, kind=kind)
+
+    def with_name(self, name: str | None) -> "Piece":
+        """The same piece under a different name."""
+        return replace(self, name=name)
+
+    def apply(self, fn: Any, *args, frame: Frame | None = None,
+              kind: Any = _UNSET, name: Any = _UNSET, **kwargs) -> "Piece":
+        """``fn(array, *args, **kwargs)`` as a new piece, keeping everything else.
+
+            piece.apply(lambda a: a > 0.5, kind="segmentation")
+            piece.apply(scipy.ndimage.gaussian_filter, sigma=2)
+            piece.apply(dilate).apply(label, kind="segmentation")
+
+        The point is that the frame, the name and the kind survive a chain of transforms —
+        which is the reason this type exists, since an array on its own forgets where it is
+        after the first operation.
+
+        **A transform that changes the shape must supply the new ``frame``.** Shape and
+        frame are two halves of one statement about where the voxels are: a 2x downsample
+        halves the shape *and* doubles the voxel size, so carrying the old frame through
+        would put the data at half its real size, silently and with nothing to check it
+        against. Rather than guess a factor — real pyramids are anisotropic, and a crop
+        changes the origin instead of the size — this refuses and asks.
+
+        **A transform that changes the dtype must say what the result is.** Nothing here can
+        detect a change of meaning — a threshold written ``(a > 0.5).astype("float32")``
+        changes neither shape nor dtype — but a dtype change is the signal that is available,
+        and it catches the two that matter: a probability map thresholded to a mask
+        (float32 -> uint8) and a mask labelled (uint8 -> uint32). Inheriting
+        ``"probability"`` through either would later authorise averaging label ids into ids
+        that were never in the data. So a dtype change with no ``kind`` raises, and the three
+        answers are a member of :data:`KINDS`, ``"same"`` to say the meaning is unchanged,
+        or ``None`` to say it is no longer known.
+
+        Full dtype equality, not ``dtype.kind``: a widening cast like ``uint8 -> uint32`` is
+        exactly the connected-components case, and the cost of a false alarm is twelve
+        characters while the cost of a miss is silent.
+
+        The two guards are the same shape — shape change wants ``frame=``, dtype change
+        wants ``kind=`` — because those are the two observable signals that a transform did
+        something the metadata cannot follow on its own.
+
+        ``name`` is inherited unless given, and ``name=None`` **clears** it rather than
+        meaning "not specified" — the same sentinel treatment ``kind`` gets, so the two
+        override arguments behave alike and neither has a value that quietly does nothing.
+
+        Nothing here imports a transform library, and it must stay that way — this package
+        is numpy and nothing else. ``fn`` is any callable, which is also what the planned
+        neu-proc gives you: an ``Op`` bound to a frame *is* a callable, so
+        ``piece.apply(op.bind(piece.frame))`` needs no hook on either side.
+        """
+        out = np.asanyarray(fn(self.array, *args, **kwargs))
+        if kind is _UNSET:
+            if out.dtype != self.dtype:
+                raise ValueError(
+                    f"{getattr(fn, '__name__', fn)} changed the dtype from {self.dtype} to "
+                    f"{out.dtype}, which is the signal that it may have changed what the "
+                    f"voxels MEAN — a thresholded probability map is a segmentation, and "
+                    f"one still labelled {self.kind!r} would later authorise averaging "
+                    f"label ids. Pass kind=: one of {', '.join(KINDS)}, or \"same\" if the "
+                    f"meaning is unchanged, or None if it is no longer known.")
+            kind = self.kind
+        elif kind == "same":
+            kind = self.kind
+        if frame is None:
+            was = self.spatial_shape
+            now = out.shape[1:] if out.ndim == 4 else out.shape
+            if tuple(now) != tuple(was):
+                raise ValueError(
+                    f"{getattr(fn, '__name__', fn)} changed the spatial shape from {was} to "
+                    f"{tuple(now)}, so the frame no longer describes it — a 2x downsample "
+                    f"halves the shape AND doubles the voxel size, and carrying the old "
+                    f"frame through would place the result at half its real size with "
+                    f"nothing to catch it. Pass frame= with the new voxel size and origin.")
+        return replace(self, array=out, frame=frame or self.frame, kind=kind,
+                       name=self.name if name is _UNSET else name)
+
+    def copy(self, **changes) -> "Piece":
+        """A copy, with any field replaced — and **the array copied too**.
+
+            out = piece.copy(array=gaussian(piece.array))   # a transform, same frame
+            out = piece.copy(kind="probability")            # relabel what it is
+            out = piece.copy(); out.array[mask] = 0         # then edit in place, safely
+
+        Copying the array is the whole reason this exists rather than
+        ``dataclasses.replace``, which re-pairs the *same* array with new metadata — so an
+        in-place edit on what looks like a copy reaches back into the original, and into
+        whatever the original was itself a view of. Passing ``array=`` skips the copy, since
+        then you brought your own.
+
+        The frame is shared rather than copied, which is safe because it is frozen and holds
+        only numbers.
+
+        Every field is validated as usual, so ``copy(kind="labels")`` raises rather than
+        producing a piece nothing can interpret.
+        """
+        unknown = set(changes) - {f.name for f in fields(self)}
+        if unknown:
+            hint = ""
+            if unknown & {"voxel_size", "voxel_size_nm", "origin", "origin_nm"}:
+                # The likely typo: these live on the Frame, not on the Piece.
+                hint = (" Voxel size and origin belong to the frame: "
+                        "copy(frame=replace(piece.frame, voxel_size_nm=...)).")
+            raise TypeError(
+                f"Piece has no field(s) {', '.join(sorted(unknown))}; it has "
+                f"{', '.join(f.name for f in fields(self))}.{hint}")
+        if "array" not in changes:
+            changes["array"] = np.array(self.array, copy=True, subok=True)
+        return replace(self, **changes)
 
     def __repr__(self) -> str:
         try:
             where = f" at {self.origin_voxel}"
         except ValueError:                       # an origin off the voxel grid
             where = f" at {self.origin_nm} nm"
-        return (f"Piece({self.spatial_shape}"
+        return (f"Piece({self.name + ', ' if self.name else ''}{self.spatial_shape}"
                 + (f", {self.channels}ch" if self.channel_axis else "")
                 + f", {self.dtype}"
                 + (f", {self.kind}" if self.kind else "")
