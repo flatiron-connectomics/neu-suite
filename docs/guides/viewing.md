@@ -385,6 +385,35 @@ srv.screenshot("view.png")           # needs a browser actually connected
 **opt-in** — `serve(..., regions=True)`, or `--regions` — because a viewer that opens with a
 layer nobody asked for reads as a bug.
 
+### Stopping it, and what a stuck cell means
+
+```python
+srv.stop()                      # or, with no handle:
+neu_glance.stop_serving()       # one server per process, so this reaches it
+```
+
+`serve()` does **not** block — the server is a background daemon thread, so the cell returns
+and the next one runs. A stuck cell is therefore the *command*: `neu-glance serve` runs until
+interrupted, and in a notebook cell that means until you interrupt the kernel. Interrupting
+it stops the server cleanly. A kernel restart always works too, since the thread is a daemon.
+
+One server per process, shared by every viewer, so stopping it kills every link this kernel
+has handed out.
+
+### Reading a whole level is refused
+
+`read_piece` and the `ServedLayer` constructors cap a single read at 4 GiB, and refusing is
+the point: a production level 0 is terabytes, and a read that size does not fail, it
+**hangs** — which in a notebook is indistinguishable from a wedged kernel. The error names
+the size and a coarser level that would fit:
+
+```
+reading (11260, 9000, 13750) ... at level 0 is 1,297.7 GiB, over the 4.0 GiB cap
+... Pass crop= to take a box out of it. level=3 would be about 2.5 GiB.
+```
+
+`max_bytes=` raises the cap, `None` lifts it.
+
 ### Where it opens, and the meshes
 
 The viewer is **centred on the union of the served layers and zoomed to fit them**.
