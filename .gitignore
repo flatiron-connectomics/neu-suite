@@ -14,13 +14,17 @@ configs/
 
 # Dataset-specific scripts. They name real volumes and ground-truth sets.
 scripts/
+gt_vol_creation.txt
+wasp_segprops.py
 
-# Working notes and agent context. These carry ceph paths, usernames and in-flight run
-# detail that do not belong in a public repository.
+# Working notes and agent context. These carry ceph/S3 paths, usernames and in-flight
+# run detail that do not belong in a public repository.
 CLAUDE.md
 NOTES-TODO.md
 NEU-DRAW-PLAN.md
+NEU-PROC-PLAN.md
 RENAME-PLAN.md
+erik-notes-todo.txt
 
 # Finished plans and superseded design docs, kept for reference and named
 # <repo>-<doc>-<date-last-true>. Never published, never tracked: they are records of
@@ -37,15 +41,12 @@ neu-mark.toml
 datasets.toml
 
 # Dataset content and run artefacts, which are large and belong on bulk storage, not in
-# git. These were tracked once by accident and had to be purged from history — the S3
-# bucket names in gt_vol_creation.txt are deliberately not public. Note `*.log` was
-# already here and did its job; the leak came in as `.txt` and `.jsonl`, so match on the
-# NAMES, not only on extensions, and never stage with `git add -A` at this root.
+# git. Note `*.log` was already here and did its job; the leak came in as `.txt`
+# and `.jsonl`, so match on the NAMES, not only on extensions, and never stage with
+# `git add -A` at this root.
 *.log
 *.progress.jsonl
 data/
-gt_vol_creation.txt
-erik-notes-todo.txt
 *-explicit-*.txt
 
 # The environment specs describe one internal environment, so they are not published.
