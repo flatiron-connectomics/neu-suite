@@ -12,6 +12,14 @@ from, and nothing raises.
     piece.bbox           # BBox in the frame's voxels — where it sits in its parent
     piece.bounds_nm      # the same box in nm, as floats
     piece.crop(box)      # a sub-piece, its origin shifted to match
+    piece.kind           # "segmentation" — what the voxels mean, where the source said
+
+``kind`` is optional and rides along because it is a fact about the **data**, not about
+any renderer: it decides whether coarsening may average or must take a mode, and averaging
+label ids invents ids that were never in the data. A source that records it (precomputed's
+``info["type"]``, OME's multiscales ``type``) fills it in; one that does not leaves it
+``None``, which is honest. It is never derived from the dtype — a uint8 label array looks
+exactly like an image that way, and that is the mistake the field exists to carry past.
 
 **One coordinate space, and it is the frame's voxels.** ``bbox`` and ``crop`` both speak
 it, not array indices — a piece read from voxel 7819 of a level reports ``lo = 7819``,
@@ -35,6 +43,14 @@ import numpy as np
 from .frame import Frame
 from .grid import BBox
 
+#: What the voxels of an array MEAN, which is not a rendering choice — it decides whether
+#: coarsening may average (image, probability) or must take a mode (segmentation), and
+#: averaging label ids invents ids that were never in the data. Recorded by precomputed as
+#: ``info["type"]`` and by OME as the multiscales ``type``; the vocabulary lives here
+#: rather than in whichever package happens to read it, so a viewer and a downsampler
+#: cannot end up with two lists.
+KINDS = ("image", "probability", "segmentation")
+
 
 @dataclass(frozen=True)
 class Piece:
@@ -52,6 +68,7 @@ class Piece:
 
     array: np.ndarray
     frame: Frame
+    kind: str | None = None
 
     def __post_init__(self) -> None:
         arr = np.asanyarray(self.array)
@@ -60,6 +77,19 @@ class Piece:
                 f"a piece is 3-D zyx, optionally with a leading channel axis, so 3-D or "
                 f"4-D — got {arr.ndim}-D {arr.shape}")
         object.__setattr__(self, "array", arr)
+        if self.kind is not None and self.kind not in KINDS:
+            raise ValueError(f"kind must be one of {KINDS} or None, got {self.kind!r}")
+
+    @property
+    def is_segmentation(self) -> bool:
+        """Whether coarsening this must take a mode rather than a mean.
+
+        ``None`` reads as False, and that asymmetry is deliberate: a piece that does not
+        know what it is should not claim to be labels, and the caller that cares is the one
+        that has to establish it. What it must **not** do is guess from the dtype — a uint8
+        label array looks exactly like an image that way.
+        """
+        return self.kind == "segmentation"
 
     # -- what it is ------------------------------------------------------------
     @property
@@ -172,11 +202,15 @@ class Piece:
         origin = tuple(float(o) + (want.lo[a] - mine.lo[a]) * self.voxel_size_nm[a]
                        for a, o in enumerate(self.origin_nm))
         return Piece(array=self.array[local],
-                     frame=replace(self.frame, origin_nm=origin))
+                     frame=replace(self.frame, origin_nm=origin), kind=self.kind)
 
     def with_frame(self, frame: Frame) -> "Piece":
         """The same array in a different frame — for a source that recorded none."""
-        return Piece(array=self.array, frame=frame)
+        return Piece(array=self.array, frame=frame, kind=self.kind)
+
+    def with_kind(self, kind: str | None) -> "Piece":
+        """The same array and frame, saying what the voxels mean."""
+        return Piece(array=self.array, frame=self.frame, kind=kind)
 
     def __repr__(self) -> str:
         try:
@@ -185,4 +219,6 @@ class Piece:
             where = f" at {self.origin_nm} nm"
         return (f"Piece({self.spatial_shape}"
                 + (f", {self.channels}ch" if self.channel_axis else "")
-                + f", {self.dtype}, {self.voxel_size_nm} nm{where})")
+                + f", {self.dtype}"
+                + (f", {self.kind}" if self.kind else "")
+                + f", {self.voxel_size_nm} nm{where})")
