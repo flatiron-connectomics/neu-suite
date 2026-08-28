@@ -326,11 +326,12 @@ Three constructors, following one rule — **infer what the source records, requ
 does not**:
 
 ```python
-ServedLayer.from_hdf5("gt.h5", "/z07901", "segmentation")     # frame from the file
+ServedLayer.from_hdf5("gt.h5", "/vol_03700", "segmentation")  # frame from the file
 ServedLayer.from_volume("s3://my-bucket/seg_v1", level=1,     # kind from its info
                         crop=((0, 0, 0), (64, 512, 512)))
 ServedLayer.from_array(prob, "probability", voxel_size=(40, 8, 8))
-ServedLayer.from_source("gt.h5:/z07901", "segmentation")      # the form the CLI takes
+ServedLayer.from_piece(piece, "segmentation")                 # a neu_lib.Piece
+ServedLayer.from_source("gt.h5:/vol_03700", "segmentation")   # the form the CLI takes
 ```
 
 A frame, a dataset name and the channel axis are all written down somewhere — in an HDF5
@@ -342,6 +343,28 @@ neuroglancer itself makes. A volume that records `info["type"]` is the exception
 
 `from_source` is what `neu-glance serve` calls, so the notebook path and the command cannot
 drift apart.
+
+### The same box out of another volume
+
+The common case: you have a ground-truth crop and you want to see the image under it.
+`crop=` takes a layer or a `neu_lib.Piece` and means *the same physical box as that*:
+
+```python
+gt = ServedLayer.from_hdf5("gt.h5", "/vol_03700", "segmentation")
+em = ServedLayer.from_volume("s3://my-bucket/em", crop=gt)             # same box
+em2 = ServedLayer.from_volume("s3://my-bucket/em", level=2, crop=gt)   # and coarser
+serve([em, gt])
+```
+
+**Nanometres are the only space that transfers.** The two frames have different voxel sizes
+*and* different origins, so a voxel box from one means nothing in the other — which is why
+reaching for the crop's `voxel_offset` and passing it as a box does not work. `crop=` also
+takes `{"nm": (lo, hi)}` for a physical box with nothing to carry it.
+
+Where a layer is: `layer.bbox` (its frame's voxels), `layer.bounds_nm`, and `layer.piece`
+for the whole `neu_lib.Piece`, which has `.crop()` too. A box clipped to a fraction of what
+was asked for **warns** — losing most of it usually means it came from a different dataset
+than the volume, which is otherwise a plausible-looking read of a thin slab.
 
 ### Reading the viewer back into Python
 
