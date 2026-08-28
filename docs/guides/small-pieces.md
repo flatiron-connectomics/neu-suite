@@ -80,9 +80,37 @@ refused when it does not, since one file describing two coordinate systems is no
 allowing. A dataset name already in use needs `--dataset` or `--overwrite`.
 
 ```{tip}
-A file with more than one volumetric dataset can no longer be read without naming one, so
+A file with more than one volumetric dataset cannot be read without naming one, so
 `to-hdf5` says so when it creates that situation rather than leaving you to meet it later.
+`neu-vol info <file.h5>` then lists every dataset with its shape, chunking and
+`voxel_offset` — which is what you want in front of you before choosing one, and what
+makes a bag of crops in one file a readable arrangement rather than an opaque one.
 ```
+
+## `info` reads a piece as readily as a volume
+
+`neu-vol info` takes anything this package can read, an HDF5 file and a slice stack
+included, so the piece and the volume it belongs to are inspected the same way:
+
+```bash
+neu-vol info piece.h5                        # shape, dtype, and the frame it records
+neu-vol info gt_v1_eval.h5                   # several datasets: every one listed
+neu-vol info gt_v1_eval.h5 --dataset /z07901 # ...then the full report on one
+```
+
+Formats with a metadata document are recognised by it; an HDF5 file and a stack of slices
+have none, so they are recognised **by name** — an `.h5`/`.hdf5` file, a glob, a multipage
+TIFF, or a directory that actually contains `.tif`/`.png` slices. A marker always wins, so
+a stray image beside an `info` changes nothing about what that directory is.
+
+If a file records no frame, the report says which attribute names were searched, because
+"records no scale" and "spells it differently" look identical otherwise — and the names are
+`--voxel-size-field` / `--offset-field` for exactly that reason.
+
+The ops that rewrite a volume in place — `downsample`, `relabel`, `mask-by-value`,
+`write`, `progress` — refuse a piece and say so. One array in one container has no pyramid
+to rebuild and no chunk objects whose presence answers "where is the data"; `convert` it
+into a volume first, or use `write` to place it *into* one.
 
 Reads are blocked, so a "small" volume that turns out not to be still packs rather than
 filling memory. `--chunk` sets the HDF5 storage chunk, which is what governs partial reads
