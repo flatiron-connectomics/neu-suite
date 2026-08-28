@@ -381,8 +381,23 @@ srv.screenshot("view.png")           # needs a browser actually connected
 ```
 
 `srv.boxes()` closes the loop: pick a region in the viewer and hand it straight to
-`--crop-bbox`, `extract_roi` or `neu-vol write`. A viewer opens with an empty `regions`
-annotation layer for exactly this; `--no-regions` omits it.
+`--crop-bbox`, `extract_roi` or `neu-vol write`. It needs somewhere to draw, which is
+**opt-in** — `serve(..., regions=True)`, or `--regions` — because a viewer that opens with a
+layer nobody asked for reads as a bug.
+
+### Where it opens, and the meshes
+
+The viewer is **centred on the union of the served layers and zoomed to fit them**.
+Neuroglancer's own default is the origin *corner* at one voxel per pixel, so a crop sitting
+at voxel 3700 of its parent would open on empty space with nothing to say the data is
+elsewhere. `position=` overrides.
+
+A served **segmentation gets meshes for free**, and this is not something to configure: the
+viewer adds a mesh subsource for any rank-3, non-float32 local volume, and they are
+generated in this process on demand by marching cubes over the array. Two things to know —
+they render **only in the 3D panel** (the slice views never show a mesh), and generation is
+not cheap: a 256³ crop produces a few MB per body and takes a moment the first time. If a
+selected segment shows nothing, check the 3D panel before suspecting the data.
 
 Two things to know. A **served link is not shareable** — each array is addressed
 `python://volume/<viewer-token>`, scoped to the process and dead when it exits, which is why
