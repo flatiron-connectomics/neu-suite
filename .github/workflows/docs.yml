@@ -40,24 +40,55 @@ jobs:
             echo "dispatched by ${{ github.event.client_payload.repo }} @ ${{ github.event.client_payload.sha }}"
           fi
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       # The packages are cloned rather than carried as submodules: submodules pin a
       # commit, which buys nothing without a release story and guarantees the published
       # docs lag the code. main is what everyone runs.
+      #
+      # **The list comes from `clitools.PACKAGES`, not from this file.** It used to be
+      # spelled out here — twice — and when neu-proc was added to `PACKAGES` this step
+      # kept cloning the other seven, so `package_dirs()` skipped it and the site built
+      # green with a whole package missing from the API reference. That skip is
+      # deliberate (a partial local checkout must still build) which is exactly why CI
+      # cannot rely on it: the one place that knows what the packages are has to be the
+      # one place that fetches them. `clitools` imports nothing but the stdlib, so it is
+      # safe to ask before anything is installed.
       - name: Check out the packages
         run: |
-          for repo in neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
+          repos=$(python -c "
+          import sys; sys.path.insert(0, 'docs/_ext')
+          import clitools
+          print(' '.join(repo for repo, *_ in clitools.PACKAGES))
+          ")
+          echo "clitools.PACKAGES declares: $repos"
+          for repo in $repos; do
             git clone --depth 1 https://github.com/flatiron-connectomics/$repo.git $repo
           done
           # Which commit of each package this site documents. The docs build against
           # main, so they can be a push ahead of the packages — and when they are, the
           # failure is otherwise an AttributeError with no hint of version skew.
-          for repo in neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw; do
+          for repo in $repos; do
             echo "$repo $(git -C $repo log -1 --format='%h %ci %s')"
           done
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
+      # A clone that failed, or a package renamed on GitHub without being renamed here,
+      # would otherwise reach the build as a silently smaller site rather than an error.
+      - name: Every declared package is present
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "docs/_ext")
+          import clitools
+          present = {repo for repo, *_ in clitools.present_packages()}
+          missing = [repo for repo, *_ in clitools.PACKAGES if repo not in present]
+          if missing:
+              sys.exit("::error::declared in clitools.PACKAGES but not checked out: "
+                       + ", ".join(missing))
+          print(f"all {len(clitools.PACKAGES)} declared packages present")
+          EOF
 
       # No conda, and that is not an accident: importing the CLI modules pulls in dask,
       # distributed, numpy, pandas and pyarrow only — never tensorstore, vol2mesh,
@@ -67,19 +98,24 @@ jobs:
       # imports inside the subcommands for the same reason.
       #
       # The API reference needs none of this: sphinx-autoapi PARSES the checked-out
-      # source, so every module of all seven packages is documented whether or not it
+      # source, so every module of all eight packages is documented whether or not it
       # imports here — including the conda-only ones, whose docstrings would otherwise
       # be the half of the reference that silently went missing.
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
-          # neu-draw is cloned but deliberately NOT installed: it has no CLI to
-          # introspect, and installing it would pull pygfx and wgpu into a job that
-          # renders no pixels. Its README and its whole API reference come from the
-          # clone. Verified by building with neu_draw, pygfx, wgpu, rendercanvas and
-          # ipywidgets all made unimportable: -W still passes and all 12 of its pages
-          # keep their content.
+          # neu-draw and neu-proc are cloned but deliberately NOT installed: neither
+          # has a CLI to introspect, and installing them would pull pygfx and wgpu, or
+          # scipy / scikit-image / cc3d / fastmorph, into a job that renders no pixels
+          # and runs no arrays. Their READMEs and their whole API references come from
+          # the clones. Verified for neu-draw by building with neu_draw, pygfx, wgpu,
+          # rendercanvas and ipywidgets all made unimportable: -W still passes and all
+          # 12 of its pages keep their content.
+          #
+          # This list is NOT derived from clitools.PACKAGES, and that is the point —
+          # which packages need installing is a fact about their CLIs, not about the
+          # set. The clone list is derived; the guard above catches the other mistake.
           pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
                       ./neu-glance
 
