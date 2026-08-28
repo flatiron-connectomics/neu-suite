@@ -13,13 +13,13 @@ the plan makes ``apply`` the test oracle.
 
 Three layers, and collapsing the first two is the easy mistake:
 
-===========  ==========================  =======================  =========
-layer        example                     units                    can run?
-===========  ==========================  =======================  =========
-``Op``       ``Gaussian(sigma_nm=80)``   **nanometres**           no
-``BoundOp``  ``op.bind(frame)``          voxels, **plus a halo**  yes
-a function   ``gaussian(a, sigma_vox=)`` **voxels**               —
-===========  ==========================  =======================  =========
+===========  ===========================  =======================  =========
+layer        example                      units                    can run?
+===========  ===========================  =======================  =========
+``Op``       ``Gaussian(sigma_nm=80)``    **nanometres**           no
+``BoundOp``  ``op.bind(frame)``           voxels, **plus a halo**  yes
+a function   ``gaussian(a, sigma_vox=)``  **voxels**               —
+===========  ===========================  =======================  =========
 
 The declaration is physical because a voxel count means different things at different
 levels and along different axes of an anisotropic volume; the execution is in voxels because

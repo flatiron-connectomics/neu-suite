@@ -1,7 +1,7 @@
 """Which library runs an op: scipy on the host, or cupyx on the device.
 
 **Dispatch is on the array, never on a flag or a parameter.** ``cupyx.scipy.ndimage``
-requires a ``cupy.ndarray``, so the module cannot be swapped without moving the data:
+requires a ``cupy.ndarray``, so the module cannot be swapped without moving the data::
 
     def dilate(array, *, radius_vox):
         ndi, array = ndimage_for(array, "grey_dilation")
