@@ -14,6 +14,7 @@ from, and nothing raises.
     piece.crop(box)      # a sub-piece, its origin shifted to match
     piece.kind           # "segmentation" — what the voxels mean, where the source said
     piece.name           # "gt/vol_03700" — what it is called, where the source said
+    piece.to_numpy()     # the voxels on the host, for something that needs numpy
 
 ``kind`` is optional and rides along because it is a fact about the **data**, not about
 any renderer: it decides whether coarsening may average or must take a mode, and averaging
@@ -44,6 +45,67 @@ import numpy as np
 from .frame import Frame
 from .grid import BBox
 
+
+def _is_device(value: Any) -> bool:
+    """True if ``value`` lives on a GPU, by the type's defining module.
+
+    One check, shared by :func:`_to_numpy` and :meth:`Piece.to_host`, so the two cannot
+    disagree about what "already on the host" means — which they did: ``to_host`` tested
+    ``isinstance(np.ndarray)``, so a device array that happened to subclass ndarray was
+    reported as already home and never converted.
+
+    By module rather than ``isinstance``, because importing cupy to ask whether an array is
+    a numpy array would make every host-only install pay for a CUDA stack.
+    """
+    return type(value).__module__.split(".")[0] == "cupy"
+
+
+def _to_numpy(value: Any) -> np.ndarray:
+    """``value`` as a host numpy array, whatever kind of array it is.
+
+    **numpy cannot do this on its own for a device array.** ``np.asarray`` on a cupy array
+    raises ``TypeError: Implicit conversion to a NumPy array is not allowed`` — deliberately,
+    because the alternative is copying gigabytes off a GPU because someone passed the wrong
+    thing to a plotting call.
+
+    What makes it possible here without importing cupy is that the conversion is a **method
+    on the array**: ``.get()``. So this package keeps its numpy-only rule and still converts.
+    The device is checked for first rather than by catching numpy's TypeError, because that
+    path also emits a spurious ``__array__`` deprecation warning that would reach the caller
+    looking like a bug in their code.
+
+    Anything else — a zarr array, an open h5py dataset, a dask array — converts through
+    ``__array__`` as usual, which for the lazy ones means reading or computing it.
+    """
+    if _is_device(value):
+        getter = getattr(value, "get", None)
+        if not callable(getter):
+            raise TypeError(
+                f"{type(value).__name__} looks like a device array but has no .get(); "
+                f"convert it to numpy yourself before building a Piece")
+        return np.asarray(getter())
+    return np.asanyarray(value)
+
+
+def _as_array(value: Any) -> Any:
+    """``value`` unchanged if it is already an array, else coerced with numpy.
+
+    **Not ``np.asanyarray`` unconditionally**, which is what this used to be: cupy makes
+    ``__array__`` raise on purpose, to stop a device array being copied to the host by
+    accident. So coercing every input meant a ``Piece`` could not hold a cupy array at all
+    — ``TypeError: Implicit conversion to a NumPy array is not allowed`` — and the same goes
+    for anything else lazy or foreign: a dask array, a zarr array, an open h5py dataset.
+
+    Anything carrying ``shape``, ``dtype`` and ``ndim`` is taken at its word. A list or a
+    scalar still goes through numpy, which is the case the coercion was for.
+
+    This package stays numpy-only: recognising a foreign array by its attributes needs no
+    import of whatever produced it.
+    """
+    if all(hasattr(value, attr) for attr in ("shape", "dtype", "ndim")):
+        return value
+    return np.asanyarray(value)
+
 #: What the voxels of an array MEAN, which is not a rendering choice — it decides whether
 #: coarsening may average (image, probability) or must take a mode (segmentation), and
 #: averaging label ids invents ids that were never in the data. Recorded by precomputed as
@@ -71,6 +133,13 @@ class Piece:
     does: whoever read the piece knew where it came from, and a consumer three calls later
     does not. :func:`neu_vol.read_piece` fills it in from the source.
 
+    **The array need not be a numpy array.** Anything carrying ``shape``, ``dtype`` and
+    ``ndim`` is taken as one — a cupy array on the GPU, a dask or zarr array, an open h5py
+    dataset — because coercing everything meant a device array could not be held at all
+    (cupy makes ``__array__`` raise on purpose, to stop an accidental copy to the host).
+    Nothing here imports any of them; recognising an array by its attributes needs no
+    knowledge of what made it.
+
     Frozen like the rest of neu-lib's types, so a piece can be passed around without
     anyone worrying about who owns it — but note the **array itself is not copied and not
     read-only**, so ``piece.array[...] = 0`` still works and still mutates whatever the
@@ -83,7 +152,7 @@ class Piece:
     name: str | None = None
 
     def __post_init__(self) -> None:
-        arr = np.asanyarray(self.array)
+        arr = _as_array(self.array)
         if arr.ndim not in (3, 4):
             raise ValueError(
                 f"a piece is 3-D zyx, optionally with a leading channel axis, so 3-D or "
@@ -224,6 +293,34 @@ class Piece:
         """The same array and frame, saying what the voxels mean."""
         return replace(self, kind=kind)
 
+    def to_numpy(self) -> np.ndarray:
+        """The voxels as a host numpy array, for handing to something that needs one.
+
+            plt.imshow(piece.to_numpy()[32])
+            neu_vol.pack_hdf5(...)          # h5py cannot take a device array
+
+        A no-op when the array is already numpy. For a cupy array this **copies off the
+        device**, which is the expensive direction — so it is a method you call rather than
+        something that happens to you, and :meth:`to_host` is the version that keeps the
+        piece intact.
+
+        There is no ``to_device`` here, and that asymmetry is not an oversight: coming *to*
+        numpy is a method on the array (``.get()``), so this package can do it without
+        importing anything, while going *to* a device needs cupy itself. That lives in
+        ``neu_proc.ops.backend.to_device``.
+        """
+        return _to_numpy(self.array)
+
+    def to_host(self) -> "Piece":
+        """The same piece with its array on the host. Unchanged if it already is.
+
+        The form to use mid-chain, since it keeps the frame, kind and name — where
+        :meth:`to_numpy` hands out the bare array.
+        """
+        if isinstance(self.array, np.ndarray) and not _is_device(self.array):
+            return self
+        return replace(self, array=_to_numpy(self.array))
+
     def with_name(self, name: str | None) -> "Piece":
         """The same piece under a different name."""
         return replace(self, name=name)
@@ -274,7 +371,7 @@ class Piece:
         neu-proc gives you: an ``Op`` bound to a frame *is* a callable, so
         ``piece.apply(op.bind(piece.frame))`` needs no hook on either side.
         """
-        out = np.asanyarray(fn(self.array, *args, **kwargs))
+        out = _as_array(fn(self.array, *args, **kwargs))
         if kind is _UNSET:
             if out.dtype != self.dtype:
                 raise ValueError(
@@ -330,7 +427,12 @@ class Piece:
                 f"Piece has no field(s) {', '.join(sorted(unknown))}; it has "
                 f"{', '.join(f.name for f in fields(self))}.{hint}")
         if "array" not in changes:
-            changes["array"] = np.array(self.array, copy=True, subok=True)
+            # The array's OWN copy, not `np.array(..., copy=True)`: that would refuse a cupy
+            # array for the same reason `_as_array` exists, and a device array should be
+            # copied on the device rather than round-tripped through the host.
+            source = self.array
+            changes["array"] = (source.copy() if hasattr(source, "copy")
+                                else np.array(source, copy=True, subok=True))
         return replace(self, **changes)
 
     def __repr__(self) -> str:

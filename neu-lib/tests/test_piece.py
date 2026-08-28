@@ -352,3 +352,67 @@ def test_apply_chains():
             .apply(lambda a: (a > 1).astype("uint8"), kind="segmentation", name="mask"))
     assert out.kind == "segmentation" and out.name == "mask"
     assert out.frame == p.frame
+
+
+# --------------------------------------------------------------------------- #
+# to_numpy / to_host — the one direction that needs no cupy
+# --------------------------------------------------------------------------- #
+class _FakeDeviceArray(np.ndarray):
+    """A numpy array that claims cupy's module and converts through `.get()`.
+
+    Enough to test the whole path with no GPU: the device branch is chosen by the type's
+    defining module, and the conversion is a method on the array.
+    """
+    __module__ = "cupy"
+
+    def get(self):
+        return np.asarray(self).view(np.ndarray)
+
+
+def test_to_numpy_is_a_no_op_for_a_host_array():
+    p = _piece()
+    assert p.to_numpy() is p.array
+    assert p.to_host() is p, "and to_host returns the same piece, not a copy"
+
+
+def test_to_numpy_converts_a_device_array_through_its_own_get():
+    """**numpy cannot do this on its own.** `np.asarray` on a cupy array raises
+    `TypeError: Implicit conversion to a NumPy array is not allowed` — deliberately, so that
+    nobody copies gigabytes off a GPU by passing the wrong thing to a plotting call. What
+    makes it possible without importing cupy is that the conversion is a *method*."""
+    data = np.arange(4 * 4 * 4, dtype="uint8").reshape(4, 4, 4)
+    p = Piece(data.view(_FakeDeviceArray), Frame(voxel_size_nm=(8, 8, 8)),
+              kind="image", name="gpu")
+    out = p.to_numpy()
+    assert type(out) is np.ndarray, "a plain ndarray, not the device subclass"
+    np.testing.assert_array_equal(out, data)
+
+
+def test_to_host_keeps_the_frame_kind_and_name():
+    """The form to use mid-chain, where to_numpy hands out the bare array."""
+    data = np.zeros((4, 4, 4), "uint8")
+    p = Piece(data.view(_FakeDeviceArray),
+              Frame(voxel_size_nm=(40, 8, 8), origin_nm=(80, 0, 0)),
+              kind="segmentation", name="gt/a")
+    host = p.to_host()
+    assert type(host.array) is np.ndarray
+    assert host.frame == p.frame and host.kind == p.kind and host.name == p.name
+    assert host.to_host() is host, "idempotent once on the host"
+
+
+def test_a_device_array_with_no_get_says_so():
+    """Rather than falling through to numpy, which would raise a TypeError naming
+    `__array__` and nothing about what to do."""
+    class NoGet(np.ndarray):
+        __module__ = "cupy"
+
+    p = Piece(np.zeros((4, 4, 4)).view(NoGet), Frame(voxel_size_nm=(8, 8, 8)))
+    with pytest.raises(TypeError, match="no .get()"):
+        p.to_numpy()
+
+
+def test_there_is_no_to_device_and_that_is_deliberate():
+    """Coming *to* numpy is a method on the array, so this package can do it without
+    importing anything; going *to* a device needs cupy itself, which is why that lives in
+    `neu_proc.ops.backend.to_device`."""
+    assert not hasattr(_piece(), "to_device")
