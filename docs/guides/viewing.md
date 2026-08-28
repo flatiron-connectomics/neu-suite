@@ -276,6 +276,74 @@ Three things worth knowing about this shader language:
   flat colour. This was a real mistake: `mix(#ff9000, #00c0ff, 0.5)` is a light green, and a
   field of orange and blue synapses came out uniformly green.
 
+## Looking at something that is not published
+
+Everything above publishes first and views second. `neu-glance serve` is the other way
+round: it hosts arrays from its own process and prints a link, so a ground-truth crop, a box
+out of a volume or a probability map straight out of a model can be looked at with nothing
+written anywhere.
+
+```bash
+pip install 'neu-glance[serve]'                # optional extra: it carries a viewer bundle
+
+neu-glance serve --seg piece.h5
+neu-glance serve --image vol --seg gt --crop-bbox 0,0,0,64,512,512
+neu-glance serve --image piece.h5:/raw --prob piece.h5:/affinity
+```
+
+`--image`, `--seg` and `--prob` are each repeatable and each take a path — an HDF5 file
+(`PATH:/DATASET` when the container holds more than one array), a volume, a slice stack.
+`--level` and `--crop-bbox` take a box out of a multiscale volume; a whole volume is usually
+far too large to hold in memory. It runs until Ctrl-C.
+
+### What the three kinds are for
+
+`--seg` is served as **labels whatever the dtype**, and that is not a detail: neuroglancer
+guesses segmentation only for uint16/32/64, so a uint8 label array would be read as an image
+— averaging label ids on downsample and losing both the colour hashing and the selection UI,
+with nothing to say so.
+
+`--prob` is for continuous scalar data and picks its shader by channel count: one channel
+gets a two-colour gradient with a threshold, three get three colours with independent gains.
+The threshold is written **discard-if-below**, so a NaN voxel — a model declining to predict
+— stays visible at every threshold rather than disappearing at all of them. `neu-glance
+shaders` lists them and prints one to edit.
+
+### The frame travels with the array
+
+A served crop keeps its origin, so it lands on top of the volume it came from rather than at
+nm zero. A source that records its own frame needs no `--voxel-size` — which is what
+`neu-vol to-hdf5` writes, so the round trip needs no coordinates typed twice:
+
+```bash
+neu-vol to-hdf5 --src <volume> --out region.h5 --level 1 --crop-bbox 2,2,2,10,10,10
+neu-glance serve --seg region.h5           # opens in the right place, at the right scale
+```
+
+### Reading the viewer back into Python
+
+The server runs **in your kernel**, so this is not one-way. From a notebook:
+
+```python
+from neu_glance import serve, ServedLayer
+srv = serve([ServedLayer(labels, kind="segmentation", frame=frame)])
+srv                                  # renders the clickable link
+srv.boxes()                          # boxes you drew, as (lo, hi) in zyx voxels
+srv.selected_segments()              # label ids you clicked
+srv.on_click(lambda c: print(c.voxel, c.values))
+srv.screenshot("view.png")           # needs a browser actually connected
+```
+
+`srv.boxes()` closes the loop: pick a region in the viewer and hand it straight to
+`--crop-bbox`, `extract_roi` or `neu-vol write`. A viewer opens with an empty `regions`
+annotation layer for exactly this; `--no-regions` omits it.
+
+Two things to know. A **served link is not shareable** — each array is addressed
+`python://volume/<viewer-token>`, scoped to the process and dead when it exits, which is why
+`serve` has no `--format url`. And `--bind` defaults to `127.0.0.1`, reachable only from the
+machine running it; pass `--bind 0.0.0.0` when the browser is elsewhere, and the printed link
+names the host.
+
 ## Sharing a view as a link
 
 ```bash
