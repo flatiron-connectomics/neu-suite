@@ -55,6 +55,13 @@ assuming. Failing that it falls back to zyx, and `--offset-order xyz` overrides 
 provenance, which of the three applied, and any reversal are printed on every run.
 ```
 
+```{tip}
+All three have Python equivalents, and one thing the CLI cannot do: write an array that is
+**already in memory**. `neu_vol.write_piece` is that door — read a crop with
+`read_piece`, transform it, write it back — and it produces the same file `to-hdf5` does,
+so `write` places either. See [reading and writing from Python](python-io.md).
+```
+
 ## `to-hdf5` makes a piece worth placing
 
 The inverse of `write`. An image stack off a microscope or an annotation tool is a

@@ -380,10 +380,26 @@ srv.on_click(lambda c: print(c.voxel, c.values))
 srv.screenshot("view.png")           # needs a browser actually connected
 ```
 
+It runs the other way too, and the browser follows the state — so a viewer that is already
+open grows a layer without being re-served:
+
+```python
+srv.add_layer(ServedLayer.from_array(pred, "probability", voxel_size=(40, 8, 8)))
+srv.annotate(tool="point")           # somewhere to draw, box or point tool armed
+box = srv.enclose(margin=16, clip="volume", replace=True)
+lo, hi = box                         # a neu_lib.BBox, straight into --crop-bbox
+```
+
 `srv.boxes()` closes the loop: pick a region in the viewer and hand it straight to
 `--crop-bbox`, `extract_roi` or `neu-vol write`. It needs somewhere to draw, which is
-**opt-in** — `serve(..., regions=True)`, or `--regions` — because a viewer that opens with a
-layer nobody asked for reads as a bug.
+**opt-in** — `srv.annotate()`, or `serve(..., annotations=True)` / `--annotate` to open with
+one — because a viewer that opens with a layer nobody asked for reads as a bug.
+
+`srv.enclose()` is there because dragging a box to exact corners in neuroglancer is fiddly
+while clicking a point at each corner is not: it takes the containing box of everything drawn
+in the layer, adds it as a real box annotation and returns it. `clip="volume"` keeps a margin
+inside the served arrays (`srv.bounds()`), `clip="data"` inside their non-zero voxels
+(`srv.data_bounds()`).
 
 ### Stopping it, and what a stuck cell means
 

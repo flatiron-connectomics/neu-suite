@@ -94,6 +94,7 @@ _generated/api-index
 
 guides/converting
 guides/small-pieces
+guides/python-io
 guides/ground-truth
 guides/viewing
 guides/rendering

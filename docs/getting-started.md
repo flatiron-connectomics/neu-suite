@@ -103,7 +103,8 @@ asked, because a notebook has no flag to pass.
 - The [API reference](_generated/api-index.md) — calling any of it from Python.
 - The guides, which follow whole tasks rather than single commands: [converting a
   source](guides/converting.md), [assembling small pieces into one
-  frame](guides/small-pieces.md), [ground truth to
+  frame](guides/small-pieces.md), [reading and writing from
+  Python](guides/python-io.md), [ground truth to
   meshes](guides/ground-truth.md), [viewing the results in
   neuroglancer](guides/viewing.md), and [rendering locally in a
   notebook](guides/rendering.md).
