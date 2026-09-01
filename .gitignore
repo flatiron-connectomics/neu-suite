@@ -21,7 +21,7 @@ wasp_segprops.py
 # Working notes and agent context. These carry ceph/S3 paths, usernames and in-flight
 # run detail that do not belong in a public repository.
 CLAUDE.md
-NOTES-TODO.md
+NOTES-*.md
 NEU-DRAW-PLAN.md
 NEU-PROC-PLAN.md
 RENAME-PLAN.md
