@@ -88,6 +88,20 @@ data. Where the source records nothing, `kind` stays `None` and you pass it:
 file that carries no `voxel_size` attribute. There is nothing to read, so there is nothing
 to infer.
 
+**A cast on the way in is allowed, and a narrowing one is called out.** `dtype=` casts
+after the read, so a piece arrives in the dtype it will be used in — a set of crops exported
+by different tools comes as uint8/16/32/64, and a consumer that has to handle all four is
+what this avoids:
+
+```python
+piece = read_piece(gt_file, dataset=name, kind="segmentation", dtype="uint64")
+```
+
+Widening among unsigned ints loses nothing. Narrowing is warned about rather than refused,
+since only you know the range your labels use — but it wraps a label id into another
+plausible label id, and a segmentation has no invalid values for anything downstream to
+catch.
+
 **A read too large to finish is refused, not attempted.** A whole level 0 of a production
 volume is terabytes; `read_piece(volume)` on one does not fail, it *hangs*, which in a
 notebook is indistinguishable from a wedged kernel with every later cell pending behind it.
