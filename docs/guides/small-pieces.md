@@ -44,6 +44,20 @@ still clean.
 `--offset` is optional: with none given, each source is asked for its own. HDF5 files
 routinely record one, and `--offset-field` names it (default `voxel_offset`).
 
+One HDF5 file often holds a *bag* of crops rather than one, each with its own
+`voxel_offset` — which is what `to-hdf5` builds when you add to a file, and what a cleaning
+pass over a ground-truth set produces. `--all-datasets` writes every one of them:
+
+```bash
+neu-vol write <volume> --src gt_v1_eval_cleaned.h5 --all-datasets
+neu-vol write <volume> --src gt_v1_eval_cleaned.h5 --all-datasets 'z*'   # a subset
+```
+
+The optional glob matches the dataset path or its basename, and one that matches nothing is
+an error rather than a write that reports success and places nothing. The datasets become
+ordinary sources in the same batch, so the whole set is still checked before any of it
+lands.
+
 ```{warning}
 **The axis order is never guessed.** `voxel_offset` is precomputed's field name, and
 precomputed means xyz — while everything in these packages is zyx. Reversed, the piece
