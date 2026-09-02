@@ -54,9 +54,44 @@ def test_kernels_needs_no_scipy():
 
 def test_every_export_resolves():
     """A name in `_EXPORTS` pointing at a module that does not define it fails only when
-    someone reaches for it, which may be much later."""
+    someone reaches for it, which may be much later. Same for a `_SUBMODULES` entry naming
+    a module that is not there."""
     import neu_proc
 
-    for name in neu_proc._EXPORTS:
+    for name in (*neu_proc._EXPORTS, *neu_proc._SUBMODULES):
         assert getattr(neu_proc, name) is not None
-    assert set(neu_proc.__all__) == {"__version__", *neu_proc._EXPORTS}
+    assert set(neu_proc.__all__) == {"__version__", *neu_proc._EXPORTS,
+                                     *neu_proc._SUBMODULES}
+
+
+def test_the_two_export_mappings_stay_disjoint():
+    """They resolve differently — a name in `_EXPORTS` is looked up *inside* its module,
+    one in `_SUBMODULES` *is* the module — so a key in both means whichever `__getattr__`
+    checks first silently wins, and the other entry is dead with nothing to say so."""
+    import neu_proc
+
+    assert not set(neu_proc._EXPORTS) & set(neu_proc._SUBMODULES)
+
+
+def test_a_submodule_export_is_the_module_itself():
+    """`from neu_proc import measure` cannot fall back to the import system's own submodule
+    lookup, which would go looking for `neu_proc/measure.py` — the module lives under
+    `ops/`. So this is entirely `__getattr__`'s doing, and worth pinning."""
+    import types
+
+    from neu_proc import measure
+
+    import neu_proc.ops.measure
+
+    assert isinstance(measure, types.ModuleType)
+    assert measure is neu_proc.ops.measure, "the same object, not a copy"
+
+
+def test_an_unknown_top_level_name_still_raises_AttributeError():
+    """`__getattr__` grew a branch; the miss must stay a miss. An ImportError leaking out of
+    here instead would break `hasattr` and every `from neu_proc import *`."""
+    import neu_proc
+    import pytest
+
+    with pytest.raises(AttributeError, match="has no attribute 'nope'"):
+        neu_proc.nope
