@@ -26,17 +26,27 @@ dispatch to.
 A binary input has no such problem — one label, so the mask *is* the labelling — and cc3d
 takes ``binary_image=True`` for it. That is where a device path could be added correctly if
 the 4-5x is ever worth the second implementation.
+
+**``exclude_boundary`` spares a COMPONENT that reaches a face, and per-component is the
+whole point.** A fragment poking into a crop from a body that mostly lives outside it is
+indistinguishable, within the crop, from dust: its observed size is a lower bound on its
+real one, so no threshold can judge it. Keying that on the *label* instead spares every
+speck sharing an id with something on a face, wherever it sits — measured on one 364^3
+ground-truth crop at ``min_voxels=1000``: 72,706 voxels of interior dust across 254 labels
+survived that way, **34% of the interior dust that was meant to go**. It also cost a
+full-array pass per face label, 8.3 s against 0.42 s for the component test below.
 """
 
 from __future__ import annotations
 
 import cc3d
+import numpy as np
 
 from .backend import host_only
 
 
 def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
-         connectivity: int = 26, invert: bool = False, **kwargs):
+         connectivity: int = 6, invert: bool = False, exclude_boundary: bool = False, **kwargs):
     """Drop connected components outside the given voxel-count range.
 
         dust(labels, 10)                    # remove anything under 10 voxels
@@ -55,10 +65,17 @@ def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
     three voxel sizes rather than scaling per axis —
     :func:`~neu_proc.ops.kernels.volume_to_voxels`.
 
-    ``connectivity`` is 26 by default, i.e. corner-touching voxels are one component. That
-    is the loosest choice and so the most conservative for dusting: it merges specks into
-    neighbours where it can, removing fewer of them. 6 counts only face-sharing neighbours
-    and will find — and delete — more.
+    ``connectivity`` is 6 by default, counting only face-sharing neighbours. 26 makes
+    corner-touching voxels one component, which is the loosest choice and so the most
+    conservative for dusting — it merges specks into neighbours where it can and removes
+    fewer of them.
+
+    ``exclude_boundary`` spares any component **reaching a face of the array**, however
+    small. Within a crop, such a fragment may be part of a body that mostly lives outside
+    it, so its observed voxel count is only a lower bound and the threshold cannot judge it;
+    a component wholly inside is judged normally, including one that merely comes close to a
+    face. The test is per component and not per label — see the module docstring for what the
+    per-label version cost on real data.
 
     Runs on the host; see the module docstring on why there is no device path. A device array
     is copied off and back with a warning rather than failing.
@@ -75,5 +92,69 @@ def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
             raise ValueError(
                 f"min_voxels {threshold[0]} is above max_voxels {threshold[1]}, which keeps "
                 f"nothing")
-    return cc3d.dust(host_only(arr, "cc3d.dust"), threshold=threshold,
-                     connectivity=connectivity, invert=invert, **kwargs)
+    host = host_only(arr, "cc3d.dust")
+    if exclude_boundary:
+        # This path runs its own labelling instead of `cc3d.dust`, so a passthrough keyword
+        # would be silently dropped rather than applied. Only `binary_image` means the same
+        # thing to both.
+        unsupported = sorted(set(kwargs) - {"binary_image"})
+        if unsupported:
+            raise TypeError(
+                f"exclude_boundary=True does not pass {'=, '.join(unsupported)}= through to "
+                f"cc3d.dust — it decides per component itself. Drop one or the other")
+        return _dust_interior(host, threshold, connectivity=connectivity, invert=invert,
+                              binary_image=kwargs.get("binary_image", False))
+    return cc3d.dust(host, threshold=threshold, connectivity=connectivity, invert=invert,
+                     **kwargs)
+
+
+def _dust_interior(arr, threshold, *, connectivity: int, invert: bool,
+                   binary_image: bool = False):
+    """:func:`dust`, sparing every component that reaches a face of the array.
+
+    One connected-components pass and one ``cc3d.statistics``, then a lookup table over
+    component ids — so the cost is independent of how many components or labels there are.
+    ``cc3d.dust`` cannot express this: it decides per component but reports only the
+    surviving *labels*, and recovering "which component was that" from the result means
+    scanning per label, which is what made the first version 20x slower as well as wrong.
+
+    **A component reaches a face iff its bounding box does**, which ``statistics`` already
+    computed — equivalent to testing the six face slices for its id, without touching the
+    voxels.
+    """
+    cc = cc3d.connected_components(arr, connectivity=connectivity,
+                                   binary_image=binary_image)
+    stats = cc3d.statistics(cc)
+    counts = np.asarray(stats["voxel_counts"])
+    small = _within(counts, threshold)
+    touches = np.array(
+        [any(s.start == 0 or s.stop == extent for s, extent in zip(box, arr.shape))
+         for box in stats["bounding_boxes"]], dtype=bool)
+
+    # Component 0 is the background, which is neither dust nor a body. Excluding it here is
+    # what keeps the `drop[cc]` lookup below a single expression.
+    drop = small & ~touches
+    drop[0] = False
+    if invert:
+        # What WOULD be removed, for looking at the dust before committing to losing it —
+        # the same meaning `invert=True` has without exclude_boundary, so a face-touching
+        # speck is absent from both answers rather than appearing in each.
+        dust_only = np.zeros_like(arr)
+        keep = drop[cc]
+        dust_only[keep] = arr[keep]
+        return dust_only
+    dusted = arr.copy()
+    dusted[drop[cc]] = 0
+    return dusted
+
+
+def _within(counts, threshold) -> "np.ndarray":
+    """Which component sizes fall **outside** the range cc3d would keep, i.e. are dust.
+
+    cc3d reads a scalar threshold as "keep at least this many" and a pair as the range to
+    keep; this is the complement of that, expressed once so the two paths cannot disagree
+    about the boundary cases.
+    """
+    if isinstance(threshold, tuple):
+        return (counts < threshold[0]) | (counts > threshold[1])
+    return counts < threshold
