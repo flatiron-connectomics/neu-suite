@@ -22,8 +22,8 @@ piece.apply(neu_proc.dust, min_voxels=50)              # or through a Piece
 
 ## What exists so far
 
-Two operations and the two support modules under them. Top-level names resolve lazily
-(PEP 562), so `import neu_proc` pays for neither scipy nor cupy.
+Four operations, a measurement module, and the two support modules under them. Top-level
+names resolve lazily (PEP 562), so `import neu_proc` pays for neither scipy nor cupy.
 
 ### `dilate(arr, method="edt", *, max_distance=None, gpu=None, **kwargs)`
 
@@ -47,7 +47,7 @@ The three methods take **disjoint** parameters (`edt` has `sampling`, `spherical
 than one entry point suggests. A parameter on the wrong method is refused by name, with a
 pointer to the one that takes it; an unknown method name is refused with the list.
 
-### `dust(arr, min_voxels=None, *, max_voxels=None, connectivity=26, invert=False)`
+### `dust(arr, min_voxels=None, *, max_voxels=None, connectivity=6, invert=False, exclude_boundary=False)`
 
 Drop small connected components. **Component-wise, not per-label**, and the difference is
 large here: a speck carrying the same id as a big body somewhere else is removed while the
@@ -65,14 +65,62 @@ dust(labels, 10, invert=True)     # keep ONLY those — what you are throwing aw
 dust(labels, 5, max_voxels=50)    # keep the band, dropping both tails
 ```
 
-`connectivity=26` is the default and the *conservative* choice for dusting: it is the loosest
-connectivity, so it merges specks into neighbours where it can and removes fewer of them. 6
-counts only face-sharing neighbours and will find — and delete — more.
+`connectivity=6` is the default, counting only face-sharing neighbours. 26 is the loosest
+connectivity and so the *conservative* choice for dusting — it merges specks into neighbours
+where it can and removes fewer of them.
+
+`exclude_boundary=True` spares any component **reaching a face of the array**, however
+small. Inside a crop such a fragment may belong to a body that mostly lives outside it, so
+its voxel count is only a lower bound and the threshold cannot judge it; a component wholly
+inside is judged normally, including one that merely comes close to a face.
+
+**Per component, not per label**, and that distinction is the whole operation: keyed on the
+label instead, every speck sharing an id with something on a face survives wherever it sits.
+Measured on one 364³ ground-truth crop at `min_voxels=1000`, that spared 72,706 voxels of
+interior dust across 254 labels — 34% of what was meant to go — while also costing a
+full-array pass per face label (8.3 s against 0.42 s). The test is a bounding box per
+component, which `cc3d.statistics` has already computed and which is equivalent to scanning
+the six face slices for its id.
 
 Voxel counts, not physical volume, deliberately: the conversion needs a `Frame` and belongs
 one layer up. Note it is a **volume**, so `kernels.volume_to_voxels` divides by the *product*
 of the three voxel sizes rather than scaling per axis — a 40×8×8 nm voxel is 2560 nm³, not
 40, so a 1 µm³ threshold is 390 voxels and not 25,000.
+
+### `opening(arr, radius, *, anisotropy=None)`
+
+An erosion then a dilation, label-aware, via `fastmorph.spherical_open` — the way to remove
+a thin protrusion or a one-voxel bridge without shrinking what survives.
+
+**It is not anti-extensive, and a mathematical opening is.** `γ(X) ⊆ X` is what the name
+promises, and this does not have it, because fastmorph's erosion and dilation read `radius`
+differently. Measured on a 10³ box: at `radius=1` the erosion removes *nothing* while the
+dilation still grows by a 6-neighbourhood, so the call is a pure dilation and returns 1600
+voxels; at `radius=2` a one-voxel shell does come off — a thin spike is genuinely removed —
+but the survivor comes back 1384 voxels, 38% larger than it went in. Neither is a bug to fix
+here; what would be a bug is a caller assuming sizes are comparable across the operation. A
+radius whose erosion is inert warns rather than passing silently.
+
+`radius` follows `anisotropy` exactly as `dilate`'s `max_distance` follows `sampling`, and
+is counted in voxels without it.
+
+### `offset(arr, offset, fill_method="extend", fill_const=0)`
+
+Shift by whole voxels, **keeping the shape** — so the far side is filled, either by repeating
+the edge plane (`extend`) or with a constant (`const`). Nothing wraps: a body leaving one
+face does not reappear on the opposite one, which `np.roll` would do and which produces a
+well-formed array with tissue teleported across the volume.
+
+The frame does not come along. Shifting the voxels by one is the same statement as moving the
+origin one voxel the other way, so a physical shift is `piece.apply(..., frame=...)` one
+layer up; this layer is arrays in, arrays out.
+
+### `ops/measure.py` — component and label sizes
+
+`sizes`, `component_sizes`, `flat_component_sizes`: voxel counts per label, per component,
+and flattened across labels. Exposed as a module (`from neu_proc import measure`) rather
+than as loose top-level names, since it is a namespace of related readings rather than one
+transform.
 
 ### `ops/kernels.py` — the one place a length becomes voxels
 
