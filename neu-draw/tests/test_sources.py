@@ -318,7 +318,13 @@ def test_a_batch_still_raises_when_the_volume_declares_no_meshes(volume):
 
 def test_a_batch_still_raises_on_a_mesh_format_it_cannot_decode(volume_with_mesh):
     """An unreadable format fails exactly like an empty volume — every body absent — so it
-    has to be refused rather than counted as missing bodies."""
+    has to be refused rather than counted as missing bodies.
+
+    The stand-in is deliberately a made-up ``@type``. It used to be
+    ``neuroglancer_legacy_mesh``, which readback now DECODES, so the test passed for a reason
+    that had stopped being true; what is being checked is that a *declared and unrecognised*
+    format is refused, whatever that format happens to be this year.
+    """
     import json as _json
     import pathlib
 
@@ -326,10 +332,10 @@ def test_a_batch_still_raises_on_a_mesh_format_it_cannot_decode(volume_with_mesh
 
     mesh_info = pathlib.Path(volume_with_mesh) / "mesh" / "info"
     info = _json.loads(mesh_info.read_text())
-    info["@type"] = "neuroglancer_legacy_mesh"
+    info["@type"] = "neuroglancer_mesh_from_the_future"
     mesh_info.write_text(_json.dumps(info))
 
-    with pytest.raises(UnsupportedSubresource, match="legacy"):
+    with pytest.raises(UnsupportedSubresource, match="from_the_future"):
         sources.body_meshes(volume_with_mesh, BODIES, skip_missing=True)
     with pytest.raises(UnsupportedSubresource):
         sources.body_mesh(volume_with_mesh, BODIES[0])
