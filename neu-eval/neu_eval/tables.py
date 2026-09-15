@@ -86,11 +86,23 @@ def write_disagreements(rows: Iterable[Mapping], path: str | Path, *,
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    header = list(rows[0].keys()) if rows else [
-        "pair_key", "kind", f"{labels[0]}_id", f"{labels[1]}_id", "n_voxels", "severity"]
+    # The UNION of every row's keys, in first-seen order — not `rows[0].keys()`, which is
+    # what this did and which silently dropped any column a later row added. Rows compared
+    # under different side names (one table per vendor, say) have different id columns, and
+    # `DictWriter(extrasaction="ignore")` discarded the ones missing from row zero: 450 of
+    # 600 rows came out with no segment id at all, and nothing said so.
+    header: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in header:
+                header.append(key)
+    if not header:
+        header = ["pair_key", "kind", f"{labels[0]}_id", f"{labels[1]}_id",
+                  "n_voxels", "severity"]
     if VERDICT_COLUMN not in header:
         header.append(VERDICT_COLUMN)
-    header.append("note")
+    if "note" not in header:
+        header.append("note")
 
     verdicts = verdicts or {}
     with path.open("w", newline="") as handle:

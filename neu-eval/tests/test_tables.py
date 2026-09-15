@@ -94,6 +94,31 @@ def test_a_file_without_a_verdict_column_is_refused_by_name(tmp_path):
         tables.read_disagreements(path)
 
 
+def test_rows_with_different_columns_all_keep_their_values(tmp_path):
+    """The header is the UNION, because `rows[0].keys()` silently dropped the rest.
+
+    Real case: one comparison per vendor, each labelled with that vendor's name, appended
+    into one table. The first vendor's id column became the header and 450 of 600 rows came
+    out with no segment id — `pair_key` survived, so adjudication still worked and nothing
+    looked wrong.
+    """
+    rows = [{"pair_key": "1:5", "kind": "split", "gt_id": 1, "zetta_id": 5},
+            {"pair_key": "2:9", "kind": "merge", "gt_id": 2, "vi_id": 9}]
+    path = tables.write_disagreements(rows, tmp_path / "d.csv")
+    back = list(csv.DictReader(open(path)))
+    assert {"zetta_id", "vi_id"} <= set(back[0])
+    assert back[0]["zetta_id"] == "5" and back[0]["vi_id"] == ""
+    assert back[1]["vi_id"] == "9" and back[1]["zetta_id"] == ""
+
+
+def test_a_row_that_already_has_a_verdict_does_not_get_a_second_column(tmp_path):
+    rows = [{"pair_key": "1:5", "kind": "split", "verdict": "gt_correct", "note": "x"}]
+    path = tables.write_disagreements(rows, tmp_path / "d.csv")
+    header = csv.DictReader(open(path)).fieldnames
+    assert header.count("verdict") == 1 and header.count("note") == 1
+    assert list(csv.DictReader(open(path)))[0]["verdict"] == "gt_correct"
+
+
 def test_an_empty_row_set_still_writes_a_usable_header(tmp_path):
     path = tables.write_disagreements([], tmp_path / "d.csv", labels=("gt", "seg"))
     assert "verdict" in (csv.DictReader(open(path)).fieldnames or [])
