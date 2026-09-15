@@ -102,6 +102,7 @@ def compare(a: Any, b: Any, *,
             min_voxels: int = 1,
             rank: str = "severity",
             locate: bool = True,
+            point_at: str = "seam",
             verdicts: Mapping[str, str] | None = None,
             check_frames: bool = True,
             check_scattered: bool = True) -> Report:
@@ -111,9 +112,11 @@ def compare(a: Any, b: Any, *,
     default ``ignore_a=(0,)``, the names in the output, and the direction of ``voi_split`` /
     ``voi_merge``. The table underneath is symmetric.
 
-    ``locate=False`` skips the per-pair distance transform, which is the only part whose
+    ``locate=False`` skips the per-pair distance transforms, which are the only part whose
     cost scales with ``top`` rather than with the table. Worth turning off when scoring
-    many crops in a loop and only the numbers are wanted.
+    many crops in a loop and only the numbers are wanted. ``point_at="overlap"`` picks the
+    middle of what the two labelings agree about instead of the surface where they part —
+    see :func:`neu_eval.disagree.locate`.
 
     ``verdicts`` maps ``pair_key`` to a verdict from a reviewed disagreement file; supplying
     it adds the adjudicated score *alongside* the raw one, never instead of it.
@@ -131,7 +134,12 @@ def compare(a: Any, b: Any, *,
 
     rows = disagree.rows(c, min_frac=min_frac, min_voxels=min_voxels, top=top, rank=rank)
     if locate and rows:
-        rows = disagree.locate(rows, a, b, labels=labels)
+        # The ignore sets have to reach `locate`: a seam is a contact with another LABELLED
+        # thing, so an ignored value must not count as the other side. Where 0 is membrane
+        # and ignored, counting it would put every split point on an ordinary cell
+        # boundary.
+        rows = disagree.locate(rows, a, b, labels=labels, at=point_at,
+                               ignore_a=ignore_a, ignore_b=ignore_b)
 
     if check_scattered:
         warnings.extend(_scatter_warnings(a, c, labels))

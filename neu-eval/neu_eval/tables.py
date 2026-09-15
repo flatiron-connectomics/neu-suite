@@ -192,7 +192,8 @@ def annotation_csv(rows: Iterable[Mapping], path: str | Path, *,
             writer.writerow([
                 row["z_nm"], row["y_nm"], row["x_nm"],
                 f"{row['kind']} {row['pair_key']} sev={row['severity']:.4f} "
-                f"frac={row.get('worst_fraction', 0):.2f}",
+                f"frac={row.get('worst_fraction', 0):.2f} "
+                f"@{row.get('point_at', 'overlap')}",
                 " ".join(ids),
             ])
     return str(path)

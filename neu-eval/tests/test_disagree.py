@@ -160,15 +160,98 @@ def test_the_located_point_is_inside_its_own_pair():
         assert int(b[z, y, x]) == row["b_id"]
 
 
-def test_the_located_point_is_interior_not_on_the_boundary():
-    """A slab of 6 voxels' thickness: the deepest point is in the middle, not the face."""
+def _slab():
+    """One reference body, cut into two segments at z=5 and z=11 — a false cut."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
     b[5:11] = 6
+    return a, b
+
+
+def test_the_seam_point_sits_on_the_false_cut():
+    """The default, and the whole point of `at="seam"`.
+
+    The body runs the full depth; the segmentation cuts it at z=5 and z=11. The place to
+    look is one of those cuts, not the middle of the slab — the middle is where the two
+    labelings *agree*.
+    """
+    a, b = _slab()
     rows = disagree.locate(
         disagree.rows(contingency(a, b, ignore_a=())), _piece(a), _piece(b))
     six = next(r for r in rows if r["b_id"] == 6)
+    assert six["point_at"] == "seam-split"
+    assert six["z_vox"] in (5, 10), "on a face of the slab, i.e. on the cut"
+    # And the voxel across the cut really belongs to the other segment.
+    z = six["z_vox"]
+    beyond = z - 1 if z == 5 else z + 1
+    assert int(b[beyond, six["y_vox"], six["x_vox"]]) == 5
+
+
+def test_the_overlap_point_is_still_available_and_is_interior():
+    """`at="overlap"` is the old behaviour, kept for when you want the agreeing middle."""
+    a, b = _slab()
+    rows = disagree.locate(
+        disagree.rows(contingency(a, b, ignore_a=())), _piece(a), _piece(b),
+        at="overlap")
+    six = next(r for r in rows if r["b_id"] == 6)
+    assert six["point_at"] == "overlap"
     assert 6 <= six["z_vox"] <= 9, "inside the slab, off its faces"
+
+
+def test_a_merge_seam_is_where_the_reference_bodies_meet():
+    """Mirror image: one segment spanning two bodies, so the seam is inside the segment."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    a[8:] = 2
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    rows = disagree.locate(
+        disagree.rows(contingency(a, b, ignore_a=())), _piece(a), _piece(b))
+    assert {r["kind"] for r in rows} == {"merge"}
+    for row in rows:
+        assert row["point_at"] == "seam-merge"
+        assert row["z_vox"] in (7, 8), "on the false join between body 1 and body 2"
+
+
+def test_an_ignored_label_is_not_a_seam_partner():
+    """The membrane case, and it decides whether the answer is useful at all.
+
+    Here segment 0 is membrane and ignored. The body's contact with membrane is its own
+    ordinary surface, not a false cut — so it must not be picked. The real cut is at z=8,
+    where segment 6 takes over from segment 5.
+    """
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[8:] = 6
+    b[:, 0, :] = 0          # a membrane sheet through the body, ignored
+    b[:, -1, :] = 0
+
+    rows = disagree.locate(
+        disagree.rows(contingency(a, b, ignore_a=(), ignore_b=(0,))),
+        _piece(a), _piece(b), ignore_a=(), ignore_b=(0,))
+    for row in rows:
+        assert row["point_at"] == "seam-split"
+        assert row["z_vox"] in (7, 8), "the real cut, not the membrane surface"
+        assert row["y_vox"] not in (0, 15), "never on the ignored sheet"
+
+
+def test_a_disconnected_fragment_falls_back_and_says_so():
+    """Two pieces of one body that never touch have no seam to point at."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[12:] = 6                      # segment 6 is separated from 5 by nothing...
+    a[10:12] = 0                    # ...except a gap in the BODY, so no contact in `a`
+    rows = disagree.locate(
+        disagree.rows(contingency(a, b)), _piece(a), _piece(b), ignore_a=(0,))
+    six = [r for r in rows if r["b_id"] == 6]
+    if six:                          # only if it survives the structural filter
+        assert six[0]["point_at"] == "overlap"
+        assert int(b[six[0]["z_vox"], six[0]["y_vox"], six[0]["x_vox"]]) == 6
+
+
+def test_an_unknown_at_is_refused_by_name():
+    a, b = _slab()
+    rows = disagree.rows(contingency(a, b, ignore_a=()))
+    with pytest.raises(ValueError, match="'seam' or 'overlap'"):
+        disagree.locate(rows, _piece(a), _piece(b), at="middle")
 
 
 def test_a_c_shaped_region_gets_a_point_inside_it():

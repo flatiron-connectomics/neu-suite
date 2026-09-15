@@ -25,7 +25,7 @@ merge on fractions **of that segment**.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 
@@ -146,18 +146,44 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
 
 def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
            labels: Sequence[str] = ("a", "b"),
+           at: str = "seam",
+           ignore_a: Iterable[int] = (0,), ignore_b: Iterable[int] = (),
            max_edt_voxels: int = MAX_EDT_VOXELS) -> list[dict]:
     """Add a world-coordinate click target to each row.
 
     ``a`` and ``b`` are the two :class:`~neu_lib.Piece` objects the table was built from.
-    The point returned is **the deepest interior voxel of the overlap**, not its centroid:
-    a centroid can fall outside a curved or C-shaped region, and one that lands on a
-    boundary puts you on the disagreement's edge rather than in it, which is the difference
-    between seeing the problem and hunting for it.
 
-    Cost is one pass over the arrays per row, so bound it with ``rows(..., top=N)``. The
-    distance transform runs on the pair's bounding box, not the whole array, and dispatches
-    to cupyx on a GPU array like everything else here.
+    **``at="seam"`` (default) points at the error; ``at="overlap"`` points at the
+    agreement.** This function shipped doing the latter and it was the wrong choice: the
+    deepest interior voxel of ``a ∩ b`` is the middle of the part the two labelings agree
+    about, which is the least informative voxel in the pair. What you want to look at is
+    the surface where they part company:
+
+    - a **split** row is a segment that stops while the reference body continues, so its
+      seam is the boundary of ``a ∩ b`` *inside* ``a`` — the false cut;
+    - a **merge** row is a segment that continues while the reference body stops, so its
+      seam is the boundary of ``a ∩ b`` *inside* ``b`` — the false join;
+    - a **tangle** is both, so both are computed and the larger contact wins;
+    - a **match** has no seam and falls back to the overlap interior.
+
+    Of the seam's voxels it returns the one **deepest inside the containing region** (the
+    body for a split, the segment for a merge), so the point sits in the middle of the
+    false cut rather than where that cut grazes the object's own surface.
+
+    **``ignore_a`` / ``ignore_b`` must match the table's, and on real data this decides
+    whether the answer is useful at all.** The seam is a contact with *another labelled
+    thing*, so ignored values cannot count as the other side. Where a pipeline marks
+    membranes 0 and that 0 is ignored, counting it would put every "split point" on an
+    ordinary cell boundary — the seam would be the body's own surface, and every row would
+    point somewhere correct and uninteresting.
+
+    A pair whose pieces do not touch at all — a genuinely disconnected fragment — has no
+    seam; those fall back to the overlap interior and say so in ``point_at``, because a
+    caller comparing points across rows should know which question each answers.
+
+    Cost is a few passes over the arrays per row, so bound it with ``rows(..., top=N)``.
+    The distance transforms run on the containing region's bounding box, not the whole
+    array, and dispatch to cupyx on a GPU array like everything else here.
 
     Coordinates come back as ``z_nm``/``y_nm``/``x_nm`` through ``Piece.to_nm``, because the
     voxel index means nothing outside its own frame and a report gets read next to a viewer
@@ -165,17 +191,33 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     """
     from neu_proc.ops.backend import ndimage_for, to_cpu
 
+    if at not in ("seam", "overlap"):
+        raise ValueError(f"at must be 'seam' or 'overlap', got {at!r}")
     if a.array.shape != b.array.shape:
         raise ValueError(f"the two pieces must be the same shape: "
                          f"{a.array.shape} vs {b.array.shape}")
+
     a_key, b_key = f"{labels[0]}_id", f"{labels[1]}_id"
     aa, ba = a.array, b.array
+    drop_a = [aa.dtype.type(v) for v in ignore_a]
+    drop_b = [ba.dtype.type(v) for v in ignore_b]
     out: list[dict] = []
+
     for row in report_rows:
-        mask = (aa == aa.dtype.type(row[a_key])) & (ba == ba.dtype.type(row[b_key]))
-        point = _deepest_voxel(mask, max_edt_voxels=max_edt_voxels, ndimage_for=ndimage_for,
-                               to_cpu=to_cpu)
-        enriched = dict(row)
+        a_id, b_id = aa.dtype.type(row[a_key]), ba.dtype.type(row[b_key])
+        body, segment = aa == a_id, ba == b_id
+        inter = body & segment
+
+        point, how = None, "overlap"
+        if at == "seam":
+            point, how = _seam_voxel(
+                row.get("kind", "tangle"), inter, body, segment, aa, ba,
+                a_id, b_id, drop_a, drop_b,
+                max_edt_voxels=max_edt_voxels, ndimage_for=ndimage_for, to_cpu=to_cpu)
+        if point is None:
+            point = _deepest_voxel(inter, max_edt_voxels=max_edt_voxels,
+                                   ndimage_for=ndimage_for, to_cpu=to_cpu)
+            how = "overlap"
         if point is None:
             # The pair is in the table, so it has voxels; an empty mask here means the
             # pieces are not the ones the table was built from. Say so rather than emit a
@@ -183,12 +225,106 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
             raise ValueError(
                 f"pair {row['pair_key']} is in the table but not in these arrays — the "
                 f"pieces are not the ones the table was built from")
+
         z, y, x = point
-        enriched.update({"z_vox": int(z), "y_vox": int(y), "x_vox": int(x)})
+        enriched = dict(row)
+        enriched.update({"z_vox": int(z), "y_vox": int(y), "x_vox": int(x),
+                         "point_at": how})
         nm = np.asarray(a.to_nm([[int(z), int(y), int(x)]])).reshape(-1)
         enriched.update({"z_nm": float(nm[0]), "y_nm": float(nm[1]), "x_nm": float(nm[2])})
         out.append(enriched)
     return out
+
+
+def _other_side(arr, own_id, drop):
+    """``arr`` is some *other* labelled thing: not this id, and not an ignored value."""
+    other = arr != own_id
+    for value in drop:
+        other &= arr != value
+    return other
+
+
+def _seam_voxel(kind, inter, body, segment, aa, ba, a_id, b_id, drop_a, drop_b, *,
+                max_edt_voxels, ndimage_for, to_cpu):
+    """``((z, y, x), how)`` on the surface where the two labelings part company.
+
+    ``how`` is ``"seam-split"`` or ``"seam-merge"``, naming which side's boundary the point
+    sits on — a tangle has both and the wider contact wins, so the row has to say which one
+    it answered.
+    """
+    candidates = []
+    if kind in ("split", "tangle", "match"):
+        # The segment stops, the body carries on. The other side must be another segment
+        # **inside this body** — `& body` is load-bearing. Without it a fragment separated
+        # by a gap in the body reports a seam against something outside the body entirely,
+        # which is not a false cut and not where anyone should be sent to look.
+        candidates.append(("seam-split", body, body & _other_side(ba, b_id, drop_b)))
+    if kind in ("merge", "tangle", "match"):
+        # Mirror image: another body inside this segment.
+        candidates.append(("seam-merge", segment,
+                           segment & _other_side(aa, a_id, drop_a)))
+
+    best = None
+    for how, container, other in candidates:
+        contact = inter & _grow(other, ndimage_for=ndimage_for)
+        n = int(to_cpu(contact.sum()))
+        if n == 0:
+            continue
+        if best is None or n > best[0]:
+            best = (n, how, container, contact)
+    if best is None:
+        return None, "overlap"
+
+    _, how, container, contact = best
+    point = _deepest_in(container, contact, max_edt_voxels=max_edt_voxels,
+                        ndimage_for=ndimage_for, to_cpu=to_cpu)
+    return point, how
+
+
+def _grow(mask, *, ndimage_for):
+    """``mask`` dilated by one voxel, 6-connected — scipy's default 3D structure."""
+    ndi, work = ndimage_for(mask, "binary_dilation")
+    return ndi.binary_dilation(work)
+
+
+def _deepest_in(container, contact, *, max_edt_voxels, ndimage_for, to_cpu):
+    """The ``contact`` voxel furthest from the outside of ``container``.
+
+    Scored by the container's own distance transform, so the point lands mid-seam rather
+    than where the seam meets the object's surface — which is where a naive pick on a thin
+    contact sheet would land, since a one-voxel-thick surface has no interior of its own.
+    """
+    spans = _bbox(container, to_cpu=to_cpu)
+    if spans is None:
+        return None
+    box = tuple(slice(lo, hi) for lo, hi in spans)
+    size = int(np.prod([hi - lo for lo, hi in spans]))
+
+    stride = 1
+    while size // (stride ** 3) > max_edt_voxels:
+        stride *= 2
+    sub = tuple(slice(lo, hi, stride) for lo, hi in spans)
+
+    ndi, held = ndimage_for(container[sub], "distance_transform_edt")
+    depth = ndi.distance_transform_edt(_pad_false(held))[1:-1, 1:-1, 1:-1]
+    here = contact[sub]
+    scored = to_cpu(depth * here)
+    if not scored.any():
+        return None
+    local = np.unravel_index(int(scored.argmax()), scored.shape)
+    return tuple(int(v) * stride + lo for v, (lo, _) in zip(local, spans))
+
+
+def _bbox(mask, *, to_cpu):
+    """Per-axis ``(lo, hi)`` of ``mask``, or None when it is empty."""
+    spans = []
+    for axis in range(3):
+        hits = to_cpu(mask.any(axis=tuple(j for j in range(3) if j != axis)))
+        where = np.nonzero(hits)[0]
+        if where.size == 0:
+            return None
+        spans.append((int(where[0]), int(where[-1]) + 1))
+    return spans
 
 
 def _deepest_voxel(mask, *, max_edt_voxels, ndimage_for, to_cpu):

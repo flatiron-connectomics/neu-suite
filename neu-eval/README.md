@@ -68,9 +68,18 @@ bodies), or `tangle` (both at once — the case a proofreader cannot fix with on
 
 Two details that took measuring:
 
-**The coordinate is the deepest interior voxel of the overlap**, not its centroid. A
-centroid can fall outside a curved region, and one that lands on a boundary puts you on the
-disagreement's edge rather than in it.
+**The coordinate is on the seam — where the two labelings part company.** A `split` row is
+a segment that stops while the body continues, so its point goes on the false *cut*; a
+`merge` row is a segment that continues while the body stops, so its point goes on the false
+*join*; a `tangle` has both and the wider contact wins. Of the seam's voxels it returns the
+one deepest inside the containing object, so you land mid-cut rather than where the cut
+grazes the surface. `--point-at overlap` gives the old behaviour — the deepest interior
+voxel of the overlap — which is the middle of what the two sides *agree* about and therefore
+the least informative voxel in the pair.
+
+Which makes the ignore sets matter twice over: a seam is a contact with another *labelled*
+thing, so where 0 means membrane and is ignored, it cannot count as the other side. Counting
+it would put every split point on an ordinary cell boundary — correct, and useless.
 
 **Specks are filtered asymmetrically.** Bodies in these volumes are genuinely fragmented —
 one measured body had 344 connected components, only 7 of them ten voxels or more — so

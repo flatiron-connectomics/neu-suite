@@ -109,6 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "inherits VOI's size weighting, so a large body losing a sliver "
                         "outranks a small one cut in half; --rank fraction is the one to "
                         "use when the list matters more than the metric")
+    q.add_argument("--point-at", choices=("seam", "overlap"), default="seam",
+                   help="put each point on the surface where the two labelings part "
+                        "company (default) or in the middle of what they agree about. "
+                        "A split's seam is the false cut, a merge's is the false join")
     q.add_argument("--no-locate", action="store_true",
                    help="skip the per-pair distance transform, so no coordinates. Faster "
                         "when only the scalars are wanted")
@@ -217,7 +221,8 @@ def cmd_compare(args) -> int:
             reference, segmentation, labels=labels,
             ignore_a=_ids(args.ignore_reference), ignore_b=_ids(args.ignore_segmentation),
             top=top, min_frac=args.min_frac, min_voxels=args.min_voxels,
-            rank=args.rank, locate=not args.no_locate, verdicts=verdicts,
+            rank=args.rank, locate=not args.no_locate,
+            point_at=args.point_at, verdicts=verdicts,
             check_scattered=not args.no_scatter_check)
 
         tag = name or reference.name or "piece"
