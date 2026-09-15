@@ -1,0 +1,139 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 only, matching neu-proc: this depends on it, and fastmorph publishes no
+        # cp313 wheel. Unlike neu-glance there is no 3.11 floor to keep honest.
+        python-version: ["3.12"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Sibling packages, not on PyPI. All are public, so no token is needed — but pip
+      # would still try PyPI for the `neu-vol` and `neu-proc` requirements, so they have to
+      # be installed from source FIRST, and in dependency order.
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/neu-lib
+          path: .siblings/neu-lib
+
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/blockrun
+          path: .siblings/blockrun
+
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/neu-vol
+          path: .siblings/neu-vol
+
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/neu-proc
+          path: .siblings/neu-proc
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # No conda, as in every repo here but neu-morpho. This package is built to keep that
+      # true: the metrics are numpy and scipy, so CI runs EVERY test rather than skipping
+      # conda-only paths. `[report]` is installed too, since the parquet writers are part
+      # of the contract and `importorskip` would let them rot unnoticed.
+      #
+      # There is no cupy and there must not be: the wheels are CUDA-version-specific and
+      # the runner has no device. Dispatch is on the array, so the CPU path here is the
+      # same code — `tests/test_backend.py` skips the GPU half and still checks that the
+      # CPU factorization is a valid one.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ./.siblings/neu-lib ./.siblings/blockrun \
+                      ./.siblings/neu-vol ./.siblings/neu-proc
+          pip install -e ".[dev,report]"
+
+      - name: Test
+        run: pytest -q
+
+      # The GPU tests skip without a device, which means a bug in the shared code path can
+      # hide behind a skip. NEU_PROC_GPU=0 is the other axis: it makes `to_device` a no-op,
+      # which once turned every device assertion into a vacuous host-vs-host comparison.
+      # Running the suite both ways is what caught that.
+      - name: Test with GPU transfers disabled
+        env:
+          NEU_PROC_GPU: "0"
+        run: pytest -q
+
+      - name: Smoke-test the installed console script
+        # The suite runs from a source tree, so it cannot catch a packaging fault that only
+        # shows up once installed. Run it from a directory with no checkout in sight.
+        run: |
+          pip install build
+          python -m build --wheel -o dist/
+          pip install --force-reinstall --no-deps dist/*.whl
+          cd /tmp && neu-eval --help > /dev/null
+          cd /tmp && neu-eval compare --help > /dev/null
+          cd /tmp && neu-eval --version
+          cd /tmp && python -c "
+          import neu_eval, sys
+          # The lazy top-level exports must not drag the reading stack in: `cli` reads
+          # __version__ from __init__, so an eager import there would slow every --help,
+          # and the docs job imports `cli` with no tensorstore at all.
+          for name in ('neu_vol', 'tensorstore', 'pandas', 'dask', 'scipy'):
+              assert name not in sys.modules, f'importing neu_eval pulled in {name}'
+          assert callable(neu_eval.contingency)
+          assert callable(neu_eval.compare)
+          print('lazy exports resolve; version', neu_eval.__version__)
+          "
+
+  # Ask the documentation site to rebuild, so the published CLI reference follows this
+  # commit. `main` only, and only once the tests pass: the reference is generated from the
+  # live parsers, so publishing from a red commit would document code nobody should run.
+  docs:
+    needs: pytest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebuild flatiron-connectomics/neu-suite
+        env:
+          # The workflow's own GITHUB_TOKEN is scoped to THIS repository and cannot
+          # dispatch to another one, so this needs a separate token with contents:write on
+          # neu-suite. When it is absent the step says so and succeeds — a docs refresh
+          # that did not happen must not turn a green test run red, and the site rebuilds
+          # on its nightly schedule regardless.
+          #
+          # A NEW repository has to be granted the org secret explicitly, by repo id:
+          #   gh api -X PUT orgs/flatiron-connectomics/actions/secrets/\
+          #     DOCS_DISPATCH_TOKEN/repositories/<repo_id>
+          TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::DOCS_DISPATCH_TOKEN is not set; skipping. The site will pick this commit up on its next scheduled build."
+            exit 0
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/flatiron-connectomics/neu-suite/dispatches \
+            -d "{\"event_type\":\"package-updated\",\"client_payload\":{\"repo\":\"$GITHUB_REPOSITORY\",\"sha\":\"$GITHUB_SHA\"}}" || echo 000)
+          if [ "$code" = "204" ]; then
+            echo "::notice::asked neu-suite to rebuild its docs for $GITHUB_SHA"
+          else
+            echo "::warning::docs dispatch returned HTTP $code; the site rebuilds on its own schedule instead. A 403 means DOCS_DISPATCH_TOKEN lacks contents:write on flatiron-connectomics/neu-suite — note that a fine-grained token pinned to a repo does NOT follow a delete-and-recreate, since the new repo has a new id."
+          fi

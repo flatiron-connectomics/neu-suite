@@ -231,6 +231,62 @@ class Contingency:
                 f"scored={self.n_scored}, ignored={self.n_ignored})")
 
 
+def pool(tables: Sequence[Contingency]) -> Contingency:
+    """Combine tables from regions whose label spaces are **independent**.
+
+    Not the same operation as ``+``, and confusing the two is the chimera bug in table form.
+    ``c1 + c2`` is for two regions of *one* labeling, where a shared id means one body.
+    :func:`pool` is for separately annotated crops, where every crop numbers its bodies from
+    1 and a shared id means **nothing** — so adding those tables directly would fuse
+    unrelated cells exactly the way scoring an un-relabelled multi-crop volume does, and
+    would produce a plausible pooled number from a partition that does not exist.
+
+    So each table's labels are renumbered densely and offset past the previous table's
+    before the sum. The result is a single honest partition over all the regions, which is
+    what a pooled VOI needs, and it is the same thing ``neu-vol relabel`` does to a volume —
+    done here in the table, since the arrays are already reduced.
+
+    **Pooled ids do not name bodies.** They are positions in a concatenation, so the pooled
+    table is for scalars only; per-crop rows keep the real ids and are what you look things
+    up by.
+    """
+    tables = list(tables)
+    if not tables:
+        raise ValueError("pool() needs at least one table")
+    first = tables[0]
+    for other in tables[1:]:
+        if other.labels != first.labels:
+            raise ValueError(
+                f"cannot pool tables with different sides: {first.labels!r} vs "
+                f"{other.labels!r}")
+        if other.ignore_a != first.ignore_a or other.ignore_b != first.ignore_b:
+            raise ValueError("cannot pool tables that dropped different labels")
+
+    a_parts, b_parts, count_parts = [], [], []
+    a_offset = b_offset = np.uint64(1)          # 1-based, so 0 stays free of meaning
+    for table in tables:
+        if table.n_pairs == 0:
+            continue
+        a_uniq, a_inv = np.unique(table.a_ids, return_inverse=True)
+        b_uniq, b_inv = np.unique(table.b_ids, return_inverse=True)
+        a_parts.append(a_inv.reshape(-1).astype(np.uint64) + a_offset)
+        b_parts.append(b_inv.reshape(-1).astype(np.uint64) + b_offset)
+        count_parts.append(table.counts)
+        a_offset += np.uint64(a_uniq.size)
+        b_offset += np.uint64(b_uniq.size)
+
+    if not count_parts:
+        return _canonical(
+            np.zeros(0, np.uint64), np.zeros(0, np.uint64), np.zeros(0, np.uint64),
+            n_ignored=sum(t.n_ignored for t in tables),
+            ignore_a=first.ignore_a, ignore_b=first.ignore_b, labels=first.labels)
+
+    return _canonical(
+        np.concatenate(a_parts), np.concatenate(b_parts), np.concatenate(count_parts),
+        n_ignored=sum(t.n_ignored for t in tables),
+        ignore_a=first.ignore_a, ignore_b=first.ignore_b, labels=first.labels)
+
+
 def contingency(a: Any, b: Any, *,
                 ignore_a: Iterable[int] = (0,),
                 ignore_b: Iterable[int] = (),

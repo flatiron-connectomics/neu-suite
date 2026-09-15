@@ -49,6 +49,9 @@ __version__ = "0.1.0"
 _EXPORTS: dict[str, str] = {
     "Contingency": "overlap",
     "contingency": "overlap",
+    "pool": "overlap",
+    "compare": "compare",
+    "Report": "compare",
 }
 
 #: name -> submodule to expose at top level. Separate from `_EXPORTS` because the resolution
@@ -56,16 +59,20 @@ _EXPORTS: dict[str, str] = {
 #: Same lazy contract. Keys must not collide with `_EXPORTS` — whichever were checked first
 #: would silently win, so a test asserts they stay disjoint.
 _SUBMODULES: dict[str, str] = {
+    "adjudicate": "adjudicate",
     "assign": "assign",
+    "disagree": "disagree",
     "overlap": "overlap",
+    "tables": "tables",
     "voxel": "voxel",
 }
 
 __all__ = ["__version__", *sorted({*_EXPORTS, *_SUBMODULES})]
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDE completion only
-    from . import assign, overlap, voxel  # noqa: F401
-    from .overlap import Contingency, contingency  # noqa: F401
+    from . import adjudicate, assign, disagree, overlap, tables, voxel  # noqa: F401
+    from .compare import Report, compare  # noqa: F401
+    from .overlap import Contingency, contingency, pool  # noqa: F401
 
 
 def __getattr__(name: str):

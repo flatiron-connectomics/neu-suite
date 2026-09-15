@@ -57,9 +57,10 @@ link = ["neu-glance"]
 # `neu-glance[framing]` and `neu-draw[sources]` resolve the same reader.
 erl = ["neu-morpho"]
 
-# No `[project.scripts]` yet — `neu_eval.cli` does not exist, and an entry point naming a
-# missing module installs fine and then fails at the shell, which is worse than having no
-# command. It arrives with `cli.py`, as `neu-eval = "neu_eval.cli:main"`.
+[project.scripts]
+# `neu-eval`, matching the abbreviated commands its siblings expose (`neu-vol`,
+# `neu-morpho`, `neu-mark`, `neu-glance`).
+neu-eval = "neu_eval.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["neu_eval"]
