@@ -22,8 +22,8 @@ Three properties follow, and they are the reason the package is shaped this way:
   point where a human reads the output.
 
 **A reduction is also what keeps the GPU question small.** A contingency table is
-``O(pairs)``, not ``O(voxels)``, so it leaves the device at the boundary and always holds
-host arrays. The only functions that touch a backend are the voxel pass itself and the
+``O(pairs)``, not ``O(voxels)``, so it comes back to CPU memory at the boundary and stays
+there. The only functions that touch a backend are the voxel pass itself and the
 per-pair distance transform behind :func:`neu_eval.disagree.locate`; everything downstream
 is plain numpy. Dispatch comes from :mod:`neu_proc.ops.backend` — on the array, never on a
 flag — and the off switch is ``NEU_PROC_GPU=0``, reused rather than duplicated under a

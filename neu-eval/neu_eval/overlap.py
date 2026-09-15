@@ -47,9 +47,9 @@ class Contingency:
     """Voxel counts for every ``(a_id, b_id)`` pair that co-occurs.
 
     Sparse and canonical: ``a_ids``, ``b_ids`` and ``counts`` are parallel arrays sorted by
-    ``(a_id, b_id)``, carrying only pairs with a nonzero count. Always **host** arrays —
+    ``(a_id, b_id)``, carrying only pairs with a nonzero count. Always in **CPU memory** —
     the table is ``O(pairs)`` where the input is ``O(voxels)``, so there is nothing to gain
-    by leaving it on a device and a great deal to lose in every consumer having to care.
+    by leaving it on the GPU and a great deal to lose in every consumer having to care.
 
     ``labels`` names the two sides for reporting. It takes part in equality and in addition
     because two tables built with the sides swapped must not silently sum.
@@ -247,8 +247,9 @@ def contingency(a: Any, b: Any, *,
     restricts to where it is True. Everything dropped is tallied in ``n_ignored`` rather
     than silently vanishing. See the module docstring for why the defaults are asymmetric.
 
-    Runs on whatever device the arrays are on, via :mod:`neu_proc.ops.backend` — dispatch is
-    on the array, so one body serves both backends — and returns host arrays either way.
+    Runs wherever the arrays already live, CPU or GPU, via :mod:`neu_proc.ops.backend` —
+    dispatch is on the array, so one body serves both — and the table comes back in CPU
+    memory either way.
     """
     from neu_proc.ops.backend import array_module, to_host
 
@@ -263,7 +264,7 @@ def contingency(a: Any, b: Any, *,
     xp = array_module(a)
     if type(a).__module__.split(".")[0] != type(b).__module__.split(".")[0]:
         raise TypeError(
-            "both labelings must live in the same place: got "
+            "both labelings must live in the same place (both CPU, or both GPU): got "
             f"{type(a).__module__.split('.')[0]} and {type(b).__module__.split('.')[0]}. "
             "Move one with neu_proc.ops.backend.to_device / to_host.")
 
@@ -274,26 +275,40 @@ def contingency(a: Any, b: Any, *,
     ignore_a = frozenset(int(v) for v in ignore_a)
     ignore_b = frozenset(int(v) for v in ignore_b)
 
-    keep = None
+    # A spatial mask has to be applied to the voxels; there is no other place it exists.
     if mask is not None:
         mask = xp.asarray(mask)
         if mask.shape != a.shape:
             raise ValueError(f"mask must match the labelings: {mask.shape} vs {a.shape}")
         keep = mask.reshape(-1).astype(bool)
-    for values, arr in ((ignore_a, af), (ignore_b, bf)):
-        for value in sorted(values):
-            flag = arr != xp.asarray(value, dtype=arr.dtype)
-            keep = flag if keep is None else (keep & flag)
-
-    if keep is not None:
         af = af[keep]
         bf = bf[keep]
-    n_scored = int(af.shape[0])
+    n_counted = int(af.shape[0])
 
     a_ids, b_ids, counts = _count_pairs(xp, af, bf)
+    a_ids, b_ids, counts = to_host(a_ids), to_host(b_ids), to_host(counts)
+
+    # An **ignored label**, by contrast, is applied to the finished table. Dropping the rows
+    # that name it gives exactly the table of the voxels that survive it — the ignore is a
+    # union of whole rows and columns — and that is O(pairs) rather than a boolean pass plus
+    # a fancy-index compaction of both labelings, which measured 142 ms on a 21.7 Mvoxel
+    # crop *whose side a contained no 0 at all*. The default `ignore_a=(0,)` is therefore
+    # free, which matters because it is on every call.
+    n_dropped = 0
+    if (ignore_a or ignore_b) and counts.size:
+        drop = np.zeros(counts.shape, dtype=bool)
+        if ignore_a:
+            drop |= np.isin(a_ids, np.fromiter(ignore_a, dtype=np.uint64, count=len(ignore_a)))
+        if ignore_b:
+            drop |= np.isin(b_ids, np.fromiter(ignore_b, dtype=np.uint64, count=len(ignore_b)))
+        if drop.any():
+            n_dropped = int(counts[drop].sum())
+            keep_rows = ~drop
+            a_ids, b_ids, counts = a_ids[keep_rows], b_ids[keep_rows], counts[keep_rows]
+
     return _canonical(
-        to_host(a_ids), to_host(b_ids), to_host(counts),
-        n_ignored=n_total - n_scored,
+        a_ids, b_ids, counts,
+        n_ignored=n_total - n_counted + n_dropped,
         ignore_a=ignore_a, ignore_b=ignore_b,
         labels=(str(labels[0]), str(labels[1])))
 
@@ -328,15 +343,23 @@ def _factorize(xp, arr):
     """``(ids, dense)`` — the distinct labels, and each voxel's index into them.
 
     Two implementations, because the obvious one is slow where it matters.
-    ``unique(return_inverse=True)`` is a sort, and on the host that is most of the cost of
-    the whole pass: measured on a 21.7 Mvoxel uint64 crop with 1,316 labels, 3.43 s against
-    **116 ms** for ``fastremap.renumber``, which is hash-based and linear. So the host uses
-    fastremap (already a neu-proc dependency) and the device uses cupy's ``unique``, where
-    the sort is parallel and the question does not arise. Both return the same thing up to
-    the arbitrary numbering of the dense indices, which nothing downstream can see.
+    ``unique(return_inverse=True)`` is a sort, and **on the CPU that was most of the cost of
+    the whole pass**: measured on a 21.7 Mvoxel uint64 crop with 1,316 labels, 3.43 s
+    against **116 ms** for ``fastremap.renumber``, which is hash-based and linear. It took
+    the whole CPU pass from 7.26 s to 0.41 s — a larger win than the GPU's, and one that
+    CI and every GPU-less worker gets.
+
+    So the CPU uses fastremap (already a neu-proc dependency) and the GPU uses cupy's
+    ``unique``, where the sort is parallel and the question does not arise. Both return the
+    same thing up to the arbitrary numbering of the dense indices, which nothing downstream
+    can see — and ``test_backend`` pins that rather than assuming it, because these are
+    genuinely different algorithms and not one function with a flag.
     """
     from neu_proc.ops.backend import is_device_array
 
+    # `is_device_array` is neu-proc's name for "lives in GPU memory". Its host/device
+    # vocabulary is CUDA's and Numba's; this package follows it at the API boundary and
+    # says CPU/GPU in prose.
     if is_device_array(arr):
         ids, dense = xp.unique(arr, return_inverse=True)
         return ids, dense.reshape(-1)
@@ -355,7 +378,7 @@ def _factorize(xp, arr):
 
 
 def _count_pairs(xp, af, bf):
-    """``(a_ids, b_ids, counts)`` for the co-occurring pairs, on whatever device they are.
+    """``(a_ids, b_ids, counts)`` for the co-occurring pairs, wherever they live.
 
     Dense-renumber each side, pack the pair into one integer, and count that — the trick
     ``neu_morpho.measure.compartments.joint_counts`` uses, with its 16-labels-on-one-side

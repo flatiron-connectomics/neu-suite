@@ -146,6 +146,34 @@ def test_a_mask_restricts_the_scored_region():
     assert c.n_ignored == 4
 
 
+def test_ignoring_a_label_is_the_same_as_masking_out_where_it_occurs():
+    """The equivalence the fast path relies on.
+
+    A label ignore is a union of whole rows and columns of the table, so it can be applied
+    to the finished table instead of to the voxels — which is O(pairs) rather than a
+    boolean pass plus a compaction of both labelings. This asserts the two routes agree on
+    the counts; they differ only in the bookkeeping fields, which is the point of having
+    both.
+    """
+    a, b = _pair()
+    by_label = contingency(a, b, ignore_a=(0, 3), ignore_b=(5,))
+    by_mask = contingency(a, b, ignore_a=(), mask=(a != 0) & (a != 3) & (b != 5))
+    assert np.array_equal(by_label.a_ids, by_mask.a_ids)
+    assert np.array_equal(by_label.b_ids, by_mask.b_ids)
+    assert np.array_equal(by_label.counts, by_mask.counts)
+    assert by_label.n_scored == by_mask.n_scored
+    assert by_label.n_ignored == by_mask.n_ignored
+
+
+def test_ignoring_a_label_that_does_not_occur_costs_nothing_and_changes_nothing():
+    a = np.array([[[1, 2, 3]]], dtype=np.uint64)
+    b = np.array([[[7, 8, 9]]], dtype=np.uint64)
+    plain = contingency(a, b, ignore_a=())
+    absent = contingency(a, b, ignore_a=(999,))
+    assert np.array_equal(plain.counts, absent.counts)
+    assert absent.n_ignored == 0
+
+
 def test_ignoring_more_labels_can_only_shrink_the_scored_region():
     a, b = _pair()
     wide = contingency(a, b)
