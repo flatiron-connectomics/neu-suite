@@ -68,49 +68,60 @@ def _gpu():
 gpu = pytest.mark.skipif(not _gpu(), reason="no GPU available")
 
 
+def _dev(arr):
+    """``arr`` on the device, via cupy directly rather than through ``to_device``.
+
+    Deliberately bypassing the backend helper. ``to_device`` honours ``NEU_PROC_GPU=0`` and
+    returns the array untouched, which is right for production code and *wrong* for a test
+    of the device path: under that switch every assertion below would compare the host
+    against itself and pass for the wrong reason. Caught by running the suite with the
+    switch off, which is the only reason it was visible at all.
+    """
+    import cupy
+
+    return cupy.asarray(arr)
+
+
 @gpu
 def test_the_device_gives_the_same_table_as_the_host():
-    from neu_proc.ops.backend import to_device
-
     a, b = _pair()
-    assert contingency(to_device(a), to_device(b)) == contingency(a, b)
+    assert contingency(_dev(a), _dev(b)) == contingency(a, b)
 
 
 @gpu
 def test_the_device_gives_the_same_table_on_the_sorted_key_path(monkeypatch):
-    from neu_proc.ops.backend import to_device
-
     a, b = _pair()
     expected = contingency(a, b)
     monkeypatch.setattr(overlap, "DENSE_CELL_LIMIT", 0)
-    assert contingency(to_device(a), to_device(b)) == expected
+    assert contingency(_dev(a), _dev(b)) == expected
 
 
 @gpu
 def test_the_table_comes_back_on_the_host_whatever_went_in():
     """The reduction leaves the device, so no consumer has to know about one."""
-    from neu_proc.ops.backend import to_device
-
-    c = contingency(*(to_device(x) for x in _pair()))
+    c = contingency(*(_dev(x) for x in _pair()))
     for name in ("a_ids", "b_ids", "counts"):
         assert isinstance(getattr(c, name), np.ndarray)
 
 
 @gpu
 def test_a_mask_works_on_the_device_too():
-    from neu_proc.ops.backend import to_device
-
     a, b = _pair()
     mask = np.zeros(a.shape, dtype=bool)
     mask[:5] = True
-    assert (contingency(to_device(a), to_device(b), mask=to_device(mask))
+    assert (contingency(_dev(a), _dev(b), mask=_dev(mask))
             == contingency(a, b, mask=mask))
 
 
 @gpu
-def test_mixing_a_host_and_a_device_labeling_is_refused():
-    from neu_proc.ops.backend import to_device
+def test_ignored_labels_are_dropped_on_the_device_too():
+    a, b = _pair()
+    assert (contingency(_dev(a), _dev(b), ignore_a=(0, 1), ignore_b=(2,))
+            == contingency(a, b, ignore_a=(0, 1), ignore_b=(2,)))
 
+
+@gpu
+def test_mixing_a_host_and_a_device_labeling_is_refused():
     a, b = _pair()
     with pytest.raises(TypeError, match="same place"):
-        contingency(to_device(a), b)
+        contingency(_dev(a), b)
