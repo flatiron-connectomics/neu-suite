@@ -22,13 +22,13 @@ logger = logging.getLogger(__name__)
 _EPILOG = """\
 examples:
   # one annotated crop against a segmentation, read registered to it
-  neu-eval compare --reference gt.h5:/z11601 --segmentation SEG_URL --level 0 --out cmp/
+  neu-eval compare --reference gt.h5:/crop_01 --segmentation SEG_URL --level 0 --out cmp/
 
   # every crop in the container, plus a pooled score over all of them
   neu-eval compare --reference gt.h5 --all-datasets --segmentation SEG_URL --out cmp/
 
   # after filling in the verdict column, rescore without the reference's own errors
-  neu-eval compare --reference gt.h5:/z11601 --segmentation SEG_URL \\
+  neu-eval compare --reference gt.h5:/crop_01 --segmentation SEG_URL \\
       --adjudicated cmp/disagreements.csv --out cmp/
 
   # step through the worst disagreements in a viewer
