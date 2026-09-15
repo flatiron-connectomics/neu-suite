@@ -2,7 +2,7 @@
 
 ## The environment
 
-One conda environment, `neu-env`, covers all eight packages, installed editable so a
+One conda environment, `neu-env`, covers every package, installed editable so a
 change to any of them is live everywhere.
 
 ```bash
@@ -21,7 +21,8 @@ conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
     numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
 pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-                      -e ./neu-mark -e ./neu-glance -e ./neu-draw
+                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc \
+                      -e ./neu-eval
 ```
 
 ```{warning}

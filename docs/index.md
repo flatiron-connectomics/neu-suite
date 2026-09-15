@@ -26,6 +26,7 @@ neu-vol             volume I/O: tensorstore backends, storage profiles,
     └─ neu-proc        array processing: filters, label tools, distance transforms
            ↑
         neu-draw      local 3D rendering in a notebook, on pygfx
+        neu-eval      comparing a segmentation against a reference labeling
 ```
 
 Nothing lower may import from anything higher, and consumers **at the same tier** do not
@@ -33,7 +34,7 @@ import each other.
 
 ## Which one do I want?
 
-You almost certainly want a **command**, and there are four:
+You almost certainly want a **command**, and there are five:
 
 ::::{grid} 2
 :::{grid-item-card} `neu-vol`
@@ -55,9 +56,14 @@ Anything a **viewer** consumes: a shareable link or a state, a layer of your own
 coordinates, a layer of boxes showing where a sparse volume's data is. The other three
 write data and know nothing about neuroglancer.
 :::
+:::{grid-item-card} `neu-eval`
+How good is a segmentation? Variation of information, adapted Rand, matching and
+completeness against a reference labeling — and a ranked, located list of where the two
+disagree, which round-trips so you can record that the *reference* was the wrong one.
+:::
 ::::
 
-Four packages have no command. `neu-lib` holds the types they all share and `blockrun`
+Three packages have no command. `neu-lib` holds the types they all share and `blockrun`
 is the substrate they all run on; `neu-draw` is a notebook library — it draws meshes,
 skeletons and synapse points locally with pygfx, where `neu-glance` sends a state to a
 remote neuroglancer. `neu-proc` is the newest and the least finished: array-in, array-out
@@ -69,7 +75,7 @@ with its synopsis. The [CLI reference](cli/index.md) has the full flag-by-flag d
 generated from the parsers themselves so it always matches `--help`.
 
 Calling them from Python instead — from a notebook, or from your own script — is the
-[API reference](_generated/api-index.md): every module of all eight packages, parsed
+[API reference](_generated/api-index.md): every module of every package, parsed
 from the source.
 
 ```{toctree}
@@ -115,4 +121,5 @@ _generated/neu-mark-readme
 _generated/neu-glance-readme
 _generated/neu-draw-readme
 _generated/neu-proc-readme
+_generated/neu-eval-readme
 ```

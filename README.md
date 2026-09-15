@@ -18,10 +18,11 @@ The packages live in their own repositories and are meant to sit here as sibling
 | [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
 | [neu-proc](https://github.com/flatiron-connectomics/neu-proc) | array processing: filters, label tools, distance transforms. Library only, no command. |
 | [neu-draw](https://github.com/flatiron-connectomics/neu-draw) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
+| [neu-eval](https://github.com/flatiron-connectomics/neu-eval) | comparison metrics against a reference labeling, and the `neu-eval` command |
 
 The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
-{neu-morpho, neu-mark, neu-glance, neu-proc} ← neu-draw` — and they depend on each other
-by relative `../sibling` path, so the layout matters:
+{neu-morpho, neu-mark, neu-glance, neu-proc} ← {neu-draw, neu-eval}` — and they depend on
+each other by relative `../sibling` path, so the layout matters:
 
 ```text
 neu-suite/          ← this repository
@@ -32,7 +33,8 @@ neu-suite/          ← this repository
 ├── neu-mark/
 ├── neu-glance/
 ├── neu-proc/
-└── neu-draw/
+├── neu-draw/
+└── neu-eval/
 ```
 
 `neu-lib` and `blockrun` sit side by side at the bottom and know nothing about each
@@ -68,7 +70,8 @@ conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
     numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
 conda activate neu-env
 pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc
+                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc \
+                      -e ./neu-eval
 ```
 
 `--no-deps` is load-bearing: the `pyproject.toml` files declare real runtime deps, and

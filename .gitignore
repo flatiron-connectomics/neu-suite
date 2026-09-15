@@ -1,5 +1,6 @@
-# The five packages are their own repositories, cloned as siblings here. They are
-# NOT submodules — see .github/workflows/docs.yml for why.
+# The packages are their own repositories, cloned as siblings here. They are
+# NOT submodules — see .github/workflows/docs.yml for why. Deliberately uncounted: this
+# comment said "five" while listing eight, which is the way a count in prose goes wrong.
 blockrun/
 neu-vol/
 neu-morpho/
@@ -8,6 +9,7 @@ neu-glance/
 neu-draw/
 neu-lib/
 neu-proc/
+neu-eval/
 
 # Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
 # one cluster's partitions, accounts and paths.

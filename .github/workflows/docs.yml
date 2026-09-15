@@ -105,18 +105,25 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
-          # neu-draw and neu-proc are cloned but deliberately NOT installed: neither
-          # has a CLI to introspect, and installing them would pull pygfx and wgpu, or
-          # scipy / scikit-image / cc3d / fastmorph, into a job that renders no pixels
-          # and runs no arrays. Their READMEs and their whole API references come from
-          # the clones. Verified for neu-draw by building with neu_draw, pygfx, wgpu,
-          # rendercanvas and ipywidgets all made unimportable: -W still passes and all
-          # 12 of its pages keep their content.
+          # neu-draw is cloned but deliberately NOT installed: it has no CLI to
+          # introspect, and installing it would pull pygfx and wgpu into a job that
+          # renders no pixels. Its README and its whole API reference come from the
+          # clone. Verified by building with neu_draw, pygfx, wgpu, rendercanvas and
+          # ipywidgets all made unimportable: -W still passes and all 12 of its pages
+          # keep their content.
+          #
+          # neu-proc IS installed, and only because neu-eval requires it: `pip install
+          # ./neu-eval` would otherwise go to PyPI for a package that is not there. That
+          # drags in scipy / scikit-image / cc3d / fastmorph for a job that runs no
+          # arrays, which is a real cost accepted for a real reason — neu-eval has a CLI
+          # and its reference is rendered from the live parser. `neu_eval.cli` itself
+          # imports neu_proc only inside a handler, so nothing here executes it.
           #
           # This list is NOT derived from clitools.PACKAGES, and that is the point —
           # which packages need installing is a fact about their CLIs, not about the
           # set. The clone list is derived; the guard above catches the other mistake.
           pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
+                      ./neu-proc ./neu-eval \
                       ./neu-glance
 
       # -W because the CLI reference is generated: a warning here means a parser stopped

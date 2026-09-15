@@ -13,4 +13,5 @@ neu-vol
 neu-morpho
 neu-mark
 neu-glance
+neu-eval
 ```

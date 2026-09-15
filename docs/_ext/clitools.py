@@ -30,6 +30,8 @@ COMMANDS = [
     ("neu-mark", "neu_mark.cli", "DVID annotations into tables: synapses and other "
                                       "point annotations, per-body records"),
     ("neu-glance", "neu_glance.cli", "neuroglancer states, annotation layers and links"),
+    ("neu-eval", "neu_eval.cli", "comparison metrics against a reference labeling, and "
+                                      "a located list of the disagreements"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
@@ -46,6 +48,7 @@ INCLUDED = [
     ("neu-glance/README.md", "neu-glance-readme.md"),
     ("neu-draw/README.md", "neu-draw-readme.md"),
     ("neu-proc/README.md", "neu-proc-readme.md"),
+    ("neu-eval/README.md", "neu-eval-readme.md"),
 ]
 
 
@@ -79,6 +82,10 @@ PACKAGES = [
      "Array processing: filters, label tools and distance transforms. Only the pure "
      "array-in-array-out half so far.",
      "`dilate`, `dust`, `ops.kernels`, `ops.backend`"),
+    ("neu-eval", "neu_eval",
+     "Comparing a segmentation against a reference labeling: the metrics, and where "
+     "the two disagree.",
+     "`contingency`, `compare`, `voxel`, `assign`, `disagree`, `adjudicate`"),
     ("neu-draw", "neu_draw",
      "Local 3D rendering in a notebook, on pygfx.",
      "`show`, `build_scene`, `Scene`, `sources`, `Legend`"),
@@ -324,6 +331,11 @@ def em_annot_parser() -> argparse.ArgumentParser:
 def neu_glance_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the neu-glance page."""
     return documented_parser("neu_glance.cli")
+
+
+def neu_eval_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the neu-eval page."""
+    return documented_parser("neu_eval.cli")
 
 
 def write_cheatsheet(path: Path) -> None:
