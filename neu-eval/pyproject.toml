@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neu-eval"
+version = "0.1.0"
+description = "Comparison metrics between a segmentation and a reference labeling: variation of information, adapted Rand, matching and completeness, and a located list of disagreements."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# The pure core is numpy + scipy, and keeping it that way is worth protecting for the same
+# reason neu-proc protects it: CI can then run *every* test rather than skipping the
+# conda-only paths. `neu-proc` is the one sibling the core needs, and it drags nothing heavy
+# in — its `ops.backend` is the scipy/cupyx dispatch this package reuses rather than
+# reimplementing, and `ops.measure` / `ops.dust` are what make a component count meaningful
+# (bodies in these volumes are genuinely fragmented into single-voxel specks, so an
+# unthresholded count measures the specks).
+#
+# `neu-vol` is here for the reading half only — `read_piece`, and `ops.annotate.labeled_regions`
+# for the un-relabelled-GT guard. Every module that computes anything is importable without
+# it, which `tests/test_imports.py` pins.
+dependencies = [
+    "numpy>=2",
+    "scipy>=1.15",
+    "neu-lib",
+    "neu-proc",
+    "neu-vol",
+]
+
+# Deliberately NOT declared:
+#   pandas/pyarrow — see the `report` extra. Every use is inside a function, so
+#     `import neu_eval` does not pay for pandas and neither does `--help`; the same rule
+#     `neu_morpho.measure` follows, and a test asserts it.
+#   cupy — CUDA-version-specific wheels, so it is never a declared dependency anywhere in
+#     the suite. Dispatch is on the array (`neu_proc.ops.backend`), so a host-only install
+#     runs the same code; `NEU_PROC_GPU=0` is the off switch, reused rather than duplicated
+#     under a second name.
+#   neu-mark — connectivity metrics take synapses as TABLES. neu-mark is the same tier as
+#     the packages below this one, and neu-draw's abstention is the precedent.
+#   neu-morpho, neu-glance — see the `erl` and `link` extras. Both are downward
+#     dependencies and so permitted, but neither is on any required path.
+[project.optional-dependencies]
+dev = ["pytest"]
+# Result tables. parquet for metrics (it round-trips a nullable integer column, unlike csv);
+# the disagreement table is csv on purpose, because a human edits the verdict column.
+report = ["pandas", "pyarrow"]
+# `neu-eval link` — turn the ranked disagreements into a neuroglancer state whose LOCAL
+# annotations list and step. Optional because the table is the contract: `neu-glance
+# annotate` reads it from disk and needs no import here.
+link = ["neu-glance"]
+# Skeleton metrics (expected run length). Two of the three reference sources are conda-only
+# — `neu_morpho.readback` for a published precomputed skeleton source, kimimaro for a pass
+# over a dense crop — so this is an extra, resolved inside the function, exactly as
+# `neu-glance[framing]` and `neu-draw[sources]` resolve the same reader.
+erl = ["neu-morpho"]
+
+# No `[project.scripts]` yet — `neu_eval.cli` does not exist, and an entry point naming a
+# missing module installs fine and then fails at the shell, which is worse than having no
+# command. It arrives with `cli.py`, as `neu-eval = "neu_eval.cli:main"`.
+
+[tool.hatch.build.targets.wheel]
+packages = ["neu_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
