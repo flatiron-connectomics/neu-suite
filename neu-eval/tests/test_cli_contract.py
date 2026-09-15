@@ -108,8 +108,8 @@ def test_voxel_sizes_parse_as_floats_not_ints():
 # -- dataset pairing ---------------------------------------------------------------------
 
 def test_a_plain_source_is_passed_through_unchanged():
-    assert cli._paired_source("s3://my-bucket/vol", "z11601") == "s3://my-bucket/vol"
-    assert cli._paired_source("some.h5:/already", "z11601") == "some.h5:/already"
+    assert cli._paired_source("s3://my-bucket/vol", "crop_a") == "s3://my-bucket/vol"
+    assert cli._paired_source("some.h5:/already", "crop_a") == "some.h5:/already"
     assert cli._paired_source("some.h5", None) == "some.h5"
 
 
@@ -120,12 +120,12 @@ def test_a_container_holding_the_name_is_addressed_to_it(tmp_path):
 
     path = tmp_path / "seg.h5"
     with h5py.File(path, "w") as handle:
-        handle.create_dataset("z11601", data=np.zeros((2, 2, 2), np.uint64))
-    assert cli._paired_source(str(path), "z11601") == f"{path}:/z11601"
+        handle.create_dataset("crop_a", data=np.zeros((2, 2, 2), np.uint64))
+    assert cli._paired_source(str(path), "crop_a") == f"{path}:/crop_a"
     assert cli._paired_source(str(path), "absent") == str(path)
 
 
 def test_a_non_hdf5_file_is_left_alone(tmp_path):
     path = tmp_path / "notes.txt"
     path.write_text("not hdf5")
-    assert cli._paired_source(str(path), "z11601") == str(path)
+    assert cli._paired_source(str(path), "crop_a") == str(path)
