@@ -124,7 +124,7 @@ Verdicts are `<reference>_correct`, `<segmentation>_correct`, `ambiguous` and `s
   not fold the segmentation's answer in as a corrected reference. That needs the voxels and
   would produce a new annotation volume.
 
-## Two ways a comparison is quietly meaningless
+## Three ways a comparison is quietly meaningless
 
 **Unregistered pieces.** Read the segmentation with `crop=<the reference piece>`, which
 converts the reference's physical box using the target level's own voxel size and origin —
