@@ -163,7 +163,7 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     voxel index means nothing outside its own frame and a report gets read next to a viewer
     that speaks nanometres. The voxel index is kept too, for indexing back into the arrays.
     """
-    from neu_proc.ops.backend import ndimage_for, to_host
+    from neu_proc.ops.backend import ndimage_for, to_cpu
 
     if a.array.shape != b.array.shape:
         raise ValueError(f"the two pieces must be the same shape: "
@@ -174,7 +174,7 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     for row in report_rows:
         mask = (aa == aa.dtype.type(row[a_key])) & (ba == ba.dtype.type(row[b_key]))
         point = _deepest_voxel(mask, max_edt_voxels=max_edt_voxels, ndimage_for=ndimage_for,
-                               to_host=to_host)
+                               to_cpu=to_cpu)
         enriched = dict(row)
         if point is None:
             # The pair is in the table, so it has voxels; an empty mask here means the
@@ -191,11 +191,11 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     return out
 
 
-def _deepest_voxel(mask, *, max_edt_voxels, ndimage_for, to_host):
+def _deepest_voxel(mask, *, max_edt_voxels, ndimage_for, to_cpu):
     """The voxel of ``mask`` furthest from its boundary, as a ``(z, y, x)`` index."""
     # Per-axis reductions give the bounding box without materialising a coordinate list,
     # which for a body-sized region would be tens of megabytes.
-    hits = [to_host(mask.any(axis=tuple(j for j in range(3) if j != i))) for i in range(3)]
+    hits = [to_cpu(mask.any(axis=tuple(j for j in range(3) if j != i))) for i in range(3)]
     spans = []
     for axis_hits in hits:
         where = np.nonzero(axis_hits)[0]
@@ -218,14 +218,14 @@ def _deepest_voxel(mask, *, max_edt_voxels, ndimage_for, to_host):
     # reports its deepest point on that face.
     ndi, work = ndimage_for(cropped, "distance_transform_edt")
     dist = ndi.distance_transform_edt(_pad_false(work))
-    flat = int(to_host(dist.reshape(-1).argmax()))
+    flat = int(to_cpu(dist.reshape(-1).argmax()))
     local = np.unravel_index(flat, tuple(dist.shape))
     index = [(int(l) - 1) * stride + lo for l, (lo, _) in zip(local, spans)]
 
     if stride > 1:
         # The strided grid may not land on a voxel of the pair. Snap to one that is, near
         # the answer, so the coordinate is always inside the disagreement.
-        index = _snap_into_mask(mask, index, spans, stride, to_host=to_host)
+        index = _snap_into_mask(mask, index, spans, stride, to_cpu=to_cpu)
     return tuple(index)
 
 
@@ -239,16 +239,16 @@ def _pad_false(arr):
     return np.pad(arr, 1, mode="constant", constant_values=False)
 
 
-def _snap_into_mask(mask, index, spans, stride, *, to_host):
+def _snap_into_mask(mask, index, spans, stride, *, to_cpu):
     """Move ``index`` to the nearest voxel that is actually in ``mask``."""
-    if bool(to_host(mask[tuple(index)])):
+    if bool(to_cpu(mask[tuple(index)])):
         return index
     window = tuple(
         slice(max(lo, i - stride), min(hi, i + stride + 1))
         for i, (lo, hi) in zip(index, spans))
-    local = np.argwhere(to_host(mask[window]))
+    local = np.argwhere(to_cpu(mask[window]))
     if local.size == 0:                             # widen once to the whole bounding box
-        local = np.argwhere(to_host(mask[tuple(slice(lo, hi) for lo, hi in spans)]))
+        local = np.argwhere(to_cpu(mask[tuple(slice(lo, hi) for lo, hi in spans)]))
         return [int(v) + lo for v, (lo, _) in zip(local[0], spans)]
     return [int(v) + w.start for v, w in zip(local[0], window)]
 

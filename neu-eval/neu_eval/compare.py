@@ -183,9 +183,9 @@ def scattered_labels(piece: Any, c: Contingency, *,
     from scipy.ndimage import find_objects
     import fastremap
 
-    from neu_proc.ops.backend import to_host
+    from neu_proc.ops.backend import to_cpu
 
-    arr = to_host(piece.array)
+    arr = to_cpu(piece.array)
     dense, mapping = fastremap.renumber(np.ascontiguousarray(arr), in_place=False)
     back = {new: original for original, new in mapping.items()}
     boxes = find_objects(dense.astype(np.int64))

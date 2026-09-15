@@ -307,7 +307,7 @@ def contingency(a: Any, b: Any, *,
     dispatch is on the array, so one body serves both — and the table comes back in CPU
     memory either way.
     """
-    from neu_proc.ops.backend import array_module, to_host
+    from neu_proc.ops.backend import array_module, to_cpu
 
     a = _as_labels(a, "a")
     b = _as_labels(b, "b")
@@ -322,7 +322,7 @@ def contingency(a: Any, b: Any, *,
         raise TypeError(
             "both labelings must live in the same place (both CPU, or both GPU): got "
             f"{type(a).__module__.split('.')[0]} and {type(b).__module__.split('.')[0]}. "
-            "Move one with neu_proc.ops.backend.to_device / to_host.")
+            "Move one with neu_proc.ops.backend.to_gpu / to_cpu.")
 
     n_total = int(a.size)
     af = a.reshape(-1)
@@ -342,7 +342,7 @@ def contingency(a: Any, b: Any, *,
     n_counted = int(af.shape[0])
 
     a_ids, b_ids, counts = _count_pairs(xp, af, bf)
-    a_ids, b_ids, counts = to_host(a_ids), to_host(b_ids), to_host(counts)
+    a_ids, b_ids, counts = to_cpu(a_ids), to_cpu(b_ids), to_cpu(counts)
 
     # An **ignored label**, by contrast, is applied to the finished table. Dropping the rows
     # that name it gives exactly the table of the voxels that survive it — the ignore is a
@@ -411,12 +411,10 @@ def _factorize(xp, arr):
     can see — and ``test_backend`` pins that rather than assuming it, because these are
     genuinely different algorithms and not one function with a flag.
     """
-    from neu_proc.ops.backend import is_device_array
+    from neu_proc.ops.backend import is_gpu_array
 
-    # `is_device_array` is neu-proc's name for "lives in GPU memory". Its host/device
-    # vocabulary is CUDA's and Numba's; this package follows it at the API boundary and
-    # says CPU/GPU in prose.
-    if is_device_array(arr):
+    # `is_gpu_array` is neu-proc's name for "lives in GPU memory".
+    if is_gpu_array(arr):
         ids, dense = xp.unique(arr, return_inverse=True)
         return ids, dense.reshape(-1)
 
