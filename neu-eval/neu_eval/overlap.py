@@ -20,6 +20,21 @@ dense segmentation, where 0 is "assigned to no body" inside a region somebody di
 — an error, not an absence. Scoring the second as if it were the first is the ordinary way
 these numbers come out flattering.
 
+**But "0 means membrane" is a common convention, and then the default is badly wrong.**
+Several pipelines label membranes 0 and cell interiors with body ids. Scored with
+``ignore_b=()`` that invents one enormous segment threading between every cell in the
+volume, so it touches nearly every reference body at once and registers as a colossal false
+merge. Measured on two vendor segmentations of the same specimen, ``ignore_b=(0,)`` against
+``ignore_b=()``: VOI **0.63 vs 1.37**, **0.51 vs 2.01**, **0.96 vs 2.16**, **0.29 vs 1.98**
+— a factor of 2.2 to 6.9, all of it artefact. Nothing in the array distinguishes the two
+conventions, so **the caller has to know and say**; there is no safe guess, which is why
+there is no attempt at one.
+
+The guard against the obvious abuse — declaring everything membrane so almost nothing is
+scored — is ``n_ignored``, and therefore ``frac_scored`` in every summary. On those same two
+vendors it reads 93.6% for one and 84.5–87.1% for the other, which is a real difference in
+how much each declined to label and belongs beside their scores rather than buried.
+
 One consequence worth stating because it looks like a bug: ``contingency(a, b).T`` is not
 ``contingency(b, a)``. Transposing relabels the axes of a table already built;
 re-running the kernel applies the *defaults* to the new side ``a``. Both are right, and if

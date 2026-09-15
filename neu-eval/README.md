@@ -132,6 +132,16 @@ never an assumed `2**level` factor, because real pyramids are anisotropic. `comp
 the frames agree and refuses when they do not; a half-voxel shift otherwise becomes a
 metric nobody can explain.
 
+**A `0` that means something other than what you assumed.** The reference side ignores 0 by
+default (unannotated); the segmentation side does not (a 0 there is a body the pipeline
+failed to assign). **But several pipelines label membranes 0**, and then the default invents
+one enormous segment threading between every cell — a colossal false merge touching nearly
+every body. Measured on two vendor segmentations of one specimen, `--ignore-segmentation 0`
+against the default: VOI 0.63 vs 1.37, 0.51 vs 2.01, 0.96 vs 2.16, 0.29 vs 1.98 — a factor
+of 2.2 to 6.9, all artefact. Nothing in the array tells the two conventions apart, so you
+have to. `frac_scored` is the guard against the opposite abuse (declare everything membrane
+and almost nothing gets scored), which is why it sits in every summary.
+
 **An un-relabelled multi-crop reference.** Every annotated region numbers its bodies from
 1, so the same integer names a different cell in each crop — measured on one dataset, 3,637
 label-instances over 12 regions but only 1,824 distinct ids, 496 of them shared. Score that
