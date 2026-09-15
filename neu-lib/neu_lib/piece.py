@@ -14,7 +14,7 @@ from, and nothing raises.
     piece.crop(box)      # a sub-piece, its origin shifted to match
     piece.kind           # "segmentation" — what the voxels mean, where the source said
     piece.name           # "gt/vol_03700" — what it is called, where the source said
-    piece.to_numpy()     # the voxels on the host, for something that needs numpy
+    piece.to_numpy()     # the voxels in CPU memory, for something that needs numpy
 
 ``kind`` is optional and rides along because it is a fact about the **data**, not about
 any renderer: it decides whether coarsening may average or must take a mode, and averaging
@@ -46,42 +46,42 @@ from .frame import Frame
 from .grid import BBox
 
 
-def _is_device(value: Any) -> bool:
-    """True if ``value`` lives on a GPU, by the type's defining module.
+def _is_gpu_array(value: Any) -> bool:
+    """True if ``value`` lives in GPU memory, by the type's defining module.
 
-    One check, shared by :func:`_to_numpy` and :meth:`Piece.to_host`, so the two cannot
-    disagree about what "already on the host" means — which they did: ``to_host`` tested
-    ``isinstance(np.ndarray)``, so a device array that happened to subclass ndarray was
+    One check, shared by :func:`_to_numpy` and :meth:`Piece.to_cpu`, so the two cannot
+    disagree about what "already in CPU memory" means — which they did: ``to_cpu`` tested
+    ``isinstance(np.ndarray)``, so a GPU array that happened to subclass ndarray was
     reported as already home and never converted.
 
     By module rather than ``isinstance``, because importing cupy to ask whether an array is
-    a numpy array would make every host-only install pay for a CUDA stack.
+    a numpy array would make every CPU-only install pay for a CUDA stack.
     """
     return type(value).__module__.split(".")[0] == "cupy"
 
 
 def _to_numpy(value: Any) -> np.ndarray:
-    """``value`` as a host numpy array, whatever kind of array it is.
+    """``value`` as a CPU numpy array, whatever kind of array it is.
 
-    **numpy cannot do this on its own for a device array.** ``np.asarray`` on a cupy array
+    **numpy cannot do this on its own for a GPU array.** ``np.asarray`` on a cupy array
     raises ``TypeError: Implicit conversion to a NumPy array is not allowed`` — deliberately,
     because the alternative is copying gigabytes off a GPU because someone passed the wrong
     thing to a plotting call.
 
     What makes it possible here without importing cupy is that the conversion is a **method
     on the array**: ``.get()``. So this package keeps its numpy-only rule and still converts.
-    The device is checked for first rather than by catching numpy's TypeError, because that
+    The GPU is checked for first rather than by catching numpy's TypeError, because that
     path also emits a spurious ``__array__`` deprecation warning that would reach the caller
     looking like a bug in their code.
 
     Anything else — a zarr array, an open h5py dataset, a dask array — converts through
     ``__array__`` as usual, which for the lazy ones means reading or computing it.
     """
-    if _is_device(value):
+    if _is_gpu_array(value):
         getter = getattr(value, "get", None)
         if not callable(getter):
             raise TypeError(
-                f"{type(value).__name__} looks like a device array but has no .get(); "
+                f"{type(value).__name__} looks like a GPU array but has no .get(); "
                 f"convert it to numpy yourself before building a Piece")
         return np.asarray(getter())
     return np.asanyarray(value)
@@ -91,7 +91,7 @@ def _as_array(value: Any) -> Any:
     """``value`` unchanged if it is already an array, else coerced with numpy.
 
     **Not ``np.asanyarray`` unconditionally**, which is what this used to be: cupy makes
-    ``__array__`` raise on purpose, to stop a device array being copied to the host by
+    ``__array__`` raise on purpose, to stop a GPU array being copied to the CPU by
     accident. So coercing every input meant a ``Piece`` could not hold a cupy array at all
     — ``TypeError: Implicit conversion to a NumPy array is not allowed`` — and the same goes
     for anything else lazy or foreign: a dask array, a zarr array, an open h5py dataset.
@@ -135,8 +135,8 @@ class Piece:
 
     **The array need not be a numpy array.** Anything carrying ``shape``, ``dtype`` and
     ``ndim`` is taken as one — a cupy array on the GPU, a dask or zarr array, an open h5py
-    dataset — because coercing everything meant a device array could not be held at all
-    (cupy makes ``__array__`` raise on purpose, to stop an accidental copy to the host).
+    dataset — because coercing everything meant a GPU array could not be held at all
+    (cupy makes ``__array__`` raise on purpose, to stop an accidental copy to the CPU).
     Nothing here imports any of them; recognising an array by its attributes needs no
     knowledge of what made it.
 
@@ -294,30 +294,31 @@ class Piece:
         return replace(self, kind=kind)
 
     def to_numpy(self) -> np.ndarray:
-        """The voxels as a host numpy array, for handing to something that needs one.
+        """The voxels as a CPU numpy array, for handing to something that needs one.
 
             plt.imshow(piece.to_numpy()[32])
-            neu_vol.pack_hdf5(...)          # h5py cannot take a device array
+            neu_vol.pack_hdf5(...)          # h5py cannot take a GPU array
 
         A no-op when the array is already numpy. For a cupy array this **copies off the
-        device**, which is the expensive direction — so it is a method you call rather than
-        something that happens to you, and :meth:`to_host` is the version that keeps the
+        GPU**, which is the expensive direction — so it is a method you call rather than
+        something that happens to you, and :meth:`to_cpu` is the version that keeps the
         piece intact.
 
-        There is no ``to_device`` here, and that asymmetry is not an oversight: coming *to*
+        There is no ``to_gpu`` here, and that asymmetry is not an oversight: coming *to*
         numpy is a method on the array (``.get()``), so this package can do it without
-        importing anything, while going *to* a device needs cupy itself. That lives in
-        ``neu_proc.ops.backend.to_device``.
+        importing anything, while going *to* the GPU needs cupy itself — which would put a
+        compiled CUDA dependency under this package's numpy-only promise. That lives in
+        ``neu_proc.ops.backend.to_gpu``.
         """
         return _to_numpy(self.array)
 
-    def to_host(self) -> "Piece":
-        """The same piece with its array on the host. Unchanged if it already is.
+    def to_cpu(self) -> "Piece":
+        """The same piece with its array in CPU memory. Unchanged if it already is.
 
         The form to use mid-chain, since it keeps the frame, kind and name — where
         :meth:`to_numpy` hands out the bare array.
         """
-        if isinstance(self.array, np.ndarray) and not _is_device(self.array):
+        if isinstance(self.array, np.ndarray) and not _is_gpu_array(self.array):
             return self
         return replace(self, array=_to_numpy(self.array))
 
@@ -428,8 +429,8 @@ class Piece:
                 f"{', '.join(f.name for f in fields(self))}.{hint}")
         if "array" not in changes:
             # The array's OWN copy, not `np.array(..., copy=True)`: that would refuse a cupy
-            # array for the same reason `_as_array` exists, and a device array should be
-            # copied on the device rather than round-tripped through the host.
+            # array for the same reason `_as_array` exists, and a GPU array should be
+            # copied on the GPU rather than round-tripped through the CPU.
             source = self.array
             changes["array"] = (source.copy() if hasattr(source, "copy")
                                 else np.array(source, copy=True, subok=True))
