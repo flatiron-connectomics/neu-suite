@@ -108,19 +108,19 @@ def test_a_nonsense_anisotropy_is_refused():
 # the backend and the export
 # --------------------------------------------------------------------------- #
 def test_a_device_array_is_moved_with_a_warning_and_comes_back():
-    """fastmorph has no device build, so this is the `host_only` path — loud, because the
-    array came to the device to be fast. The answer returns **where the input lived**, which
+    """fastmorph has no GPU build, so this is the `cpu_only` path — loud, because the
+    array came to the GPU to be fast. The answer returns **where the input lived**, which
     is `like`'s contract and what `dilate`'s own fastmorph methods do; `dust` differs only
     because cc3d's path never stages at all."""
     if not backend.gpu_available():
         pytest.skip("no GPU backend")
     backend._warned.discard("fastmorph.spherical_open")
-    a = backend.to_device(_box_with_spike())
+    a = backend.to_gpu(_box_with_spike())
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         out = opening(a, 2)
     assert any("no GPU implementation" in str(w.message) for w in caught)
-    assert backend.is_device_array(out), "handed in a device array, handed one back"
+    assert backend.is_gpu_array(out), "handed in a GPU array, handed one back"
     assert not (out.get()[16:19, 9, 9] != 0).any(), "and the answer is still right"
 
 

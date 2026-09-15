@@ -10,7 +10,7 @@ dominate:
 - **The methods take disjoint parameters**, so putting one on the wrong method is the easy
   mistake, and the libraries' own TypeErrors name *their* functions rather than this one.
 
-`test_backend.py` covers the device path and the host/device agreement; this file is about
+`test_backend.py` covers the GPU path and the CPU/GPU agreement; this file is about
 the entry point.
 """
 

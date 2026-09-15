@@ -43,7 +43,7 @@ import warnings
 
 from fastmorph import spherical_open
 
-from .backend import host_only, like
+from .backend import cpu_only, like
 
 #: Below this, ``fastmorph``'s erosion removes nothing (measured; see the module docstring),
 #: so the call is a dilation wearing the wrong name. Warned about rather than refused —
@@ -62,7 +62,7 @@ def opening(arr, radius: float, *, anisotropy=None, **kwargs):
     to be a subset of the input. It is required rather than defaulted: every useful property
     of this op depends on it, including whether the erosion happens at all.
 
-    fastmorph has no device implementation, so a device array is copied off and back with a
+    fastmorph has no GPU implementation, so a GPU array is copied off and back with a
     warning; the answer comes back where the input lived, the same contract
     :func:`~neu_proc.ops.dilate.dilate` follows.
     """
@@ -83,6 +83,6 @@ def opening(arr, radius: float, *, anisotropy=None, **kwargs):
             f"{_INERT_EROSION_BELOW * min(anisotropy or (1.0,)):g} to remove anything, or "
             f"`dilate` if growth is what you want",
             stacklevel=2)
-    opened = spherical_open(host_only(arr, "fastmorph.spherical_open"), radius=radius,
+    opened = spherical_open(cpu_only(arr, "fastmorph.spherical_open"), radius=radius,
                             anisotropy=anisotropy, **kwargs)
     return like(opened, arr)

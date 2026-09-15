@@ -1,7 +1,7 @@
 """Label dilation, three ways.
 
-``edt`` has a cupyx implementation and stays on the device; the fastmorph methods have none
-and are moved to the host with a warning (:func:`~neu_proc.ops.backend.host_only`).
+``edt`` has a cupyx implementation and stays on the GPU; the fastmorph methods have none
+and are moved to the CPU with a warning (:func:`~neu_proc.ops.backend.cpu_only`).
 
 **``edt`` is UNBOUNDED unless you bound it.** Every background voxel takes the label of the
 nearest foreground voxel, so by default the labels grow until they meet and no background is
@@ -25,7 +25,7 @@ is refused by name, with a pointer to the one that takes it.
 
 from fastmorph import dilate as fm_dilate, spherical_dilate
 
-from .backend import host_only, like, ndimage_for, stage
+from .backend import cpu_only, like, ndimage_for, stage
 
 #: Method name -> (spellings, the implementation it calls). A table rather than a chain of
 #: `startswith` tests so an unknown name can be refused *with the list* — the house pattern
@@ -107,13 +107,13 @@ def dilate(arr, method: str = "edt", *, max_distance: float | None = None,
     parameter put on the wrong method says so rather than surfacing as a TypeError from
     scipy or fastmorph.
 
-    **A host array is sent to the device and back for the ``edt`` method**, because measured
-    that is faster than staying on the host even counting both transfers: 192^3 takes 811 ms
+    **A CPU array is sent to the GPU and back for the ``edt`` method**, because measured
+    that is faster than staying on the CPU even counting both transfers: 192^3 takes 811 ms
     on scipy against 16 ms with the round trip, and the margin *grows* with size since the
     EDT is superlinear while a transfer is linear. What you hand in is what you get back, so this returns numpy
     for a numpy input; nothing is left on a GPU you did not ask for. ``gpu=False`` opts out
     (as does ``NEU_PROC_GPU=0``), and for a *chain* move once yourself with
-    ``backend.to_device`` so no step transfers at all.
+    ``backend.to_gpu`` so no step transfers at all.
     """
     resolved = _resolve(method)
     if max_distance is not None and resolved != "edt":
@@ -130,7 +130,7 @@ def dilate(arr, method: str = "edt", *, max_distance: float | None = None,
         background = (arr == 0)
         # The nearest foreground voxel's INDEX rather than its distance, so the labels come
         # along for free and no second pass is needed. No copy first: fancy-indexing builds a
-        # new array anyway, and copying a large one on the device is not free.
+        # new array anyway, and copying a large one on the GPU is not free.
         want_distance = max_distance is not None
         result = ndi.distance_transform_edt(
             background,
@@ -148,7 +148,7 @@ def dilate(arr, method: str = "edt", *, max_distance: float | None = None,
 
     # No `.copy()`: measured, neither fastmorph function mutates its input — only
     # `spherical_dilate(in_place=True)` does, which is the caller asking for it.
-    # fastmorph has no device implementation, so there is nothing to stage toward — and the
+    # fastmorph has no GPU implementation, so there is nothing to stage toward — and the
     # result comes back where the input was, same contract as the edt path.
     target = METHODS[resolved][1]
-    return like(target(host_only(arr, f"fastmorph.{target.__name__}"), **kwargs), arr)
+    return like(target(cpu_only(arr, f"fastmorph.{target.__name__}"), **kwargs), arr)

@@ -130,15 +130,15 @@ def test_volume_to_voxels_refuses_a_nonsense_voxel_size():
 # the backend
 # --------------------------------------------------------------------------- #
 def test_a_device_array_is_moved_with_a_warning():
-    """cc3d has no GPU build, so this is the `host_only` path — loud, because the array came
-    to the device to be fast and a copy back is the slowest thing that can happen to it."""
+    """cc3d has no GPU build, so this is the `cpu_only` path — loud, because the array came
+    to the GPU to be fast and a copy back is the slowest thing that can happen to it."""
     if not backend.gpu_available():
         pytest.skip("no GPU backend")
     backend._warned.discard("cc3d.dust")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        out = neu_proc.dust(backend.to_device(_slabs()), 10)
-    assert not backend.is_device_array(out)
+        out = neu_proc.dust(backend.to_gpu(_slabs()), 10)
+    assert not backend.is_gpu_array(out)
     assert caught and "no GPU implementation" in str(caught[0].message)
     assert _sizes(out) == [30, 200], "and the answer is still right"
 

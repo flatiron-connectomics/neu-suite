@@ -24,7 +24,7 @@ cc3d removes it. ``cupyx`` has no multi-label connected-components, so there is 
 dispatch to.
 
 A binary input has no such problem — one label, so the mask *is* the labelling — and cc3d
-takes ``binary_image=True`` for it. That is where a device path could be added correctly if
+takes ``binary_image=True`` for it. That is where a GPU path could be added correctly if
 the 4-5x is ever worth the second implementation.
 
 **``exclude_boundary`` spares a COMPONENT that reaches a face, and per-component is the
@@ -42,7 +42,7 @@ from __future__ import annotations
 import cc3d
 import numpy as np
 
-from .backend import host_only
+from .backend import cpu_only
 
 
 def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
@@ -77,7 +77,7 @@ def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
     face. The test is per component and not per label — see the module docstring for what the
     per-label version cost on real data.
 
-    Runs on the host; see the module docstring on why there is no device path. A device array
+    Runs on the CPU; see the module docstring on why there is no GPU path. A GPU array
     is copied off and back with a warning rather than failing.
     """
     if min_voxels is None and max_voxels is None:
@@ -92,7 +92,7 @@ def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
             raise ValueError(
                 f"min_voxels {threshold[0]} is above max_voxels {threshold[1]}, which keeps "
                 f"nothing")
-    host = host_only(arr, "cc3d.dust")
+    CPU = cpu_only(arr, "cc3d.dust")
     if exclude_boundary:
         # This path runs its own labelling instead of `cc3d.dust`, so a passthrough keyword
         # would be silently dropped rather than applied. Only `binary_image` means the same
@@ -102,9 +102,9 @@ def dust(arr, min_voxels: int | None = None, *, max_voxels: int | None = None,
             raise TypeError(
                 f"exclude_boundary=True does not pass {'=, '.join(unsupported)}= through to "
                 f"cc3d.dust — it decides per component itself. Drop one or the other")
-        return _dust_interior(host, threshold, connectivity=connectivity, invert=invert,
+        return _dust_interior(CPU, threshold, connectivity=connectivity, invert=invert,
                               binary_image=kwargs.get("binary_image", False))
-    return cc3d.dust(host, threshold=threshold, connectivity=connectivity, invert=invert,
+    return cc3d.dust(CPU, threshold=threshold, connectivity=connectivity, invert=invert,
                      **kwargs)
 
 

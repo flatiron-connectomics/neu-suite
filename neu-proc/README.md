@@ -130,7 +130,7 @@ case), `box` (odd sizes, so a window stays centred). Imports no scipy: convertin
 needs arithmetic and a frame, and keeping it scipy-free means the conversion can be tested
 without the filters and reasoned about beside the halo it produces.
 
-### `ops/backend.py` — scipy on the host, cupyx on the device
+### `ops/backend.py` — scipy on the CPU, cupyx on the GPU
 
 **Dispatch is on the array, never on a flag**, since `cupyx.scipy.ndimage` requires a
 `cupy.ndarray` and the module cannot be swapped without moving the data:
@@ -146,14 +146,14 @@ One body, both backends. Three properties follow from dispatching on the array:
   people. Here the answer is a property of the array in your hand.
 - **Free when cupy is absent.** `is_device_array` reads `type(a).__module__`, so nothing
   imports cupy to discover that it is not needed.
-- **`NEU_PROC_GPU=0` governs transfers, not dispatch.** Handed a device array anyway, the
-  right thing is still cupyx; a flag that ran host code on device memory would just raise
+- **`NEU_PROC_GPU=0` governs transfers, not dispatch.** Handed a GPU array anyway, the
+  right thing is still cupyx; a flag that ran CPU code on GPU memory would just raise
   somewhere less obvious.
 
-**A host array may still go to the device and come back, and for an expensive op that wins.**
+**A CPU array may still go to the GPU and come back, and for an expensive op that wins.**
 Measured on an RTX A6000 for the EDT dilation — `round trip` includes both transfers:
 
-| size | host (scipy) | round trip | already on device |
+| size | CPU (scipy) | round trip | already on GPU |
 |---|---|---|---|
 | 96³ | 36.4 ms | 2.7 ms (13.6×) | 0.7 ms (52×) |
 | 144³ | 140.7 ms | 6.3 ms (22.3×) | 1.3 ms (112×) |
@@ -167,11 +167,11 @@ reference)` returns the answer to wherever the input lived — `dilate(numpy_arr
 numpy, and nothing silently leaves your data on a GPU. For a *chain*, move once yourself with
 `backend.to_device` and every step stays there, which is where the extra ~8× is.
 
-Two host-only escapes, both **loud**: `ndimage_for` falls back to scipy with a warning for the
+Two CPU-only escapes, both **loud**: `ndimage_for` falls back to scipy with a warning for the
 four functions cupyx lacks (`distance_transform_bf`, `distance_transform_cdt`,
 `geometric_transform`, `watershed_ift`), and `host_only` does the same for libraries with no
-device build at all — fastmorph, cc3d, fill_voids, edt. Loud because the array came to the
-device to be fast and a copy back is the slowest thing that can happen to it; not fatal
+GPU build at all — fastmorph, cc3d, fill_voids, edt. Loud because the array came to the
+GPU to be fast and a copy back is the slowest thing that can happen to it; not fatal
 because the op still works and refusing would let one function poison a chain.
 
 **There is no GPU `dust`, and that is a correctness decision.** The obvious cupy version —
@@ -185,7 +185,7 @@ no multi-label connected components, so there is nothing to dispatch to.
 
 `pyproject.toml` names no cupy, because the wheel is CUDA-version-specific
 (`cupy-cuda12x`, `cupy-cuda11x`, ...) and pinning one would break the install on any other
-machine. Install it yourself if you want the device path; everything works without it.
+machine. Install it yourself if you want the GPU path; everything works without it.
 
 ## Three layers, and only the middle one is nanometres
 
