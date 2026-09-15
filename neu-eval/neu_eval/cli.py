@@ -31,8 +31,13 @@ examples:
   neu-eval compare --reference gt.h5:/crop_01 --segmentation SEG_URL \\
       --adjudicated cmp/disagreements.csv --out cmp/
 
-  # step through the worst disagreements in a viewer
-  neu-glance annotate --points cmp/annotations.csv --out state.json
+  # step through the worst disagreements in a viewer. The coordinates are nanometres,
+  # so `annotate` needs a frame: --volume is better than --voxel-size, since it also
+  # bounds-checks. Then compose the layer with the volumes.
+  neu-glance annotate --points cmp/annotations.csv --nm --volume REF_URL \\
+      --name disagreements --format layer --out layer.json
+  neu-glance gen --image IMAGE_URL --seg REF_URL --seg SEG_URL --layer layer.json \\
+      --format url
 """
 
 
@@ -251,7 +256,8 @@ def cmd_compare(args) -> int:
         written.append(tables.write_disagreements(
             all_rows, out / "disagreements.csv", labels=labels, verdicts=verdicts))
         if not args.no_locate:
-            written.append(tables.annotation_csv(all_rows, out / "annotations.csv"))
+            written.append(tables.annotation_csv(
+                all_rows, out / "annotations.csv", labels=labels))
     if len(contingencies) == 1:
         written.append(tables.write_table(
             tables.per_label_frame(contingencies[0]), out / "per_label.parquet"))
@@ -260,8 +266,12 @@ def cmd_compare(args) -> int:
     for path in written:
         print(f"  {path}")
     if all_rows and not args.no_locate:
-        print(f"\nStep through them:  neu-glance annotate --points "
-              f"{out / 'annotations.csv'} --out state.json")
+        print(f"\nStep through them:")
+        print(f"  neu-glance annotate --points {out / 'annotations.csv'} --nm "
+              f"--volume {args.reference.split(':/')[0]} \\")
+        print(f"      --name disagreements --format layer --out {out / 'layer.json'}")
+        print(f"  neu-glance gen --seg {args.reference.split(':/')[0]} "
+              f"--seg {args.segmentation} --layer {out / 'layer.json'} --format url")
         print(f"Adjudicate:         fill in the verdict column of "
               f"{out / 'disagreements.csv'}, then re-run with --adjudicated")
     return 0

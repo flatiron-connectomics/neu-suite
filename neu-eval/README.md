@@ -97,7 +97,11 @@ So the disagreement table round-trips. It goes out with a blank `verdict` column
 it in while looking at the voxels; passing it back reports a second score.
 
 ```bash
-neu-glance annotate --points cmp/annotations.csv --out state.json   # step with [ and ]
+# the coordinates are nanometres, so annotate needs a frame -- the volume is the best one
+neu-glance annotate --points cmp/annotations.csv --nm --volume REF_URL \
+    --name disagreements --format layer --out layer.json
+neu-glance gen --image IMAGE_URL --seg REF_URL --seg SEG_URL --layer layer.json \
+    --format url            # then step the list with [ and ]
 # ... fill in cmp/disagreements.csv ...
 neu-eval compare --reference gt.h5:/crop_01 --segmentation SEG_URL \
     --adjudicated cmp/disagreements.csv --out cmp/

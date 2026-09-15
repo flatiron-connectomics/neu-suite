@@ -158,28 +158,41 @@ def write_table(frame, path: str | Path) -> str:
     return str(path)
 
 
-def annotation_csv(rows: Iterable[Mapping], path: str | Path) -> str:
-    """The located rows as a point list ``neu-glance annotate`` can read.
+def annotation_csv(rows: Iterable[Mapping], path: str | Path, *,
+                   labels: Sequence[str] = ("gt", "seg")) -> str:
+    """The located rows as a point list ``neu-glance annotate --points`` can read.
 
-    Three columns of nanometres and a description, which is the contract that keeps this
-    package from importing neu-glance: the table is the interface, exactly as neu-draw takes
-    synapses as tables rather than importing neu-mark.
+    **The column names are neu-glance's contract, not ours**: ``z``, ``y``, ``x`` required,
+    ``id`` / ``description`` / ``segments`` optional. This wrote ``z_nm``/``y_nm``/``x_nm``
+    at first, which its reader rejects outright — caught only by running the command that
+    three of our own docs had been advertising. Coordinates here are **nanometres**, so the
+    command needs ``--nm`` and a frame (``--volume`` or ``--voxel-size``).
 
-    These become **local** annotations in a viewer state, and that is the point — a
-    precomputed annotation source renders in the viewport but puts zero rows in the
-    Annotations tab, so there is nothing to click through and ``[``/``]`` do not step. A
-    ranked worst-first list is exactly the thing you want to step through, so it has to be
-    local.
+    ``segments`` carries both ids of the pair, so clicking the annotation selects the bodies
+    it is about rather than leaving you to type them. neuroglancer looks them up in the
+    segmentation the annotation layer is linked to, so the id belonging to the other side
+    simply finds nothing — harmless, and cheaper than emitting two files.
+
+    Points, not boxes, and they become **local** annotations: only local ones appear in the
+    Annotations tab, which is what makes a ranked worst-first list steppable with ``[`` and
+    ``]``. A precomputed annotation source renders in the viewport and lists nothing.
+
+    Writing the table rather than importing neu-glance is the whole interface — the same
+    abstention neu-draw keeps from neu-mark by taking synapses as tables.
     """
     rows = [row for row in rows if "z_nm" in row]
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    a_key, b_key = f"{labels[0]}_id", f"{labels[1]}_id"
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["z_nm", "y_nm", "x_nm", "description"])
+        writer.writerow(["z", "y", "x", "description", "segments"])
         for row in rows:
+            ids = [str(row[k]) for k in (a_key, b_key) if k in row]
             writer.writerow([
                 row["z_nm"], row["y_nm"], row["x_nm"],
-                f"{row['kind']} {row['pair_key']} sev={row['severity']:.4f}",
+                f"{row['kind']} {row['pair_key']} sev={row['severity']:.4f} "
+                f"frac={row.get('worst_fraction', 0):.2f}",
+                " ".join(ids),
             ])
     return str(path)

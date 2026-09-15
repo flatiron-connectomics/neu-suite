@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import pathlib
 
 import numpy as np
 import pytest
@@ -111,8 +112,45 @@ def test_the_annotation_csv_is_three_coordinates_and_a_description(tmp_path):
                            Piece(a, frame), Piece(b, frame))
     path = tables.annotation_csv(rows, tmp_path / "ann.csv")
     got = list(csv.DictReader(open(path)))
-    assert list(got[0]) == ["z_nm", "y_nm", "x_nm", "description"]
+    assert list(got[0]) == ["z", "y", "x", "description", "segments"]
     assert "split" in got[0]["description"]
+
+
+def test_the_annotation_columns_are_the_ones_neu_glance_demands(tmp_path):
+    """Pinned as a literal, because getting it wrong is invisible from this side.
+
+    `annotation_csv` shipped writing z_nm/y_nm/x_nm, which neu-glance's reader rejects —
+    and three of our own docs advertised the command that fails. A unit test on our own
+    output could not have caught that; only running the consumer could. So this pins the
+    header, and the test below runs the real reader when it is available.
+    """
+    rows = [{"z_nm": 1.0, "y_nm": 2.0, "x_nm": 3.0, "kind": "split",
+             "pair_key": "7:9", "severity": 0.5, "worst_fraction": 0.5,
+             "gt_id": 7, "seg_id": 9}]
+    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
+    assert csv.DictReader(open(path)).fieldnames == [
+        "z", "y", "x", "description", "segments"]
+
+
+def test_neu_glance_actually_accepts_the_annotation_file(tmp_path):
+    """The cross-package contract, checked against the real reader.
+
+    Skips when neu-glance is absent (it is the `link` extra, not a dependency) — the
+    table is the interface and this package must not import it to work.
+    """
+    layers = pytest.importorskip("neu_glance.layers")
+
+    rows = [{"z_nm": 1000.0, "y_nm": 2000.0, "x_nm": 3000.0, "kind": "merge",
+             "pair_key": "7:9", "severity": 0.5, "worst_fraction": 0.9,
+             "gt_id": 7, "seg_id": 9}]
+    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
+    records = layers.read_annotation_csv(
+        pathlib.Path(path).read_text(), "point", source=str(path))
+    assert len(records) == 1
+    assert records[0]["segments"] == ["7", "9"], "both ids reach the annotation"
+    # And it builds into a real annotation, which is the thing the state carries.
+    built = layers.build_annotation(records[0], "a0")
+    assert built["segments"] == [["7", "9"]]
 
 
 def test_unlocated_rows_are_skipped_rather_than_written_as_zeros(tmp_path):
