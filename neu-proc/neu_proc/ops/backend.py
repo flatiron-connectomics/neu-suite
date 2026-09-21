@@ -45,7 +45,7 @@ Measured, on an RTX A6000, for the EDT dilation — ``CPU`` is scipy, ``round tr
 both transfers, ``on GPU`` is an array already there:
 
 ======  =========  ==================  ===================
-size    CPU       round trip          already on GPU
+size    CPU        round trip          already on GPU
 ======  =========  ==================  ===================
 96^3     36.4 ms    2.7 ms (13.6x)      0.7 ms (52x)
 144^3   140.7 ms    6.3 ms (22.3x)      1.3 ms (112x)
