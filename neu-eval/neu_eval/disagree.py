@@ -46,7 +46,7 @@ MAX_EDT_VOXELS = 1 << 24
 
 def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
          top: int | None = None, include_matches: bool = False,
-         rank: str = "severity") -> list[dict]:
+         rank: str = "severity", max_per_group: int | None = None) -> list[dict]:
     """One row per structurally significant pair, worst first.
 
     **Significance is asymmetric, and it has to be.** Whether a reference body is *split*
@@ -72,6 +72,20 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
       sliver scores 0.242, so a severity-ranked list is dominated by large bodies and a
       badly-broken small one can sit a hundred rows down. Both numbers are in every row, so
       the choice is only about the order.
+
+    **One failure is many rows, and ``max_per_group`` is what stops it flooding the list.**
+    A merge is a single event but the table holds one row per ``(body, segment)`` pair, so
+    a segment swallowing twenty bodies yields twenty rows. Measured on real deliveries:
+    1,049 merge rows came from 565 distinct segments, 71% of them in multi-row groups, and
+    one segment alone contributed 21 of a top-100. Every row carries ``group`` (the
+    segment for a merge or tangle, the body for a split), ``group_size`` and
+    ``group_rank``, so a reviewer can see that twenty-one rows are one problem.
+
+    ``max_per_group`` then keeps only the worst *n* of each, applied **after** ranking so
+    the survivors are each group's most severe. Deliberately not a deduplication: the rows
+    are not copies. 17% of within-group neighbours sit within 2 voxels — the two sides of
+    one interface — but the median is 33 voxels apart, because a segment usually merges
+    bodies at several genuinely distinct places, and collapsing would hide them.
 
     ``include_matches`` keeps the pairs classified ``match`` — one structural partner each
     way, i.e. the two sides agreeing. Off by default because this is a disagreement report.
@@ -141,7 +155,24 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
     key = "severity" if rank == "severity" else "worst_fraction"
     # Ties broken by pair_key so the order is a property of the table, not of the sort.
     out.sort(key=lambda r: (-r[key], r["pair_key"]))
-    return out[:top] if top is not None else out
+
+    # A split is one body coming apart, so the body groups it; a merge is one segment
+    # swallowing several, so the segment does. A tangle is both at once and is grouped
+    # with the merges, which is the half a proofreader acts on first.
+    a_key, b_key = f"{c.labels[0]}_id", f"{c.labels[1]}_id"
+    for row in out:
+        row["group"] = str(row[a_key] if row["kind"] == "split" else row[b_key])
+    counts: Counter = Counter(row["group"] for row in out)
+    seen: Counter = Counter()
+    kept = []
+    for row in out:
+        g = row["group"]
+        seen[g] += 1
+        row["group_size"] = counts[g]
+        row["group_rank"] = seen[g]
+        if max_per_group is None or seen[g] <= max_per_group:
+            kept.append(row)
+    return kept[:top] if top is not None else kept
 
 
 def locate(report_rows: Sequence[dict], a: Any, b: Any, *,

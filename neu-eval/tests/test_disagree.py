@@ -114,6 +114,47 @@ def test_severity_ranking_inherits_vois_size_bias_and_fraction_ranking_fixes_it(
     assert by_fraction[0]["gt_id"] == 1, "relative damage puts the halved body first"
 
 
+def test_one_merge_event_is_grouped_not_repeated():
+    """A segment swallowing three bodies is three rows, and they say so.
+
+    Measured on real deliveries: 1,049 merge rows came from 565 segments, and one segment
+    contributed 21 rows of a top-100. The rows are not duplicates -- a segment usually
+    merges bodies in several places -- so they are grouped, not collapsed.
+    """
+    c = _c([1] * 4 + [2] * 4 + [3] * 4, [9] * 12)
+    rows = disagree.rows(c)
+    assert {r["kind"] for r in rows} == {"merge"}
+    assert len(rows) == 3
+    assert {r["group"] for r in rows} == {"9"}, "grouped by the merging SEGMENT"
+    assert all(r["group_size"] == 3 for r in rows)
+    assert sorted(r["group_rank"] for r in rows) == [1, 2, 3]
+
+
+def test_a_split_is_grouped_by_the_body_that_came_apart():
+    rows = disagree.rows(_c([1] * 9, [5, 5, 5, 6, 6, 6, 7, 7, 7]))
+    assert {r["kind"] for r in rows} == {"split"}
+    assert {r["group"] for r in rows} == {"1"}, "grouped by the BODY"
+
+
+def test_max_per_group_keeps_the_worst_of_each():
+    """So one bad segment cannot crowd a top-N list, while its size stays visible."""
+    c = _c([1] * 4 + [2] * 4 + [3] * 4, [9] * 12)
+    capped = disagree.rows(c, max_per_group=1)
+    assert len(capped) == 1
+    assert capped[0]["group_size"] == 3, "the group's true size survives the cap"
+    assert capped[0]["group_rank"] == 1
+    # and it is the most severe of the three, not an arbitrary one
+    assert capped[0]["severity"] == max(r["severity"] for r in disagree.rows(c))
+
+
+def test_the_cap_is_applied_across_groups_not_globally():
+    a = [1] * 4 + [2] * 4 + [3] * 4 + [4] * 6
+    b = [9] * 12 + [8] * 3 + [7] * 3
+    rows = disagree.rows(_c(a, b), max_per_group=1)
+    groups = {r["group"] for r in rows}
+    assert len(groups) == len(rows), "one row survives per group, several groups survive"
+
+
 def test_an_unknown_rank_is_refused_by_name():
     with pytest.raises(ValueError, match="'severity' or 'fraction'"):
         disagree.rows(_c([1], [5]), rank="voxels")
