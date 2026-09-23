@@ -247,6 +247,42 @@ def test_a_disconnected_fragment_falls_back_and_says_so():
         assert int(b[six[0]["z_vox"], six[0]["y_vox"], six[0]["x_vox"]]) == 6
 
 
+def test_cropping_to_the_pair_changes_nothing(monkeypatch):
+    """The optimisation must be invisible in the answer, only in the time.
+
+    `locate` bounds each row's work to the two labels it names rather than passing over
+    the whole array. That is only sound if the window contains both containers whole --
+    a split's depth is measured inside the body, a merge's inside the segment -- so this
+    pins that the cropped and uncropped paths agree voxel for voxel.
+    """
+    rng = np.random.default_rng(0)
+    a = rng.integers(1, 7, size=(24, 24, 24), dtype=np.uint64)
+    b = rng.integers(1, 9, size=(24, 24, 24), dtype=np.uint64)
+    # plus a structured pair, so it is not only noise
+    a[4:12, 4:12, 4:12] = 100
+    b[4:12, 4:12, 8:12] = 200
+    b[4:12, 4:12, 4:8] = 201
+    rows = disagree.rows(contingency(a, b, ignore_a=()), top=30)
+
+    cropped = disagree.locate(rows, _piece(a), _piece(b), ignore_a=())
+    whole = disagree.locate(rows, _piece(a), _piece(b), ignore_a=(), crop=False)
+    assert len(cropped) == len(whole)
+    for c, w in zip(cropped, whole):
+        assert c["pair_key"] == w["pair_key"]
+        assert (c["z_vox"], c["y_vox"], c["x_vox"]) == (w["z_vox"], w["y_vox"], w["x_vox"])
+        assert c["point_at"] == w["point_at"]
+
+
+def test_a_label_missing_from_the_box_map_falls_back_to_the_whole_array():
+    """`_window` returns None rather than guessing, so an unknown label still works."""
+    a = np.ones((8, 8, 8), dtype=np.uint64)
+    b = np.full((8, 8, 8), 5, dtype=np.uint64)
+    b[4:] = 6
+    rows = disagree.rows(contingency(a, b, ignore_a=()))
+    assert disagree._window(None, (slice(0, 2),) * 3, (8, 8, 8)) is None
+    assert disagree.locate(rows, _piece(a), _piece(b), ignore_a=())
+
+
 def test_an_unknown_at_is_refused_by_name():
     a, b = _slab()
     rows = disagree.rows(contingency(a, b, ignore_a=()))
