@@ -51,11 +51,31 @@ extra columns needs no preparation:
 | `--boxes`, `--lines` | `z0,y0,x0,z1,y1,x1` |
 | `--ellipsoids` | `z,y,x,rz,ry,rx` |
 
-Any of them may also carry `id`, `description` and `segments`. `segments` is the useful
-one: whitespace- or comma-separated body ids, and clicking the annotation then selects
-those bodies. Ids are kept as strings, because a 19-digit body id does not survive a JSON
-number — `annotate` refuses a `segments` value that arrives as `1.23e+18`, which is
-what a spreadsheet does to one.
+Any of them may also carry `id`, `description` and `segments` — whitespace- or
+comma-separated body ids. Ids are kept as strings, because a 19-digit body id does not
+survive a JSON number — `annotate` refuses a `segments` value that arrives as `1.23e+18`,
+which is what a spreadsheet does to one.
+
+**Ids are only selectable once they are linked to a layer.** On its own, `segments` is
+stored but inert: neuroglancer does not know which segmentation the ids belong to.
+`--link LAYER` binds them to a segmentation layer by its name in the state; selecting the
+annotation then lists them in the selection panel, where each is one click to select.
+
+An annotation can name objects in **several** layers at once — a reference body and the
+segment that merged it, say, or what each of two segmentations has at the same place.
+Give each layer its own column, `segments:<relationship>`, and bind each with
+`--link <relationship>=<layer>`:
+
+```bash
+# z0..x1 in nm, plus segments:gt and segments:seg columns
+neu-glance annotate --lines merges.csv --nm --volume s3://.../gt \
+    --link gt=gt --link seg=seg_v1 --name merges --format layer --out merges.json
+```
+
+A relationship with nothing at an annotation is written as an empty column, not left out:
+the viewer pairs each id list with a relationship by position, so a missing one would move
+the next layer's ids into its slot. A relationship column that no `--link` binds is
+refused rather than dropped.
 
 ```{warning}
 **Coordinates are level-0 voxels unless you say otherwise**, and this is the mistake the
