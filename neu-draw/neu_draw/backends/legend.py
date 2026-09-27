@@ -65,6 +65,7 @@ figure there is nobody to scroll it.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Mapping, Optional, Sequence, Union
 
 import numpy as np
@@ -144,8 +145,13 @@ class LegendEntry:
     """
 
     def __init__(self, label: str, indices: Sequence[int], drawables: Sequence[Any],
-                 world_objects: Sequence[Optional[pygfx.WorldObject]], spec: Legend):
+                 world_objects: Sequence[Optional[pygfx.WorldObject]], spec: Legend,
+                 is_group: bool = False):
         self.text = str(label)
+        #: A row declared in ``Legend.groups`` rather than formed by a shared label. Its
+        #: members also sit on rows of their own, which is what the overlay's shared
+        #: highlight bookkeeping (``LegendOverlay._lit``) exists for.
+        self.is_group = is_group
         #: Positions of the members in ``Scene.drawables``. Carried so a rebuild can match
         #: rows up across a relabel, which is the one thing their labels cannot do.
         self.indices = list(indices)
@@ -227,8 +233,14 @@ class LegendEntry:
 
     # -- state -----------------------------------------------------------------
 
-    def refresh(self) -> None:
+    def refresh(self, lit: Optional[set] = None) -> None:
         """Push this entry's state onto the objects: colour, highlight, visibility.
+
+        ``lit`` is the set of scene indices drawn highlighted, computed by the overlay over
+        **every** row. It has to be global once groups exist: a drawable sits on its own row
+        and on a group row, and if each row painted its members from its own flag alone,
+        whichever refreshed last would win — un-lighting a body another row had lit. With
+        ``None`` (an entry used on its own) the row's own flag decides.
 
         **The highlight is a display override and the drawable is never touched**, which is
         the same rule the placement offsets follow (see ``scene.Placed``) and it is what
@@ -245,16 +257,19 @@ class LegendEntry:
         """
         state = self.visibility
         drawn = self.spec.highlight_color if self.highlighted else None
+        if lit is None:
+            lit = set(self.indices) if self.highlighted else set()
 
-        for drawable, obj in zip(self.drawables, self.world_objects):
+        for index, drawable, obj in zip(self.indices, self.drawables, self.world_objects):
             if obj is None:
                 continue
+            override = self.spec.highlight_color if index in lit else None
             # `display_color` keeps the drawable's own alpha, so highlighting a translucent
             # surface does not also turn it opaque — being translucent is often exactly why
             # it could not be found. Each member keeps its own colour when not highlighted,
             # so a group whose members disagree is drawn honestly even though one swatch
             # cannot show all of it.
-            obj.material.color = display_color(drawable, drawn)
+            obj.material.color = display_color(drawable, override)
             obj.visible = bool(drawable.visible)
 
         # Full opacity for the glyph whatever the drawable's alpha. A scene alpha is about
@@ -289,9 +304,10 @@ class LegendEntry:
         """
         if self.highlighted:
             return (*self.spec.highlight_color[:3], HIGHLIGHT_ROW_ALPHA)
+        base = self.spec.group_row_color if self.is_group else self.spec.row_color
         if state == "all":
-            return self.spec.row_color
-        return _dim(self.spec.row_color, 0.6 if state == "none" else 0.8)
+            return base
+        return _dim(base, 0.6 if state == "none" else 0.8)
 
     def toggle(self) -> bool:
         """Hide the whole group, or show it. Returns whether it is now visible.
@@ -429,7 +445,7 @@ class LegendOverlay:
 
     # -- the rows ---------------------------------------------------------------
 
-    def build_entries(self) -> None:
+    def build_entries(self, strict: bool = True) -> None:
         """(Re)group the scene's drawables into rows, discarding any rows there were.
 
         **Relabelling is structural, not a text edit** — it merges rows and splits them —
@@ -443,43 +459,97 @@ class LegendOverlay:
         lit when *every* member of it was lit: a split keeps both halves, a plain rename
         keeps the row, and merging a lit row into an unlit one goes dark rather than lighting
         up bodies nobody asked about.
+
+        **Group rows** (``Legend.groups``) come first and are carried across by their own
+        text instead: they are declared, not derived, so a relabel cannot change what one
+        is. Their members are resolved by **name**. ``strict`` makes a member that names no
+        drawable, or a group whose text collides with a label row, raise — the default for
+        every call a person makes. :meth:`sync` passes ``False``, because it runs inside a
+        draw, where an exception is a blank canvas and a traceback in a log; it warns and
+        skips instead.
         """
-        lit = {i for e in self.entries if e.highlighted for i in e.indices}
+        lit_rows = {i for e in self.entries if e.highlighted and not e.is_group
+                    for i in e.indices}
+        lit_groups = {e.text for e in self.entries if e.highlighted and e.is_group}
         for entry in self.entries:
             self.scene.remove(entry.group)
         self._structure_at, self._state_at = self._structure(), self._state()
 
-        groups: dict[str, list[int]] = {}
-        for index, drawable in enumerate(self.scene_data.drawables):
+        drawables = self.scene_data.drawables
+        rows: dict[str, list[int]] = {}
+        for index, drawable in enumerate(drawables):
             label = label_of(drawable)
             if label is not None:
-                groups.setdefault(str(label), []).append(index)
+                rows.setdefault(str(label), []).append(index)
+
+        by_name = {d.name: i for i, d in enumerate(drawables) if d.name is not None}
+        declared: dict[str, list[int]] = {}
+        for text, members in (self.spec.groups or {}).items():
+            problems = []
+            if text in rows:
+                problems.append(f"its text is also a label row's, and rows are addressed "
+                                f"by text")
+            unknown = [m for m in members if m not in by_name]
+            if unknown:
+                problems.append(f"it names drawables that are not in the scene: {unknown}")
+            indices = [by_name[m] for m in members if m in by_name]
+            if not indices and not problems:
+                problems.append("it has no members")
+            if problems:
+                message = f"legend group {text!r}: " + "; ".join(problems)
+                if strict:
+                    raise ValueError(message)
+                warnings.warn(message + " — skipping it", stacklevel=2)
+                if text in rows or not indices:
+                    continue
+            declared[text] = indices
 
         objects = list(self.group.children)
         self.entries = []
-        for label, indices in groups.items():
-            entry = LegendEntry(
-                label, indices,
-                [self.scene_data.drawables[i] for i in indices],
-                [objects[i] if i < len(objects) else None for i in indices],
-                self.spec)
-            entry.highlighted = bool(lit) and set(indices) <= lit
-            entry.refresh()
-            self.entries.append(entry)
-            self.scene.add(entry.group)
-            self._bind(entry)
+        for is_group, table in ((True, declared), (False, rows)):
+            for label, indices in table.items():
+                entry = LegendEntry(
+                    label, indices,
+                    [drawables[i] for i in indices],
+                    [objects[i] if i < len(objects) else None for i in indices],
+                    self.spec, is_group=is_group)
+                entry.highlighted = (label in lit_groups if is_group
+                                     else bool(lit_rows) and set(indices) <= lit_rows)
+                self.entries.append(entry)
+                self.scene.add(entry.group)
+                self._bind(entry)
+        self._refresh_all()
+
+    def _lit(self) -> set:
+        """Scene indices drawn in the highlight colour: a member of ANY lit row."""
+        return {i for e in self.entries if e.highlighted for i in e.indices}
+
+    def _refresh_all(self) -> None:
+        """Repaint every row and every member from the truth, in no particular order.
+
+        Called after anything that changes one row, because with groups one drawable is on
+        several rows: hiding a body from its own row changes its group row's three-state
+        look too, and only a pass over all of them can know that.
+        """
+        lit = self._lit()
+        for entry in self.entries:
+            entry.refresh(lit)
 
     def _structure(self) -> tuple:
-        """What the rows ARE: one label per drawable, in order.
+        """What the rows ARE: each drawable's label and name, in order, plus the groups.
 
         Membership and order both follow from the sequence, so a merge, a split, a rename,
-        an added drawable and a reordering all show up as a different value.
+        an added drawable and a reordering all show up as a different value. Names are in
+        it because groups are resolved by name.
         """
-        return tuple(label_of(d) for d in self.scene_data.drawables)
+        groups = tuple((text, tuple(members))
+                       for text, members in (self.spec.groups or {}).items())
+        return (tuple((label_of(d), d.name) for d in self.scene_data.drawables), groups)
 
     def _state(self) -> tuple:
-        """What the rows LOOK like: each drawable's visibility and colour."""
-        return tuple((bool(d.visible), tuple(d.color)) for d in self.scene_data.drawables)
+        """What the rows LOOK like: each drawable's visibility, colour and opacity."""
+        return tuple((bool(d.visible), tuple(d.color), float(d.alpha))
+                     for d in self.scene_data.drawables)
 
     def sync(self) -> bool:
         """Catch up with the scene if it has changed since the last look. Cheap when not.
@@ -502,14 +572,13 @@ class LegendOverlay:
         """
         structure = self._structure()
         if structure != self._structure_at:
-            self.build_entries()
+            self.build_entries(strict=False)
             self.layout()
             return True
 
         state = self._state()
         if state != self._state_at:
-            for entry in self.entries:
-                entry.refresh()
+            self._refresh_all()
             self._state_at = state
             return True
         return False
@@ -637,6 +706,7 @@ class LegendOverlay:
                 entry.toggle_highlight()
             else:
                 return
+            self._refresh_all()
             self._request_draw()
 
         entry.plate.add_event_handler(on_click, "click")
@@ -706,7 +776,7 @@ class LegendOverlay:
         rgba = to_rgba(color)
         for drawable in self.entry(label).drawables:
             drawable.color = rgba
-        self.entry(label).refresh()
+        self._refresh_all()
         self._request_draw()
         return self
 
@@ -715,12 +785,13 @@ class LegendOverlay:
         entry = self.entry(label)
         for drawable in entry.drawables:
             drawable.visible = bool(visible)
-        entry.refresh()
+        self._refresh_all()
         self._request_draw()
         return self
 
     def toggle(self, label: str) -> bool:
         state = self.entry(label).toggle()
+        self._refresh_all()
         self._request_draw()
         return state
 
@@ -741,9 +812,8 @@ class LegendOverlay:
         if exclusive:
             self.clear_highlights()
         for label in labels:
-            entry = self.entry(label)
-            entry.highlighted = True
-            entry.refresh()
+            self.entry(label).highlighted = True
+        self._refresh_all()
         self._request_draw()
         return self
 
@@ -752,7 +822,7 @@ class LegendOverlay:
         chosen = [self.entry(x) for x in labels] if labels else list(self.entries)
         for entry in chosen:
             entry.highlighted = False
-            entry.refresh()
+        self._refresh_all()
         self._request_draw()
         return self
 
@@ -762,6 +832,7 @@ class LegendOverlay:
     def toggle_highlight(self, label: str) -> bool:
         """What right-clicking a row does."""
         state = self.entry(label).toggle_highlight()
+        self._refresh_all()
         self._request_draw()
         return state
 

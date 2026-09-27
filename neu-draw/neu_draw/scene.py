@@ -245,6 +245,10 @@ class VolumeDrawable:
 
 Drawable = Union[MeshDrawable, LinesDrawable, PointsDrawable]
 
+#: The words used for each drawable class wherever one is chosen by kind — `set_alpha`,
+#: and the toolbar's opacity sliders. The same words `build_scene` suffixes names with.
+DRAWABLE_KINDS = {"mesh": MeshDrawable, "skeleton": LinesDrawable, "points": PointsDrawable}
+
 
 @dataclass
 class Camera:
@@ -283,6 +287,14 @@ class Legend:
     ``visible`` defaults to ``True`` and the pygfx backend now honours it, so a scene built
     by :func:`build_scene` gets a legend without asking. ``Scene(legend=Legend(visible=
     False))`` — or ``show(scene, legend=False)`` — is the way out.
+
+    ``groups`` adds rows **on top of** the per-label ones: ``{row text: [drawable names]}``.
+    A drawable keeps its own row and may sit in any number of groups, so one click can
+    hide every Mi1 synapse while each cell's Mi1 set still has a row of its own. That is
+    the thing a label cannot do — a drawable has exactly one — which is why groups are a
+    separate declaration rather than a second label. Members are **names**, not labels,
+    because a name is identity: a relabel leaves a group intact, and
+    :meth:`Scene.rename` carries the membership along. Group rows come first.
     """
     visible: bool = True
     location: str = "right"
@@ -304,8 +316,27 @@ class Legend:
     #: a translucent panel would instead composite against the *page*, and come out
     #: washed out in a light-themed notebook and fine in a dark one.
     panel_color: Optional[RGBA] = None
+    #: Extra rows, each toggling a set of drawables by **name**. See the class docstring.
+    groups: Optional[Mapping[str, Sequence[str]]] = None
+    #: The plate behind a GROUP row. A shade lighter than ``row_color``, so the rows that
+    #: act on many drawables read as headers rather than as one more entry.
+    group_row_color: RGBA = (0.42, 0.42, 0.50, 0.75)
 
     def __post_init__(self) -> None:
+        if self.groups is not None:
+            if isinstance(self.groups, (str, bytes)) or not isinstance(self.groups, Mapping):
+                raise TypeError("groups is a mapping {row text: [drawable names]}, not "
+                                f"{type(self.groups).__name__}")
+            groups = {}
+            for text, members in self.groups.items():
+                # A bare string would iterate as its characters: a group of one-letter
+                # names that match nothing.
+                if isinstance(members, str):
+                    raise TypeError(f"group {text!r}: members must be a list of names, "
+                                    f"not the string {members!r}")
+                groups[str(text)] = tuple(str(m) for m in members)
+            self.groups = groups
+        self.group_row_color = to_rgba(self.group_row_color)
         if self.location not in LEGEND_LOCATIONS:
             raise ValueError(
                 f"unknown legend location {self.location!r}; known: "
@@ -578,6 +609,10 @@ class Scene:
 
         for drawable in drawables:
             drawable.name = mapping[drawable.name]
+        # Groups are keyed on names, so they follow a rename rather than losing a member.
+        if self.legend is not None and self.legend.groups:
+            self.legend.groups = {text: tuple(mapping.get(m, m) for m in members)
+                                  for text, members in self.legend.groups.items()}
         self._changed()
         return self
 
@@ -598,6 +633,65 @@ class Scene:
             self.get(name).label = value
         self._changed()
         return self
+
+    def group(self, text: str, members: Union[Iterable[str], Any]) -> "Scene":
+        """Add (or replace) a legend **group** row: one click for many drawables.
+
+        ``members`` is drawable names, or a predicate on drawables —
+        ``scene.group("Mi1", lambda d: d.name.endswith(": Mi1"))`` — resolved to names
+        **now**, so a group is a fixed set rather than a query re-run on every frame.
+        A group matching nothing raises: an empty row is one that toggles nothing and
+        looks like a broken legend. See :class:`Legend` for how groups relate to labels.
+        """
+        if callable(members):
+            names = [d.name for d in self.drawables if d.name is not None and members(d)]
+        else:
+            if isinstance(members, str):
+                raise TypeError(f"members must be a list of names or a predicate, not "
+                                f"the string {members!r}")
+            names = [str(m) for m in members]
+            unknown = [m for m in names if m not in set(self.names)]
+            if unknown:
+                raise KeyError(f"group {text!r} names drawables that are not here: "
+                               f"{unknown}; have {self.names}")
+        if not names:
+            raise ValueError(f"group {text!r} matches no drawables")
+        groups = dict(self.legend.groups or {})
+        groups[str(text)] = tuple(names)
+        self.legend.groups = groups
+        self._changed()
+        return self
+
+    def set_alpha(self, alpha: float, *, kind: Optional[str] = None,
+                  names: Optional[Iterable[str]] = None) -> "Scene":
+        """Set the opacity of every drawable of one ``kind``, or of the ``names`` given.
+
+        ``kind`` is ``"mesh"``, ``"skeleton"`` or ``"points"``; neither argument means
+        everything. An **authored** change, like :meth:`set_color` — it is written to the
+        drawables, so a saved figure and ``view.reset()`` both keep it — and it sets each
+        one to ``alpha`` outright rather than scaling, so the value you asked for is the
+        value the scene then reports.
+        """
+        alpha = float(alpha)
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+        chosen = self.of_kind(kind) if kind is not None else list(self.drawables)
+        if names is not None:
+            wanted = {str(n) for n in names}
+            unknown = wanted - set(self.names)
+            if unknown:
+                raise KeyError(f"no drawables named {sorted(unknown)}")
+            chosen = [d for d in chosen if d.name in wanted]
+        for drawable in chosen:
+            drawable.alpha = alpha
+        self._changed()
+        return self
+
+    def of_kind(self, kind: str) -> list[Drawable]:
+        """The drawables of one kind: ``"mesh"``, ``"skeleton"`` or ``"points"``."""
+        if kind not in DRAWABLE_KINDS:
+            raise ValueError(f"kind is one of {', '.join(DRAWABLE_KINDS)}, not {kind!r}")
+        return [d for d in self.drawables if isinstance(d, DRAWABLE_KINDS[kind])]
 
     def set_color(self, name: str, color: Any) -> "Scene":
         """Recolour **one** drawable, leaving every other colour exactly where it is.

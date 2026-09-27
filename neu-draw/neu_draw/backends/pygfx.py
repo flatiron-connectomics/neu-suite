@@ -181,6 +181,7 @@ class View:
 
         self.group = build(scene)
         self.scene.add(self.group)
+        self._looks_at = self._looks()
 
         self._install_legend(legend)
 
@@ -304,6 +305,24 @@ class View:
         for drawable, obj in zip(self.scene_data.drawables, self.group.children):
             obj.material.color = display_color(drawable)
             obj.visible = bool(drawable.visible)
+        self._looks_at = self._looks()
+
+    def _looks(self) -> tuple:
+        """Each drawable's visibility, colour and opacity — what `_sync_objects` pushes."""
+        return tuple((bool(d.visible), tuple(d.color), float(d.alpha))
+                     for d in self.scene_data.drawables)
+
+    def set_alpha(self, alpha: float, *, kind: Optional[str] = None,
+                  names: Optional[Any] = None) -> "View":
+        """Opacity for every drawable of a ``kind`` (``"mesh"``, ``"skeleton"``,
+        ``"points"``), or of ``names``; what the toolbar's sliders do.
+        :meth:`Scene.set_alpha <neu_draw.scene.Scene.set_alpha>` plus the repaint."""
+        self.scene_data.set_alpha(alpha, kind=kind, names=names)
+        self._sync_objects()
+        if self.legend is not None:
+            self.legend.sync()
+        self.request_draw()
+        return self
 
     # -- viewpoints ------------------------------------------------------------
 
@@ -398,6 +417,11 @@ class View:
         at an exact size, and the legend has to go through that pass too — a saved figure
         without its legend is not the figure.
         """
+        # A field set directly (`drawable.alpha = 0.2`) reaches the objects on the next
+        # frame even with no legend to notice it — the legend's own per-frame check covers
+        # only the drawables on its rows, and a figure need not have a legend at all.
+        if self._looks() != self._looks_at:
+            self._sync_objects()
         if self.legend is None:
             renderer.render(self.scene, camera)
             return

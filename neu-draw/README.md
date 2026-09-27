@@ -173,6 +173,23 @@ scene.rename({"a": "b", "b": "a"})       # identity, still unique; a mapping app
 It replaced a `rename` method on the legend: once a row can hold several drawables its text
 is a label and not a name, and renaming one member would not change the row at all.
 
+### Group rows: one click for many drawables, on top of their own rows
+
+A label puts a drawable on exactly **one** row. When you want both — every cell's Mi1
+synapses on a row of their own *and* one row that hides all of them — declare a group:
+
+```python
+scene.group("all Mi1", lambda d: d.name.endswith(": Mi1"))   # a predicate, or…
+scene.group("cell A", ["A mesh", "A skeleton", "A : Mi1"])   # …a list of names
+# or up front: Scene(legend=Legend(groups={"all Mi1": [...]}))
+```
+
+Group rows come first, on a lighter plate, and toggle and highlight like any other row;
+every member keeps its own row, and a group whose members are partly hidden shows the
+partial state. Members are **names** — resolved once, when the group is declared — so a
+relabel leaves a group intact and `scene.rename` carries it along. A group naming a
+drawable that is not there, or whose text is also a label row's, raises.
+
 ### Edits take effect where you make them
 
 **Nothing needs re-running `show()`, and in the usual cases nothing needs a refresh either.**
@@ -237,6 +254,17 @@ nothing to remember after a kernel restart:
 | **Last** | go to `views["last"]` — where the last **closed** figure was |
 | **Capture** | write the PNG named in the box below the buttons |
 | **Close** | close the canvas, leaving the image it last showed in its place |
+
+Below the buttons is one **opacity slider per kind** the scene holds — mesh, skeleton,
+points — for when the surfaces hide the synapses. A slider *sets* every drawable of its
+kind to the value shown, starting from the largest they have now. From a cell, for any
+subset:
+
+```python
+view.set_alpha(0.2, kind="mesh")
+view.set_alpha(0.5, names=["A : Mi1"])
+scene.set_alpha(0.2, kind="mesh")     # the same, before show(); kept by reset()
+```
 
 Every one is also a method, so a notebook or a script can do the same:
 

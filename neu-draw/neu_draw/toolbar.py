@@ -150,6 +150,8 @@ class Toolbar:
                                   self._close),
         }
 
+        self.sliders = self._opacity_sliders()
+
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
         # Replacing a child of the outer VBox would work too, but this keeps the bar's
         # position fixed and the swap a single-element assignment.
@@ -162,6 +164,9 @@ class Toolbar:
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             widgets.HBox([self.path, self.status]),
+            *([widgets.HBox(list(self.sliders.values()),
+                            layout=widgets.Layout(flex_flow="row wrap", width="100%"))]
+              if self.sliders else []),
             self._stage,
         ])
 
@@ -180,6 +185,42 @@ class Toolbar:
                                 layout=widgets.Layout(width="98px", flex="0 0 auto"))
         button.on_click(lambda _button: self._guarded(handler))
         return button
+
+    def _opacity_sliders(self) -> dict:
+        """One opacity slider per kind of drawable the scene holds, keyed by kind.
+
+        **Per kind, not per row**: the reason to reach for one is almost always "the
+        surfaces are hiding the synapses", which is a statement about every mesh at once,
+        and a slider per legend row would be a second legend. A single row's opacity is
+        ``view.set_alpha(a, names=[...])`` from a cell.
+
+        A slider **sets** each drawable's alpha rather than scaling it, so it starts at the
+        value the drawables share, or the largest where they differ — moving it then puts
+        them all on the one value, which is what the slider reads. Absent for a view that
+        cannot set opacity, so a test double without ``set_alpha`` still gets its buttons.
+        """
+        scene = getattr(self.view, "scene_data", None)
+        if scene is None or not hasattr(self.view, "set_alpha"):
+            return {}
+        from .scene import DRAWABLE_KINDS
+
+        widgets = self._widgets
+        sliders = {}
+        for kind in DRAWABLE_KINDS:
+            members = scene.of_kind(kind)
+            if not members:
+                continue
+            slider = widgets.FloatSlider(
+                value=max(float(d.alpha) for d in members), min=0.0, max=1.0, step=0.02,
+                description=f"{kind} α", readout_format=".2f", continuous_update=True,
+                style={"description_width": "70px"},
+                layout=widgets.Layout(width="260px"))
+            slider.observe(
+                lambda change, kind=kind: self._guarded(
+                    lambda: self.view.set_alpha(change["new"], kind=kind)),
+                names="value")
+            sliders[kind] = slider
+        return sliders
 
     def _guarded(self, handler) -> None:
         """Run a handler, putting any failure in the status line.
@@ -277,6 +318,8 @@ class Toolbar:
         # NEXT figure, which is what the status line says.
         for button in self._buttons.values():
             button.disabled = True
+        for slider in self.sliders.values():
+            slider.disabled = True
         self.path.disabled = True
         self._say(f"closed. The viewpoint is in views[{LAST!r}] — press 'Last' in the next "
                   f"figure, or open it with show(scene, viewpoint='{LAST}')")

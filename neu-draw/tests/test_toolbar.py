@@ -87,10 +87,11 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     automatic: a feature you have to remember to switch on looks identical to a broken
     one after a kernel restart."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
-    bar, entry, stage = view.ui.widget.children
+    bar, entry, opacity, stage = view.ui.widget.children
     assert [b.description for b in bar.children] == [
         "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Close"]
     assert entry.children == (view.ui.path, view.ui.status)
+    assert opacity.children == (view.ui.sliders["mesh"],)
     assert stage.children == (view.canvas,)
 
 
@@ -199,6 +200,44 @@ def test_closing_records_the_viewpoint_it_is_about_to_lose(view):
     view.ui._close()
     assert viewstate.LAST in viewstate.views
     assert "Last" in view.ui.status.value and "viewpoint=" in view.ui.status.value
+
+
+# --------------------------------------------------------------------------- #
+# the opacity sliders
+# --------------------------------------------------------------------------- #
+
+def test_there_is_one_slider_per_kind_the_scene_holds(has_gpu):
+    """Per kind, not per row: "the surfaces hide the synapses" is about every mesh."""
+    from neu_lib import Skeleton
+
+    skel = Skeleton(np.array([[0.0, 0, 0], [50.0, 50, 50]]), np.array([[0, 1]]),
+                    name="s")
+    scene = Scene().add_mesh(_mesh()).add_skeleton(skel)
+    view = backend.show(scene, size=(120, 90), canvas="jupyter")
+    try:
+        assert list(view.ui.sliders) == ["mesh", "skeleton"]
+    finally:
+        view.close()
+
+
+def test_a_slider_starts_at_the_largest_alpha_and_moving_it_sets_them_all(has_gpu):
+    scene = Scene().add_mesh(_mesh("a"), alpha=0.3).add_mesh(_mesh("b"), alpha=0.7)
+    view = backend.show(scene, size=(120, 90), canvas="jupyter")
+    try:
+        slider = view.ui.sliders["mesh"]
+        assert slider.value == pytest.approx(0.7)
+        slider.value = 0.2
+        assert [d.alpha for d in scene] == [pytest.approx(0.2)] * 2
+        assert [tuple(o.material.color)[3] for o in view.group.children] == [
+            pytest.approx(0.2)] * 2
+    finally:
+        view.close()
+
+
+def test_closing_disables_the_sliders_too(view):
+    pytest.importorskip("imageio")
+    view.ui._close()
+    assert all(s.disabled for s in view.ui.sliders.values())
 
 
 def test_closing_twice_is_harmless(view):
