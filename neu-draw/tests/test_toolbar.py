@@ -87,10 +87,11 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     automatic: a feature you have to remember to switch on looks identical to a broken
     one after a kernel restart."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
-    bar, entry, options, opacity, stage = view.ui.widget.children
-    assert options is view.ui.options["panel"]
+    bar, entry, panels, opacity, stage = view.ui.widget.children
+    assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"])
     assert [b.description for b in bar.children] == [
-        "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Close"]
+        "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Animate",
+        "Close"]
     assert entry.children == (view.ui.path, view.ui.status)
     assert opacity.children == (view.ui.sliders["mesh"],)
     assert stage.children == (view.canvas,)
@@ -200,6 +201,39 @@ def test_capture_honours_the_options(view, tmp_path):
     view.ui._capture()
     assert (tmp_path / "fig.pdf").read_bytes().startswith(b"%PDF-")
     assert view.ui.path.value.endswith(".pdf")
+
+
+def test_animate_renders_the_options_and_reports_the_encode_line(view, tmp_path):
+    """Frames only, so the line to run is what the status shows."""
+    pytest.importorskip("imageio")
+    a, c = view.ui.animation, view.ui.options
+    a["seconds"].value, a["fps"].value, a["degrees"].value = 0.5, 8, 90.0
+    c["width"].value, c["height"].value = 60, 40
+    a["folder"].value = str(tmp_path / "spin")
+    a["encode"].value = False              # hermetic: never an ffmpeg this machine has
+    view.ui._animate()
+    assert len(list((tmp_path / "spin").glob("frame_*.png"))) == 4
+    assert "ffmpeg" in view.ui.status.value and "yuv420p" in view.ui.status.value
+
+
+def test_animate_encodes_with_the_ffmpeg_it_finds(view, tmp_path, monkeypatch):
+    import stat
+    import sys
+
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nopen(sys.argv[-1], 'wb').write(b'x')\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("NEU_DRAW_FFMPEG", str(fake))
+    a = view.ui.animation
+    a["seconds"].value, a["fps"].value = 0.25, 8
+    a["folder"].value, a["video"].value = str(tmp_path / "spin"), str(tmp_path / "t4.mp4")
+    view.ui._animate()
+    assert (tmp_path / "t4.mp4").exists() and "wrote" in view.ui.status.value
+
+
+def test_the_frames_folder_defaults_beside_the_capture(view):
+    view.ui.path.value = "figs/t4.svg"
+    assert view.ui._frames_folder() == "figs/t4_orbit"
 
 
 def test_an_empty_path_is_refused_rather_than_guessed_at(view):

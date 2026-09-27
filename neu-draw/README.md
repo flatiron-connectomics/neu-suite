@@ -241,7 +241,7 @@ scroll it. The strip never takes more than 45% of the canvas.
 
 ## The toolbar, and saved viewpoints
 
-In a notebook `show()` puts eight buttons above the canvas — no argument needed, and
+In a notebook `show()` puts nine buttons above the canvas — no argument needed, and
 nothing to remember after a kernel restart:
 
 | button | what it does |
@@ -253,6 +253,7 @@ nothing to remember after a kernel restart:
 | **Restore** | go to `views["saved"]` |
 | **Last** | go to `views["last"]` — where the last **closed** figure was |
 | **Capture** | write the file named in the box below the buttons — `.png`, or a layered `.svg` / `.pdf` |
+| **Animate** | render an orbit to PNG frames, as set in Animation options, and encode an mp4 where ffmpeg is available |
 | **Close** | close the canvas, leaving the image it last showed in its place |
 
 Below the buttons is one **opacity slider per kind** the scene holds — mesh, skeleton,
@@ -343,6 +344,45 @@ colours are **solved against the figure's own background** (the GPU blends in li
 editors in sRGB), so it matches the canvas over that background exactly and is close
 rather than exact if you change the background in the editor.
 
+### Animation: an orbit to video frames
+
+**Animate** renders the camera turning about an axis into numbered PNGs and, where an
+ffmpeg is available, encodes them to an mp4; **Animation options** (collapsed, beside
+Capture options) hold the degrees, seconds, fps, axis, easing, smoothing, whether the
+light turns with the camera, the frames folder, and the video. Size and legend come from
+Capture options. From a cell:
+
+```python
+spin = view.orbit("figs/t4_orbit", degrees=360, seconds=12, fps=30, axis="up")
+spin.video      # "figs/t4_orbit.mp4" — or None, and repr(spin) is the ffmpeg line to run
+```
+
+**ffmpeg is looked for, first match wins**: `ffmpeg=` on the call, then the
+`NEU_DRAW_FFMPEG` environment variable (a path or a command name), then `ffmpeg` on
+`PATH`, then [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/)'s bundled binary if
+that is installed. With none, the frames are still written and the plain command is
+printed. `encode=False` renders frames only; `encode=True` insists. If your site provides
+ffmpeg through a module system, load it in the shell that starts Jupyter, or point
+`NEU_DRAW_FFMPEG` at it.
+
+- **Axes**: `up`, `right`, `view` are the *screen's*, read at the start — a turntable of
+  the view you set up — and `x`, `y`, `z` (or any xyz vector) are the data's own. The
+  pivot is the point at the screen centre, so frame 0 is exactly the current view, and
+  the view itself is left where it was.
+- **`light="camera"`** (the default) turns the lights with the camera, so shading holds
+  still as it spins; `"fixed"` sweeps it across the surface.
+- A whole number of turns **loops** (no doubled frame at the seam); any other sweep ends
+  exactly on its angle. `ease="in-out"` for a move that is not a loop.
+- Frames are written atomically and a rerun into the same folder **resumes** — but only
+  with the same parameters (recorded in `animation.json`); a different orbit into a
+  folder of frames is refused unless `overwrite=True`.
+- The encode uses `-pix_fmt yuv420p`, without which the mp4 will not play in PowerPoint,
+  Keynote or Slack, and odd frame sizes are refused up front because that format needs
+  even ones.
+
+Measured on a 4-cell scene with meshes, skeletons and 350 synapses at 1500x900 with 2x
+smoothing: about 0.11 s a frame, so a 12-second turn renders in 40 s.
+
 `toolbar=False` gives the bare canvas; `toolbar=True` insists and raises if ipywidgets is
 missing or the canvas is not a widget. Offscreen and desktop renders quietly get no
 toolbar, which is why the buttons never appear in a `snapshot()` — the legend is drawn in
@@ -402,8 +442,13 @@ notebook toolbar are in place; DVID sources and 2D projections are not.
 | `neu_draw.sources` | the only module that reads anything |
 | `neu_draw.cache` | a three-method protocol; in-memory by default, `yes3` optional |
 | `neu_draw.viewstate` | saved camera viewpoints, outliving the view they came from |
+| `neu_draw.orbit` | camera orbits: the angle schedule and each frame's pose — no renderer |
+| `neu_draw.vectorfile` | a figure as a tree of named groups, and its SVG and PDF writers — no renderer |
+| `neu_draw.video` | finding ffmpeg and encoding frames with it — standard library only |
 | `neu_draw.backends.pygfx` | the renderer seam — build, camera, canvas, snapshots |
 | `neu_draw.backends.legend` | the clickable legend, drawn in the canvas |
+| `neu_draw.backends.vector` | builds the vector figure from a live view: one image per mesh, the rest projected |
+| `neu_draw.backends.animation` | renders an orbit to frames |
 | `neu_draw.toolbar` | the notebook buttons; the only module that needs ipywidgets |
 
 ## Tests

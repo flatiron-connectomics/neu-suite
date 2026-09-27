@@ -1,10 +1,11 @@
 """Buttons above a rendered view, in a notebook. ipywidgets, not an in-canvas UI.
 
-Eight actions: **centre** the camera on what is visible, **reset** to the view the figure
+Nine actions: **centre** the camera on what is visible, **reset** to the view the figure
 opened with, **refresh** from a scene edited in a cell, **save** a viewpoint and go back to
-it (**restore**) or to wherever the **last** closed figure was, **capture** a PNG, and
-**close** the figure — replacing the live canvas with the image it last showed, so the
-notebook keeps a picture where the widget was.
+it (**restore**) or to wherever the **last** closed figure was, **capture** a PNG, SVG or
+PDF, **animate** an orbit to frames, and **close** the figure — replacing the live canvas
+with the image it last showed, so the notebook keeps a picture where the widget was.
+Capture and Animate each read a collapsed options panel below the path box.
 
 **Two viewpoint slots, two buttons.** They answer different questions — "the angle I chose"
 against "wherever I happened to be" — and a single button picking between them would leave
@@ -159,6 +160,10 @@ class Toolbar:
             "capture": self._button("Capture", "camera",
                                     "write the file named in the box below — a .png, or "
                                     "a layered .svg", self._capture),
+            "animate": self._button("Animate", "film",
+                                    "render an orbit to PNG frames, as set in Animation "
+                                    "options, and encode it where ffmpeg is available",
+                                    self._animate),
             "close": self._button("Close", "power-off",
                                   "close the canvas, leaving its last image behind",
                                   self._close),
@@ -166,6 +171,7 @@ class Toolbar:
 
         self.sliders = self._opacity_sliders()
         self.options = self._capture_options()
+        self.animation = self._animation_options()
 
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
         # Replacing a child of the outer VBox would work too, but this keeps the bar's
@@ -179,7 +185,8 @@ class Toolbar:
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             widgets.HBox([self.path, self.status]),
-            self.options["panel"],
+            widgets.HBox([self.options["panel"], self.animation["panel"]],
+                         layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             *([widgets.HBox(list(self.sliders.values()),
                             layout=widgets.Layout(flex_flow="row wrap", width="100%"))]
               if self.sliders else []),
@@ -274,6 +281,76 @@ class Toolbar:
         panel.set_title(0, "Capture options")
         return {"panel": panel, "format": fmt, "resolution": resolution,
                 "width": w, "height": h, "legend": legend}
+
+    def _animation_options(self) -> dict:
+        """The collapsed "Animation options" panel, read by the Animate button.
+
+        Size and legend are **shared with Capture options** rather than repeated here: a
+        figure and its video are usually the same frame, and two width boxes that could
+        disagree would be a question nobody wants to answer. The frames folder defaults
+        to the capture path's stem plus ``_orbit``, so a figure and its animation land
+        side by side.
+        """
+        from .backends.animation import LIGHTS
+        from .orbit import DATA_AXES, EASES, SCREEN_AXES
+
+        widgets = self._widgets
+        style = {"description_width": "80px"}
+        short = widgets.Layout(width="180px")
+        wide = widgets.Layout(width="330px")
+        axes = ([(f"screen: {a}", a) for a in SCREEN_AXES]
+                + [(f"data: {a}", a) for a in DATA_AXES])
+        controls = {
+            "degrees": widgets.FloatText(value=360.0, description="degrees", style=style,
+                                         layout=short),
+            "seconds": widgets.BoundedFloatText(value=12.0, min=0.1, max=3600.0,
+                                                description="seconds", style=style,
+                                                layout=short),
+            "fps": widgets.BoundedIntText(value=30, min=1, max=240, description="fps",
+                                          style=style, layout=short),
+            "axis": widgets.Dropdown(options=axes, value="up", description="axis",
+                                     style=style, layout=short),
+            "light": widgets.Dropdown(
+                options=[("turns with camera", "camera"), ("fixed in scene", "fixed")],
+                value=LIGHTS[0], description="light", style=style, layout=wide),
+            "ease": widgets.Dropdown(options=list(EASES), value="linear",
+                                     description="ease", style=style, layout=short),
+            "supersample": widgets.BoundedIntText(value=2, min=1, max=4,
+                                                  description="smoothing ×", style=style,
+                                                  layout=short),
+            "folder": widgets.Text(value="", placeholder="<capture name>_orbit",
+                                   description="frames in", style=style, layout=wide),
+            "overwrite": widgets.Checkbox(value=False, description="overwrite frames",
+                                          indent=False),
+            "encode": widgets.Checkbox(value=True, description="encode to mp4", indent=False,
+                                       tooltip="needs an ffmpeg: on PATH, or named by "
+                                               "$NEU_DRAW_FFMPEG; without one, the frames "
+                                               "are written and the command is shown"),
+            "video": widgets.Text(value="", placeholder="<frames folder>.mp4",
+                                  description="video", style=style, layout=wide),
+        }
+        note = widgets.HTML("<span style='color:#666'>size and legend: from Capture "
+                            "options</span>")
+        body = widgets.VBox([
+            widgets.HBox([controls["degrees"], controls["seconds"], controls["fps"]]),
+            widgets.HBox([controls["axis"], controls["ease"], controls["supersample"]]),
+            controls["light"],
+            widgets.HBox([controls["folder"], controls["overwrite"]]),
+            widgets.HBox([controls["video"], controls["encode"]]),
+            note,
+        ])
+        panel = widgets.Accordion(children=[body], selected_index=None)
+        panel.set_title(0, "Animation options")
+        return {"panel": panel, **controls}
+
+    def _frames_folder(self) -> str:
+        chosen = self.animation["folder"].value.strip()
+        if chosen:
+            return chosen
+        stem = self.path.value.strip() or default_path()
+        if self._extension(stem):
+            stem = stem.rsplit(".", 1)[0]
+        return f"{stem}_orbit"
 
     @staticmethod
     def _extension(path: str) -> Optional[str]:
@@ -393,6 +470,42 @@ class Toolbar:
         self.path.value = default_path()
         self._say(f"wrote {written}")
 
+    def _animate(self) -> None:
+        """Render the orbit the Animation options describe, reporting progress here.
+
+        The kernel is busy for the length of the render, so the status line is the only
+        sign of life; it is updated per frame, which ipywidgets sends as it goes.
+        """
+        a, c = self.animation, self.options
+        folder = self._frames_folder()
+
+        def progress(done: int, total: int) -> None:
+            self._say(f"rendering {folder}: frame {done} / {total}"
+                      + (" — encoding…" if done == total else ""))
+
+        result = self.view.orbit(
+            folder, degrees=float(a["degrees"].value), seconds=float(a["seconds"].value),
+            fps=float(a["fps"].value), axis=a["axis"].value, light=a["light"].value,
+            ease=a["ease"].value, supersample=int(a["supersample"].value),
+            size=(int(c["width"].value), int(c["height"].value)),
+            legend=bool(c["legend"].value), overwrite=bool(a["overwrite"].value),
+            encode="auto" if a["encode"].value else False,
+            output=a["video"].value.strip() or None, progress=progress)
+        import html as _html
+
+        from .video import FFMPEG_ENV
+
+        self.last_orbit = result
+        if result.video:
+            self._say(f"{result.frames} frames in {folder}; wrote {result.video}")
+        elif a["encode"].value:
+            self._say(f"{result.frames} frames in {folder}. No ffmpeg found — put one on "
+                      f"PATH or set ${FFMPEG_ENV} and it runs itself; or encode with: "
+                      f"<code>{_html.escape(result.command())}</code>")
+        else:
+            self._say(f"{result.frames} frames in {folder}. Encode with: "
+                      f"<code>{_html.escape(result.command())}</code>")
+
     def _close(self) -> None:
         """Close the canvas and leave the image it last showed in its place.
 
@@ -419,9 +532,10 @@ class Toolbar:
             button.disabled = True
         for slider in self.sliders.values():
             slider.disabled = True
-        for key, control in self.options.items():
-            if key != "panel":
-                control.disabled = True
+        for panel in (self.options, self.animation):
+            for key, control in panel.items():
+                if key != "panel":
+                    control.disabled = True
         self.path.disabled = True
         self._say(f"closed. The viewpoint is in views[{LAST!r}] — press 'Last' in the next "
                   f"figure, or open it with show(scene, viewpoint='{LAST}')")

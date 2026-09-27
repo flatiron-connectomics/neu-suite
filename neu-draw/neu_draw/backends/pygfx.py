@@ -523,6 +523,22 @@ class View:
             raise ValueError(f"save_pdf writes .pdf, not {path!r}")
         return self.save(path, **kwargs)
 
+    def orbit(self, directory: str, **kwargs) -> Any:
+        """Render the camera turning about an axis, as numbered PNGs in ``directory``.
+
+        Keywords: ``degrees`` (360), ``seconds`` (12), ``fps`` (30), ``axis`` (``"up"``;
+        also ``right``/``view``, data ``x``/``y``/``z``, or an xyz vector), ``light``
+        (``"camera"`` turns the lights with it, ``"fixed"`` does not), ``ease``
+        (``linear``/``in-out``), ``size``, ``supersample`` (2), ``legend``, ``overwrite``,
+        and ``encode`` (``"auto"``: write an mp4 if an ffmpeg is found — ``ffmpeg=``,
+        ``$NEU_DRAW_FFMPEG``, then ``PATH``), ``output`` (the mp4's path). Returns an
+        :class:`~neu_draw.backends.animation.Orbit`: the video, or the line that would
+        make it. The view's own camera is not moved.
+        """
+        from .animation import orbit
+
+        return orbit(self, directory, **kwargs)
+
     def close(self) -> None:
         """Close the canvas, recording where the camera was into ``views["last"]``.
 
