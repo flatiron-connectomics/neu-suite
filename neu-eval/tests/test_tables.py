@@ -219,3 +219,61 @@ def test_the_per_label_frame_is_long_with_a_side_column(tmp_path):
     assert set(frame.columns) == {"side", "label_id", "n_voxels", "voi_contribution"}
     # The gt body took all the split blame; the two segments share the merge blame of zero.
     assert frame[frame.side == "seg"]["voi_contribution"].sum() > 0
+
+
+# -- shape CSVs for neu-glance annotate --link ------------------------------------------
+
+def _shaped_rows():
+    base = {"pair_key": "1:5", "a_id": "1", "b_id": "5", "severity": 0.1, "group_rank": 1,
+            "z_nm": 1.0, "y_nm": 2.0, "x_nm": 3.0}
+    merge = {**base, "kind": "merge", "shapes": [{
+        "side": "merge", "other_id": "2", "n_voxels": 10,
+        "centre_nm": [8.0, 8.0, 8.0], "radii_nm": [16.0, 16.0, 16.0],
+        "p0_vox": [0, 0, 0], "p1_vox": [1, 1, 1],
+        "p0_nm": [0.0, 0.0, 0.0], "p1_nm": [8.0, 8.0, 8.0],
+        "ids": {"a": ["1", "2"], "b": ["5"], "c": []}}]}
+    split = {**base, "pair_key": "3:6", "a_id": "3", "b_id": "6", "kind": "split",
+             "shapes": [{**merge["shapes"][0], "side": "split",
+                         "ids": {"a": ["3"], "b": ["6", "7"], "c": ["9"]}}]}
+    lonely = {**base, "pair_key": "4:8", "a_id": "4", "b_id": "8", "kind": "split",
+              "shapes": [], "point_at": "overlap"}
+    return [merge, split, lonely]
+
+
+def test_shape_csvs_write_neu_glances_columns_one_set_per_kind(tmp_path):
+    import csv
+
+    from neu_eval.tables import shape_csvs
+
+    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+                     relationships=("a", "b", "c"))
+    assert set(out) == {"merges", "splits"}
+    lines = list(csv.DictReader(open(out["merges"]["lines"])))
+    assert list(lines[0])[:6] == ["z0", "y0", "x0", "z1", "y1", "x1"]
+    assert lines[0]["segments:a"] == "1 2" and lines[0]["segments:b"] == "5"
+    assert lines[0]["segments:c"] == "", "an empty relationship is written, not dropped"
+    assert "joins a 1 + 2" in lines[0]["description"]
+    ells = list(csv.DictReader(open(out["splits"]["ellipsoids"])))
+    assert list(ells[0])[:6] == ["z", "y", "x", "rz", "ry", "rx"]
+    assert "cut into b 6 + 7" in ells[0]["description"]
+
+
+def test_a_row_without_a_shape_is_kept_as_a_point(tmp_path):
+    import csv
+
+    from neu_eval.tables import shape_csvs
+
+    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+                     relationships=("a", "b"))
+    (pt,) = list(csv.DictReader(open(out["splits"]["points"])))
+    assert pt["id"] == "4:8:point" and "no seam found" in pt["description"]
+
+
+def test_shapes_stay_out_of_the_review_csv(tmp_path):
+    import csv
+
+    from neu_eval.tables import write_disagreements
+
+    path = write_disagreements(_shaped_rows(), tmp_path / "d.csv", labels=("a", "b"))
+    header = next(csv.reader(open(path)))
+    assert "shapes" not in header and "verdict" in header

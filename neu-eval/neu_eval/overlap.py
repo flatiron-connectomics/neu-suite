@@ -519,3 +519,30 @@ def _group_sum(ids: np.ndarray, counts: np.ndarray) -> tuple[np.ndarray, np.ndar
     uniq, inverse = np.unique(ids, return_inverse=True)
     totals = np.bincount(inverse.reshape(-1), weights=counts.astype(np.float64))
     return uniq, totals.astype(np.uint64)
+
+
+def boundary_band(labels, width: int = 2, *, ignore: Iterable[int] = (0,)):
+    """Boolean mask of voxels within ``width`` voxels of a boundary in ``labels``.
+
+    For a boundary-TOLERANT score: pass ``mask=~boundary_band(gt)`` to :func:`contingency`
+    and voxels where two labelings merely place the same boundary differently leave the
+    denominator. Common practice in segmentation benchmarks, and a sensitivity next to the
+    ordinary score rather than a replacement for it -- the band is a property of the
+    reference, and a wide one also removes thin processes wholesale.
+
+    A boundary is any 6-neighbour pair of different labels, ignored values included (the
+    edge of the annotated region is a boundary too).
+    """
+    from scipy import ndimage as ndi
+
+    arr = np.asarray(labels)
+    edge = np.zeros(arr.shape, bool)
+    for ax in range(arr.ndim):
+        lo = [slice(None)] * arr.ndim; hi = [slice(None)] * arr.ndim
+        lo[ax], hi[ax] = slice(None, -1), slice(1, None)
+        diff = arr[tuple(lo)] != arr[tuple(hi)]
+        edge[tuple(lo)] |= diff
+        edge[tuple(hi)] |= diff
+    if width > 1:
+        edge = ndi.binary_dilation(edge, iterations=width - 1)
+    return edge

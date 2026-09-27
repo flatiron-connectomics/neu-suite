@@ -25,7 +25,7 @@ merge on fractions **of that segment**.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -46,7 +46,8 @@ MAX_EDT_VOXELS = 1 << 24
 
 def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
          top: int | None = None, include_matches: bool = False,
-         rank: str = "severity", max_per_group: int | None = None) -> list[dict]:
+         rank: str = "severity", max_per_group: int | None = None,
+         exclude: Iterable[str] = ()) -> list[dict]:
     """One row per structurally significant pair, worst first.
 
     **Significance is asymmetric, and it has to be.** Whether a reference body is *split*
@@ -90,6 +91,11 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
     ``include_matches`` keeps the pairs classified ``match`` — one structural partner each
     way, i.e. the two sides agreeing. Off by default because this is a disagreement report.
 
+    ``exclude`` is a set of ``pair_key`` values to treat as **not structural at all** —
+    neither reported nor counted as anyone's partner. It is how :func:`thin_pairs` removes
+    boundary disagreements: dropping only the strip's own row would leave the body it pokes
+    into still classified "split", because the strip would still count as its second piece.
+
     Returns plain dicts rather than a DataFrame so this module stays free of pandas; see
     :mod:`neu_eval.tables` for the writers.
     """
@@ -109,6 +115,10 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
     frac_b = counts / b_total
 
     big_enough = c.counts >= min_voxels
+    exclude = set(exclude)
+    if exclude:
+        keys = np.array([f"{int(x)}:{int(y)}" for x, y in zip(c.a_ids, c.b_ids)])
+        big_enough &= ~np.isin(keys, list(exclude))
     # Asymmetric, per the docstring: a pair counts toward "is this body split?" only if it
     # takes a real share OF THE BODY, and toward "is this segment a merge?" only if it
     # contributes a real share OF THE SEGMENT.
@@ -175,12 +185,64 @@ def rows(c: Contingency, *, min_frac: float = 0.05, min_voxels: int = 1,
     return kept[:top] if top is not None else kept
 
 
+def thin_pairs(c: Contingency, a: Any, b: Any, *, radius: float = 3.0,
+               min_frac: float = 0.05, min_voxels: int = 1,
+               ignore_a: Iterable[int] = (0,), ignore_b: Iterable[int] = ()) -> dict[str, float]:
+    """``{pair_key: interior radius}`` for the significant pairs with NO real interior.
+
+    Two labelings draw the same cell boundary a voxel or two apart, so each body carries a
+    thin strip of its neighbour's segment. By fraction alone such a strip can be
+    "significant" -- a few percent of a small body -- and it then reads as a merge (the
+    neighbour's segment reaching into this body) or a split. What it does not have is an
+    interior: its **largest inscribed radius** (the peak of the distance transform of the
+    pair's overlap) is a voxel or two. Measured on one delivery's merges, 63% of rows were
+    at most 3 voxels deep, against none of its splits. A pair is thin when that radius is
+    at most ``radius`` voxels.
+
+    Only pairs that would pass :func:`rows`'s significance test are measured -- the rest
+    cannot become rows -- each inside the intersection of its two labels' bounding boxes.
+    Pass the keys to ``rows(..., exclude=...)``.
+    """
+    from scipy import ndimage as ndi
+
+    from neu_proc.ops.backend import to_cpu
+
+    if c.n_pairs == 0:
+        return {}
+    aa, ba = to_cpu(a.array), to_cpu(b.array)
+    a_ids, a_counts = c.a_totals()
+    b_ids, b_counts = c.b_totals()
+    fa = c.counts / a_counts[np.searchsorted(a_ids, c.a_ids)]
+    fb = c.counts / b_counts[np.searchsorted(b_ids, c.b_ids)]
+    candidate = ((fa >= min_frac) | (fb >= min_frac)) & (c.counts >= min_voxels)
+    drop_a = {int(v) for v in ignore_a}
+    drop_b = {int(v) for v in ignore_b}
+    boxes_a = _label_boxes(aa, to_cpu=to_cpu)
+    boxes_b = _label_boxes(ba, to_cpu=to_cpu)
+    out = {}
+    for k in np.nonzero(candidate)[0]:
+        x, y = int(c.a_ids[k]), int(c.b_ids[k])
+        if x in drop_a or y in drop_b or x not in boxes_a or y not in boxes_b:
+            continue
+        box = tuple(slice(max(p.start, q.start), min(p.stop, q.stop))
+                    for p, q in zip(boxes_a[x], boxes_b[y]))
+        if any(s.stop <= s.start for s in box):
+            continue
+        m = (aa[box] == aa.dtype.type(x)) & (ba[box] == ba.dtype.type(y))
+        r = float(ndi.distance_transform_edt(np.pad(m, 1)).max()) if m.any() else 0.0
+        if r <= radius:
+            out[f"{x}:{y}"] = r
+    return out
+
+
 def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
            labels: Sequence[str] = ("a", "b"),
            at: str = "seam",
            ignore_a: Iterable[int] = (0,), ignore_b: Iterable[int] = (),
            crop: bool = True,
-           max_edt_voxels: int = MAX_EDT_VOXELS) -> list[dict]:
+           max_edt_voxels: int = MAX_EDT_VOXELS,
+           shapes: bool = False, anchor_radius: int = 24,
+           gap: int = 2) -> list[dict]:
     """Add a world-coordinate click target to each row.
 
     ``a`` and ``b`` are the two :class:`~neu_lib.Piece` objects the table was built from.
@@ -220,6 +282,11 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     Coordinates come back as ``z_nm``/``y_nm``/``x_nm`` through ``Piece.to_nm``, because the
     voxel index means nothing outside its own frame and a report gets read next to a viewer
     that speaks nanometres. The voxel index is kept too, for indexing back into the arrays.
+
+    **``shapes=True`` adds a drawable description of the error** under ``row["shapes"]`` --
+    a point says *where* but not *what*, and on real data a single seam voxel can sit on an
+    incidental contact rather than the false boundary itself. See :func:`_shapes`; the
+    point above is computed exactly as before either way.
     """
     from neu_proc.ops.backend import ndimage_for, to_cpu
 
@@ -243,6 +310,10 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
     # before, and the pair occupies a median 2.6% of the volume.
     boxes_a = _label_boxes(aa, to_cpu=to_cpu) if crop else {}
     boxes_b = _label_boxes(ba, to_cpu=to_cpu) if crop else {}
+    # Whole-array label sizes, for telling a piece OF a body from a strip of a neighbour
+    # (see _shapes). Counted once; a window holds only part of most neighbours.
+    sizes_a = _label_sizes(aa, to_cpu=to_cpu) if shapes else {}
+    sizes_b = _label_sizes(ba, to_cpu=to_cpu) if shapes else {}
 
     for row in report_rows:
         a_id, b_id = aa.dtype.type(row[a_key]), ba.dtype.type(row[b_key])
@@ -285,7 +356,186 @@ def locate(report_rows: Sequence[dict], a: Any, b: Any, *,
                          "point_at": how})
         nm = np.asarray(a.to_nm([[int(z), int(y), int(x)]])).reshape(-1)
         enriched.update({"z_nm": float(nm[0]), "y_nm": float(nm[1]), "x_nm": float(nm[2])})
+        if shapes:
+            enriched["shapes"] = _shapes(
+                row.get("kind", "tangle"), to_cpu(caa), to_cpu(cba), a_id, b_id,
+                drop_a, drop_b, origin, a, radius=anchor_radius, gap=gap,
+                sizes_a=sizes_a, sizes_b=sizes_b)
         out.append(enriched)
+    return out
+
+
+#: The sides a row's kind has. A tangle is both errors at once, so it gets both shapes.
+_SIDES = {"split": ("split",), "merge": ("merge",), "tangle": ("split", "merge"),
+          "match": ()}
+
+
+def _label_sizes(arr, *, to_cpu):
+    ids, n = np.unique(to_cpu(arr), return_counts=True)
+    return dict(zip(ids.tolist(), n.tolist()))
+
+
+#: A piece counts as part of the container when at least this share of it lies inside.
+#: Between the two measured cases it must separate: boundary strips of a neighbouring cell
+#: sit at 0.1-1% inside (specimen 5), while a tangle's partner -- itself a merger spanning
+#: bodies -- sits at 40-60%.
+FRAGMENT_SHARE = 0.25
+
+
+def _shapes(kind, caa, cba, a_id, b_id, drop_a, drop_b, origin, piece, *, radius, gap,
+            sizes_a=None, sizes_b=None):
+    """One drawable shape per side of the error: ``[{side, centre_nm, radii_nm, p0, p1, ...}]``.
+
+    For a **split** (``a``'s body cut between this ``b`` segment and another) and a **merge**
+    (``b``'s segment spanning this ``a`` body and another) alike:
+
+    - ``other_id`` is the specific piece across the false boundary, in the other side's
+      labelling. **It must be a FRAGMENT of the container** -- at least
+      :data:`FRAGMENT_SHARE` of it inside -- and the largest such by overlap. Not the piece
+      with the most contact: two labelings draw one cell boundary a voxel or two apart, so a
+      strip of the NEIGHBOURING cell's segment lies inside the body along its whole
+      boundary, and on real data that strip out-touched the true cut and put the ellipsoid
+      on an ordinary cell boundary. Where no piece qualifies the side is not drawn (the row
+      falls back to a point) rather than drawn on a boundary. ``other_how`` records it;
+    - the **patch** is the largest connected part of the contact with it, plus its mirror
+      on the far side, so ``centre`` / ``radii`` describe the false cut or join itself.
+      Largest, because the contact is often several patches and the deepest single voxel
+      (what the point uses) can belong to a stray one;
+    - ``p0`` is inside this pair's overlap and ``p1`` inside the other piece, each the voxel
+      nearest the centroid of its region within ``radius`` voxels of the patch centre, so
+      both are guaranteed to lie IN their region. For a merge they are a line across the
+      join; for a split, one point in each of the pieces that should be one.
+
+    **``gap`` bridges ignored voxels.** A delivery that draws membranes as an ignored 0
+    separates its two pieces of a split body by that membrane, so they never touch and a
+    contact-only rule finds no cut -- or finds a stray place where they happen to touch
+    and draws the error there. The other side may therefore be reached through up to
+    ``gap`` ignored voxels.
+
+    Radii are 1.5 standard deviations of the patch per axis, at least 2 voxels. Viewer
+    ellipsoids are axis-aligned, so an oblique cut is drawn as the ellipsoid bounding it.
+    """
+    from scipy import ndimage as ndi
+
+    body, segment = caa == a_id, cba == b_id
+    inter = body & segment
+    voxel = np.asarray(piece.frame.voxel_size_nm, dtype=float)
+    full = np.ones((3, 3, 3), bool)
+    out = []
+    for side in _SIDES.get(kind, ()):
+        if side == "split":
+            container, other_arr, own_id, drop = body, cba, b_id, drop_b
+            totals = sizes_b or {}
+        else:
+            container, other_arr, own_id, drop = segment, caa, a_id, drop_a
+            totals = sizes_a or {}
+        ignored = (np.isin(other_arr, np.asarray(drop, dtype=other_arr.dtype))
+                   if drop else np.zeros(other_arr.shape, bool))
+        others = container & (other_arr != own_id) & ~ignored
+        if not others.any():
+            continue
+
+        def reach_of(mask):
+            grown = mask.copy()
+            for _ in range(gap):
+                grown |= ndi.binary_dilation(grown) & ignored & container
+            return ndi.binary_dilation(grown)
+
+        values, inside = np.unique(other_arr[others], return_counts=True)
+        share = np.array([n / max(totals.get(int(v), n), 1) for v, n in zip(values, inside)])
+        # Qualifying pieces by overlap, largest first; the first that actually TOUCHES this
+        # pair wins. A fragment elsewhere in the body cannot mark this row's cut.
+        order = [i for i in np.argsort(-inside) if share[i] >= FRAGMENT_SHARE]
+        pick = contact = one = None
+        for i in order:
+            cand = container & (other_arr == values[i])
+            hit = inter & reach_of(cand)
+            if hit.any():
+                pick, one, contact = i, cand, hit
+                break
+        if pick is None:
+            continue
+        other_id = values[pick]
+        labelled, n = ndi.label(contact, structure=full)
+        if n == 0:
+            continue
+        sizes = np.bincount(labelled.ravel())
+        sizes[0] = 0
+        patch = labelled == int(sizes.argmax())
+        mirror = one & ndi.binary_dilation(patch, iterations=gap + 1)
+        where = np.argwhere(patch | mirror).astype(float)
+        centre = where.mean(axis=0)
+        radii = np.maximum(1.5 * where.std(axis=0), 2.0)
+        p0, p1 = _anchor(inter, centre, radius), _anchor(one, centre, radius)
+
+        shift = np.asarray(origin, dtype=float)
+        to_nm = lambda v: [float(x) for x in                                # noqa: E731
+                           np.asarray(piece.to_nm([list(v)])).reshape(-1)]
+        c_abs = centre + shift
+        v0 = [int(v) for v in p0 + shift]
+        v1 = [int(v) for v in p1 + shift]
+        out.append({
+            "side": side, "other_id": str(int(other_id)),
+            "other_share": float(share[pick]),
+            "n_voxels": int(len(where)),
+            "centre_nm": to_nm(c_abs), "radii_nm": [float(r) for r in radii * voxel],
+            "p0_vox": v0, "p1_vox": v1, "p0_nm": to_nm(v0), "p1_nm": to_nm(v1),
+        })
+    return out
+
+
+def _anchor(mask, centre, radius):
+    """The voxel of ``mask`` nearest the centroid of ``mask`` within ``radius`` of ``centre``.
+
+    Nearest-to-centroid rather than the centroid itself, because a curved region's centroid
+    can fall outside it and a line end in the wrong object names the wrong segment.
+    """
+    lo = np.maximum(np.floor(centre - radius).astype(int), 0)
+    hi = np.minimum(np.ceil(centre + radius).astype(int) + 1, mask.shape)
+    sub = mask[tuple(slice(a, b) for a, b in zip(lo, hi))]
+    pts = np.argwhere(sub) + lo
+    if len(pts):
+        inside = pts[((pts - centre) ** 2).sum(axis=1) <= radius ** 2]
+        pts = inside if len(inside) else pts
+    else:
+        pts = np.argwhere(mask)
+    c = pts.mean(axis=0)
+    return pts[((pts - c) ** 2).sum(axis=1).argmin()]
+
+
+def sample_ids(report_rows: Sequence[dict], pieces: Mapping[str, Any], *,
+               ignore: Mapping[str, Iterable[int]] | None = None) -> list[dict]:
+    """Add ``shape["ids"] = {name: [ids at p0 and p1]}`` for every labelling in ``pieces``.
+
+    This is what lets an annotation name, in EVERY layer, the objects at its two ends: the
+    reference bodies, the segment that merged them, and whatever a third delivery has there
+    -- two segments if it got it right, one if it made the same merge. The rule needs no
+    knowledge of which layer is "the" answer, which is the point.
+
+    ``pieces`` must be on the grid ``locate`` was given (``p0_vox`` / ``p1_vox`` index
+    it), and should hold the labels **as delivered** -- the ids a viewer shows -- even
+    when the table was built from connected-components ids. Ignored values (membrane) are
+    left out: they are not objects anyone can select.
+    """
+    ignore = {k: set(int(v) for v in vals) for k, vals in (ignore or {}).items()}
+    shape = None
+    for p in pieces.values():
+        if shape is not None and p.array.shape != shape:
+            raise ValueError("every piece must be on one grid: "
+                             f"{shape} vs {p.array.shape}")
+        shape = p.array.shape
+    out = []
+    for row in report_rows:
+        new = dict(row)
+        if row.get("shapes"):
+            new["shapes"] = []
+            for s in row["shapes"]:
+                ids = {}
+                for name, p in pieces.items():
+                    got = {int(p.array[tuple(s[k])]) for k in ("p0_vox", "p1_vox")}
+                    ids[name] = [str(v) for v in sorted(got - ignore.get(name, set()))]
+                new["shapes"].append({**s, "ids": ids})
+        out.append(new)
     return out
 
 

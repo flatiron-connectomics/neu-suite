@@ -68,6 +68,27 @@ bodies), or `tangle` (both at once — the case a proofreader cannot fix with on
 
 Two details that took measuring:
 
+**Boundary disagreement is not structure, and the table can leave it out.** Two labelings
+place the same cell boundary a voxel or two apart, so every body carries thin strips of its
+neighbours' segments — by fraction alone a strip can pass as a merge or a split.
+`thin_pairs(c, a, b, radius=3)` finds the significant pairs whose overlap has no interior
+deeper than `radius` voxels (the peak of its distance transform), and `rows(...,
+exclude=...)` drops them from both the report **and** the partner counting, so the body a
+strip pokes into is no longer "split" either. Measured on one crop it took a delivery's
+merge rows from 570 to 28 while leaving its splits thick. The metrics are untouched; for a
+boundary-tolerant score, pass `mask=~overlap.boundary_band(reference, width)` to
+`contingency` and report it beside the ordinary one.
+
+**Each row can also be DRAWN as what it is** (`locate(..., shapes=True)`): a merge as a
+*line* from inside one reference body to inside the other, across the false join; a split
+as an *ellipsoid* over the false cut, sized by the cut; a tangle as both. They sit on the
+largest connected patch of the seam, not one voxel of it, and reach across up to `gap`
+ignored voxels — so a cut a segmentation drew as membrane (an ignored 0) is still found.
+`sample_ids` then names what every labelling has at each shape's two ends, and
+`tables.shape_csvs` writes them for `neu-glance annotate --link`, one relationship per
+labelling: one annotation selects the reference bodies, the segment at fault, and whatever a
+second segmentation has in the same place.
+
 **The coordinate is on the seam — where the two labelings part company.** A `split` row is
 a segment that stops while the body continues, so its point goes on the false *cut*; a
 `merge` row is a segment that continues while the body stops, so its point goes on the false

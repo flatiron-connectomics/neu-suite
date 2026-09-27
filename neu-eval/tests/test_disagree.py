@@ -386,3 +386,174 @@ def test_mismatched_piece_shapes_are_refused():
     rows = disagree.rows(contingency(a, b, ignore_a=()))
     with pytest.raises(ValueError, match="same shape"):
         disagree.locate(rows, _piece(a), _piece(np.ones((4, 4, 5), np.uint64)))
+
+
+# -- shapes: what the error IS, not only where ------------------------------------------
+
+def _shaped(a, b, **kw):
+    return disagree.locate(disagree.rows(contingency(a, b, ignore_a=())),
+                           _piece(a), _piece(b), shapes=True, **kw)
+
+
+def test_a_merge_is_a_line_from_one_reference_body_to_the_other():
+    """The line is the annotation for a merge because it connects the two things that
+    should not be connected: one end in each body, both ends in the one segment."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    a[8:] = 2
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    for row in _shaped(a, b):
+        (s,) = row["shapes"]
+        assert s["side"] == "merge"
+        p0, p1 = tuple(s["p0_vox"]), tuple(s["p1_vox"])
+        assert {int(a[p0]), int(a[p1])} == {1, 2}, "one end in each reference body"
+        assert int(b[p0]) == int(b[p1]) == 5, "both ends in the merging segment"
+        assert int(a[p0]) == int(row["a_id"]), "p0 is this row's own body"
+        assert s["other_id"] == str(3 - int(row["a_id"]))
+        assert abs(s["centre_nm"][0] / 8.0 - 7.5) <= 1.0, "centred on the join at z=8"
+
+
+def test_a_split_is_an_ellipsoid_flat_across_the_cut():
+    """The cut is a z-plane, so the ellipsoid must be thin in z and wide in y and x -- its
+    shape is what says how big the false boundary is."""
+    a, b = _slab()
+    six = next(r for r in _shaped(a, b) if r["b_id"] == 6)
+    (s,) = six["shapes"]
+    assert s["side"] == "split" and s["other_id"] == "5"
+    rz, ry, rx = (r / 8.0 for r in s["radii_nm"])
+    assert rz < ry and rz < rx, "flat across the cut"
+    assert int(b[tuple(s["p0_vox"])]) == 6 and int(b[tuple(s["p1_vox"])]) == 5
+    assert int(a[tuple(s["p0_vox"])]) == int(a[tuple(s["p1_vox"])]) == 1
+
+
+def test_the_largest_patch_wins_not_a_stray_contact():
+    """Two segments meeting over a whole plane AND at one stray voxel: the shape must sit
+    on the plane. A single deepest voxel can land on the stray contact; a patch cannot."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[8:] = 6
+    b[2, 2, 2] = 6                                     # the stray contact, far from z=8
+    six = next(r for r in _shaped(a, b) if r["b_id"] == 6)
+    (s,) = six["shapes"]
+    assert abs(s["centre_nm"][0] / 8.0 - 7.5) <= 1.0
+
+
+def test_a_cut_drawn_as_membrane_is_still_a_cut():
+    """A delivery that marks membrane as an ignored 0 separates the two pieces of a split
+    body by that membrane, so they never touch. Bridging `gap` ignored voxels is what
+    finds the cut at all; with gap=0 there is nothing to draw."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[8:] = 6
+    b[8] = 0                                           # a one-voxel membrane at z=8
+    rows = disagree.rows(contingency(a, b, ignore_a=(), ignore_b=(0,)))
+    loc = lambda gap: disagree.locate(rows, _piece(a), _piece(b), ignore_b=(0,),  # noqa: E731
+                                      shapes=True, gap=gap)
+    five = next(r for r in loc(2) if r["b_id"] == 5)
+    (s,) = five["shapes"]
+    assert s["other_id"] == "6"
+    assert abs(s["centre_nm"][0] / 8.0 - 8.0) <= 1.0, "on the membrane between them"
+    assert next(r for r in loc(0) if r["b_id"] == 5)["shapes"] == []
+
+
+def test_a_tangle_gets_both_shapes():
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    a[:, 8:] = 2
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[8:] = 6
+    b[:4, :4] = 7                                      # enough to make it a tangle
+    rows = [r for r in _shaped(a, b) if r["kind"] == "tangle"]
+    assert rows, "the fixture must produce a tangle"
+    assert {s["side"] for s in rows[0]["shapes"]} == {"split", "merge"}
+
+
+def test_sample_ids_names_what_every_layer_has_at_the_anchors():
+    """The rule behind linking every layer: whatever each labelling has at the two ends.
+    Here a third labelling agrees with the reference, so it names TWO objects -- which is
+    exactly what tells a viewer that delivery did not make this merge."""
+    a = np.ones((16, 16, 16), dtype=np.uint64)
+    a[8:] = 2
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    third = np.where(a == 1, 70, 80).astype(np.uint64)
+    third[0] = 0                                       # membrane, never named
+    rows = disagree.sample_ids(_shaped(a, b), {"gt": _piece(a), "vi": _piece(b),
+                                              "zetta": _piece(third)},
+                               ignore={"zetta": (0,)})
+    ids = rows[0]["shapes"][0]["ids"]
+    assert ids["gt"] == ["1", "2"] and ids["vi"] == ["5"] and ids["zetta"] == ["70", "80"]
+
+
+def test_sample_ids_refuses_pieces_on_different_grids():
+    a = np.ones((4, 4, 4), dtype=np.uint64)
+    with pytest.raises(ValueError, match="one grid"):
+        disagree.sample_ids([], {"x": _piece(a), "y": _piece(np.ones((4, 4, 5)))})
+
+
+def test_without_shapes_the_rows_are_as_before():
+    a, b = _slab()
+    rows = disagree.rows(contingency(a, b, ignore_a=()))
+    assert all("shapes" not in r for r in disagree.locate(rows, _piece(a), _piece(b)))
+
+
+def test_a_boundary_sliver_is_not_taken_for_the_other_half_of_a_split():
+    """The real-data failure. Reference and segmentation draw a cell boundary a voxel apart,
+    so a strip of the NEIGHBOURING cell's segment lies inside the body -- along its whole
+    boundary, which can give it more contact than the true cut has. Chosen by contact, the
+    shape lands on an ordinary cell boundary. The other half of a split must be a piece
+    that is mostly INSIDE the body."""
+    a = np.full((16, 16, 16), 1, dtype=np.uint64)
+    a[:, :, 12:] = 2                                    # body 1 is x<12, body 2 beyond
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)       # segment 5: most of body 1
+    b[15:, :, :12] = 6                                  # segment 6: body 1's other piece,
+    b[:, :, 12:] = 9                                    #   thin, so the strip outweighs it
+    b[:15, :, 11] = 9                                   # segment 9: body 2, poking one voxel
+                                                        #   into body 1 along its boundary
+    rows = _shaped(a, b)
+    five = next(r for r in rows if r["a_id"] == 1 and r["b_id"] == 5)
+    (s,) = [s for s in five["shapes"] if s["side"] == "split"]
+    assert s["other_id"] == "6", "the true second piece, not the boundary strip"
+    assert abs(s["centre_nm"][0] / 8.0 - 14.5) <= 1.5, "on the cut at z=15"
+
+
+# -- the thin-pair gate: boundary disagreements are not structure -----------------------
+
+def _strip_fixture():
+    """Body 1 (x<12) cut at z=8 into segments 5 and 6 -- a real split -- and segment 9
+    (body 2, x>=12) reaching one voxel into body 1 along their boundary: the offset two
+    labelings produce when they place one cell boundary a voxel apart."""
+    a = np.full((16, 16, 16), 1, dtype=np.uint64)
+    a[:, :, 12:] = 2
+    b = np.full((16, 16, 16), 5, dtype=np.uint64)
+    b[8:, :, :12] = 6
+    b[:, :, 12:] = 9
+    b[:, :, 11] = 9
+    return a, b
+
+
+def test_thin_pairs_finds_the_strip_and_not_the_real_piece():
+    a, b = _strip_fixture()
+    c = contingency(a, b, ignore_a=())
+    thin = disagree.thin_pairs(c, _piece(a), _piece(b), radius=3)
+    assert "1:9" in thin and thin["1:9"] <= 1.0, "a one-voxel strip has no interior"
+    assert "1:6" not in thin and "1:5" not in thin, "the halves of a real split are thick"
+
+
+def test_excluding_thin_pairs_removes_the_false_merge_and_keeps_the_split():
+    """The strip is dropped from partner COUNTING too: otherwise segment 9 would still be
+    "a merge of bodies 1 and 2" even with the strip's own row gone."""
+    a, b = _strip_fixture()
+    c = contingency(a, b, ignore_a=())
+    before = disagree.rows(c)
+    assert any(r["b_id"] == 9 for r in before), "the fixture must produce the false merge"
+    after = disagree.rows(c, exclude=disagree.thin_pairs(c, _piece(a), _piece(b)))
+    assert not any(r["b_id"] == 9 for r in after)
+    assert {(r["a_id"], r["b_id"], r["kind"]) for r in after} >= {(1, 5, "split"),
+                                                                    (1, 6, "split")}
+
+
+def test_boundary_band_has_the_width_asked_for():
+    from neu_eval.overlap import boundary_band
+
+    a = np.ones((4, 4, 10), dtype=np.uint64)
+    a[:, :, 5:] = 2
+    assert boundary_band(a, 1)[0, 0].nonzero()[0].tolist() == [4, 5]
+    assert boundary_band(a, 2)[0, 0].nonzero()[0].tolist() == [3, 4, 5, 6]
