@@ -360,6 +360,11 @@ class Scene:
     legend: Legend = field(default_factory=Legend)
     background: Optional[RGBA] = None
     axes_visible: bool = False
+    #: How an exported figure nests its drawables: ``drawable -> tuple of group names``,
+    #: under the kind's own group (``meshes``/``skeletons``/``points``). ``None`` puts each
+    #: drawable directly under its kind. Kept on the scene, like the legend, so the
+    #: toolbar's Capture button uses it without being told. See ``backends/vector.py``.
+    export_groups: Optional[Any] = None
 
     def __post_init__(self) -> None:
         # Not a dataclass field on purpose: it must stay out of `__init__`, out of `__eq__`

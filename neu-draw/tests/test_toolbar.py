@@ -32,10 +32,10 @@ def has_gpu():
 @pytest.fixture(autouse=True)
 def clean_globals():
     viewstate.views.clear()
-    toolbar_mod.last_prefix = None
+    toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
     yield
     viewstate.views.clear()
-    toolbar_mod.last_prefix = None
+    toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
 
 
 def _mesh(name="body"):
@@ -87,7 +87,8 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     automatic: a feature you have to remember to switch on looks identical to a broken
     one after a kernel restart."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
-    bar, entry, opacity, stage = view.ui.widget.children
+    bar, entry, options, opacity, stage = view.ui.widget.children
+    assert options is view.ui.options["panel"]
     assert [b.description for b in bar.children] == [
         "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Close"]
     assert entry.children == (view.ui.path, view.ui.status)
@@ -167,6 +168,38 @@ def test_capture_writes_the_named_file_and_reseeds_the_box(view, tmp_path):
     assert (tmp_path / "left_lobe.png").exists()
     assert "wrote" in view.ui.status.value
     assert view.ui.path.value.startswith("left_lobe_")
+
+
+def test_capturing_an_svg_writes_one_and_keeps_the_next_default_an_svg(view, tmp_path):
+    pytest.importorskip("imageio")
+    view.ui.path.value = str(tmp_path / "fig.svg")
+    view.ui._capture()
+    assert "<svg" in (tmp_path / "fig.svg").read_text()[:200]
+    assert view.ui.path.value.startswith("fig_") and view.ui.path.value.endswith(".svg")
+
+
+def test_the_format_dropdown_and_the_paths_extension_follow_each_other(view):
+    view.ui.path.value = "figs/fig.png"
+    view.ui.options["format"].value = "pdf"
+    assert view.ui.path.value == "figs/fig.pdf"
+    view.ui.path.value = "figs/other.svg"
+    assert view.ui.options["format"].value == "svg"
+
+
+def test_capture_honours_the_options(view, tmp_path):
+    pytest.importorskip("imageio")
+    from imageio import v3 as iio
+
+    opts = view.ui.options
+    opts["width"].value, opts["height"].value, opts["resolution"].value = 60, 40, 1.0
+    view.ui.path.value = str(tmp_path / "small.png")
+    view.ui._capture()
+    assert iio.imread(tmp_path / "small.png").shape[:2] == (40, 60)
+
+    view.ui.path.value = str(tmp_path / "fig.pdf")
+    view.ui._capture()
+    assert (tmp_path / "fig.pdf").read_bytes().startswith(b"%PDF-")
+    assert view.ui.path.value.endswith(".pdf")
 
 
 def test_an_empty_path_is_refused_rather_than_guessed_at(view):

@@ -406,7 +406,7 @@ class View:
     def _draw(self) -> None:
         self._paint(self.renderer, self.camera)
 
-    def _paint(self, renderer: Any, camera: Any) -> None:
+    def _paint(self, renderer: Any, camera: Any, legend: bool = True) -> None:
         """One frame: the scene, then the legend strip beside it.
 
         Two ``render`` calls into two rects, with only the second flushing. pygfx clears
@@ -422,7 +422,7 @@ class View:
         # only the drawables on its rows, and a figure need not have a legend at all.
         if self._looks() != self._looks_at:
             self._sync_objects()
-        if self.legend is None:
+        if self.legend is None or not legend:
             renderer.render(self.scene, camera)
             return
         main, strip = self.legend.rects_for(renderer.logical_size)
@@ -434,7 +434,8 @@ class View:
         """Internal pixels per logical pixel. ``>= 2`` by default — see the constructor."""
         return float(self.renderer.pixel_ratio)
 
-    def snapshot(self, size: Optional[tuple[int, int]] = None) -> np.ndarray:
+    def snapshot(self, size: Optional[tuple[int, int]] = None, *,
+                 pixel_ratio: Optional[float] = None, legend: bool = True) -> np.ndarray:
         """Render once and return the pixels as ``(h, w, 4)`` uint8.
 
         **On a Jupyter canvas this renders through a separate offscreen pass**, at the
@@ -447,26 +448,47 @@ class View:
 
         **The result is `pixel_ratio` times the requested size**, not the requested size:
         that is pygfx's supersampled internal texture, and it is where the antialiasing
-        comes from. Construct the view with ``pixel_ratio=1.0`` for pixel-exact output.
+        comes from. Construct the view with ``pixel_ratio=1.0`` — or pass one here — for
+        pixel-exact output. ``legend=False`` leaves the strip out and gives the scene the
+        whole frame.
         """
-        if size is None and _is_offscreen(self.canvas):
+        if (size is None and pixel_ratio is None and legend
+                and _is_offscreen(self.canvas)):
             self._paint(self.renderer, self.camera)
             return np.asarray(self.renderer.snapshot())
-        return self._offscreen_snapshot(tuple(size) if size else self._size)
+        return self._offscreen_snapshot(tuple(size) if size else self._size,
+                                        pixel_ratio=pixel_ratio, legend=legend)
 
-    def _offscreen_snapshot(self, size: tuple[int, int]) -> np.ndarray:
+    def _offscreen_snapshot(self, size: tuple[int, int], *,
+                            pixel_ratio: Optional[float] = None,
+                            legend: bool = True) -> np.ndarray:
         """Re-render this scene and camera at an exact size, off any live canvas."""
         from rendercanvas.offscreen import RenderCanvas as Offscreen
 
         canvas = Offscreen(size=size)
-        renderer = pygfx.renderers.WgpuRenderer(canvas, pixel_ratio=self._pixel_ratio)
+        ratio = pixel_ratio if pixel_ratio is not None else self._pixel_ratio
+        renderer = pygfx.renderers.WgpuRenderer(canvas, pixel_ratio=ratio)
         camera = pygfx.PerspectiveCamera(self.camera.fov)
         camera.set_state(self.camera.get_state())
-        self._paint(renderer, camera)
+        self._paint(renderer, camera, legend=legend)
         return np.asarray(renderer.snapshot())
 
-    def save(self, path: str, size: Optional[tuple[int, int]] = None) -> str:
-        """Write a snapshot to a PNG. Alpha is dropped — a figure wants a flat image."""
+    def save(self, path: str, size: Optional[tuple[int, int]] = None, *,
+             pixel_ratio: Optional[float] = None, legend: bool = True,
+             groups: Optional[Any] = None) -> str:
+        """Write the figure to ``path``: PNG, or by extension ``.svg`` / ``.pdf``.
+
+        One call for every format, which is what lets the toolbar's Capture box write
+        any of them. ``pixel_ratio`` is the PNG's supersampling — or the mesh images'
+        resolution in a vector file (default 2) — and ``legend=False`` drops the strip.
+        ``groups`` only means something for a vector file; see :meth:`save_svg`.
+        Alpha is dropped from a PNG: a figure wants a flat image.
+        """
+        if str(path).lower().endswith((".svg", ".pdf")):
+            from .vector import save as save_vector
+
+            return save_vector(self, path, size=size, legend=legend, groups=groups,
+                               pixel_ratio=2.0 if pixel_ratio is None else pixel_ratio)
         try:
             from imageio import v3 as iio
         except ImportError as exc:                              # pragma: no cover
@@ -475,8 +497,31 @@ class View:
                 "`snapshot()` returns the array if you would rather write it "
                 "yourself.") from exc
 
-        iio.imwrite(path, self.snapshot(size)[..., :3])
+        iio.imwrite(path, self.snapshot(size, pixel_ratio=pixel_ratio,
+                                        legend=legend)[..., :3])
         return path
+
+    def save_svg(self, path: str, **kwargs) -> str:
+        """Write the view as SVG — laid out for **Illustrator**, which keeps its named
+        groups (it does not keep a PDF's). Each mesh is its own transparent image;
+        points, skeletons and the legend are vectors.
+
+        ``groups`` nests drawables deeper: ``drawable -> tuple of group names``, e.g.
+        ``lambda d: (d.name.split(" : ")[0],)`` puts every synapse set under its cell.
+        Defaults to ``scene.export_groups``. See :mod:`neu_draw.backends.vector` for what
+        the format trades away (occlusion *between* groups).
+        """
+        if not str(path).lower().endswith(".svg"):
+            raise ValueError(f"save_svg writes .svg, not {path!r}")
+        return self.save(path, **kwargs)
+
+    def save_pdf(self, path: str, **kwargs) -> str:
+        """The same figure as :meth:`save_svg`, as PDF, with the groups as nested layers
+        in Acrobat's layer panel. Illustrator opens a PDF it did not write onto a single
+        layer, so for editing there, prefer the SVG."""
+        if not str(path).lower().endswith(".pdf"):
+            raise ValueError(f"save_pdf writes .pdf, not {path!r}")
+        return self.save(path, **kwargs)
 
     def close(self) -> None:
         """Close the canvas, recording where the camera was into ``views["last"]``.

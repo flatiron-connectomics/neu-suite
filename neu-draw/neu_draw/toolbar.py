@@ -58,16 +58,25 @@ TS_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 DEFAULT_PREFIX = "snapshot"
 
+#: What Capture can write, keyed by extension — the path's extension decides.
+FORMATS = {
+    "png": "PNG image",
+    "svg": "SVG — layered, for Illustrator",
+    "pdf": "PDF — layered, for Acrobat",
+}
+
 #: The stem of the last path captured through a toolbar, for the next one's default.
 #: Module-level rather than per-toolbar: it is a preference about naming files, and it
 #: should survive the view it was expressed in.
 last_prefix: Optional[str] = None
+#: …and its extension, so capturing one ``.svg`` keeps the next default an ``.svg``.
+last_suffix: str = ".png"
 
 
 def default_path(prefix: Optional[str] = None) -> str:
-    """``<prefix>_<timestamp>.png`` — the pre-filled capture path."""
+    """``<prefix>_<timestamp>.png`` (or the last extension used) — the pre-filled path."""
     stem = prefix or last_prefix or DEFAULT_PREFIX
-    return f"{stem}_{datetime.now().strftime(TS_FORMAT)}.png"
+    return f"{stem}_{datetime.now().strftime(TS_FORMAT)}{last_suffix}"
 
 
 def remember_prefix(path: str) -> str:
@@ -76,8 +85,11 @@ def remember_prefix(path: str) -> str:
     Without the strip, capturing ``cell_2026-08-26_11-00-00.png`` would seed the next
     default with that whole string and produce ``cell_2026-08-26_11-00-00_2026-08-26_11-00-42.png``.
     """
-    global last_prefix
-    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    global last_prefix, last_suffix
+    base = path.rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0]
+    if "." in base and base.rsplit(".", 1)[1].lower() in FORMATS:
+        last_suffix = "." + base.rsplit(".", 1)[1].lower()
     parts = stem.split("_")
     if len(parts) > 2:
         try:
@@ -121,7 +133,8 @@ class Toolbar:
             value=path or default_path(),
             placeholder="snapshot.png",
             layout=widgets.Layout(width="260px"),
-            tooltip="where 'capture' writes the PNG")
+            tooltip="where 'capture' writes: .png for an image, .svg for vector points, "
+                    "lines and legend with one image layer per mesh")
         self.status = widgets.HTML(value="")
 
         self._buttons = {
@@ -144,13 +157,15 @@ class Toolbar:
                                  f"views[{LAST!r}], written on the way out",
                                  self._restore_last),
             "capture": self._button("Capture", "camera",
-                                    "write the PNG named in the box below", self._capture),
+                                    "write the file named in the box below — a .png, or "
+                                    "a layered .svg", self._capture),
             "close": self._button("Close", "power-off",
                                   "close the canvas, leaving its last image behind",
                                   self._close),
         }
 
         self.sliders = self._opacity_sliders()
+        self.options = self._capture_options()
 
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
         # Replacing a child of the outer VBox would work too, but this keeps the bar's
@@ -164,6 +179,7 @@ class Toolbar:
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             widgets.HBox([self.path, self.status]),
+            self.options["panel"],
             *([widgets.HBox(list(self.sliders.values()),
                             layout=widgets.Layout(flex_flow="row wrap", width="100%"))]
               if self.sliders else []),
@@ -185,6 +201,85 @@ class Toolbar:
                                 layout=widgets.Layout(width="98px", flex="0 0 auto"))
         button.on_click(lambda _button: self._guarded(handler))
         return button
+
+    def _capture_options(self) -> dict:
+        """The collapsed "Capture options" panel: format, resolution, size, legend.
+
+        **The path's extension is the single source of truth for the format**, and the
+        dropdown is a way of editing it: choosing ``svg`` rewrites the extension in the
+        box, and typing ``fig.pdf`` moves the dropdown. Two settings that could disagree
+        would leave "which one wins" to be discovered.
+
+        ``resolution`` is pixels per logical pixel — a PNG's supersampling, a vector
+        file's mesh images. ``width``/``height`` start at the canvas size; changing them
+        reframes nothing, it renders the same camera into a different frame.
+        """
+        widgets = self._widgets
+        width, height = self.view.logical_size()
+        style = {"description_width": "80px"}
+        wide = widgets.Layout(width="330px")
+        fmt = widgets.Dropdown(options=[(label, ext) for ext, label in FORMATS.items()],
+                               value=self._extension(self.path.value) or "png",
+                               description="format", style=style, layout=wide)
+        resolution = widgets.BoundedFloatText(value=2.0, min=0.5, max=8.0, step=0.5,
+                                              description="resolution ×", style=style,
+                                              layout=widgets.Layout(width="180px"))
+        w = widgets.BoundedIntText(value=int(width), min=16, max=16384, description="width",
+                                   style=style, layout=widgets.Layout(width="180px"))
+        h = widgets.BoundedIntText(value=int(height), min=16, max=16384,
+                                   description="height", style=style,
+                                   layout=widgets.Layout(width="180px"))
+        legend = widgets.Checkbox(value=True, description="legend", indent=False)
+        reset = widgets.Button(description="canvas size", icon="expand",
+                               tooltip="set width and height back to the canvas's",
+                               layout=widgets.Layout(width="130px"))
+
+        syncing = {"on": False}
+
+        def on_format(change) -> None:
+            if syncing["on"]:
+                return
+            syncing["on"] = True
+            try:
+                stem = self.path.value.strip()
+                if self._extension(stem):
+                    stem = stem.rsplit(".", 1)[0]
+                self.path.value = f"{stem}.{change['new']}"
+            finally:
+                syncing["on"] = False
+
+        def on_path(change) -> None:
+            ext = self._extension(change["new"])
+            if syncing["on"] or ext is None or ext == fmt.value:
+                return
+            syncing["on"] = True
+            try:
+                fmt.value = ext
+            finally:
+                syncing["on"] = False
+
+        def on_reset(_button) -> None:
+            w.value, h.value = (int(v) for v in self.view.logical_size())
+
+        fmt.observe(on_format, names="value")
+        self.path.observe(on_path, names="value")
+        reset.on_click(lambda b: self._guarded(lambda: on_reset(b)))
+
+        body = widgets.VBox([
+            fmt,
+            widgets.HBox([resolution, legend]),
+            widgets.HBox([w, h, reset]),
+        ])
+        panel = widgets.Accordion(children=[body], selected_index=None)
+        panel.set_title(0, "Capture options")
+        return {"panel": panel, "format": fmt, "resolution": resolution,
+                "width": w, "height": h, "legend": legend}
+
+    @staticmethod
+    def _extension(path: str) -> Optional[str]:
+        base = str(path).strip().rsplit("/", 1)[-1]
+        ext = base.rsplit(".", 1)[1].lower() if "." in base else None
+        return ext if ext in FORMATS else None
 
     def _opacity_sliders(self) -> dict:
         """One opacity slider per kind of drawable the scene holds, keyed by kind.
@@ -289,7 +384,11 @@ class Toolbar:
         if not path:
             self._say("type a filename in the box first", error=True)
             return
-        written = self.view.save(path)
+        options = self.options
+        written = self.view.save(
+            path, size=(int(options["width"].value), int(options["height"].value)),
+            pixel_ratio=float(options["resolution"].value),
+            legend=bool(options["legend"].value))
         remember_prefix(written)
         self.path.value = default_path()
         self._say(f"wrote {written}")
@@ -320,6 +419,9 @@ class Toolbar:
             button.disabled = True
         for slider in self.sliders.values():
             slider.disabled = True
+        for key, control in self.options.items():
+            if key != "panel":
+                control.disabled = True
         self.path.disabled = True
         self._say(f"closed. The viewpoint is in views[{LAST!r}] — press 'Last' in the next "
                   f"figure, or open it with show(scene, viewpoint='{LAST}')")

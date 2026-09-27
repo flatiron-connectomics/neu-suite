@@ -252,7 +252,7 @@ nothing to remember after a kernel restart:
 | **Save** | remember this camera as `views["saved"]`, for *any* later figure |
 | **Restore** | go to `views["saved"]` |
 | **Last** | go to `views["last"]` — where the last **closed** figure was |
-| **Capture** | write the PNG named in the box below the buttons |
+| **Capture** | write the file named in the box below the buttons — `.png`, or a layered `.svg` / `.pdf` |
 | **Close** | close the canvas, leaving the image it last showed in its place |
 
 Below the buttons is one **opacity slider per kind** the scene holds — mesh, skeleton,
@@ -305,6 +305,43 @@ and returns to the camera the figure opened at — including a `viewpoint=` it w
 with. It deliberately leaves **colours** alone: hiding and highlighting are transient
 exploration, but `legend.recolor` is an authored change, and a button that silently reverted
 it would be destroying work rather than tidying up.
+
+### Vector export: SVG and PDF
+
+Name the capture `.svg` or `.pdf` — in the toolbar box, or `view.save("fig.pdf")` — and
+the figure is written as nested groups an editor can work with: **each mesh as its own
+image** with a transparent surround, and the skeletons, synapse points and legend as
+**vectors** (the legend as real text). Only what is visible is exported, highlights
+included.
+
+**For Illustrator, use the SVG.** Illustrator keeps an SVG's named groups, but opens a PDF
+from any other program onto a single layer; the PDF's groups are nested layers in
+Acrobat. The SVG is written for Illustrator's importer (SVG 1.1, `xlink:href` images, its
+own id escaping so group names read back as written).
+
+The tree is `background`, `meshes`, `skeletons`, `points`, `legend`, with a group per
+drawable. `export_groups` nests drawables deeper — here, synapse sets by cell:
+
+```python
+scene.export_groups = lambda d: (d.name.split(" : ")[0],) if " : " in d.name else ()
+# points / T4a 78044864 / T4a 78044864 : Mi1 (17)
+```
+
+The legend splits into `panel`, `group rows`, and `rows` nested by kind and by the same
+function, so a cell's rows sit together as its drawables do; each row groups its plate,
+glyph and text.
+
+**Capture options** (collapsed, under the path box) set the format, the resolution, the
+width and height, and whether the legend is included; the same are keywords on
+`view.save(path, size=, pixel_ratio=, legend=, groups=)`, and `save_svg` / `save_pdf`
+refuse the other extension.
+
+Two things to know. **Occlusion between groups is gone**: every vector sits above every
+mesh, and meshes stack back to front by their centres — right for the faint meshes this
+is meant for, visibly wrong for an opaque mesh in front of synapses. And a mesh image's
+colours are **solved against the figure's own background** (the GPU blends in linear light,
+editors in sRGB), so it matches the canvas over that background exactly and is close
+rather than exact if you change the background in the editor.
 
 `toolbar=False` gives the bare canvas; `toolbar=True` insists and raises if ipywidgets is
 missing or the canvas is not a widget. Offscreen and desktop renders quietly get no
