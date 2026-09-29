@@ -11,23 +11,18 @@ neu-lib/
 neu-proc/
 neu-eval/
 
-# Site-specific dask configs and launcher scripts. Deliberately not shared: they encode
-# one cluster's partitions, accounts and paths.
+# Site configs: dask configs for one cluster's partitions, accounts and paths;
+# datasets.toml, the ONE file allowed to name object-store locations, so that no committed
+# doc, script or notebook has to; and neu-mark rules modules such as wasp_segprops.py.
 configs/
 
-# Dataset-specific scripts. They name real volumes and ground-truth sets.
+# Dataset-specific scripts and their records. They name real volumes and ground-truth sets.
 scripts/
-gt_vol_creation.txt
-wasp_segprops.py
 
 # Working notes and agent context. These carry ceph/S3 paths, usernames and in-flight
 # run detail that do not belong in a public repository.
 CLAUDE.md
-NOTES-*.md
-NEU-DRAW-PLAN.md
-NEU-PROC-PLAN.md
-RENAME-PLAN.md
-erik-notes-todo.txt
+notes/
 
 # Finished plans and superseded design docs, kept for reference and named
 # <repo>-<doc>-<date-last-true>. Never published, never tracked: they are records of
@@ -38,10 +33,6 @@ archive/
 # neu-mark site defaults (neu_mark.config), found by walking up from the working
 # directory. Personal, and it carries a server name and a branch ref.
 neu-mark.toml
-
-# Where the data is. The ONE file allowed to name object-store locations, so that no
-# committed doc, script or notebook has to. Same rule as neu-mark.toml.
-datasets.toml
 
 # Dataset content and run artefacts, which are large and belong on bulk storage, not in
 # git. Note `*.log` was already here and did its job; the leak came in as `.txt`
