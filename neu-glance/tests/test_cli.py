@@ -242,6 +242,19 @@ def test_into_needs_no_voxel_size_because_the_state_has_dimensions(tmp_path, cap
     assert cli.main(["gen", "--layer", str(box), "--into", path]) == 0
 
 
+def test_gen_into_with_nothing_to_add_turns_a_state_file_into_its_link(tmp_path, capsys):
+    """The inverse of `parse`. Without --into the same bare `gen` is still refused."""
+    base, path = _base_state(tmp_path)
+    assert cli.main(["gen", "--into", path]) == 0
+    assert parse_url(_out(capsys)) == base
+
+    cli.main(["gen", "--into", path, "--hide-slices"])
+    assert parse_url(_out(capsys)) == {**base, "showSlices": False}
+
+    with pytest.raises(SystemExit, match="nothing to show"):
+        cli.main(["gen"])
+
+
 def test_into_can_override_the_view_when_asked(tmp_path, volume, capsys):
     _base, path = _base_state(tmp_path)
     cli.main(["bboxes", volume, "--no-tighten", "--into", path,

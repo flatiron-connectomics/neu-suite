@@ -196,7 +196,9 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                         "one — a neuroglancer URL or a state JSON file. The state's own "
                         "dimensions, position and zoom are kept, so your view does not "
                         "move; a layer whose name is already taken is renamed and reported. "
-                        "Implies --format url unless --format says otherwise. Quote a URL "
+                        "Implies --format url unless --format says otherwise. With nothing "
+                        "to add, `gen --into` re-emits the state itself — a view file "
+                        "straight to a link. Quote a URL "
                         "with SINGLE quotes: inside double quotes bash expands '!', which "
                         "neuroglancer uses both after '#' and for hidden segments.")
     if "state" in formats or "url" in formats:
@@ -324,7 +326,8 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             base = _load_into(into)
             state, notes = merge_into(base, layers, **shaping)
             print(f"added {len(layers)} layer(s) to {len(base.get('layers') or [])} "
-                  f"already in {into if '#!' not in into else 'the given URL'}", file=err)
+                  f"already in {into if '#!' not in into else 'the given URL'}"
+                  + ("" if layers else " — re-emitting it as is"), file=err)
             print(f"  kept the existing dimensions, position and zoom", file=err)
             for note in notes:
                 print(f"  {note}", file=err)
@@ -603,7 +606,8 @@ def build_parser() -> argparse.ArgumentParser:
         "parse", help="a neuroglancer URL back into its state JSON",
         description="Decode the state out of a link, for reading or editing it.\n\n"
                     "Note that `gen --into` accepts a URL directly, so this is not a "
-                    "required step in that workflow — it is the inspection tool.")
+                    "required step in that workflow — it is the inspection tool. The "
+                    "reverse, a state JSON back to a link, is `gen --into STATE.json`.")
     q.add_argument("url", help="the neuroglancer URL, in single quotes (or - to read one "
                                "from stdin)")
     q.add_argument("--layers", action="store_true",
@@ -729,9 +733,11 @@ def cmd_gen(args) -> int:
             json.JSONDecodeError) as e:
         raise SystemExit(str(e)) from None
 
-    if not layers:
+    # With --into and nothing to add, the state itself is the output: a view file straight
+    # to a link, with any of the view options (--layout, --hide-slices, …) applied on the way.
+    if not layers and not args.into:
         raise SystemExit("nothing to show: pass at least one of --image, --seg, "
-                         "--annotations or --layer")
+                         "--annotations or --layer, or --into to re-emit an existing state")
 
     voxel = _ftriple(args.voxel_size, "voxel-size")
     units = "nm" if voxel else (frame_info or {}).get("units")
@@ -747,8 +753,9 @@ def cmd_gen(args) -> int:
     known = [e for e in extents if e]
     fit = max(known, key=lambda e: max(e[0])) if known else annotation_extent(layers)
 
-    print(f"{len(layers)} layer(s): "
-          + ", ".join(f"{lyr['name']} ({lyr['type']})" for lyr in layers), file=err)
+    if layers:
+        print(f"{len(layers)} layer(s): "
+              + ", ".join(f"{lyr['name']} ({lyr['type']})" for lyr in layers), file=err)
     if voxel:
         print(f"  voxel size {tuple(voxel)} zyx, units {units or '?'}", file=err)
     for note in shader_notes:
