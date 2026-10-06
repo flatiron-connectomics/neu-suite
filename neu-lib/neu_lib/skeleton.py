@@ -225,6 +225,64 @@ class Skeleton:
         """The complement of :meth:`crop` — drop what is inside the region."""
         return self.crop(inside, keep_inside=False, **kwargs)
 
+    def split_at(self, inside: InsideFn, *, tolerance_nm: float = 8.0
+                 ) -> tuple["Skeleton", np.ndarray, np.ndarray]:
+        """Insert a vertex where each edge crosses a region boundary, keeping both sides.
+
+        Returns ``(skeleton, inside, boundary)``: the skeleton with every crossing edge
+        split in two at the boundary, plus one bool per vertex for "in the region" and
+        "is an inserted boundary vertex". Original vertices keep their indices; the
+        boundary vertices are appended, on the inside, within ``tolerance_nm`` of the
+        surface — the same bisection :meth:`crop` uses, so a distance measured from them
+        starts at the region surface rather than at the last vertex inside it.
+
+        **The edge layout is part of the contract**, so per-edge flags can follow the
+        split: the uncrossed edges first, in their original order, then one
+        ``(inside endpoint, boundary)`` edge per crossing edge, then one
+        ``(boundary, outside endpoint)`` edge per crossing edge, both in original order.
+
+        Same inherited limitation as :meth:`crop`: an edge whose endpoints are on the
+        same side is assumed not to cross.
+        """
+        verts = self.vertices_zyx_nm
+        keep = np.asarray(inside(verts), dtype=bool).ravel()
+        if keep.shape != (len(verts),):
+            raise ValueError(
+                f"inside() returned {keep.shape} for {len(verts)} vertices; it must "
+                f"return one bool per point")
+        edges = self.edges
+        is_crossing = keep[edges[:, 0]] ^ keep[edges[:, 1]]
+        crossing = edges[is_crossing]
+        if not len(crossing):
+            return (Skeleton(verts.copy(), edges.copy(),
+                             None if self.radii_nm is None else self.radii_nm.copy(),
+                             self.name),
+                    keep, np.zeros(len(verts), dtype=bool))
+
+        # Orient every crossing edge so column 0 is the inside endpoint.
+        flip = ~keep[crossing[:, 0]]
+        crossing = np.where(flip[:, None], crossing[:, ::-1], crossing)
+        p_in = verts[crossing[:, 0]].astype(np.float64)
+        p_out = verts[crossing[:, 1]].astype(np.float64)
+        t = _bisect(p_in, p_out, inside, True, tolerance_nm)
+        new_ix = len(verts) + np.arange(len(crossing))
+
+        radii = None
+        if self.radii_nm is not None:
+            r_in = self.radii_nm[crossing[:, 0]].astype(np.float64)
+            r_out = self.radii_nm[crossing[:, 1]].astype(np.float64)
+            radii = np.concatenate([self.radii_nm, r_in + t * (r_out - r_in)])
+        out = Skeleton(
+            np.concatenate([verts, (p_in + t[:, None] * (p_out - p_in))]),
+            np.concatenate([edges[~is_crossing],
+                            np.stack([crossing[:, 0], new_ix], axis=1),
+                            np.stack([new_ix, crossing[:, 1]], axis=1)]),
+            radii, self.name)
+        n_new = len(crossing)
+        return (out, np.concatenate([keep, np.ones(n_new, dtype=bool)]),
+                np.concatenate([np.zeros(len(verts), dtype=bool),
+                                np.ones(n_new, dtype=bool)]))
+
     def __repr__(self) -> str:
         return (f"Skeleton(name={self.name!r}, vertices={len(self.vertices_zyx_nm)}, "
                 f"edges={len(self.edges)}, radii={self.radii_nm is not None})")

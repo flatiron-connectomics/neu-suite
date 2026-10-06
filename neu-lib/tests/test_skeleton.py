@@ -203,3 +203,65 @@ def test_crop_handles_a_cycle_crossing_the_boundary_twice():
     out = skel.crop(_z_below(5.0), tolerance_nm=0.01)
     assert len(out.vertices_zyx_nm) == 4             # 2 kept + 2 boundary vertices
     assert len(out.edges) == 3                       # 1 whole edge + 2 stubs
+
+
+# --------------------------------------------------------------------------- #
+# splitting at a region boundary, keeping both sides
+# --------------------------------------------------------------------------- #
+
+def test_split_at_inserts_a_boundary_vertex_and_keeps_every_original():
+    skel = _chain(4)                                 # vertices at z = 0, 10, 20, 30
+    out, inside, boundary = skel.split_at(_z_below(25.0), tolerance_nm=0.01)
+    assert len(out.vertices_zyx_nm) == 5
+    assert np.array_equal(out.vertices_zyx_nm[:4], skel.vertices_zyx_nm)
+    assert len(out.edges) == 4                       # the crossing edge became two
+    assert out.vertices_zyx_nm[4][0] == pytest.approx(25.0, abs=0.05)
+    assert inside.tolist() == [True, True, True, False, True]
+    assert boundary.tolist() == [False, False, False, False, True]
+
+
+def test_split_at_preserves_total_length():
+    skel = _chain(4)
+    out, _, _ = skel.split_at(_z_below(25.0), tolerance_nm=0.01)
+
+    def length(s):
+        v, e = s.vertices_zyx_nm, s.edges
+        return float(np.linalg.norm(v[e[:, 1]] - v[e[:, 0]], axis=1).sum())
+
+    assert length(out) == pytest.approx(length(skel))
+
+
+def test_split_at_orients_by_side_whichever_way_the_edge_points():
+    verts = np.array([[30.0, 0, 0], [0.0, 0, 0]])     # edge runs outside -> inside
+    out, inside, boundary = Skeleton(verts, np.array([[0, 1]])).split_at(
+        _z_below(25.0), tolerance_nm=0.01)
+    assert out.vertices_zyx_nm[2][0] == pytest.approx(25.0, abs=0.05)
+    assert sorted(tuple(sorted(e)) for e in out.edges.tolist()) == [(0, 2), (1, 2)]
+    assert inside.tolist() == [False, True, True]
+
+
+def test_split_at_with_no_crossing_changes_nothing():
+    skel = _chain(4)
+    out, inside, boundary = skel.split_at(lambda p: np.ones(len(p), bool))
+    assert np.array_equal(out.edges, skel.edges) and inside.all() and not boundary.any()
+
+
+def test_split_at_interpolates_the_radius():
+    verts = np.array([[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]])
+    skel = Skeleton(verts, np.array([[0, 1]]), radii_nm=np.array([10.0, 20.0]))
+    out, _, _ = skel.split_at(_z_below(50.0), tolerance_nm=0.01)
+    assert out.radii_nm[-1] == pytest.approx(15.0, abs=0.1)
+
+
+def test_split_at_edge_layout_is_uncrossed_then_inside_halves_then_outside_halves():
+    """Pinned because callers carry per-edge flags through the split by this layout."""
+    # Edges: 0 inside-only, 1 crossing (written outside->inside), 2 outside-only,
+    # 3 crossing (inside->outside).
+    verts = np.array([[0.0, 0, 0], [10.0, 0, 0], [40.0, 0, 0], [50.0, 0, 0],
+                      [0.0, 5, 0], [30.0, 5, 0]])
+    edges = np.array([[0, 1], [2, 1], [2, 3], [4, 5]])
+    out, inside, boundary = Skeleton(verts, edges).split_at(_z_below(25.0),
+                                                            tolerance_nm=0.01)
+    assert out.edges[:2].tolist() == [[0, 1], [2, 3]]
+    assert out.edges[2:4].tolist() == [[1, 6], [4, 7]]
+    assert out.edges[4:6].tolist() == [[6, 2], [7, 5]]
