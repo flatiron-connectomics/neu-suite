@@ -11,13 +11,18 @@ neu-lib/
 neu-proc/
 neu-eval/
 
+# The PRIVATE repo of site configs, dataset scripts and notebooks. configs, scripts and
+# notebooks at this root are SYMLINKS into it, so they are matched below WITHOUT a
+# trailing slash: `configs/` matches only a directory, and would let a symlink through.
+neu-scripts-mega/
+
 # Site configs: dask configs for one cluster's partitions, accounts and paths;
 # datasets.toml, the ONE file allowed to name object-store locations, so that no committed
-# doc, script or notebook has to; and neu-mark rules modules such as wasp_segprops.py.
-configs/
+# doc, script or notebook has to; neu-mark.toml and its rules modules.
+/configs
 
 # Dataset-specific scripts and their records. They name real volumes and ground-truth sets.
-scripts/
+/scripts
 
 # Working notes and agent context. These carry ceph/S3 paths, usernames and in-flight
 # run detail that do not belong in a public repository.
@@ -59,7 +64,7 @@ docs/_generated/
 docs/api/
 
 # Analysis notebooks
-notebooks/
+/notebooks
 
 __pycache__/
 *.pyc
