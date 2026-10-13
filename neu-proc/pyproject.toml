@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neu-proc"
+version = "0.1.0"
+description = "Blockwise array processing for large 3D EM volumes: filters, label tools, distance transforms."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# EVERY dependency here is pip-installable, and that is worth protecting: it makes this the
+# first package in the suite whose CI can run *every* test rather than skipping the
+# conda-only paths (tensorstore, vol2mesh, dvidutils, neuclease, kimimaro). Adding a
+# conda-only dependency would cost that, so weigh it against what it buys.
+#
+# `neu-lib` is numpy-only, so depending on it drags nothing in — it is what lets `ops/` name
+# a Frame while staying pure.
+dependencies = [
+    "numpy>=2",
+    "neu-lib",
+    "scipy>=1.15",
+    "scikit-image>=0.25",
+    "connected-components-3d>=4",
+    "fastremap>=1.15",
+    "fastmorph>=1.8",
+    "edt>=3",
+    "fill-voids>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["neu_proc"]
