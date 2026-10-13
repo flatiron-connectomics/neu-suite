@@ -1,0 +1,27 @@
+.pixi/
+!pixi.lock
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+dask-job-logs/
+*.log
+.vscode/
+.idea/
+
+# Outputs of the skeleton benchmark harness (now in the private scripts repo), which
+# older checkouts still hold here. skel_compare_out/ was committed once (35 files,
+# 81 MB) because nothing ignored it; benchmark masks are ~450 MB each.
+views/
+*_3d.html
+skel_compare_out/
+skel_benchmark_out/
+benchmark_masks/
+
+# Site-specific dask configs and dataset allowlists live here, untracked. The
+# LEADING SLASH is load-bearing: a bare `configs/` matches at any depth and would
+# also swallow neu_morpho/configs/, so the bundled configs would silently never
+# be committed and the installed command would ship without the data it resolves.
+/configs/
