@@ -1,0 +1,279 @@
+"""Writers and the csv round trip. The parquet half skips without the `report` extra."""
+
+from __future__ import annotations
+
+import csv
+import pathlib
+
+import numpy as np
+import pytest
+
+from neu_eval import disagree, tables
+from neu_eval.overlap import contingency
+
+
+def _c(a, b, labels=("gt", "seg")):
+    a = np.asarray(a, dtype=np.uint64).reshape(1, 1, -1)
+    b = np.asarray(b, dtype=np.uint64).reshape(1, 1, -1)
+    return contingency(a, b, ignore_a=(), labels=labels)
+
+
+def _rows():
+    return disagree.rows(_c([1] * 10, [5] * 5 + [6] * 5))
+
+
+# -- the csv, which needs no optional dependency -----------------------------------------
+
+def test_the_disagreement_csv_needs_no_pandas(tmp_path, monkeypatch):
+    """The one file a reviewer edits must not require an optional extra to produce."""
+    monkeypatch.setitem(__import__("sys").modules, "pandas", None)
+    path = tables.write_disagreements(_rows(), tmp_path / "d.csv")
+    assert csv.DictReader(open(path)).fieldnames is not None
+
+
+def test_the_csv_has_a_blank_verdict_and_note_column(tmp_path):
+    path = tables.write_disagreements(_rows(), tmp_path / "d.csv")
+    rows = list(csv.DictReader(open(path)))
+    assert all(row["verdict"] == "" for row in rows)
+    assert all(row["note"] == "" for row in rows)
+
+
+def test_ids_are_written_as_text(tmp_path):
+    """A spreadsheet parses a long integer as float64 and hands back a rounded id.
+
+    So the ids go out as text and `pair_key` is the join key — a reviewer who reformats a
+    column still cannot break the round trip.
+    """
+    huge = 2**63 + 12345
+    rows = [{"pair_key": f"{huge}:5", "kind": "merge", "gt_id": huge, "seg_id": 5,
+             "n_voxels": 10, "severity": 0.5}]
+    path = tables.write_disagreements(rows, tmp_path / "d.csv")
+    text = open(path).read()
+    assert str(huge) in text
+    back, verdicts = tables.read_disagreements(path)
+    assert back[0]["gt_id"] == str(huge)
+    assert f"{huge}:5" in verdicts
+
+
+def test_the_round_trip_recovers_the_verdicts(tmp_path):
+    path = tables.write_disagreements(_rows(), tmp_path / "d.csv")
+    rows = list(csv.DictReader(open(path)))
+    rows[0]["verdict"] = "seg_correct"
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    _, verdicts = tables.read_disagreements(path)
+    assert verdicts[rows[0]["pair_key"]] == "seg_correct"
+    assert all(v == "" for k, v in verdicts.items() if k != rows[0]["pair_key"])
+
+
+def test_rewriting_preserves_a_review_already_done(tmp_path):
+    """Re-running a comparison must not blank an afternoon of work."""
+    path = tmp_path / "d.csv"
+    rows = _rows()
+    verdicts = {rows[0]["pair_key"]: "gt_correct"}
+    tables.write_disagreements(rows, path, verdicts=verdicts)
+    _, back = tables.read_disagreements(path)
+    assert back[rows[0]["pair_key"]] == "gt_correct"
+
+
+def test_a_legend_is_written_beside_the_csv(tmp_path):
+    path = tables.write_disagreements(_rows(), tmp_path / "d.csv", labels=("v1", "v2"))
+    legend = (tmp_path / "d.README.txt").read_text()
+    assert "v2_correct" in legend and "v1_correct" in legend
+    assert "TEXT" in legend, "the spreadsheet hazard is stated where a reviewer will see it"
+    del path
+
+
+def test_a_file_without_a_verdict_column_is_refused_by_name(tmp_path):
+    path = tmp_path / "not-adjudication.csv"
+    path.write_text("a,b\n1,2\n")
+    with pytest.raises(ValueError, match="verdict"):
+        tables.read_disagreements(path)
+
+
+def test_rows_with_different_columns_all_keep_their_values(tmp_path):
+    """The header is the UNION, because `rows[0].keys()` silently dropped the rest.
+
+    Real case: one comparison per vendor, each labelled with that vendor's name, appended
+    into one table. The first vendor's id column became the header and 450 of 600 rows came
+    out with no segment id — `pair_key` survived, so adjudication still worked and nothing
+    looked wrong.
+    """
+    rows = [{"pair_key": "1:5", "kind": "split", "gt_id": 1, "zetta_id": 5},
+            {"pair_key": "2:9", "kind": "merge", "gt_id": 2, "vi_id": 9}]
+    path = tables.write_disagreements(rows, tmp_path / "d.csv")
+    back = list(csv.DictReader(open(path)))
+    assert {"zetta_id", "vi_id"} <= set(back[0])
+    assert back[0]["zetta_id"] == "5" and back[0]["vi_id"] == ""
+    assert back[1]["vi_id"] == "9" and back[1]["zetta_id"] == ""
+
+
+def test_a_row_that_already_has_a_verdict_does_not_get_a_second_column(tmp_path):
+    rows = [{"pair_key": "1:5", "kind": "split", "verdict": "gt_correct", "note": "x"}]
+    path = tables.write_disagreements(rows, tmp_path / "d.csv")
+    header = csv.DictReader(open(path)).fieldnames
+    assert header.count("verdict") == 1 and header.count("note") == 1
+    assert list(csv.DictReader(open(path)))[0]["verdict"] == "gt_correct"
+
+
+def test_an_empty_row_set_still_writes_a_usable_header(tmp_path):
+    path = tables.write_disagreements([], tmp_path / "d.csv", labels=("gt", "seg"))
+    assert "verdict" in (csv.DictReader(open(path)).fieldnames or [])
+
+
+# -- the annotation point list -----------------------------------------------------------
+
+def test_the_annotation_csv_is_three_coordinates_and_a_description(tmp_path):
+    a = np.ones((8, 8, 8), dtype=np.uint64)
+    b = np.full((8, 8, 8), 5, dtype=np.uint64)
+    b[4:] = 6
+    from neu_lib import Frame, Piece
+
+    frame = Frame(voxel_size_nm=(8.0, 8.0, 8.0))
+    rows = disagree.locate(disagree.rows(contingency(a, b, ignore_a=())),
+                           Piece(a, frame), Piece(b, frame))
+    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
+    got = list(csv.DictReader(open(path)))
+    assert list(got[0]) == ["z", "y", "x", "description", "segments"]
+    assert "split" in got[0]["description"]
+
+
+def test_the_annotation_columns_are_the_ones_neu_glance_demands(tmp_path):
+    """Pinned as a literal, because getting it wrong is invisible from this side.
+
+    `annotation_csv` shipped writing z_nm/y_nm/x_nm, which neu-glance's reader rejects —
+    and three of our own docs advertised the command that fails. A unit test on our own
+    output could not have caught that; only running the consumer could. So this pins the
+    header, and the test below runs the real reader when it is available.
+    """
+    rows = [{"z_nm": 1.0, "y_nm": 2.0, "x_nm": 3.0, "kind": "split",
+             "pair_key": "7:9", "severity": 0.5, "worst_fraction": 0.5,
+             "gt_id": 7, "seg_id": 9}]
+    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
+    assert csv.DictReader(open(path)).fieldnames == [
+        "z", "y", "x", "description", "segments"]
+
+
+def test_neu_glance_actually_accepts_the_annotation_file(tmp_path):
+    """The cross-package contract, checked against the real reader.
+
+    Skips when neu-glance is absent (it is the `link` extra, not a dependency) — the
+    table is the interface and this package must not import it to work.
+    """
+    layers = pytest.importorskip("neu_glance.layers")
+
+    rows = [{"z_nm": 1000.0, "y_nm": 2000.0, "x_nm": 3000.0, "kind": "merge",
+             "pair_key": "7:9", "severity": 0.5, "worst_fraction": 0.9,
+             "gt_id": 7, "seg_id": 9}]
+    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
+    records = layers.read_annotation_csv(
+        pathlib.Path(path).read_text(), "point", source=str(path))
+    assert len(records) == 1
+    assert records[0]["segments"] == ["7", "9"], "both ids reach the annotation"
+    # And it builds into a real annotation, which is the thing the state carries.
+    built = layers.build_annotation(records[0], "a0")
+    assert built["segments"] == [["7", "9"]]
+
+
+def test_unlocated_rows_are_skipped_rather_than_written_as_zeros(tmp_path):
+    path = tables.annotation_csv(_rows(), tmp_path / "ann.csv")
+    assert list(csv.DictReader(open(path))) == []
+
+
+# -- parquet, behind the extra -----------------------------------------------------------
+
+def test_the_summary_parquet_round_trips(tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+
+    from neu_eval.compare import summarize
+
+    row = summarize(_c([1] * 10, [5] * 5 + [6] * 5))
+    path = tables.write_summary(row, tmp_path / "s.parquet")
+    back = pd.read_parquet(path)
+    assert len(back) == 1
+    assert back["voi"].iloc[0] == pytest.approx(row["voi"])
+
+
+def test_many_summary_rows_go_in_one_file(tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+
+    from neu_eval.compare import summarize
+
+    c = _c([1] * 10, [5] * 5 + [6] * 5)
+    path = tables.write_summary([{"piece": "a", **summarize(c)},
+                                 {"piece": "b", **summarize(c)}], tmp_path / "s.parquet")
+    assert list(pd.read_parquet(path)["piece"]) == ["a", "b"]
+
+
+def test_the_per_label_frame_is_long_with_a_side_column(tmp_path):
+    pytest.importorskip("pandas")
+
+    c = _c([1] * 10, [5] * 5 + [6] * 5)
+    frame = tables.per_label_frame(c)
+    assert set(frame["side"]) == {"gt", "seg"}
+    assert set(frame.columns) == {"side", "label_id", "n_voxels", "voi_contribution"}
+    # The gt body took all the split blame; the two segments share the merge blame of zero.
+    assert frame[frame.side == "seg"]["voi_contribution"].sum() > 0
+
+
+# -- shape CSVs for neu-glance annotate --link ------------------------------------------
+
+def _shaped_rows():
+    base = {"pair_key": "1:5", "a_id": "1", "b_id": "5", "severity": 0.1, "group_rank": 1,
+            "z_nm": 1.0, "y_nm": 2.0, "x_nm": 3.0}
+    merge = {**base, "kind": "merge", "shapes": [{
+        "side": "merge", "other_id": "2", "n_voxels": 10,
+        "centre_nm": [8.0, 8.0, 8.0], "radii_nm": [16.0, 16.0, 16.0],
+        "p0_vox": [0, 0, 0], "p1_vox": [1, 1, 1],
+        "p0_nm": [0.0, 0.0, 0.0], "p1_nm": [8.0, 8.0, 8.0],
+        "ids": {"a": ["1", "2"], "b": ["5"], "c": []}}]}
+    split = {**base, "pair_key": "3:6", "a_id": "3", "b_id": "6", "kind": "split",
+             "shapes": [{**merge["shapes"][0], "side": "split",
+                         "ids": {"a": ["3"], "b": ["6", "7"], "c": ["9"]}}]}
+    lonely = {**base, "pair_key": "4:8", "a_id": "4", "b_id": "8", "kind": "split",
+              "shapes": [], "point_at": "overlap"}
+    return [merge, split, lonely]
+
+
+def test_shape_csvs_write_neu_glances_columns_one_set_per_kind(tmp_path):
+    import csv
+
+    from neu_eval.tables import shape_csvs
+
+    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+                     relationships=("a", "b", "c"))
+    assert set(out) == {"merges", "splits"}
+    lines = list(csv.DictReader(open(out["merges"]["lines"])))
+    assert list(lines[0])[:6] == ["z0", "y0", "x0", "z1", "y1", "x1"]
+    assert lines[0]["segments:a"] == "1 2" and lines[0]["segments:b"] == "5"
+    assert lines[0]["segments:c"] == "", "an empty relationship is written, not dropped"
+    assert "joins a 1 + 2" in lines[0]["description"]
+    ells = list(csv.DictReader(open(out["splits"]["ellipsoids"])))
+    assert list(ells[0])[:6] == ["z", "y", "x", "rz", "ry", "rx"]
+    assert "cut into b 6 + 7" in ells[0]["description"]
+
+
+def test_a_row_without_a_shape_is_kept_as_a_point(tmp_path):
+    import csv
+
+    from neu_eval.tables import shape_csvs
+
+    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+                     relationships=("a", "b"))
+    (pt,) = list(csv.DictReader(open(out["splits"]["points"])))
+    assert pt["id"] == "4:8:point" and "no seam found" in pt["description"]
+
+
+def test_shapes_stay_out_of_the_review_csv(tmp_path):
+    import csv
+
+    from neu_eval.tables import write_disagreements
+
+    path = write_disagreements(_shaped_rows(), tmp_path / "d.csv", labels=("a", "b"))
+    header = next(csv.reader(open(path)))
+    assert "shapes" not in header and "verdict" in header
