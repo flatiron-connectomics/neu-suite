@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "blockrun"
+version = "0.1.0"
+description = "Resumable, chunked parallel maps on dask — locally or across a SLURM cluster."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# All runtime deps are pure-Python and available from both conda-forge and PyPI.
+# In the shared conda env they come from conda-forge, so install with
+# `pip install --no-deps -e .` to keep pip from re-resolving them.
+dependencies = [
+    "dask",
+    "distributed",        # dask.distributed Client / LocalCluster / as_completed
+    "dask-jobqueue>=0.8", # SLURMCluster
+    "pyyaml",             # dask-config.yaml loading
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["blockrun"]
+# blockrun/configs/*.yaml are package DATA and ship automatically, because
+# hatchling includes every tracked file under `packages`. Consumers resolve them by
+# name through importlib.resources, so a missing template breaks `--config
+# dask-local`. Keep them TRACKED, and never add an unanchored `configs/` pattern to
+# .gitignore — it matches at any depth and would silently exclude these.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exercises a real dask cluster (LocalCluster); slower to run",
+]
