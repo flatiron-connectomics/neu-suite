@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neu-glance"
+version = "0.1.0"
+description = "Neuroglancer viewer states, annotation layers and shareable links, built from EM volumes and precomputed annotation sources."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# In the shared conda env this comes from conda-forge, so install with
+# `pip install --no-deps -e .` to keep pip from re-resolving tensorstore.
+dependencies = [
+    "neu-vol",     # volume metadata, store reads, occupancy boxes
+]
+# Deliberately NOT declared:
+#   numpy/pandas — nothing here does array or table work. `layers` and `state` are pure
+#     dict-and-list manipulation, which is what keeps them testable with no fixture.
+#   neuroglancer — see the `serve` extra below; it is not needed to BUILD a state, only to
+#     host one, and CI has no business downloading a viewer bundle.
+
+[project.optional-dependencies]
+dev = ["pytest"]
+# For a future `neu-glance serve`: host a local volume (an HDF5 chunk, say) at a localhost URL
+# and open a viewer on it, the way chunkflow does. Optional because building a state needs
+# none of it, and because the wheel carries a JS bundle.
+serve = ["neuroglancer>=2.40"]
+# Pointing the camera at a named object needs that object's bounds, and the mesh is the only
+# honest source for them — a thin arbor thins out of existence on the way down a pyramid, so
+# a coarse volume read frames the wrong thing without saying so. `neu_morpho.readback` is the
+# reader, and RENAME-PLAN stage 6 already AGREES it belongs in a bottom-tier `neu-codecs`
+# beside blockrun; neu-draw took the same temporary dependency for the same reason. Optional
+# and deferred (`sources._readback`), so CI, `import neu_glance` and every pure path are
+# unaffected — and `Timeline.frame_on` takes a box from anywhere, so this is never required.
+framing = ["neu-morpho"]
+
+[project.scripts]
+# `neu-glance`, matching the abbreviated commands its siblings expose (`neu-vol`, `neu-morpho`,
+# `neu-mark`). Here the library name matches the command rather than being spelled out,
+# because "neuroglancer" is not an abbreviation anyone needs expanded.
+neu-glance = "neu_glance.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["neu_glance"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
