@@ -29,7 +29,7 @@ a layer without touching state assembly, and it is why a timeline's interpolatio
 by a CI that installs no extras.
 
 Top-level names resolve lazily (PEP 562) so ``neu-glance --help`` does not pay for
-neu-vol' import graph; ``cli`` reads ``__version__`` from here.
+neu-vol's import graph; ``cli`` reads ``__version__`` from here.
 """
 
 from __future__ import annotations

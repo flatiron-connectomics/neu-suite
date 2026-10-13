@@ -12,7 +12,7 @@ neu-glance gen --image s3://bucket/em --seg s3://bucket/seg_v1 \
     --annotations s3://bucket/seg_v1/synapses_v1 --annotation-split --segments 12345
 ```
 
-## The six subcommands
+## Subcommands
 
 | | produces |
 | --- | --- |

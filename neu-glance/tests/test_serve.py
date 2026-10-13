@@ -1346,36 +1346,6 @@ def test_the_serve_and_gen_annotation_flags_are_spelled_APART():
 
 
 def test_stop_serving_works_without_a_handle(frame, stop_server):
-    """The escape hatch for a re-run cell or an unassigned result: there is one server per
-    process, so it can be reached without the Server that started it."""
-    import neuroglancer as _ng
-
-    from neu_glance import stop_serving
-
-    assert stop_serving() is False, "nothing running yet"
-    serve([ServedLayer(_labels(), name="a", frame=frame)])          # result discarded
-    assert _ng.server.is_server_running()
-    assert stop_serving() is True
-    assert not _ng.server.is_server_running()
-    assert stop_serving() is False, "idempotent"
-
-
-def test_serve_does_not_block(frame, stop_server):
-    """Nothing here holds the notebook: the tornado server is a background daemon thread,
-    so a blocked cell is the *command* (`neu-glance serve` runs until interrupted), never
-    this."""
-    import threading
-    import time
-
-    before = threading.active_count()
-    start = time.monotonic()
-    server = serve([ServedLayer(_labels(), name="a", frame=frame)])
-    assert time.monotonic() - start < 10, "serve() returned promptly"
-    assert server.url
-    assert threading.active_count() > before, "...because the server is on its own thread"
-
-
-def test_stop_serving_works_without_a_handle(frame, stop_server):
     """For a re-run cell or a result never assigned: there is one server per process, so it
     can be reached without the Server that started it."""
     import neuroglancer as _ng
