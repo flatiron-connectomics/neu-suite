@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+*.log
+
+# editor
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Site-specific configs. The LEADING SLASH is load-bearing: a bare `configs/` would match
+# at any depth.
+/configs/
+
+# Config override for neu_mark.config, carrying a server address and a branch ref.
+neu-mark.toml
+
+# Rules modules encode one dataset's label vocabulary, not the package's.
+/rules/
+*_rules.py
+# ...except the package's OWN builtin rules, which this pattern would otherwise silently
+# leave out of every commit — a module missing from the release, with nothing to show for it
+# in `git status`. Anything under neu_mark/ is package code, never dataset content.
+!neu_mark/*_rules.py
+
+# Notebooks are working material. Add one deliberately with `git add -f` to release it.
+notebooks/
+
+# Fetched tables are dataset content and belong on bulk storage, not in git.
+*.parquet
+*.feather
+provenance.json
