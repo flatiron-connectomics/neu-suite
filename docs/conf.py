@@ -1,8 +1,8 @@
 """Sphinx configuration for the neu-suite documentation site.
 
-The site assembles the suite's sibling repositories — deliberately separate
-packages, in a strict one-way dependency — into one place to read about them, because
-the thing a user needs (a command, or a function) does not correspond to a repository.
+The site assembles the suite's packages — separately installable, in a strict one-way
+dependency — into one place to read about them, because the thing a user needs (a
+command, or a function) does not correspond to a package.
 `clitools.PACKAGES` is the single list of what they are, in dependency order.
 
 **Nothing here is written by hand twice.** The CLI reference renders the actual
@@ -96,9 +96,9 @@ default_role = "literal"
 #   * no `autodoc_mock_imports` list to keep in step with tensorstore, vol2mesh,
 #     dvidutils, kimimaro, neuclease, pygfx and wgpu — none of which are installable
 #     from PyPI alone, which is the constraint the whole build is built around;
-#   * a package that is CHECKED OUT but not INSTALLED is documented anyway, which is
-#     exactly `neu-draw`'s situation in CI: it is cloned for its README, and installing
-#     it would pull a GPU stack into a job that renders no pixels.
+#   * a package that is in the tree but not INSTALLED is documented anyway, which is
+#     exactly `neu-draw`'s situation in CI: installing it would pull a GPU stack into a
+#     job that renders no pixels.
 extensions.append("autoapi.extension")
 
 autoapi_dirs = [str(p) for p in clitools.package_dirs()]

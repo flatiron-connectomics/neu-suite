@@ -4,7 +4,7 @@ Interactive 3D rendering of segment morphology in Jupyter — body **meshes** an
 **skeletons**, synapse points, and ROI meshes — drawn locally with
 [pygfx](https://github.com/pygfx/pygfx).
 
-Its sibling [neu-glance](https://github.com/flatiron-connectomics/neu-glance) builds
+Its sibling [neu-glance](../neu-glance) builds
 neuroglancer states for a *remote* viewer. The axis that separates the two is **where
 the rendering happens**, not what is rendered.
 

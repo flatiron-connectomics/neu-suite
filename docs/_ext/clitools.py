@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def posixpath_dirname(rel: str) -> str:
-    """The directory an included file sits in, within its own repository."""
+    """The directory an included file sits in, within its package directory."""
     return posixpath.dirname(rel)
 
 HERE = Path(__file__).resolve().parent.parent          # docs/
@@ -91,29 +91,24 @@ PACKAGES = [
 ]
 
 
-def package_dirs() -> list[Path]:
-    """The package directories `autoapi` parses, skipping any repo not checked out.
-
-    A missing one must not fail the build: the site is assembled from independent
-    clones, and a partial checkout is a normal state to build in locally. Which is
-    exactly why the API landing page is generated rather than written — a hand-written
-    toctree would cite the page of a package that was never parsed, and `-W` turns that
-    into a failed build for anyone without all of them.
-    """
-    return [ROOT / repo / pkg for repo, pkg, _blurb, _entry in PACKAGES
-            if (ROOT / repo / pkg).is_dir()]
-
-
 def present_packages() -> list[tuple[str, str, str, str]]:
-    """`PACKAGES`, filtered to what is actually here, in dependency order."""
-    return [row for row in PACKAGES if (ROOT / row[0] / row[1]).is_dir()]
+    """`PACKAGES`, after checking every one is in the tree (they are subdirectories here)."""
+    missing = [repo for repo, pkg, _b, _e in PACKAGES if not (ROOT / repo / pkg).is_dir()]
+    if missing:
+        raise FileNotFoundError(f"declared in clitools.PACKAGES but not in the tree: "
+                                f"{', '.join(missing)}")
+    return list(PACKAGES)
+
+
+def package_dirs() -> list[Path]:
+    """The package directories `autoapi` parses, in dependency order."""
+    return [ROOT / repo / pkg for repo, pkg, _blurb, _entry in present_packages()]
 
 
 def write_api_index(path: Path) -> None:
     """The API reference's landing page: prose, cards, and the toctree of what was parsed.
 
-    Generated for the reason `package_dirs` gives — the toctree must list exactly the
-    packages that were parsed, and nothing else.
+    Generated from `PACKAGES`, so the toctree lists exactly the packages that were parsed.
     """
     present = present_packages()
     out = [
@@ -155,8 +150,7 @@ def write_api_index(path: Path) -> None:
                 blurb, "", f"**Start at** {entry}", ":::"]
     out += ["::::", ""]
 
-    # Keyed on the package each row points into, so a partial checkout drops the row
-    # rather than emitting a `{doc}` reference to a page that was never generated.
+    # Keyed on the package each row points into, so a row cannot outlive its package.
     starts = [
         ("neu_lib", "do box or grid arithmetic",
          "{doc}`neu_lib.grid <../api/neu_lib/grid/index>` — `BBox`, `align_box`, "
@@ -390,16 +384,15 @@ def _extras(module: str) -> list[str]:
     return out + [""]
 
 
-GITHUB = "https://github.com/flatiron-connectomics"
+GITHUB = "https://github.com/flatiron-connectomics/neu-suite"
 
 
 def _absolutize(text: str, repo: str, from_dir: str) -> str:
-    """Point a repo README's relative links at GitHub.
+    """Point an included file's relative links at the file on GitHub.
 
-    An included file's links (`LICENSE`, `docs/skeletonization.md`, `../blockrun`) resolve
-    against its own repository, not against this site — so left alone they are dangling
-    references that warn on every build and 404 for the reader. Rewriting them to the
-    repository they mean makes them work, which is better than suppressing the warning.
+    Links like `LICENSE`, `docs/skeletonization.md` or `../blockrun` resolve against the
+    file's own directory, not against this site, so left alone they warn on every build
+    and 404 for the reader.
     """
     import posixpath
     import re
@@ -412,12 +405,10 @@ def _absolutize(text: str, repo: str, from_dir: str) -> str:
         if "#" in target:
             target, anchor = target.split("#", 1)
             anchor = "#" + anchor
-        # A sibling repo (`../blockrun`) leaves this repo entirely; anything else is
-        # relative to the included file's own directory inside it.
-        joined = posixpath.normpath(posixpath.join(from_dir, target))
-        if joined.startswith("../"):
-            return f"[{label}]({GITHUB}/{joined.removeprefix('../')}{anchor})"
-        return f"[{label}]({GITHUB}/{repo}/blob/main/{joined}{anchor})"
+        # Relative to the included file's own directory, inside its package directory;
+        # `../blockrun` therefore lands on the sibling package.
+        joined = posixpath.normpath(posixpath.join(repo, from_dir, target))
+        return f"[{label}]({GITHUB}/blob/main/{joined}{anchor})"
 
     return re.sub(r"\[([^\]]*)\]\(([^)]+)\)", fix, text)
 
@@ -430,18 +421,9 @@ def copy_included(dest: Path) -> None:
     locally and in CI.
     """
     for rel, name in INCLUDED:
-        src = ROOT / rel
-        if src.exists():
-            repo = rel.split("/", 1)[0]
-            from_dir = posixpath_dirname(rel.split("/", 1)[1])
-            (dest / name).write_text(
-                _absolutize(src.read_text(), repo, from_dir))
-        else:
-            # A repo that is not checked out should not fail the build; the toctree
-            # entry will warn on its own, which is the visible signal.
-            (dest / name).write_text(
-                f"# Not available\n\n`{rel}` was not present when this site was "
-                f"built.\n")
+        repo, inner = rel.split("/", 1)
+        (dest / name).write_text(
+            _absolutize((ROOT / rel).read_text(), repo, posixpath_dirname(inner)))
 
 
 def _hide_source_links(app, pagename, _templatename, context, _doctree) -> None:

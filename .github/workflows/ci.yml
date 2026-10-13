@@ -1,0 +1,165 @@
+name: ci
+
+# One workflow for the whole suite: every package's tests on every push and pull
+# request, the docs site built with -W, and the site deployed from main once all of it
+# is green, so the published reference never documents a red commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: All nine packages carry the same version
+        run: python tools/release.py --check
+
+  # Each package installed the way a user without conda would: from PyPI, with its
+  # siblings from this checkout. The conda-only dependencies (vol2mesh, dvidutils,
+  # neuclease) are absent, so this is what proves the packages import and skip cleanly
+  # without them. neu-morpho is not here because its mesh stage
+  # cannot run without vol2mesh; it is covered by the full-environment job below.
+  pip:
+    name: ${{ matrix.pkg }} (pip, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {pkg: neu-lib,    python: "3.11", deps: ""}
+          - {pkg: neu-lib,    python: "3.12", deps: ""}
+          - {pkg: blockrun,   python: "3.11", deps: ""}
+          - {pkg: blockrun,   python: "3.12", deps: ""}
+          - {pkg: neu-vol,    python: "3.11", deps: "../neu-lib ../blockrun"}
+          - {pkg: neu-vol,    python: "3.12", deps: "../neu-lib ../blockrun"}
+          - {pkg: neu-mark,   python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-mark,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-glance, python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-glance, python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-draw,   python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-draw,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol"}
+          - {pkg: neu-proc,   python: "3.12", deps: "../neu-lib"}
+          - {pkg: neu-eval,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol ../neu-proc", extras: ",report"}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ matrix.pkg }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          if [ -n "${{ matrix.deps }}" ]; then pip install ${{ matrix.deps }}; fi
+          pip install -e ".[dev${{ matrix.extras }}]"
+      - name: Test
+        env:
+          PYTEST_OUT: ${{ runner.temp }}/pytest.out
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee "$PYTEST_OUT"
+      - name: Package checks
+        env:
+          PYTEST_OUT: ${{ runner.temp }}/pytest.out
+        run: |
+          script="../.github/smoke/${{ matrix.pkg }}.sh"
+          if [ -f "$script" ]; then bash "$script"; else echo "no extra checks"; fi
+
+  # The environment users are told to build: environment.yml, every package installed
+  # editable with --no-deps, every suite run against it. One step per package so a
+  # failure names the package.
+  full:
+    name: all packages (environment.yml, py3.12)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}       # micromamba activates through a login shell
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+      - name: Install the packages
+        run: make install
+      - name: Record the exact environment
+        run: |
+          micromamba env export --explicit > "$RUNNER_TEMP/conda-explicit.txt" \
+            || micromamba list > "$RUNNER_TEMP/conda-explicit.txt"
+          pip freeze > "$RUNNER_TEMP/pip-freeze.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: environment
+          path: |
+            ${{ runner.temp }}/conda-explicit.txt
+            ${{ runner.temp }}/pip-freeze.txt
+      - {name: neu-lib,    run: make test-neu-lib}
+      - {name: blockrun,   run: make test-blockrun}
+      - {name: neu-vol,    run: make test-neu-vol}
+      - {name: neu-morpho, run: make test-neu-morpho}
+      - {name: neu-mark,   run: make test-neu-mark}
+      - {name: neu-glance, run: make test-neu-glance}
+      - {name: neu-draw,   run: make test-neu-draw}
+      - {name: neu-proc,   run: make test-neu-proc}
+      - {name: neu-eval,   run: make test-neu-eval}
+      - name: neu-morpho package checks
+        working-directory: neu-morpho
+        run: bash ../.github/smoke/neu-morpho.sh
+
+  # No conda: the CLI reference imports only the `cli` modules, which never reach the
+  # conda-only packages, and the API reference parses the source rather than importing
+  # it. neu-draw is deliberately not installed (it would pull a GPU stack); neu-proc is,
+  # only because neu-eval requires it.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+          pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
+                      ./neu-proc ./neu-eval ./neu-glance
+      # -W because the CLI reference is generated: a warning means a parser or a
+      # docstring stopped rendering.
+      - name: Build
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/_build/html
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [versions, pip, full, docs]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

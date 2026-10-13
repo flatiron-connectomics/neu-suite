@@ -1,0 +1,95 @@
+# One environment for all nine neu-* packages, for users and CI alike.
+#
+#   conda env create -n neu-env -f environment.yml
+#   conda activate neu-env
+#   pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
+#       -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc -e ./neu-eval
+#   pip install -r docs/requirements.txt        # only to build the docs site
+#
+# `--no-deps` matters: without it pip re-resolves the compiled stack below (numpy,
+# tensorstore, h5py) from PyPI and can install builds that do not match the conda
+# libraries vol2mesh, dvidutils and neuclease were compiled against.
+#
+# Python is 3.12 because vol2mesh and dvidutils are built only for 3.12 on flyem-forge.
+#
+# Optional GPU path (neu-proc, neu-eval): add the cupy wheel matching your CUDA, e.g.
+# `pip install "cupy-cuda12x[ctk]"` or `"cupy-cuda13x[ctk]"`. Without it the GPU tests
+# skip and everything runs on the CPU.
+name: neu-env
+
+channels:
+  - flyem-forge   # vol2mesh, dvidutils, neuclease: conda-only
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - pip
+
+  # blockrun
+  - dask
+  - distributed
+  - dask-jobqueue>=0.8
+  - pyyaml
+
+  # neu-vol
+  - numpy>=2
+  - scipy>=1.15
+  - tensorstore>=0.1.70
+  - zarr>=3
+  - ngff_zarr>=0.39
+  - wasmtime-py<48        # itkwasm (under ngff-zarr) imports names wasmtime 48 removed
+  - jsonschema
+  - h5py
+  - tifffile
+  - imageio
+  - neuclease             # DVID sources; needs libdvid-cpp and vigra, not on PyPI
+
+  # neu-mark, and the tables in neu-morpho[measure] / neu-eval[report]
+  - pandas>=2
+  - pyarrow>=15
+
+  # neu-morpho
+  - vol2mesh
+  - dvidutils
+  - trimesh
+  - plotly                # neu-morpho[viz]
+
+  # neu-proc
+  - scikit-image>=0.25
+
+  # neu-glance (colour parsing in shaders, progress bars in rendering)
+  - matplotlib
+  - tqdm
+
+  # neu-draw in a notebook
+  - jupyterlab
+  - ipywidgets
+
+  # tests
+  - pytest
+  - pytest-cov
+  - pytest-xdist          # opt-in `-n 4`; only neu-vol gains from it
+
+  # Not on conda-forge in usable versions. Each ships self-contained wheels, so they do
+  # not link against the conda libraries above.
+  - pip:
+      # neu-morpho skeletons and Draco meshes
+      - kimimaro
+      - osteoid>=0.7.3    # below 0.7.3, Skeleton.consolidate promotes edges to int64
+      - DracoPy
+      # neu-proc
+      - connected-components-3d>=4
+      - fastremap>=1.15
+      - fastmorph>=1.8
+      - edt>=3
+      - fill-voids>=2
+      # neu-glance[serve]
+      - neuroglancer>=2.40
+      # neu-draw[render], [cache]
+      - pygfx>=0.15
+      - rendercanvas
+      - jupyter-rfb
+      - cmap
+      - yes3>=0.1
+      # No ffmpeg here: every H.264-capable build is GPL. neu-draw uses whatever ffmpeg
+      # is on PATH or in $NEU_DRAW_FFMPEG; neu-glance prints the encode command.

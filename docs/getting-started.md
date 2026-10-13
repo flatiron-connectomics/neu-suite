@@ -13,16 +13,14 @@ neu-mark --help         # DVID annotations into tables
 neu-glance --help       # neuroglancer states, layers and links
 ```
 
-Building one from scratch:
+Building one from scratch, from a clone of the repository:
 
 ```bash
-conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
-    vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
-    numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
+git clone https://github.com/flatiron-connectomics/neu-suite.git
+cd neu-suite
+mamba env create -n neu-env -f environment.yml    # or micromamba; plain conda is slow
 conda activate neu-env
-pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc \
-                      -e ./neu-eval
+make install                                     # pip install --no-deps -e for all nine
 ```
 
 ```{warning}
@@ -37,8 +35,8 @@ py312-only *and* conda-only on flyem-forge: there is no py313 build and no PyPI
 equivalent, so they can never be pip dependencies. For the same reason they are omitted
 from `neu-morpho`'s declared dependencies.
 
-The nine repositories must stay siblings — they depend on each other by relative
-`../sibling` path.
+The packages depend on each other by relative `../sibling` path, so install them from a
+clone of the repository rather than one at a time.
 
 ```{note}
 `dvidutils` is invisible to `importlib.metadata`. Its flyem-forge package ships no

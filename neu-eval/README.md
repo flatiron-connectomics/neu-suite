@@ -20,10 +20,10 @@ wrote:
 ```
 
 Part of [neu-suite](https://github.com/flatiron-connectomics/neu-suite). Sits at the top
-tier with [neu-draw](https://github.com/flatiron-connectomics/neu-draw); depends on
-[neu-vol](https://github.com/flatiron-connectomics/neu-vol),
-[neu-proc](https://github.com/flatiron-connectomics/neu-proc) and
-[neu-lib](https://github.com/flatiron-connectomics/neu-lib).
+tier with [neu-draw](../neu-draw); depends on
+[neu-vol](../neu-vol),
+[neu-proc](../neu-proc) and
+[neu-lib](../neu-lib).
 
 ## The idea
 

@@ -1,32 +1,31 @@
 # neu-suite
 
-Documentation and the shared environment for a suite of EM volume packages developed at
-the Flatiron Institute's Center for Computational Neuroscience.
+A suite of EM volume packages developed at the Flatiron Institute's Center for
+Computational Neuroscience. They are developed together in this repository and installed
+separately: each top-level directory is its own Python distribution.
 
 **📖 [Documentation](https://flatiron-connectomics.github.io/neu-suite/)** — start at
 the cheat sheet if you just need to remember a flag.
 
-The packages live in their own repositories and are meant to sit here as siblings:
-
-| repository | what it is |
+| package | what it is |
 | --- | --- |
-| [neu-lib](https://github.com/flatiron-connectomics/neu-lib) | the shared vocabulary: boxes, grid arithmetic, frames, meshes, skeletons. **numpy only.** Library, no command. |
-| [blockrun](https://github.com/flatiron-connectomics/blockrun) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
-| [neu-vol](https://github.com/flatiron-connectomics/neu-vol) | volume I/O and the `neu-vol` command |
-| [neu-morpho](https://github.com/flatiron-connectomics/neu-morpho) | meshes and skeletons, and the `neu-morpho` command |
-| [neu-mark](https://github.com/flatiron-connectomics/neu-mark) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
-| [neu-glance](https://github.com/flatiron-connectomics/neu-glance) | neuroglancer states, layers and links, and the `neu-glance` command |
-| [neu-proc](https://github.com/flatiron-connectomics/neu-proc) | array processing: filters, label tools, distance transforms. Library only, no command. |
-| [neu-draw](https://github.com/flatiron-connectomics/neu-draw) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
-| [neu-eval](https://github.com/flatiron-connectomics/neu-eval) | comparison metrics against a reference labeling, and the `neu-eval` command |
+| [neu-lib](neu-lib/) | the shared vocabulary: boxes, grid arithmetic, frames, meshes, skeletons. **numpy only.** Library, no command. |
+| [blockrun](blockrun/) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
+| [neu-vol](neu-vol/) | volume I/O and the `neu-vol` command |
+| [neu-morpho](neu-morpho/) | meshes and skeletons, and the `neu-morpho` command |
+| [neu-mark](neu-mark/) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
+| [neu-glance](neu-glance/) | neuroglancer states, layers and links, and the `neu-glance` command |
+| [neu-proc](neu-proc/) | array processing: filters, label tools, distance transforms. Library only, no command. |
+| [neu-draw](neu-draw/) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
+| [neu-eval](neu-eval/) | comparison metrics against a reference labeling, and the `neu-eval` command |
 
 The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
 {neu-morpho, neu-mark, neu-glance, neu-proc} ← {neu-draw, neu-eval}` — and they depend on
-each other by relative `../sibling` path, so the layout matters:
+each other by relative `../sibling` path:
 
 ```text
-neu-suite/          ← this repository
-├── neu-lib/        ← cloned separately
+neu-suite/
+├── neu-lib/
 ├── blockrun/
 ├── neu-vol/
 ├── neu-morpho/
@@ -65,27 +64,30 @@ required**, and it is `vol2mesh` and `dvidutils` that force it — both are py31
 never resolve them and a conda environment has to provide them.
 
 ```bash
-conda create -n neu-env -c flyem-forge -c conda-forge python=3.12 \
-    vol2mesh dvidutils kimimaro tensorstore zarr dask distributed dask-jobqueue \
-    numpy scipy h5py tifffile imageio pandas pyarrow ngff-zarr jsonschema pyyaml
+git clone https://github.com/flatiron-connectomics/neu-suite.git
+cd neu-suite
+mamba env create -n neu-env -f environment.yml    # or micromamba; plain conda is slow
 conda activate neu-env
-pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-                      -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc \
-                      -e ./neu-eval
+make install                                     # every package, editable, --no-deps
+make test                                        # every suite
 ```
+
+`environment.yml` is the one environment spec, used by CI as well. The optional GPU path
+in neu-proc and neu-eval needs the cupy wheel matching your CUDA, installed by hand
+(see the comment at the top of `environment.yml`).
 
 `--no-deps` is load-bearing: the `pyproject.toml` files declare real runtime deps, and
 without it pip re-resolves conda-provided binaries (tensorstore, h5py) from PyPI and
 invites an ABI mismatch.
 
-Add `neuclease` from `flyem-forge` for DVID sources — it needs `libdvid-cpp`, `vigra`
-and `dvidutils`, none of which exist on PyPI, which is why there is no `dvid` pip extra
-and cannot be one. `cloud-volume` is deliberately **not** in this environment: it pins
+`neuclease` (DVID sources) comes from `flyem-forge` for the same reason — it needs
+`libdvid-cpp`, `vigra` and `dvidutils`, none of which exist on PyPI, which is why there is
+no `dvid` pip extra and cannot be one. `cloud-volume` is deliberately **not** in this environment: it pins
 `DracoPy<2` and would downgrade the DracoPy behind neu-morpho's mesh serialisation, so
 it belongs in a separate one.
 
-The exact pinned specs for the environment used to develop this are not published —
-they describe one machine's environment rather than a supported matrix.
+Every CI run uploads the exact environment it tested (`conda` explicit list and
+`pip freeze`) as a build artifact.
 
 ## Building the docs locally
 
@@ -101,5 +103,11 @@ The CLI reference is rendered from the packages' actual `ArgumentParser` objects
 cheat sheet is generated from them at build time, so neither can drift away from
 `--help`. Nothing under `docs/_generated/` is committed.
 
-CI publishes to GitHub Pages on every push to `main`, and on a `repository_dispatch` of
-type `package-updated` from any of the package repositories.
+CI builds the site with `-W` on every push and pull request, and publishes it to GitHub
+Pages from `main` once every package's tests pass.
+
+## License
+
+neu-morpho is **GPL-3.0-or-later**, because its skeletonization uses `kimimaro` and
+`dijkstra3d`. Every other package is **Apache-2.0**. Each package directory carries its
+own `LICENSE`.

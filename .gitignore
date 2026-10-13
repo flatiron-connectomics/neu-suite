@@ -1,15 +1,6 @@
-# The packages are their own repositories, cloned as siblings here. They are
-# NOT submodules — see .github/workflows/docs.yml for why. Deliberately uncounted: this
-# comment said "five" while listing eight, which is the way a count in prose goes wrong.
-blockrun/
-neu-vol/
-neu-morpho/
-neu-mark/
-neu-glance/
-neu-draw/
-neu-lib/
-neu-proc/
-neu-eval/
+# The nine packages are tracked subdirectories of this repository (monorepo since
+# 2026-10-13). The rules below that carry no leading slash apply inside them too, on
+# purpose: a `data/` or `CLAUDE.md` anywhere in the tree stays out of git.
 
 # The PRIVATE repo of site configs, dataset scripts and notebooks. configs, scripts and
 # notebooks at this root are SYMLINKS into it, so they are matched below WITHOUT a
@@ -48,12 +39,11 @@ neu-mark.toml
 data/
 *-explicit-*.txt
 
-# The environment specs describe one internal environment, so they are not published.
-# `docs/requirements.txt` is the exception and MUST stay tracked — the docs CI job
-# installs from it.
-environment.yml
-pypi_requirements.txt
-neu-vol-cv-environment.yml
+# `environment.yml` IS tracked: it is the one spec for users and CI. These two describe
+# one internal machine and stay private. `docs/requirements.txt` must stay tracked —
+# the docs CI job installs from it.
+/pypi_requirements.txt
+/neu-vol-cv-environment.yml
 
 # Build output and the generated pages. Generating them is the point: a committed copy
 # could disagree with the code, which is the failure this site is designed to prevent.
