@@ -1,4 +1,4 @@
-"""Skeletonization via kimimaro — block-first, mirroring the meshing pipeline.
+"""Skeletonization, block-first, mirroring the meshing pipeline.
 
     stage 1 (:func:`skeletonize_block`) : one block's labels -> per-body fragments
     stage 2 (:func:`fuse_body`)         : a body's fragments -> one skeleton
@@ -8,9 +8,6 @@ box **extent**, not the voxel count: a sparse arbor occupies few voxels but a
 huge bbox, and its dense crop array is what OOMs. A block is bounded by
 construction. A body wholly inside one block yields a single fragment, so fusion
 is a no-op for it and only large/spanning bodies see real welding.
-
-:func:`skeletonize_body` (crop-based) is kept for one-off work and the comparison
-harness.
 
 The alignment discipline (see coords.py) is the important part: run kimimaro with
 ``anisotropy = voxel_size`` so its vertices are physical nm, then shift by the
@@ -365,30 +362,3 @@ def skeleton_metrics(skeleton) -> dict:
         "n_tips": int(len(skeleton.terminals())),
         "max_radius_nm": float(radius.max()) if radius.size else None,
     }
-
-
-# --------------------------------------------------------------------------- #
-# Per-body crop path (one-offs / comparison harness)
-# --------------------------------------------------------------------------- #
-def skeletonize_body(mask_zyx: np.ndarray, body_id: int, crop_origin_vox_zyx, cfg: SkeletonConfig):
-    """Skeletonize one body's crop; returns a Skeleton in **global nm** (or None).
-
-    ``mask_zyx`` is the (binary) body crop at the skeleton scale; ``crop_origin_vox_zyx``
-    is the crop's origin in that scale's voxels. Vertices are placed in the same
-    physical-nm world as the meshes. Beware the bbox-extent memory hazard that
-    motivated the block-first pipeline — prefer :func:`skeletonize_block` at scale.
-    """
-    import kimimaro
-
-    labels = mask_zyx.astype(np.uint64) * np.uint64(body_id)
-    skels = kimimaro.skeletonize(
-        labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,
-        object_ids=[body_id], dust_threshold=cfg.dust_threshold, progress=False,
-    )
-    skel = skels.get(body_id)
-    if skel is None:
-        return None
-    origin_nm = crop_origin_nm(crop_origin_vox_zyx, cfg.anisotropy)   # anisotropy = skel voxel size
-    skel.vertices = skeleton_to_physical(skel.vertices, origin_nm).astype(np.float32)
-    skel.id = int(body_id)
-    return skel

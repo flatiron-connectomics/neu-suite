@@ -5,10 +5,9 @@ cable length of the centreline through it gives the **mean cross-sectional area*
 the voxels by nearest centreline node turns the same pass into a *length-weighted
 distribution* of local cross-section rather than one number per body.
 
-**Every default here came from a measurement, and `docs/measure-calibration.md` records
-which** — the read block size, the 32 nm level, dropping zeros before counting, and why
-the published skeleton radii and a mesh-based estimator were both rejected on evidence.
-Read it before changing a default; two of its conclusions were reached and then reversed.
+**Every default here came from a measurement**: the read block size, the 32 nm level,
+dropping zeros before counting, and the rejection of published skeleton radii and of a
+mesh-based estimator. Re-measure before changing one.
 
 Two properties to keep in mind at the call site:
 

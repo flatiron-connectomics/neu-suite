@@ -15,8 +15,7 @@ that here confines the filesystem access to a module that never writes to ``dst`
 and means this package does not own a copy of the multires manifest parser.
 
 No optional dependencies: everything here is numpy plus what the pipeline already
-requires. Rendering lives in ``scripts/view_body_3d.py``, which needs the ``viz``
-extra.
+requires. For rendering, see neu-draw.
 """
 
 from __future__ import annotations

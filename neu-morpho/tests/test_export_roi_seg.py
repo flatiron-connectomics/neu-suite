@@ -315,7 +315,7 @@ def test_copy_block_survives_a_transient_store_failure(tmp_path, monkeypatch):
     from neu_morpho.ops.export_roi_seg import _copy_block
 
     # What is under test is that the copy retries at all, not how long it waits —
-    # the backoff schedule itself is neu-vol' test_retry. Left real, the
+    # the backoff schedule itself is neu-vol's test_retry. Left real, the
     # default 1 s base delay is spent sleeping in the one test that reaches it.
     monkeypatch.setattr("neu_vol.retry.time.sleep", lambda *_: None)
     src, dst, block = _one_block_and_specs(tmp_path)

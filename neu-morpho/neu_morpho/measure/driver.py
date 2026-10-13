@@ -4,7 +4,7 @@ The one module in `measure` that opens a store and touches dask; everything in
 `sweep.py` is pure so it can be tested without either. Fills `voxel_count` /
 `volume_nm3` in a `MetricsDB`, block by block, resumably.
 
-Three choices here follow from measurements recorded in `docs/measure-calibration.md`:
+Three choices here follow from calibration measurements:
 
 - **No occupancy or ROI prefilter by default.** An ROI built from a compartment mask
   omits somata that sit outside it, and `V/L` then divides a truncated volume by a

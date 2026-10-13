@@ -320,8 +320,8 @@ def simplify(vertices, radii, edges, *, preserve_junctions=PRESERVE_JUNCTIONS, *
     """The full reduction: region-sample, then downsample.
 
     Branch *count* is not this module's problem — it is settled during tracing, by
-    ``neutu_trace``'s un-invalidated-length test. A geometric post-hoc pruner used
-    to live here and was removed; see docs/skeletonization.md "Removed".
+    ``neutu_trace``'s un-invalidated-length test. A geometric post-hoc pruner lost to
+    that test (docs/skeletonization.md, ``min_length``).
     """
     v, r, e = region_sample(vertices, radii, edges,
                             preserve_junctions=preserve_junctions)

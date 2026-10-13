@@ -121,7 +121,7 @@ geometrically afterwards is strictly dominated (swept to comparable node counts,
 in-extraction reached 72–80% fill against the pruner's 45–65%). The test is on
 *new territory reached*, not geometric length — a short branch into unclaimed
 volume survives, a long one shadowing covered ground does not — and length alone
-cannot express that. The post-hoc pruner that lost is gone; see [Removed](#removed).
+cannot express that. The post-hoc pruner that lost has been removed.
 
 Un-invalidated length is bimodal, so 5 / 10 / 20 / 40 give near-identical output.
 NeuTu's default of 10 is fine; **do not sweep it.**
@@ -191,18 +191,6 @@ fuse a body into disconnected block-length stubs while every block still reporte
 
 ## Things established as wrong — do not re-derive
 
-- **Do not optimise fill or spill.** Fill is confounded by branch count, so it
-  rewards a skeletonizer that invents neurites; measured per unit cable, NeuTu is
-  *more* fill-efficient than a port carrying 5–10× the tips. And on a dense
-  segmentation, spill cannot distinguish reclaiming a false split from
-  trespassing — a graded-spill metric was built to settle that and could not.
-  **Optimise `skelmetrics.agreement`** (bidirectional centreline distance plus
-  node/tip/cable ratios) against NeuTu instead. NeuTu is the reference because it
-  behaves well enough, not because it is right.
-- **Always pass `edges` to `skelmetrics`.** The first fill metric stamped
-  isolated spheres at vertices instead of sweeping capsules along edges, which
-  penalised sparse-node methods and **reversed the tool ranking**.
-  `skelmetrics.sweep` exists to prevent a repeat.
 - **"NeuTu's larger radii are what fills better" is false.** Its median radius
   error is negative, and the port reaches 92% fill using exact inscribed radii.
   Fill is driven by path coverage and node placement, not radius. Do not tune
@@ -235,76 +223,3 @@ fuse a body into disconnected block-length stubs while every block still reporte
   (96.3% → 41.2% on one body). Median process radius is ~72 nm, about 1.1 voxels
   at 64 nm, so thin neurites sit at the resolution limit and shatter. A property
   of the data, so no tracer change recovers it — block-first is the route.
-
-## Benchmarking
-
-`scripts/pick_benchmark_bodies.py` → `export_benchmark_masks.py` →
-`run_skel_benchmark.py`, scored by `neu_morpho.skelmetrics`. **Bodies 6308993 and
-18052382 are pinned** into the set: the measurements above are made on them, and
-dropping them would strand that evidence. Body 6308993's true extent is
-**448,672,289 voxels** (bbox), which comes from its *mesh* bbox — the skeleton
-bbox is smaller because stage 1 applies a `dust_threshold`, so detached specks
-have no skeleton.
-
-Masks are large (~450 MB each) and belong on bulk storage, not in the repo.
-
-### Running NeuTu itself
-
-NeuTu is the regression target, and `neu_morpho.neutu_io.run_neutu` shells out to
-it. **It cannot be installed alongside this package** — its conda recipe pins
-hdf5 1.8.18, jansson 2.7 and libpng 1.6.28, and its SWIG bindings predate Python
-3.12 — so it lives in a separate environment and is invoked as a binary. It is
-also GPL: shelling out to a separate process is fine, linking is not.
-
-```
-neutu --command --config cfg.json body.sobj --skeletonize
-```
-
-- **Argument order is load-bearing.** genelib's `Process_Arguments` **segfaults**
-  when a positional input is followed by a valued option, because
-  `[<input:string> ...]` (`gui/zcommandline.cpp:1658`) is greedy. Valued options
-  must precede the positional; bare flags after it are fine. `-o out.swc` after
-  the input crashes — set `output` in the config JSON instead.
-- **Bounding-box limit** of `ONEGIGA` = 1,073,741,824 voxels of *bbox*, not voxel
-  count.
-- **Radius saturation**: the distance map is uint16 *squared* distance, so radii
-  clip at ~256 voxels. Irrelevant at 32 nm/voxel; recheck if you go coarser.
-- NeuTu's four pre-skeletonization mask cleanups (`m_removingBorder`,
-  `m_interpolating`, `m_fillingHole`, `m_minObjSize`) were **all off** in the runs
-  that produced our reference SWCs, so they explain nothing about its appearance.
-  They remain the most direct lever on noisy bulbs, since the noise is in the
-  input — but changing the mask invalidates every reference comparison.
-
-## Removed
-
-Dead ends deleted once `neutu` became the default. Recorded because each was
-reachable-but-never-reached — the state that reads as a supported option and is
-not one. None was on the production path and none had a test.
-
-| Removed | Why it went |
-|---|---|
-| `swc_simplify.prune_twigs` + `simplify(prune_below=)` | Post-hoc geometric twig pruner. Lost to in-extraction `min_length`; `prune_below` defaulted to 0.0 and no caller ever passed it. |
-| `skelmetrics.spill_by_neighbour_size`, and the per-voxel neighbour-size maps feeding it | Could not settle the question it was built for. Moving the fragment/large boundary one bin swung the answer from 13% to 1%. |
-| `SkeletonConfig.mask_opening_iters` / `mask_closing_iters`, `skeleton._clean_mask` | Never set to anything but 0, cost a branch in the per-block hot path, and no baseline supports tuning it. |
-| `neutu_io.read_sobj` | No caller. `write_sobj` **stays** — it is `run_neutu`'s input format. |
-| the HTML comparison report generator | Hardcoded numbers from a superseded round, and highlighted highest *fill* as the winner — the objective this document retracts. |
-| max-un-invalidated-length target selection | See `PATIENCE` above: a real p90 gain bought with 31.5% more cable, nearly all bulb noise. |
-
-**Things a dead-code scan flags that are NOT dead**, so a future sweep does not
-cut them: `neutu_io.write_sobj` (same-file caller), `skelcompare.y_branch` /
-`rod_with_cavity` (registry dispatch), `skelmetrics.score` (used by two scripts),
-and `neutu_trace.path_to` (a nested closure inside `_trace_component`, i.e. core
-production tracing). Name-based scanning sees none of those; verify by grep
-before cutting.
-
-## Open
-
-- **Gap-bridging (`reconnect`, `maximalDistance=50`) is a product decision, not a
-  fix.** NeuTu joins disconnected roots within 50 voxels (1,600 nm at 32 nm),
-  which is what bridges visible mask gaps. It is *not* needed to match NeuTu's
-  structure, and it contradicts this project's rule against wide joins (a 400 nm
-  split doubled `cable_length`), so adopting it needs a deliberate call about
-  inventing cable.
-- **Whole-body tracing does not scale.** Peak RSS is ~12× the mask, so scale 0 is
-  infeasible for a single large body and scale 1 is marginal. Block-first removes
-  the problem outright — one 256³ block is a 16.7 MB mask regardless of body size.

@@ -19,7 +19,7 @@ the same flip for skeletons. Get it wrong and skeletons come out mirrored throug
 the z=x diagonal relative to their meshes — the same class of bug as the dropped
 crop origin (see coords.py).
 
-**Every write here goes through neu-vol' kvstore helpers**, never
+**Every write here goes through neu-vol's kvstore helpers**, never
 ``open()``, so ``output_dir`` may equally be a local path or an ``s3://`` URL.
 vol2mesh makes this possible by separating encoding from writing: we use
 ``multires.build_info`` / ``encode_multilod_object``, which return a dict and

@@ -4,7 +4,7 @@ Reads the work dir only — the JSONL manifests, ``run_plan.json`` and the fragm
 stores. **It never contacts the dask cluster, S3, or SLURM**, so it is cheap and
 safe to run as often as you like from any terminal:
 
-    neu-morpho progress /mnt/ceph/users/<you>/morpho-run
+    neu-morpho progress /path/to/morpho-run
 
     # measure a rate and extrapolate, by sampling the manifests twice
     neu-morpho progress <work-dir> --sample 60

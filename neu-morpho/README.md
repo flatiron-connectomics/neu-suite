@@ -35,8 +35,7 @@ Python is pinned to **3.12**: `vol2mesh` and `dvidutils` are only built for py31
 on flyem-forge, and they are conda-only (no PyPI equivalent), so the conda
 environment — not pip — has to provide them. The
 [neu-suite](https://github.com/flatiron-connectomics/neu-suite) README describes how to
-build the shared environment. Skeleton *comparison* tooling
-(`skelcompare.py`) needs the `compare` extra: `networkx`, `plotly`, `skeletor`.
+build the shared environment.
 
 ## Running it
 

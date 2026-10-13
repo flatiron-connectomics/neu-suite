@@ -42,27 +42,13 @@ dependencies = [
 neu-morpho = "neu_morpho.cli:main"
 
 [project.optional-dependencies]
-# Viewing published output: scripts/view_body_3d.py. neu_morpho.readback, which
-# does the actual reading, needs nothing beyond the core deps — only the rendering
-# is optional.
-viz = ["plotly"]  # self-contained interactive 3D HTML
 # Per-body measurement over PUBLISHED output (neu_morpho/measure/). An analysis layer,
 # so its deps are optional: `metrics.py` is numpy only and the pipeline needs none of
 # this. pandas/pyarrow are imported INSIDE functions, so `import neu_morpho` does not
 # pay for them and the CLI stays fast — the same rule neu-mark's `cli` follows.
 measure = [
-    "pandas",   # cohort and result tables
+    "pandas",   # result tables
     "pyarrow",  # parquet, which unlike csv round-trips a nullable integer column
-]
-# The comparison harness (neu_morpho/skelcompare.py, scripts/compare_skeletons*).
-# plotly is repeated rather than pulled in via a self-referential `neu-morpho[viz]`
-# extra: the two groups are installed independently and this project installs with
-# `pip install --no-deps`, so nothing resolves extras here anyway. Keep the two
-# entries in step if either is ever version-pinned.
-compare = [
-    "networkx",
-    "plotly",   # interactive 3D skeleton comparison (self-contained HTML)
-    "skeletor", # mesh skeletonization (wavefront / teasar) + post-processing
 ]
 dev = ["pytest"]
 

@@ -11,9 +11,9 @@ reads bboxes from the DB", and that consumer is gone: `meshify` and
 
 - ``voxel_count``, for ``MetricsDB.write_allowlist`` (the ``--min-voxels`` /
   ``--limit-bodies`` size filter). Counts only; no bbox needed.
-- the bbox, for ``scripts/sweep_postprocess.py`` via ``crop_at_scale``.
+- the bbox, for crop-based one-off analysis via ``crop_at_scale``.
 
-So the bbox half is now paid for by one script rather than by the pipeline, and it is
+So the bbox half is not paid for by the pipeline, and it is
 the expensive half: an ``argwhere`` plus an ``argsort`` over every labelled voxel, ~30 s
 against ~3 s for the counts on a dense block. For per-body volume alone, prefer
 ``neu_morpho.measure.sweep_volumes`` (``neu-morpho measure volumes``).
