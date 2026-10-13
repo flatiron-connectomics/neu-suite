@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+*.log
+
+# editor
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Site-specific configs. The LEADING SLASH is load-bearing: a bare `configs/` would match
+# at any depth.
+/configs/
+
+# Generated states and links are one person's view of one dataset, not the package's.
+*.state.json
+*.layer.json
+
+# Scratch notebooks. Deliberately untracked: they carry one person's body ids, bucket
+# paths and cell outputs (which for this package are megabytes of rendered PNG), and
+# they are for poking at things rather than for documenting them. A demo worth keeping
+# belongs in docs/, stripped of outputs.
+/notebooks/

@@ -1,0 +1,314 @@
+"""The notebook toolbar: what it is made of, and what each button does.
+
+Driven against a **real** Jupyter canvas rather than a stub. `rendercanvas.jupyter`
+constructs perfectly well outside a notebook — it is an ipywidget either way, and the
+browser is only needed to *paint* it — so the widget tree, the button handlers and the
+close-and-leave-the-image swap are all exercisable here. The handlers are called
+directly; `Button.on_click` is ipywidgets' own dispatch and needs a front end.
+"""
+
+import numpy as np
+import pytest
+
+pytest.importorskip("pygfx", reason="the render extra is not installed")
+widgets = pytest.importorskip("ipywidgets")
+
+from neu_lib import Mesh                                        # noqa: E402
+from neu_draw import toolbar as toolbar_mod, viewstate          # noqa: E402
+from neu_draw.backends import pygfx as backend                  # noqa: E402
+from neu_draw.scene import Scene                                # noqa: E402
+
+
+@pytest.fixture
+def has_gpu():
+    import wgpu
+    try:
+        wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    except Exception as exc:                                    # pragma: no cover
+        pytest.skip(f"no wgpu adapter available: {exc}")
+    return True
+
+
+@pytest.fixture(autouse=True)
+def clean_globals():
+    viewstate.views.clear()
+    toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
+    yield
+    viewstate.views.clear()
+    toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
+
+
+def _mesh(name="body"):
+    verts = np.array([[0.0, 0, 0], [100.0, 0, 0], [0.0, 100.0, 0], [0.0, 0, 100.0]])
+    return Mesh(verts, np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]), name=name)
+
+
+@pytest.fixture
+def view(has_gpu):
+    view = backend.show(Scene().add_mesh(_mesh()), size=(120, 90), canvas="jupyter")
+    yield view
+    view.close()
+
+
+# --------------------------------------------------------------------------- #
+# naming a capture
+# --------------------------------------------------------------------------- #
+
+def test_the_default_capture_name_carries_a_sortable_timestamp():
+    path = toolbar_mod.default_path()
+    assert path.startswith("snapshot_") and path.endswith(".png")
+
+
+def test_the_remembered_prefix_does_not_accumulate_timestamps():
+    """The failure this exists to prevent: capture once, and the next default would be
+    `cell_<ts>_<ts>.png`, then three, then four."""
+    first = toolbar_mod.default_path("cell")
+    toolbar_mod.remember_prefix(first)
+    assert toolbar_mod.last_prefix == "cell"
+    assert toolbar_mod.default_path().count("_") == first.count("_")
+
+
+def test_a_prefix_with_underscores_of_its_own_survives():
+    toolbar_mod.remember_prefix("figures/left_optic_lobe_2026-08-26_11-00-00.png")
+    assert toolbar_mod.last_prefix == "left_optic_lobe"
+
+
+def test_a_name_that_is_not_timestamped_is_kept_whole():
+    toolbar_mod.remember_prefix("/tmp/final_figure.png")
+    assert toolbar_mod.last_prefix == "final_figure"
+
+
+# --------------------------------------------------------------------------- #
+# attachment
+# --------------------------------------------------------------------------- #
+
+def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
+    """`toolbar="auto"` is the default, for the same reason the store-log filter is
+    automatic: a feature you have to remember to switch on looks identical to a broken
+    one after a kernel restart."""
+    assert isinstance(view.ui, toolbar_mod.Toolbar)
+    bar, entry, panels, opacity, stage = view.ui.widget.children
+    assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"])
+    assert [b.description for b in bar.children] == [
+        "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Animate",
+        "Close"]
+    assert entry.children == (view.ui.path, view.ui.status)
+    assert opacity.children == (view.ui.sliders["mesh"],)
+    assert stage.children == (view.canvas,)
+
+
+def test_an_offscreen_view_quietly_has_no_toolbar(has_gpu):
+    """Nothing to sit above, and nothing that wanted buttons. It must not raise: this is
+    the path every test and every headless render takes."""
+    view = backend.show(Scene(), size=(32, 32), canvas="offscreen")
+    try:
+        assert view.ui is None
+    finally:
+        view.close()
+
+
+def test_insisting_on_a_toolbar_off_a_notebook_says_why(has_gpu):
+    with pytest.raises(TypeError, match="ipywidget"):
+        backend.show(Scene(), size=(32, 32), canvas="offscreen", toolbar=True)
+
+
+def test_the_toolbar_can_be_declined(has_gpu):
+    view = backend.show(Scene(), size=(32, 32), canvas="jupyter", toolbar=False)
+    try:
+        assert view.ui is None
+        assert view._repr_mimebundle_() == view.canvas._repr_mimebundle_()
+    finally:
+        view.close()
+
+
+def test_the_mimebundle_shows_the_toolbar_when_there_is_one(view):
+    """What Jupyter calls to display the cell. Wrapping the canvas must not change how a
+    view is shown, only what it is shown inside."""
+    bundle = view._repr_mimebundle_(include=None, exclude=None)
+    assert "application/vnd.jupyter.widget-view+json" in bundle
+
+
+# --------------------------------------------------------------------------- #
+# the buttons
+# --------------------------------------------------------------------------- #
+
+def test_save_and_restore_report_through_the_status_line(view):
+    view.ui._restore_view()
+    assert "nothing saved" in view.ui.status.value
+
+    view.ui._save_view()
+    assert "saved" in view.ui.status.value and viewstate.SAVED in viewstate.views
+
+    view.ui._restore_view()
+    assert "restored" in view.ui.status.value
+
+
+def test_last_and_restore_are_separate_buttons_on_separate_slots(view):
+    """They answer different questions — "the angle I chose" against "wherever I happened
+    to be" — and one button choosing between them would leave it unclear which you got."""
+    view.ui._save_view()
+    view.ui._restore_last()
+    assert "no closed figure" in view.ui.status.value
+
+    viewstate.views[viewstate.LAST] = view.save_view("scratch")
+    view.ui._restore_last()
+    assert "last closed figure" in view.ui.status.value
+
+
+def test_reset_reports_that_it_left_colours_alone(view):
+    view.ui._reset()
+    assert "opening view" in view.ui.status.value
+    assert "colours" in view.ui.status.value
+
+
+def test_capture_writes_the_named_file_and_reseeds_the_box(view, tmp_path):
+    pytest.importorskip("imageio")
+    view.ui.path.value = str(tmp_path / "left_lobe.png")
+    view.ui._capture()
+
+    assert (tmp_path / "left_lobe.png").exists()
+    assert "wrote" in view.ui.status.value
+    assert view.ui.path.value.startswith("left_lobe_")
+
+
+def test_capturing_an_svg_writes_one_and_keeps_the_next_default_an_svg(view, tmp_path):
+    pytest.importorskip("imageio")
+    view.ui.path.value = str(tmp_path / "fig.svg")
+    view.ui._capture()
+    assert "<svg" in (tmp_path / "fig.svg").read_text()[:200]
+    assert view.ui.path.value.startswith("fig_") and view.ui.path.value.endswith(".svg")
+
+
+def test_the_format_dropdown_and_the_paths_extension_follow_each_other(view):
+    view.ui.path.value = "figs/fig.png"
+    view.ui.options["format"].value = "pdf"
+    assert view.ui.path.value == "figs/fig.pdf"
+    view.ui.path.value = "figs/other.svg"
+    assert view.ui.options["format"].value == "svg"
+
+
+def test_capture_honours_the_options(view, tmp_path):
+    pytest.importorskip("imageio")
+    from imageio import v3 as iio
+
+    opts = view.ui.options
+    opts["width"].value, opts["height"].value, opts["resolution"].value = 60, 40, 1.0
+    view.ui.path.value = str(tmp_path / "small.png")
+    view.ui._capture()
+    assert iio.imread(tmp_path / "small.png").shape[:2] == (40, 60)
+
+    view.ui.path.value = str(tmp_path / "fig.pdf")
+    view.ui._capture()
+    assert (tmp_path / "fig.pdf").read_bytes().startswith(b"%PDF-")
+    assert view.ui.path.value.endswith(".pdf")
+
+
+def test_animate_renders_the_options_and_reports_the_encode_line(view, tmp_path):
+    """Frames only, so the line to run is what the status shows."""
+    pytest.importorskip("imageio")
+    a, c = view.ui.animation, view.ui.options
+    a["seconds"].value, a["fps"].value, a["degrees"].value = 0.5, 8, 90.0
+    c["width"].value, c["height"].value = 60, 40
+    a["folder"].value = str(tmp_path / "spin")
+    a["encode"].value = False              # hermetic: never an ffmpeg this machine has
+    view.ui._animate()
+    assert len(list((tmp_path / "spin").glob("frame_*.png"))) == 4
+    assert "ffmpeg" in view.ui.status.value and "yuv420p" in view.ui.status.value
+
+
+def test_animate_encodes_with_the_ffmpeg_it_finds(view, tmp_path, monkeypatch):
+    import stat
+    import sys
+
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nopen(sys.argv[-1], 'wb').write(b'x')\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("NEU_DRAW_FFMPEG", str(fake))
+    a = view.ui.animation
+    a["seconds"].value, a["fps"].value = 0.25, 8
+    a["folder"].value, a["video"].value = str(tmp_path / "spin"), str(tmp_path / "t4.mp4")
+    view.ui._animate()
+    assert (tmp_path / "t4.mp4").exists() and "wrote" in view.ui.status.value
+
+
+def test_the_frames_folder_defaults_beside_the_capture(view):
+    view.ui.path.value = "figs/t4.svg"
+    assert view.ui._frames_folder() == "figs/t4_orbit"
+
+
+def test_an_empty_path_is_refused_rather_than_guessed_at(view):
+    view.ui.path.value = "   "
+    view.ui._capture()
+    assert "type a filename" in view.ui.status.value
+
+
+def test_a_failing_button_reports_instead_of_vanishing(view):
+    """A button callback's traceback goes to the kernel log, not the cell, so an
+    unguarded failure is a control that visibly does nothing."""
+    view.ui._guarded(lambda: 1 / 0)
+    assert "ZeroDivisionError" in view.ui.status.value
+
+
+def test_closing_leaves_the_last_image_where_the_canvas_was(view):
+    pytest.importorskip("imageio")
+    view.ui._close()
+
+    (still,) = view.ui._stage.children
+    assert isinstance(still, widgets.Image) and still.value[:4] == b"\x89PNG"
+    assert still.layout.width == "120px"       # scaled back from the supersampled shot
+    assert all(button.disabled for button in view.ui._buttons.values())
+
+
+def test_closing_records_the_viewpoint_it_is_about_to_lose(view):
+    """The reason to press it rather than delete the cell: the angle survives, so the
+    next figure can open where this one left off — via 'Last' or `viewpoint="last"`, both
+    of which the status line names."""
+    pytest.importorskip("imageio")
+    view.ui._close()
+    assert viewstate.LAST in viewstate.views
+    assert "Last" in view.ui.status.value and "viewpoint=" in view.ui.status.value
+
+
+# --------------------------------------------------------------------------- #
+# the opacity sliders
+# --------------------------------------------------------------------------- #
+
+def test_there_is_one_slider_per_kind_the_scene_holds(has_gpu):
+    """Per kind, not per row: "the surfaces hide the synapses" is about every mesh."""
+    from neu_lib import Skeleton
+
+    skel = Skeleton(np.array([[0.0, 0, 0], [50.0, 50, 50]]), np.array([[0, 1]]),
+                    name="s")
+    scene = Scene().add_mesh(_mesh()).add_skeleton(skel)
+    view = backend.show(scene, size=(120, 90), canvas="jupyter")
+    try:
+        assert list(view.ui.sliders) == ["mesh", "skeleton"]
+    finally:
+        view.close()
+
+
+def test_a_slider_starts_at_the_largest_alpha_and_moving_it_sets_them_all(has_gpu):
+    scene = Scene().add_mesh(_mesh("a"), alpha=0.3).add_mesh(_mesh("b"), alpha=0.7)
+    view = backend.show(scene, size=(120, 90), canvas="jupyter")
+    try:
+        slider = view.ui.sliders["mesh"]
+        assert slider.value == pytest.approx(0.7)
+        slider.value = 0.2
+        assert [d.alpha for d in scene] == [pytest.approx(0.2)] * 2
+        assert [tuple(o.material.color)[3] for o in view.group.children] == [
+            pytest.approx(0.2)] * 2
+    finally:
+        view.close()
+
+
+def test_closing_disables_the_sliders_too(view):
+    pytest.importorskip("imageio")
+    view.ui._close()
+    assert all(s.disabled for s in view.ui.sliders.values())
+
+
+def test_closing_twice_is_harmless(view):
+    pytest.importorskip("imageio")
+    view.ui._close()
+    view.ui._close()
+    assert "already closed" in view.ui.status.value
