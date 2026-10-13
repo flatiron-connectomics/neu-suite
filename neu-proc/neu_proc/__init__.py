@@ -1,33 +1,17 @@
-"""neu-proc — blockwise array processing for large 3D EM volumes.
+"""neu-proc — array processing for large 3D EM volumes.
 
 scipy / scikit-image filters and Seung-lab label tools (cc3d, fastremap, fastmorph, edt,
-fill_voids) applied to whole arrays now, and blockwise across a volume later. The fourth
-consumer tier alongside neu-morpho, neu-mark and neu-glance.
+fill_voids), applied to whole arrays. The fourth consumer tier alongside neu-morpho,
+neu-mark and neu-glance.
 
-**Only :mod:`neu_proc.ops` exists so far, and it is deliberately the pure half.** The array
-functions are the part that can be written, read and tested on their own; the halo, seam and
-reconcile machinery that makes them correct across block boundaries is designed in
-``NEU-PROC-PLAN.md`` and not built. Nothing here is a placeholder for it — an op that works
-on one array is the *reference* the distributed runner will be checked against, which is why
-the plan makes ``apply`` the test oracle.
+**Only :mod:`neu_proc.ops` exists so far: array in, array out.** Running these ops blockwise
+across a volume, with the halos and seam reconciliation that needs, is planned and not
+built. An op that works on one array is the reference that runner will be checked against.
 
-Three layers, and collapsing the first two is the easy mistake:
-
-===========  ===========================  =======================  =========
-layer        example                      units                    can run?
-===========  ===========================  =======================  =========
-``Op``       ``Gaussian(sigma_nm=80)``    **nanometres**           no
-``BoundOp``  ``op.bind(frame)``           voxels, **plus a halo**  yes
-a function   ``gaussian(a, sigma_vox=)``  **voxels**               —
-===========  ===========================  =======================  =========
-
-The declaration is physical because a voxel count means different things at different
-levels and along different axes of an anisotropic volume; the execution is in voxels because
-that is what scipy takes. The conversion happens in exactly one place,
-:mod:`neu_proc.ops.kernels`, reached through ``bind`` — never inside a function and never
-declared beside a halo, because a halo derived from anything other than the *converted*
-parameter is wrong in a shell around every seam, which reads as faint block edges rather
-than as an error.
+Functions take **voxel** parameters. Converting a physical length into voxels for a given
+level happens in one place, :mod:`neu_proc.ops.kernels`, and never inside a function: a halo
+derived from anything other than the *converted* parameter is wrong in a shell around every
+seam, which reads as faint block edges rather than as an error.
 
 Top-level names resolve lazily (PEP 562) so importing this package, or asking a future
 ``--help``, pays for neither scipy nor dask. Two mappings feed that: ``_EXPORTS`` for a name

@@ -15,7 +15,7 @@ in nm; without it, both are counted in voxels — and on an anisotropic volume v
 growth is lopsided in tissue while looking symmetric in the array. Measured on a 32^3 array
 with one 2^3 seed: ``max_distance=5`` (voxels) grows it to 792 voxels, while
 ``sampling=(40, 8, 8), max_distance=80`` (nm) gives 1280 — the same request, different
-answers, which is the whole reason the `Op` layer above declares lengths in nm.
+answers, which is why lengths should be declared in nm and converted per level.
 
 The three methods take **disjoint** parameters — ``edt`` has ``sampling``, ``spherical`` has
 ``radius``/``anisotropy``, ``fastmorph`` has ``iterations``/``mode`` — so they are less

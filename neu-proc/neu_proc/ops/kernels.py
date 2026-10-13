@@ -1,7 +1,7 @@
 """The one place a physical length becomes voxels.
 
-Every ``Op`` declares its parameters in **nanometres** and every function takes **voxels**;
-this module is the whole of the boundary between them, and keeping it to one module is the
+Physical parameters are in **nanometres** and every function takes **voxels**; this module
+is the whole of the boundary between them, and keeping it to one module is the
 point rather than a tidiness preference. Two failures it exists to prevent:
 
 - **A halo derived from anything other than the converted parameter is wrong.** A Gaussian
@@ -12,8 +12,8 @@ point rather than a tidiness preference. Two failures it exists to prevent:
 - **A voxel count is meaningless without a frame.** ``sigma_vox=2`` is a different physical
   smoothing at level 0 than at level 2, and a different one along z than along x on an
   anisotropic volume — and real pyramids are anisotropic, ``(1, 2, 2)`` being common. So a
-  voxel number cannot be allowed to exist before a :class:`~neu_lib.Frame` does, which is
-  what ``Op.bind(frame)`` enforces and what this module implements.
+  voxel number should only be derived from a length and a :class:`~neu_lib.Frame`, which is
+  what this module does.
 
 Nothing here imports scipy: converting a length needs arithmetic and a frame, and keeping it
 scipy-free means the conversion can be tested without the filters and reasoned about beside

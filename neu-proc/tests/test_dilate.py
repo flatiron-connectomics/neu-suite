@@ -68,8 +68,8 @@ def test_a_bounded_edt_never_erases_the_seed():
 
 
 def test_max_distance_units_FOLLOW_sampling():
-    """The same number means different things, and this is the whole reason the `Op` layer
-    above declares lengths in nanometres. Without `sampling` the bound is counted in voxels;
+    """The same number means different things, and this is why lengths should be declared
+    in nanometres. Without `sampling` the bound is counted in voxels;
     with it, in whatever `sampling` is in — so on an anisotropic volume voxel-counted growth
     is lopsided in tissue while looking symmetric in the array."""
     a = _seed(shape=(32, 32, 32), at=(15, 15, 15))

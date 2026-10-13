@@ -1,6 +1,6 @@
 """Readings over a label array: :mod:`neu_proc.ops.measure`.
 
-The module was written without tests and parked (see `NOTES-neu-proc.md`), and every bug
+The module was written without tests, and every bug
 it turned out to have was one shape: **a label value used where an index was meant.** The
 configurable `background=` that caused three of them is gone — 0 is background, always —
 so what is left to pin is the index/label boundary in the two places it still exists:

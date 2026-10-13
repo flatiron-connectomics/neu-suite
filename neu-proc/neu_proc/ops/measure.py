@@ -6,8 +6,7 @@
 — which it must, since an all-background block of 1s is not all-fill and would be stored,
 costing the volume its sparsity — and `cc3d.connected_components` hardcodes 0 as
 background regardless of what is passed here, so `component_sizes` could never have
-honoured another value without a defensive copy of the whole array. It also generated
-three of the five bugs this module has had. See `NOTES-neu-proc.md`.
+honoured another value without a defensive copy of the whole array.
 
 The background voxel count is still exactly derivable, so nothing was lost:
 ``arr.size - sum(sizes(arr).values())``.
