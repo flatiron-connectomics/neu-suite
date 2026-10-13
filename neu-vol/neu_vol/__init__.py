@@ -7,15 +7,11 @@ orchestration background.
 
 __version__ = "0.1.0"
 
-from .meta import VoxelMeta
-from .volume import Volume
 # NOTE: `BBox` and the grid arithmetic moved to the shared `neu_lib` package and are
 # deliberately NOT re-exported here. Import them from where they live — a second
 # binding for the same name is the patch-point hazard the dvid modules already
-# document, and naming `neu_lib` is what keeps the layering legible in a diff.
-# Orchestration substrate now lives in the shared blockrun package; re-export
-# the common names here for convenience / backward compatibility.
-from blockrun import Block, iter_blocks, block_map, idempotent
+# document, and naming `neu_lib` is what keeps the layering legible in a diff. The same
+# goes for blockrun's orchestration names (`block_map`, `start_dask`, ...).
 from .backends.base import (ArrayBackend, clear_backend_cache, open_backend,
                             register_backend, release_backends)
 # The one format-specific opener, and the reason it earns a top-level name: an HDF5 file
@@ -42,13 +38,6 @@ from .location import (exists, is_local, local_path, read_bytes, read_json,
 
 __all__ = [
     "__version__",
-    "VoxelMeta",
-    "Volume",
-    "Block",
-    "iter_blocks",
-    "block_map",
-    "idempotent",
-    "start_dask",
     "ArrayBackend",
     "open_backend",
     "clear_backend_cache",
@@ -89,17 +78,6 @@ __all__ = [
     "write_json",
     "exists",
 ]
-
-
-# Re-exported lazily, for the reason blockrun defers it: resolving `start_dask` at
-# import time pulls in `dask.distributed`, which is ~1 s and which no read-only op needs.
-# `from neu_vol import start_dask` still works; it just resolves on first use.
-def __getattr__(name: str):
-    if name == "start_dask":
-        from blockrun import start_dask
-
-        return start_dask
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:

@@ -21,8 +21,7 @@ What gets recorded, and why those names:
 
 * ``voxel_offset`` — integer voxels, on the dataset. This is the field
   ``ops/write.resolve_offset`` already looks for, and the name is precomputed's.
-* ``voxel_size`` / ``offset`` / ``units`` / ``axes`` — the frame, in this package's own
-  vocabulary (:class:`~neu_vol.meta.VoxelMeta`), on the root *and* the dataset so
+* ``voxel_size`` / ``offset`` / ``units`` / ``axes`` — the frame, on the root *and* the dataset so
   that either the file or the array alone is self-describing. ``offset`` here is the
   physical position in ``units``; ``voxel_offset`` is the same place counted in voxels,
   and both are written because the two consumers ask different questions.

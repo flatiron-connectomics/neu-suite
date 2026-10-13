@@ -33,7 +33,7 @@ INFO = {
 # URL form
 # --------------------------------------------------------------------------- #
 def test_url_splits_into_server_uuid_instance():
-    assert dvid.parse_url(URL) == {
+    assert canonical_dvid.parse_url(URL) == {
         "server": "dvid.example.org",
         "uuid": "93fdbc:main",
         "instance": "labels",
@@ -42,19 +42,19 @@ def test_url_splits_into_server_uuid_instance():
 
 def test_a_port_and_a_branch_do_not_add_segments():
     """Both carry a ':', which is why the URL splits on '/' alone."""
-    assert dvid.parse_url("dvid://emdata3:8900/abc9:main/segmentation") == {
+    assert canonical_dvid.parse_url("dvid://emdata3:8900/abc9:main/segmentation") == {
         "server": "emdata3:8900", "uuid": "abc9:main", "instance": "segmentation"}
 
 
 def test_https_scheme_is_carried_to_the_server_string():
     """neuclease prepends http:// to a bare host, so TLS needs its own scheme."""
-    spec = dvid.parse_url("dvid+https://example.org/abc9/labels")
+    spec = canonical_dvid.parse_url("dvid+https://example.org/abc9/labels")
     assert spec["server"] == "https://example.org"
-    assert dvid.spec_url(spec) == "dvid+https://example.org/abc9/labels"
+    assert canonical_dvid.spec_url(spec) == "dvid+https://example.org/abc9/labels"
 
 
 def test_spec_url_round_trips():
-    assert dvid.spec_url(dvid.parse_url(URL)) == URL
+    assert canonical_dvid.spec_url(canonical_dvid.parse_url(URL)) == URL
 
 
 @pytest.mark.parametrize("bad", [
@@ -65,15 +65,15 @@ def test_spec_url_round_trips():
 ])
 def test_a_malformed_url_raises_and_says_what_was_expected(bad):
     with pytest.raises(ValueError) as e:
-        dvid.parse_url(bad)
+        canonical_dvid.parse_url(bad)
     assert "dvid://" in str(e.value)
 
 
 def test_is_url_recognises_both_schemes_and_nothing_else():
-    assert dvid.is_url(URL) and dvid.is_url("dvid+https://a/b/c")
-    assert not dvid.is_url("/local/path")
-    assert not dvid.is_url("s3://bucket/prefix")
-    assert not dvid.is_url({"driver": "file", "path": "/x"})
+    assert canonical_dvid.is_url(URL) and canonical_dvid.is_url("dvid+https://a/b/c")
+    assert not canonical_dvid.is_url("/local/path")
+    assert not canonical_dvid.is_url("s3://bucket/prefix")
+    assert not canonical_dvid.is_url({"driver": "file", "path": "/x"})
 
 
 # --------------------------------------------------------------------------- #
@@ -114,9 +114,9 @@ def test_no_format_can_shadow_a_dvid_instance():
 def _no_cached_nodes():
     """Ref resolutions are memoized per process, so a leaked entry makes one test's
     answer another test's premise. Cheap to clear; confusing not to."""
-    dvid.clear_node_cache()
+    canonical_dvid.clear_node_cache()
     yield
-    dvid.clear_node_cache()
+    canonical_dvid.clear_node_cache()
 
 
 @pytest.fixture()
@@ -128,11 +128,9 @@ def stub_info(monkeypatch):
     round trip per test, and cached a real uuid that then leaked into tests expecting a
     fake one. Tests here must not touch a server at all.
 
-    Patched on `neu_vol.dvid`, the module that *defines* them. `backends.dvid`
-    re-exports the same names, but a re-export is a separate binding: patching it would
-    leave `source_metadata` — which imports from the canonical module — calling the real
-    thing. Both call sites reach these through the canonical module attribute so that one
-    patch here covers everything; see `test_stubbing_the_canonical_module_covers_...`.
+    Patched on `neu_vol.dvid`, the module that defines them. Both call sites reach these
+    through that module attribute, so one patch here covers everything; see
+    `test_stubbing_the_canonical_module_covers_...`.
     """
     monkeypatch.setattr(canonical_dvid, "instance_info", lambda spec: INFO)
     monkeypatch.setattr(canonical_dvid, "resolve_node",
@@ -147,7 +145,7 @@ def test_geometry_is_origin_anchored_not_translated_by_minpoint(stub_info):
     """MinPoint says where data starts; it is not a translation to apply. Anchoring at
     the origin keeps a voxel index meaning the same thing here and in DVID, and the
     empty margin costs one ~30 ms round trip per task and nothing on disk."""
-    geom = dvid.geometry(INFO, dvid.parse_url(URL))
+    geom = dvid.geometry(INFO, canonical_dvid.parse_url(URL))
     assert geom["shape0"] == (8192, 9216, 12800)      # zyx, MaxPoint + 1
     assert geom["min_point"] == (0, 1536, 1024)       # recorded, not subtracted
     assert geom["chunks"] == (64, 64, 64)
@@ -189,7 +187,7 @@ def test_level_shape_halves_every_axis():
 def test_a_non_labelmap_instance_is_refused():
     info = {**INFO, "Base": {"TypeName": "uint8blk"}}
     with pytest.raises(ValueError, match="labelmap"):
-        dvid.geometry(info, dvid.parse_url(URL))
+        dvid.geometry(info, canonical_dvid.parse_url(URL))
 
 
 def test_an_unwritten_instance_says_so_rather_than_reading_as_empty():
@@ -197,24 +195,24 @@ def test_an_unwritten_instance_says_so_rather_than_reading_as_empty():
     an error: a zero-shaped volume would convert successfully and produce nothing."""
     info = {**INFO, "Extended": {**INFO["Extended"], "MinPoint": None, "MaxPoint": None}}
     with pytest.raises(ValueError, match="never written"):
-        dvid.geometry(info, dvid.parse_url(URL))
+        dvid.geometry(info, canonical_dvid.parse_url(URL))
 
 
 def test_a_negative_minpoint_is_refused_rather_than_clipped():
     info = {**INFO, "Extended": {**INFO["Extended"], "MinPoint": [-64, 0, 0]}}
     with pytest.raises(ValueError, match="negative MinPoint"):
-        dvid.geometry(info, dvid.parse_url(URL))
+        dvid.geometry(info, canonical_dvid.parse_url(URL))
 
 
 def test_writing_to_dvid_is_refused(stub_info):
-    be = dvid.DVIDBackend(dvid.parse_url(URL))
+    be = dvid.DVIDBackend(canonical_dvid.parse_url(URL))
     with pytest.raises(TypeError, match="read-only"):
         be.write_region((slice(0, 1),) * 3, np.zeros((1, 1, 1), np.uint64))
 
 
 def test_a_scale_above_maxdownreslevel_is_refused(stub_info):
     with pytest.raises(ValueError, match="MaxDownresLevel"):
-        dvid.DVIDBackend({**dvid.parse_url(URL), "scale_index": 4})
+        dvid.DVIDBackend({**canonical_dvid.parse_url(URL), "scale_index": 4})
 
 
 def test_supervoxels_on_a_non_dvid_source_raises_rather_than_being_ignored(tmp_path):
@@ -266,18 +264,18 @@ def fake_dag(monkeypatch):
 
 
 def test_a_branch_ref_resolves_to_head_and_reports_it_open(fake_dag):
-    node = dvid.resolve_node(dvid.parse_url(URL))
+    node = canonical_dvid.resolve_node(canonical_dvid.parse_url(URL))
     assert node == {"ref": "93fdbc:main", "uuid": "d38898", "locked": False, "walked": 0}
 
 
 def test_prefer_locked_walks_back_to_the_newest_locked_node(fake_dag):
-    node = dvid.resolve_node(dvid.parse_url(URL), prefer_locked=True)
+    node = canonical_dvid.resolve_node(canonical_dvid.parse_url(URL), prefer_locked=True)
     assert node["uuid"] == "846e3a" and node["locked"] and node["walked"] == 1
 
 
 def test_prefer_locked_is_a_no_op_when_the_ref_is_already_locked(fake_dag):
     url = "dvid://dvid.example.org/93fdbc:main~1/labels"
-    node = dvid.resolve_node(dvid.parse_url(url), prefer_locked=True)
+    node = canonical_dvid.resolve_node(canonical_dvid.parse_url(url), prefer_locked=True)
     assert node["uuid"] == "846e3a" and node["walked"] == 0
 
 
@@ -285,7 +283,7 @@ def test_prefer_locked_from_a_bare_uuid_says_why_it_cannot_walk(fake_dag):
     """DVID's ref~N syntax needs repo:branch; a bare uuid already names one node."""
     url = "dvid://dvid.example.org/d38898/labels"
     with pytest.raises(ValueError, match="repo:branch"):
-        dvid.resolve_node(dvid.parse_url(url), prefer_locked=True)
+        canonical_dvid.resolve_node(canonical_dvid.parse_url(url), prefer_locked=True)
 
 
 def test_the_resolved_uuid_reaches_the_workers_not_the_ref(fake_dag, stub_info):
@@ -381,14 +379,14 @@ def test_copy_refuses_a_dvid_source_and_points_at_convert():
 def test_node_summary_gives_both_candidate_versions(fake_dag):
     """`info` shows both because they are different answers to "which version would I
     get", and choosing between them is choosing whether the export is reproducible."""
-    s = dvid.node_summary(dvid.parse_url(URL))
+    s = canonical_dvid.node_summary(canonical_dvid.parse_url(URL))
     assert s["head"]["uuid"] == "d38898" and s["head"]["locked"] is False
     assert s["locked"]["uuid"] == "846e3a" and s["locked"]["walked"] == 1
 
 
 def test_node_summary_collapses_when_the_ref_is_already_locked(fake_dag):
     url = "dvid://dvid.example.org/93fdbc:main~1/labels"
-    s = dvid.node_summary(dvid.parse_url(url))
+    s = canonical_dvid.node_summary(canonical_dvid.parse_url(url))
     assert s["head"]["uuid"] == s["locked"]["uuid"] == "846e3a"
 
 
@@ -397,7 +395,7 @@ def test_node_summary_reports_rather_than_raises_when_no_locked_node_is_reachabl
     """A bare uuid cannot be walked back from on a multi-repo server. `info` must still
     print the rest of what it knows."""
     url = "dvid://dvid.example.org/d38898/labels"
-    s = dvid.node_summary(dvid.parse_url(url))
+    s = canonical_dvid.node_summary(canonical_dvid.parse_url(url))
     assert s["head"]["uuid"] == "d38898"
     assert s["locked"] is None and "repo:branch" in s["locked_error"]
 
@@ -529,15 +527,6 @@ def test_convert_kind_defaults_to_none_so_the_source_can_decide():
 # --------------------------------------------------------------------------- #
 # the addressing / labelmap split
 # --------------------------------------------------------------------------- #
-def test_the_backend_reexports_the_shared_names_without_copying_them():
-    """One implementation, two import paths. If these ever drift, the module that got
-    patched and the module that got called stop being the same thing."""
-    for name in ("parse_url", "is_url", "spec_url", "resolve_node", "node_summary",
-                 "instance_info", "node_provenance", "clear_node_cache",
-                 "check_instance_type"):
-        assert getattr(dvid, name) is getattr(canonical_dvid, name), name
-
-
 def test_stubbing_the_canonical_module_covers_every_call_site(monkeypatch):
     """The regression guard for the addressing split.
 

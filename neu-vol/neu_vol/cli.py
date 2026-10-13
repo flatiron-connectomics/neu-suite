@@ -237,7 +237,10 @@ def _sextuple(value, name, order="zyx"):
     return start, stop
 
 
-def _human_bytes(n: float) -> str:
+def _human_bytes(n) -> str:
+    """Binary units; "-" for a size the server did not report (wk-ls gets None or 0)."""
+    if not isinstance(n, (int, float)) or n <= 0:
+        return "-"
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if n < 1024 or unit == "TiB":
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
@@ -1880,15 +1883,6 @@ def cmd_wk_mappings(args) -> int:
 # --------------------------------------------------------------------------- #
 # wk-ls
 # --------------------------------------------------------------------------- #
-def _human_bytes(n) -> str:
-    if not isinstance(n, (int, float)) or n <= 0:
-        return "-"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-
-
 def _print_wk_summary(s) -> None:
     print(f"{s['name']}  ({s['id']})")
     print(f"  created {s['created']}" + (f" by {s['uploader']}" if s["uploader"] else "")

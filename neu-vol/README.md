@@ -291,8 +291,7 @@ ignored*, and `{"scale": 2}` therefore opens at full resolution while reporting 
 scale-0 shape — so coordinates meant for scale 2 read the wrong place and come back
 empty rather than raising.
 
-Implemented: `VoxelMeta`, `Volume`, block-map engine, `start_dask`, TensorStore
-zarr v3 (sharded/unsharded) **and** precomputed (canonical-axis view + multiscale
+Implemented: TensorStore zarr v3 (sharded/unsharded) **and** precomputed (canonical-axis view + multiscale
 `info`), image-stack / HDF5 / crop-view sources, type-aware pyramids, storage
 profiles, OME-NGFF 0.5 metadata, per-level scale metadata, and the `ingest` /
 `convert` / `extract_roi` / `create_volume` / `write_subvolume` ops.

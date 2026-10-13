@@ -11,7 +11,8 @@ import os
 import numpy as np
 import pytest
 
-from neu_vol import convert, start_dask
+from blockrun import start_dask
+from neu_vol import convert
 from neu_vol.backends.base import open_backend
 from neu_vol.backends.tensorstore import TensorStoreBackend
 from neu_vol.profiles import zarr3_create_spec

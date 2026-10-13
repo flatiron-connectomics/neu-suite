@@ -40,7 +40,6 @@ def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
     benign `AuthCredentialsProvider` lines per prefix. See `source_metadata.describe`.
     """
     from .logs import quiet_reads
-    from .source_metadata import detect_backend
 
     with quiet_reads():
         return _read_scales(spec)

@@ -7,7 +7,6 @@ rather than by a path — see ``neu_vol.dvid.parse_url`` for the URL form and
 **Addressing and version resolution live in** ``neu_vol/dvid.py``, not here: they
 are the same for every instance type, and consumers above this package need them without
 wanting an array. This module is only the labelmap part — geometry and the array view.
-The shared names are re-exported below so existing callers keep working.
 
 **Blocks that hold no labels are omitted from DVID's response**, which is why there is
 no occupancy prefilter anywhere in this package for DVID sources: an empty region costs
@@ -33,22 +32,13 @@ from typing import Any, Mapping
 import numpy as np
 
 from .. import dvid as _dvid
-# Re-exported: `neu_vol.dvid` is their home — addressing and version resolution
-# are the same for every DVID instance type, so they cannot live in a module whose
-# subject is the label array. These aliases exist because this is where callers have
-# always imported them from.
-from ..dvid import (MISSING, check_instance_type, clear_node_cache,  # noqa: F401
-                    instance_info, is_url, node_provenance, node_summary, parse_url,
-                    resolve_node, spec_url)
 from .base import Region, register_backend
 
 TAG = "dvid"
 
-# Every call below goes through `_dvid.` rather than the aliases above, deliberately: the
-# aliases are separate bindings, so patching one module would leave the other pointing at
-# the real function. One module attribute is one patch point — and a test that stubs the
-# server has to actually stub it, or it silently starts needing the network.
-_MISSING = MISSING
+# Calls go through `_dvid.<name>` so a test that stubs the server patches one module
+# attribute and covers every call site.
+_MISSING = _dvid.MISSING
 
 
 def provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
