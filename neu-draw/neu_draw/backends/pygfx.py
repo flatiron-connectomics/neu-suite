@@ -698,7 +698,7 @@ def _visible_sphere(group: pygfx.Group) -> Optional[tuple[float, float, float, f
 
 
 def _bounding_sphere(box) -> tuple[float, float, float, float]:
-    """A zyx :class:`~neu_vol.BBox` as the ``(x, y, z, radius)`` pygfx wants.
+    """A zyx :class:`~neu_lib.BBox` as the ``(x, y, z, radius)`` pygfx wants.
 
     An empty box becomes a unit sphere at the origin, so a scene with nothing in it
     still opens on something rather than raising.

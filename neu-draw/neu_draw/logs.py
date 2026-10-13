@@ -20,7 +20,7 @@ store per prefix, so it is roughly two lines the first time a prefix is touched 
 nothing after. A notebook still accumulates them across cells, hence this.
 
 **Reads are quiet by default**, via :func:`quiet_reads` around each ``sources`` entry
-point. neu-vol' own guidance is that only entry points should touch process-wide
+point. neu-vol's own guidance is that only entry points should touch process-wide
 stderr — and from a notebook's point of view ``sources.body_skeletons`` *is* the entry
 point. Expecting a user to remember an incantation before their output is legible is the
 worse trade, especially since forgetting it looks exactly like the filter being broken.

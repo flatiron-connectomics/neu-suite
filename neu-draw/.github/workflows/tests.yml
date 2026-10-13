@@ -52,7 +52,7 @@ jobs:
       # and the one that needs a GPU (`render`) are deliberately left uninstalled. A test
       # that reaches for any of them must guard with `pytest.importorskip` — an unguarded
       # conda-only import ERRORS at collection rather than skipping, which is what turned
-      # neu-vol' CI red the first time it ran.
+      # neu-vol's CI red the first time it ran.
       - name: Install
         run: |
           python -m pip install --upgrade pip
