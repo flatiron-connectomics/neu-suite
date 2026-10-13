@@ -93,12 +93,12 @@ jobs:
       # No conda, and that is not an accident: importing the CLI modules pulls in dask,
       # distributed, numpy, pandas and pyarrow only — never tensorstore, vol2mesh,
       # dvidutils, kimimaro or neuclease, which are conda-only on flyem-forge and would
-      # force a much slower micromamba job. neu-vol' test suite pins that property
+      # force a much slower micromamba job. neu-vol's test suite pins that property
       # so this cannot quietly stop being true, and neu_mark.cli keeps its heavy
       # imports inside the subcommands for the same reason.
       #
       # The API reference needs none of this: sphinx-autoapi PARSES the checked-out
-      # source, so every module of all eight packages is documented whether or not it
+      # source, so every module of every package is documented whether or not it
       # imports here — including the conda-only ones, whose docstrings would otherwise
       # be the half of the reference that silently went missing.
       - name: Install

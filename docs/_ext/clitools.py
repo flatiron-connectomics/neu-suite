@@ -43,7 +43,6 @@ INCLUDED = [
     ("neu-vol/README.md", "neu-vol-readme.md"),
     ("neu-morpho/README.md", "neu-morpho-readme.md"),
     ("neu-morpho/docs/skeletonization.md", "neu-morpho-skeletonization.md"),
-    ("neu-morpho/docs/measure-calibration.md", "neu-morpho-measure-calibration.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
     ("neu-draw/README.md", "neu-draw-readme.md"),
@@ -95,11 +94,11 @@ PACKAGES = [
 def package_dirs() -> list[Path]:
     """The package directories `autoapi` parses, skipping any repo not checked out.
 
-    A missing one must not fail the build: the site is assembled from eight independent
+    A missing one must not fail the build: the site is assembled from independent
     clones, and a partial checkout is a normal state to build in locally. Which is
     exactly why the API landing page is generated rather than written — a hand-written
     toctree would cite the page of a package that was never parsed, and `-W` turns that
-    into a failed build for anyone without all eight.
+    into a failed build for anyone without all of them.
     """
     return [ROOT / repo / pkg for repo, pkg, _blurb, _entry in PACKAGES
             if (ROOT / repo / pkg).is_dir()]
@@ -313,17 +312,17 @@ def documented_parser(module: str) -> argparse.ArgumentParser:
     return parser
 
 
-def em_vol_parser() -> argparse.ArgumentParser:
+def neu_vol_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the neu-vol page."""
     return documented_parser("neu_vol.cli")
 
 
-def em_morpho_parser() -> argparse.ArgumentParser:
+def neu_morpho_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the neu-morpho page."""
     return documented_parser("neu_morpho.cli")
 
 
-def em_annot_parser() -> argparse.ArgumentParser:
+def neu_mark_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the neu-mark page."""
     return documented_parser("neu_mark.cli")
 

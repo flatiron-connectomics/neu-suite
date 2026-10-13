@@ -1,9 +1,9 @@
 """Sphinx configuration for the neu-suite documentation site.
 
-The site assembles the suite's seven sibling repositories — deliberately separate
+The site assembles the suite's sibling repositories — deliberately separate
 packages, in a strict one-way dependency — into one place to read about them, because
 the thing a user needs (a command, or a function) does not correspond to a repository.
-`clitools.PACKAGES` is the single list of what those seven are, in dependency order.
+`clitools.PACKAGES` is the single list of what they are, in dependency order.
 
 **Nothing here is written by hand twice.** The CLI reference renders the actual
 `ArgumentParser` objects from `build_parser()` in each package, so a published flag

@@ -6,6 +6,6 @@ From `neu-morpho`. Meshes and skeletons from a segmentation volume.
 
 ```{argparse}
 :module: clitools
-:func: em_morpho_parser
+:func: neu_morpho_parser
 :prog: neu-morpho
 ```

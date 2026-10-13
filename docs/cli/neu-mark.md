@@ -12,6 +12,6 @@ index DVID already maintains.
 
 ```{argparse}
 :module: clitools
-:func: em_annot_parser
+:func: neu_mark_parser
 :prog: neu-mark
 ```

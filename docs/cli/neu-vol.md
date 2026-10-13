@@ -7,6 +7,6 @@ be certain which installation you are running.
 
 ```{argparse}
 :module: clitools
-:func: em_vol_parser
+:func: neu_vol_parser
 :prog: neu-vol
 ```

@@ -37,7 +37,7 @@ py312-only *and* conda-only on flyem-forge: there is no py313 build and no PyPI
 equivalent, so they can never be pip dependencies. For the same reason they are omitted
 from `neu-morpho`'s declared dependencies.
 
-The eight repositories must stay siblings — they depend on each other by relative
+The nine repositories must stay siblings — they depend on each other by relative
 `../sibling` path.
 
 ```{note}
