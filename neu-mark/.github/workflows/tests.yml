@@ -65,7 +65,7 @@ jobs:
           set -o pipefail
           pytest -q | tee /tmp/pytest.out
           # pytest already fails on an ERROR, which is what a fixture importing neuclease
-          # WITHOUT `pytest.importorskip` produces — the bug that turned neu-vol'
+          # WITHOUT `pytest.importorskip` produces — the bug that turned neu-vol's
           # CI red the first time it ran. This catches the opposite surprise: the DVID
           # tests quietly not running at all, which would look like a clean pass.
           grep -qE '[0-9]+ skipped' /tmp/pytest.out || {

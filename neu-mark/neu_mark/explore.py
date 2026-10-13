@@ -3,8 +3,7 @@
 Every function here takes a DataFrame and returns a DataFrame. Nothing prints, nothing
 reads or writes, and nothing needs a DVID connection — so this is usable straight from a
 notebook, which is where the work actually happens: you look at the vocabulary, write a
-rule, see what it missed, and go round again. ``neu-mark instance-report`` is a thin
-terminal wrapper over the same calls.
+rule, see what it missed, and go round again.
 
 Named ``explore`` rather than ``inspect`` to avoid shadowing the standard library module of
 that name inside this package.

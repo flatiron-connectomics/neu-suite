@@ -120,7 +120,7 @@ def test_a_keyvalue_instance_is_refused_for_points(tmp_path, dvid_server):
 
 def test_the_ref_is_resolved_to_a_concrete_uuid_before_any_fetch(tmp_path, dvid_server):
     """A branch ref names a node that moves; a table half from one node and half from the
-    next is not a snapshot. Same discipline as neu-vol' invariant 9."""
+    next is not a snapshot. Same discipline as neu-vol's invariant 9."""
     out = str(tmp_path / "o")
     ops.fetch_points(_open(), out, [1])
     from neu_vol.location import read_json

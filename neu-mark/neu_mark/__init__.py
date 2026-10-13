@@ -29,7 +29,7 @@ __version__ = "0.1.0"
 #: `rules`. Resolved through a module `__getattr__` (PEP 562) rather than imported here,
 #: because `cli` reads `__version__` from this module and an eager import would make
 #: `neu-mark --help` pay for pandas and neu-vol. Same reason and same mechanism as
-#: neu-vol' lazy `start_dask`.
+#: neu-vol's lazy `start_dask`.
 _LAZY = {
     "source": "notebook",
     "select_bodies": "notebook",

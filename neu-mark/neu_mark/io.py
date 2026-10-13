@@ -182,7 +182,7 @@ def write_provenance(dst: str, record: Mapping[str, Any], *,
 
     A sidecar *as well as* the parquet metadata, because csv and feather have nowhere to
     put it and a record that only sometimes exists is one nobody learns to look for. Same
-    argument as neu-vol' ``ops/provenance.py``, whose record shape this reuses.
+    argument as neu-vol's ``ops/provenance.py``, whose record shape this reuses.
     """
     from neu_vol.location import write_json
 

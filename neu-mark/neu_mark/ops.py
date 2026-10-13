@@ -9,7 +9,7 @@ to expand ``--dst {uuid:8}`` *before* calling them, so with ``--dvid-locked`` th
 were correctly read from the locked node while the directory was named after HEAD. The
 provenance said one node and the path said another, which is worse than having no name at
 all: the name is what someone browsing a directory believes. Resolving in the caller makes
-the ordering impossible to get wrong, and is the same discipline as neu-vol'
+the ordering impossible to get wrong, and is the same discipline as neu-vol's
 invariant 9.
 
 Fetch for an explicit body list, write tables, write provenance **after** the tables.
