@@ -75,6 +75,31 @@ def require_sync(source: Mapping[str, Any]) -> list[str]:
     return synced
 
 
+def open_points_source(src: Mapping[str, Any], *,
+                       prefer_locked: bool = False) -> dict[str, Any]:
+    """Resolve and validate a point-annotation source. Call this before anything else."""
+    source = open_source(src, expect=POINT_INSTANCE,
+                               prefer_locked=prefer_locked)
+    require_sync(source)
+    return source
+
+
+def open_bodies_source(src: Mapping[str, Any], *,
+                       prefer_locked: bool = False) -> dict[str, Any]:
+    """Resolve and validate a body-annotation (keyvalue) source."""
+    return open_source(src, expect=BODY_INSTANCE,
+                             prefer_locked=prefer_locked)
+
+
+def open_counts_source(src: Mapping[str, Any], *,
+                       prefer_locked: bool = False) -> dict[str, Any]:
+    """Resolve a synapse-count source: a ``labelsz`` index, or the instance it indexes."""
+    source = open_source(
+        src, expect=(COUNT_INSTANCE, POINT_INSTANCE),
+        prefer_locked=prefer_locked)
+    return resolve_labelsz(source)
+
+
 def _fetch_one(source: Mapping[str, Any], body: int) -> list[dict]:
     try:
         from neuclease.dvid.annotation import fetch_label

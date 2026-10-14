@@ -1,7 +1,7 @@
 """Fetches that return DataFrames and write nothing. The interactive entry point.
 
-:mod:`neu_mark.ops` runs the same fetches (both call :mod:`neu_mark.dvid`) and writes
-tables and a provenance record. Everything here is re-exported at the package top level:
+:mod:`neu_mark.ops` writes what these return, as tables plus a provenance record; both are
+thin over :mod:`neu_mark.dvid`. Everything here is re-exported at the package top level:
 
     >>> from neu_mark import source, select_bodies, points, body_annotations
     >>> src   = source("dvid://dvid.example.org/93fdbc:main/synapses",
@@ -20,13 +20,12 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import dvid as _dvid
-from . import ops as _ops
 
 #: Which `open_*_source` to use for each kind of read.
 _OPENERS = {
-    "points": _ops.open_points_source,
-    "bodies": _ops.open_bodies_source,
-    "counts": _ops.open_counts_source,
+    "points": _dvid.open_points_source,
+    "bodies": _dvid.open_bodies_source,
+    "counts": _dvid.open_counts_source,
 }
 
 
@@ -178,20 +177,7 @@ def synapse_counts(location="counts", bodies=None, *, locked: bool = False, conf
 
     :func:`select_bodies` finds the bodies above a threshold; this counts a given list.
     """
-    import pandas as pd
-
     if bodies is None:
         raise ValueError("synapse_counts needs a body list")
     src = _as_source(location, "counts", locked, config)
-    ids = body_ids(bodies)
-    from neuclease.dvid import labelsz
-
-    from neu_vol.dvid import address
-
-    server, uuid, instance = address(src)
-    pre = labelsz.fetch_counts(server, uuid, instance, ids, "PreSyn")
-    post = labelsz.fetch_counts(server, uuid, instance, ids, "PostSyn")
-    out = pd.DataFrame({"pre": pre.reindex(ids).fillna(0).astype("int64"),
-                        "post": post.reindex(ids).fillna(0).astype("int64")})
-    out["syn"] = out["pre"] + out["post"]
-    return out.rename_axis("body").reset_index()
+    return _dvid.fetch_synapse_counts_for(src, body_ids(bodies))

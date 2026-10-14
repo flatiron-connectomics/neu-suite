@@ -54,6 +54,7 @@ if _root is not None:
 import pandas as pd
 import pytest
 
+from neu_mark import dvid as ann_dvid
 from neu_mark import ops
 
 URL = "dvid://dvid.example.org/93fdbc:main/synapses"
@@ -239,7 +240,7 @@ def _src(url=URL):
 
 def _open(url=URL, kind="points", *, locked=False):
     """The resolved source, as the CLI produces it before doing anything else."""
-    opener = ops.open_points_source if kind == "points" else ops.open_bodies_source
+    opener = ann_dvid.open_points_source if kind == "points" else ann_dvid.open_bodies_source
     return opener(_src(url), prefer_locked=locked)
 
 

@@ -97,12 +97,12 @@ def test_an_unsynced_annotation_instance_is_refused_up_front(tmp_path, monkeypat
     monkeypatch.setattr(vdvid, "instance_info",
                         lambda spec: {"Base": {"TypeName": "annotation", "Syncs": []}})
     with pytest.raises(ValueError, match="not synced to a labelmap"):
-        ops.open_points_source(_src())
+        ann_dvid.open_points_source(_src())
 
 
 def test_a_keyvalue_instance_is_refused_for_points(tmp_path, dvid_server):
     with pytest.raises(ValueError, match="expected annotation"):
-        ops.open_points_source(_src(KV_URL))
+        ann_dvid.open_points_source(_src(KV_URL))
 
 
 def test_dvid_locked_selects_the_locked_ancestor(tmp_path, dvid_server):
@@ -132,7 +132,7 @@ def test_bodies_reports_the_ones_with_no_record(tmp_path, dvid_server):
 
 def test_an_annotation_instance_is_refused_for_bodies(tmp_path, dvid_server):
     with pytest.raises(ValueError, match="expected keyvalue"):
-        ops.open_bodies_source(_src())
+        ann_dvid.open_bodies_source(_src())
 
 
 # --------------------------------------------------------------------------- #
@@ -320,9 +320,9 @@ def test_cli_refuses_both_or_neither(tmp_path, dvid_server):
 # select-bodies
 # --------------------------------------------------------------------------- #
 def _select(tmp_path, dvid_server, url=URL, **kw):
-    source = ops.open_counts_source(_src(url))
+    source = ann_dvid.open_counts_source(_src(url))
     out = str(tmp_path / "sel")
-    return out, ops.select_bodies(source, out, **kw)
+    return out, ops.write_selected_bodies(source, out, **kw)
 
 
 def test_select_thresholds_on_the_total_and_ranks_by_it(tmp_path, dvid_server):
@@ -369,7 +369,7 @@ def test_a_per_type_minimum_raises_the_query_threshold(tmp_path, dvid_server,
 @pytest.mark.parametrize("url", [URL, SZ_URL], ids=["via-annotation", "direct"])
 def test_the_labelsz_instance_is_found_or_named_directly(tmp_path, dvid_server, url):
     """`synapses` is the name people know; the index records what it syncs to."""
-    source = ops.open_counts_source(_src(url))
+    source = ann_dvid.open_counts_source(_src(url))
     assert source["instance"] == "synapses_labelsz"
     assert source["indexes"] == ["synapses"]
 
@@ -380,7 +380,7 @@ def test_no_labelsz_for_the_instance_says_so(tmp_path, dvid_server, monkeypatch)
     monkeypatch.setattr(nd, "fetch_repo_info",
                         lambda server, uuid, **k: {"DataInstances": {"synapses": SYN_INFO}})
     with pytest.raises(ValueError, match="no 'labelsz' instance"):
-        ops.open_counts_source(_src(URL))
+        ann_dvid.open_counts_source(_src(URL))
 
 
 def test_an_ambiguous_labelsz_asks_which_one(tmp_path, dvid_server, monkeypatch):
@@ -390,7 +390,7 @@ def test_an_ambiguous_labelsz_asks_which_one(tmp_path, dvid_server, monkeypatch)
         "DataInstances": {"synapses": SYN_INFO, "a_labelsz": LABELSZ_INFO,
                           "b_labelsz": LABELSZ_INFO}})
     with pytest.raises(ValueError, match="several labelsz instances"):
-        ops.open_counts_source(_src(URL))
+        ann_dvid.open_counts_source(_src(URL))
 
 
 def test_an_empty_result_names_the_silent_unindexed_failure(tmp_path, dvid_server):

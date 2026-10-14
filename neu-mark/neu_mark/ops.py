@@ -1,6 +1,7 @@
 """The write operations, as functions the CLI is a thin shell over.
 
-Each takes an already-opened source (from an ``open_*_source`` function here), which
+Each takes an already-opened source (from an ``open_*_source`` function in
+:mod:`neu_mark.dvid`), which
 carries the concrete uuid rather than a ref. The caller resolves the node once, so the
 tables, the provenance record and a destination name such as ``--dst {uuid:8}`` all
 describe the same node.
@@ -25,36 +26,11 @@ POINT_TABLES = ("points", "relationships")
 BODY_TABLES = ("bodies",)
 
 
-def open_points_source(src: Mapping[str, Any], *,
-                       prefer_locked: bool = False) -> dict[str, Any]:
-    """Resolve and validate a point-annotation source. Call this before anything else."""
-    source = _dvid.open_source(src, expect=_dvid.POINT_INSTANCE,
-                               prefer_locked=prefer_locked)
-    _dvid.require_sync(source)
-    return source
-
-
-def open_bodies_source(src: Mapping[str, Any], *,
-                       prefer_locked: bool = False) -> dict[str, Any]:
-    """Resolve and validate a body-annotation (keyvalue) source."""
-    return _dvid.open_source(src, expect=_dvid.BODY_INSTANCE,
-                             prefer_locked=prefer_locked)
-
-
-def open_counts_source(src: Mapping[str, Any], *,
-                       prefer_locked: bool = False) -> dict[str, Any]:
-    """Resolve a synapse-count source: a ``labelsz`` index, or the instance it indexes."""
-    source = _dvid.open_source(
-        src, expect=(_dvid.COUNT_INSTANCE, _dvid.POINT_INSTANCE),
-        prefer_locked=prefer_locked)
-    return _dvid.resolve_labelsz(source)
-
-
-#: The table `select_bodies` writes (`<dst>/selected_bodies.csv` by default).
+#: The table `write_selected_bodies` writes (`<dst>/selected_bodies.csv` by default).
 SELECTED_TABLE = "selected_bodies"
 
 
-def select_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: int = 10,
+def write_selected_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: int = 10,
                   min_pre: int = 0, min_post: int = 0, limit: int | None = None,
                   fmt: str = "csv") -> dict[str, Any]:
     """Choose which bodies are worth fetching annotations for, and write the list.
@@ -69,8 +45,10 @@ def select_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: int = 10
     The provenance record names the node the list was computed from, since proofreading
     changes body ids.
     """
-    df = _dvid.fetch_synapse_counts(source, min_total=min_synapses, min_pre=min_pre,
-                                    min_post=min_post, limit=limit)
+    from .notebook import select_bodies
+
+    df = select_bodies(source, min_synapses=min_synapses, min_pre=min_pre,
+                       min_post=min_post, limit=limit)
     run = {"min_synapses": min_synapses, "min_pre": min_pre or None,
            "min_post": min_post or None, "limit": limit,
            "bodies_selected": int(len(df)),
@@ -98,7 +76,8 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
                  write_connections: bool = False) -> dict[str, Any]:
     """Point annotations for ``bodies`` -> ``points`` + ``relationships`` tables.
 
-    ``source`` comes from :func:`open_points_source`; it carries a concrete uuid.
+    ``source`` comes from :func:`neu_mark.dvid.open_points_source`; it carries a
+    concrete uuid.
 
     ``drop_unmatched`` removes relationships whose partner body was not resolved. It is off
     by default: an unfetched partner looks the same as a missing synapse, so dropping them
@@ -283,7 +262,8 @@ def fetch_bodies(source: Mapping[str, Any], dst: str,
                  fmt: str = "parquet", everything: bool = False) -> dict[str, Any]:
     """Body annotations -> a ``bodies`` table, for a body list or the whole instance.
 
-    ``source`` comes from :func:`open_bodies_source`; it carries a concrete uuid.
+    ``source`` comes from :func:`neu_mark.dvid.open_bodies_source`; it carries a
+    concrete uuid.
 
     ``everything=True`` reads every record in the instance instead
     (:func:`neu_mark.dvid.fetch_all_body_annotations`), a different population from a

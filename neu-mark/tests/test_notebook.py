@@ -40,6 +40,27 @@ def test_synapse_counts_answers_for_a_given_list_ignoring_any_threshold(dvid_ser
     assert out.loc[4, "syn"] == 5           # below every threshold, still reported
 
 
+def test_synapse_counts_retries_a_transient_dvid_error(dvid_server, monkeypatch):
+    """The same fetch as `segment-properties --counts`, retry included: a shared DVID
+    answers 503 under load, and one should not fail a notebook call."""
+    import neuclease.dvid.labelsz as ndsz
+
+    import neu_vol.retry
+
+    real, calls = ndsz.fetch_counts, {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("503 Server Error: Service Unavailable for url: ...")
+        return real(*a, **k)
+
+    monkeypatch.setattr(ndsz, "fetch_counts", flaky)
+    monkeypatch.setattr(neu_vol.retry.time, "sleep", lambda s: None)
+    out = nb.synapse_counts(SZ_URL, [4]).set_index("body")
+    assert out.loc[4, "syn"] == 5 and calls["n"] == 3     # one failure, then pre and post
+
+
 # --------------------------------------------------------------------------- #
 # accepting bodies in whatever form you have them
 # --------------------------------------------------------------------------- #

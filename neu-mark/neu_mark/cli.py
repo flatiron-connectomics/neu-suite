@@ -449,10 +449,10 @@ def _report_match(match: dict) -> None:
 
 
 def cmd_points(args) -> int:
-    from . import ops
+    from . import dvid, ops
 
     # Resolve the node first: the destination name and every request derive from it.
-    source = ops.open_points_source(_src_spec(args.src),
+    source = dvid.open_points_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)
     ids = _load_bodies(args)
@@ -475,7 +475,7 @@ def cmd_points(args) -> int:
 
 
 def cmd_bodies(args) -> int:
-    from . import ops
+    from . import dvid, ops
 
     everything = bool(getattr(args, "everything", False))
     if everything and args.bodies:
@@ -485,7 +485,7 @@ def cmd_bodies(args) -> int:
         raise SystemExit(
             "--bodies is required, or pass --all to read the whole instance.")
 
-    source = ops.open_bodies_source(_src_spec(args.src),
+    source = dvid.open_bodies_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)
     ids = None if everything else _load_bodies(args)
@@ -504,12 +504,12 @@ def cmd_bodies(args) -> int:
 
 
 def cmd_select_bodies(args) -> int:
-    from . import ops
+    from . import dvid, ops
 
-    source = ops.open_counts_source(_src_spec(args.src),
+    source = dvid.open_counts_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)
-    result = ops.select_bodies(source, out, min_synapses=args.min_synapses,
+    result = ops.write_selected_bodies(source, out, min_synapses=args.min_synapses,
                                min_pre=args.min_pre, min_post=args.min_post,
                                limit=args.limit, fmt=args.fmt)
     df = result["bodies"]
@@ -526,11 +526,11 @@ def cmd_select_bodies(args) -> int:
 
 
 def cmd_segment_properties(args) -> int:
-    from . import ops, segprops
+    from . import dvid, ops, segprops
 
-    bodies_src = ops.open_bodies_source(_src_spec(args.src),
+    bodies_src = dvid.open_bodies_source(_src_spec(args.src),
                                         prefer_locked=bool(args.dvid_locked))
-    counts_src = (ops.open_counts_source(_src_spec(args.counts),
+    counts_src = (dvid.open_counts_source(_src_spec(args.counts),
                                          prefer_locked=bool(args.dvid_locked))
                   if args.counts else None)
     labelmap_src = None
@@ -572,7 +572,7 @@ def _triple(value: str, name: str, n: int = 3) -> list[float]:
 
 
 def cmd_annotation_source(args) -> int:
-    from . import annsource, ops
+    from . import annsource, dvid, ops
 
     if bool(args.tables) == bool(args.src):
         raise SystemExit("pass --tables (reuse an earlier fetch) or --src plus --bodies "
@@ -597,7 +597,7 @@ def cmd_annotation_source(args) -> int:
         if not args.bodies:
             raise SystemExit("--src needs --bodies: DVID cannot cheaply enumerate the "
                              "bodies worth asking about.")
-        source = ops.open_points_source(_src_spec(args.src),
+        source = dvid.open_points_source(_src_spec(args.src),
                                         prefer_locked=bool(args.dvid_locked))
         dst = _expand_out(args.dst, source)
         kwargs.update(source=source, bodies=_load_bodies(args))
