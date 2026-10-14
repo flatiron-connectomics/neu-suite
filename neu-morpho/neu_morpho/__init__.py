@@ -4,11 +4,64 @@ Generate multi-resolution Draco-encoded **meshes** (via ``vol2mesh``) and
 **skeletons** (TEASAR: ``neutu_trace`` by default, ``kimimaro`` for anisotropic
 voxels) per segment, written in neuroglancer-precomputed format, orchestrated
 across segments with ``blockrun`` and reading segmentation arrays with
-``neu-vol``.
+``neu-vol``. The pipeline runs from the ``neu-morpho`` command; from Python::
+
+    import neu_morpho
+    verts_xyz_nm, faces, lod = neu_morpho.read_body_mesh(volume, body_id)   # or None
+    db = neu_morpho.MetricsDB(path)                          # per-body metrics
 
 Large segments (whose binary mask over a big bounding box would OOM) are meshed
 **chunked and stitched** rather than materialized whole. See the README, and
 docs/skeletonization.md for the tracer's settings.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 __version__ = "0.1.0"
+
+#: Attribute name -> the module defining it, relative to this package. Resolved on first
+#: use, so ``import neu_morpho`` (which the CLI does for ``__version__``) stays instant.
+_EXPORTS: dict[str, str] = {
+    "read_body_mesh": "readback",
+    "read_body_skeleton": "readback",
+    "mesh_transform": "readback",
+    "skeleton_transform": "readback",
+    "UnsupportedSubresource": "readback",
+    "MetricsDB": "metrics_db",
+    "MeshConfig": "config",
+    "SkeletonConfig": "config",
+}
+
+#: Name -> submodule exposed whole at the top level. Keys must not overlap ``_EXPORTS``.
+_SUBMODULES: dict[str, str] = {
+    "measure": "measure",
+    "readback": "readback",
+}
+
+__all__ = ["__version__", *sorted({*_EXPORTS, *_SUBMODULES})]
+
+if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDE completion only
+    from . import measure, readback  # noqa: F401
+    from .config import MeshConfig, SkeletonConfig  # noqa: F401
+    from .metrics_db import MetricsDB  # noqa: F401
+    from .readback import (UnsupportedSubresource, mesh_transform,  # noqa: F401
+                           read_body_mesh, read_body_skeleton, skeleton_transform)
+
+
+def __getattr__(name: str):
+    """Resolve a top-level export or submodule on first use."""
+    import importlib
+
+    module = _SUBMODULES.get(name)
+    if module is not None:
+        return importlib.import_module(f".{module}", __name__)
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(f".{module}", __name__), name)
+
+
+def __dir__():
+    return list(__all__)
