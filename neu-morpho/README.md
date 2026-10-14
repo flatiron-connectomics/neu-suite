@@ -63,13 +63,11 @@ neu-morpho help [COMMAND]           # what --help prints, as a subcommand
 | `index` | Scans the volume once and records **every body's bounding box and voxel count** in a SQLite metrics DB. |
 | `mesh` | Multi-resolution Draco meshes, one per body. |
 
-**`index` is required before `mesh` (and `neu-skel`'s `skel`), and it is the stage whose
-purpose is least obvious.** Meshing and skeletonization each crop a body out of the volume by its
-bounding box, and there is nowhere to ask for that box: a label's extent is only knowable
-by looking at every block it might appear in, which is exactly the scan `index`
-performs. The voxel counts it records are the other half — the size filter that builds
-the allowlist reads them, so without the DB there is no way to say "only bodies above N
-voxels". It writes no volume data, which is why it is easy to mistake for optional.
+**`index` is what makes a size filter possible.** It records every body's voxel count
+and bounding box in the metrics DB, and `--min-voxels` / `--limit-bodies` build the
+allowlist from those counts; without the DB there is no way to say "only bodies above N
+voxels". `mesh` and `neu-skel`'s `skel` work block by block and read no bounding box, so
+with an explicit `--allowlist` (or none) they run without it. It writes no volume data.
 
 Once the DB exists you can re-run the later stages without it: `--stages mesh` is the
 normal way to redo meshing after a parameter change. `mesh` runs in two
