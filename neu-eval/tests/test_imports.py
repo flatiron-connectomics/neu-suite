@@ -61,3 +61,26 @@ def test_dir_lists_what_getattr_can_resolve():
     import neu_eval
 
     assert set(dir(neu_eval)) == set(neu_eval.__all__)
+
+
+def _type_checking_names(module) -> set[str]:
+    """Names imported in the module's `if TYPE_CHECKING:` block: what editors and type
+    checkers see, since they cannot run `__getattr__`."""
+    import ast
+    import inspect
+
+    names: set[str] = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        if isinstance(node, ast.If) and getattr(node.test, "id", None) == "TYPE_CHECKING":
+            for stmt in ast.walk(node):
+                if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                    names |= {(a.asname or a.name).split(".")[0] for a in stmt.names}
+    return names
+
+
+def test_editors_can_see_every_lazy_export():
+    """The `TYPE_CHECKING` block lists the same names as the lazy lookup tables, so a
+    name added to one and not the other cannot become invisible to editors."""
+    import neu_eval
+
+    assert _type_checking_names(neu_eval) == {*neu_eval._EXPORTS, *neu_eval._SUBMODULES}

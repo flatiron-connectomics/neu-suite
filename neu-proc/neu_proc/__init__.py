@@ -40,8 +40,13 @@ _SUBMODULES: dict[str, str] = {
 __all__ = ["__version__", *sorted({*_EXPORTS, *_SUBMODULES})]
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDE completion only
-    # Lets type checkers and IDEs see the lazily resolved `neu_proc.measure`.
+    # Editors and type checkers read this block (it never runs), so every lazy name
+    # must be listed here as well; a test checks the two lists agree.
     from .ops import measure  # noqa: F401
+    from .ops.dilate import dilate  # noqa: F401
+    from .ops.dust import dust  # noqa: F401
+    from .ops.offset import offset  # noqa: F401
+    from .ops.opening import opening  # noqa: F401
 
 
 def __getattr__(name: str):
