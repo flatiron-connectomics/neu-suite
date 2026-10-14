@@ -1,9 +1,7 @@
-"""VOI and adapted Rand, including the two tests that pin which half is which.
+"""VOI and adapted Rand, with the direction of each half pinned.
 
-Every number asserted here is hand-computable. The point of doing it that way rather than
-against a reference implementation is that a reference implementation shares the one
-mistake this module is most likely to make — getting the direction backwards — and would
-agree with us enthusiastically about it.
+Every expected number is hand-computed. A reference implementation would share the most
+likely mistake, getting split and merge backwards.
 """
 
 from __future__ import annotations
@@ -25,20 +23,16 @@ def _c(a, b, **kwargs):
 
 # -- the direction --------------------------------------------------------------------
 
-def test_a_pure_split_is_all_split_and_no_merge():
-    """One reference body cut in two: H(b|a) = 1 bit, H(a|b) = 0."""
-    c = _c([1, 1, 1, 1], [1, 1, 2, 2])
-    result = voi(c)
-    assert result.split == pytest.approx(1.0)
-    assert result.merge == pytest.approx(0.0)
-
-
-def test_a_pure_merge_is_all_merge_and_no_split():
-    """Two reference bodies fused into one: H(a|b) = 1 bit, H(b|a) = 0."""
-    c = _c([1, 1, 2, 2], [1, 1, 1, 1])
-    result = voi(c)
-    assert result.merge == pytest.approx(1.0)
-    assert result.split == pytest.approx(0.0)
+@pytest.mark.parametrize("a, b, split, merge", [
+    ([1, 1, 1, 1], [1, 1, 2, 2], 1.0, 0.0),    # one body cut in two: H(b|a) = 1 bit
+    ([1, 1, 2, 2], [1, 1, 1, 1], 0.0, 1.0),    # two bodies fused: H(a|b) = 1 bit
+    ([1, 1, 2, 2], [1, 2, 1, 2], 1.0, 1.0),    # both at once
+], ids=["split", "merge", "both"])
+def test_voi_assigns_splits_and_merges_to_the_right_half(a, b, split, merge):
+    result = voi(_c(a, b))
+    assert result.split == pytest.approx(split)
+    assert result.merge == pytest.approx(merge)
+    assert result.total == pytest.approx(split + merge)
 
 
 def test_split_and_merge_swap_under_transpose():
@@ -46,14 +40,6 @@ def test_split_and_merge_swap_under_transpose():
     forward, backward = voi(c), voi(c.T)
     assert forward.split == pytest.approx(backward.merge)
     assert forward.merge == pytest.approx(backward.split)
-
-
-def test_a_simultaneous_split_and_merge_scores_both():
-    c = _c([1, 1, 2, 2], [1, 2, 1, 2])
-    result = voi(c)
-    assert result.split == pytest.approx(1.0)
-    assert result.merge == pytest.approx(1.0)
-    assert result.total == pytest.approx(2.0)
 
 
 # -- identity and invariance ----------------------------------------------------------
@@ -104,10 +90,7 @@ def test_an_empty_table_scores_zero_rather_than_nan():
 # -- adapted Rand ---------------------------------------------------------------------
 
 def test_rand_on_a_pure_split_is_hand_computable():
-    """b refines a: every pair b claims is right, and it keeps a third of a's pairs.
-
-    agree = 2 pairs, in_b = 2, in_a = 6 -> precision 1, recall 1/3, F 1/2.
-    """
+    """agree = 2 pairs, in_b = 2, in_a = 6: precision 1, recall 1/3, F 1/2."""
     result = rand(_c([1, 1, 1, 1], [1, 1, 2, 2]))
     assert result.precision == pytest.approx(1.0)
     assert result.recall == pytest.approx(1 / 3)
@@ -172,16 +155,10 @@ def test_the_segment_blamed_for_a_split_is_the_one_that_split():
 
 # -- summary ---------------------------------------------------------------------------
 
-def test_summary_names_its_columns_after_the_sides():
-    c = _c([1, 1, 2], [1, 2, 2], labels=("gt", "seg"))
-    row = summary(c)
+def test_summary_is_flat_numeric_and_named_after_the_sides():
+    row = summary(_c([1, 1, 2], [1, 2, 2], labels=("gt", "seg")))
     assert "n_gt" in row and "n_seg" in row
     assert row["n_scored"] == 3
-
-
-def test_summary_is_flat_and_json_able():
-    c = _c([1, 1, 2], [1, 2, 2])
-    row = summary(c)
     assert all(isinstance(v, (int, float)) for v in row.values())
 
 

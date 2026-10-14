@@ -1,14 +1,7 @@
-"""What this package costs to import, and what its lazy exports promise.
+"""What importing the package costs, and that its lazy exports resolve.
 
-Subprocess-isolated, because `sys.modules` in a test session has already been polluted by
-every other test file — a check on the in-process module table proves nothing about what a
-fresh `import neu_eval` does. The same reason `neu-proc`'s version of this file runs out of
-process.
-
-The claim being defended: the metric modules compute and do not read, so importing them
-must not pull in a store stack. It is what keeps the core testable in a conda-free CI, and
-it is the kind of property that decays silently the first time somebody needs a path helper
-and reaches for the nearest one.
+Run in subprocesses: this session's `sys.modules` already holds whatever other tests
+imported, so only a fresh interpreter shows what `import neu_eval` pulls in.
 """
 
 from __future__ import annotations
@@ -30,40 +23,23 @@ def _run(code: str) -> str:
     return result.stdout.strip()
 
 
-def test_importing_the_package_pulls_in_nothing_heavy():
-    leaked = _run(
-        "import sys, neu_eval;"
-        f"print(','.join(m for m in {HEAVY!r} if m in sys.modules))")
+@pytest.mark.parametrize("imports, banned", [
+    ("neu_eval", HEAVY),
+    # the pure metric modules: what the conda-free CI rests on
+    ("neu_eval.overlap, neu_eval.voxel, neu_eval.assign", HEAVY),
+    # scipy is a dependency, but only best_match(method="hungarian") needs it
+    ("neu_eval", ["scipy"]),
+    # the contingency kernel imports neu_proc when called, not at import
+    ("neu_eval.overlap", ["neu_proc"]),
+])
+def test_importing_pulls_in_nothing_heavy(imports, banned):
+    leaked = _run(f"import sys, {imports};"
+                  f"print(','.join(m for m in {banned!r} if m in sys.modules))")
     assert leaked == ""
-
-
-def test_importing_the_metric_modules_pulls_in_nothing_heavy():
-    """The whole pure half, at once — this is the property the conda-free CI rests on."""
-    leaked = _run(
-        "import sys;"
-        "import neu_eval.overlap, neu_eval.voxel, neu_eval.assign;"
-        f"print(','.join(m for m in {HEAVY!r} if m in sys.modules))")
-    assert leaked == ""
-
-
-def test_importing_the_package_does_not_pay_for_scipy_either():
-    """scipy is a real dependency, but only `best_match(method='hungarian')` needs it."""
-    leaked = _run("import sys, neu_eval; print('scipy' in sys.modules)")
-    assert leaked == "False"
-
-
-def test_the_contingency_kernel_resolves_its_backend_at_call_time():
-    """`neu_proc` is imported by the function, not by the module.
-
-    So `neu_eval.overlap` stays importable and readable without the label-tool stack, which
-    is what lets a metric be reviewed without one.
-    """
-    leaked = _run("import sys, neu_eval.overlap; print('neu_proc' in sys.modules)")
-    assert leaked == "False"
 
 
 def test_the_two_export_mappings_stay_disjoint():
-    """A name in both would be resolved by whichever is checked first, silently."""
+    """A name in both would silently resolve from whichever is checked first."""
     assert not set(_EXPORTS) & set(_SUBMODULES)
 
 

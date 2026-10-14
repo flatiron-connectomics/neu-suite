@@ -62,13 +62,8 @@ def test_a_merge_leaves_one_body_unmatched():
 
 
 def test_matching_by_iou_and_by_overlap_disagree_where_size_does():
-    """A small tight body and a big sprawling one compete for the same segment.
-
-    a=1 is 4 voxels, 3 of them in b=5. a=2 is 20 voxels scattered over four segments, 6 of
-    them in b=5. By raw overlap b=5 belongs to a=2 (6 voxels beats 3), which strands a=1 on
-    its 1-voxel second choice. By IoU it belongs to a=1 (0.30 beats 0.26), because 3 of 4
-    voxels is a fit and 6 of 20 is a coincidence.
-    """
+    """a=1 (4 voxels, 3 in b=5) and a=2 (20 voxels, 6 in b=5) compete for b=5: raw
+    overlap gives it to a=2, IoU (0.30 vs 0.26) to a=1."""
     a = [1] * 4 + [2] * 20
     b = [5, 5, 5, 7] + [5] * 6 + [8] * 5 + [9] * 5 + [10] * 4
     c = _c(a, b)
@@ -90,11 +85,8 @@ def test_the_greedy_order_does_not_depend_on_the_sort():
 
 
 def test_the_optimal_assignment_can_beat_greedy():
-    """Greedy takes the single best pair first and may strand a better total.
-
-    a=1 overlaps b=5 by 5 and b=6 by 4; a=2 overlaps only b=5, by 4. Greedy takes (1,5)
-    and leaves a=2 unmatched; the optimal assignment takes (1,6) and (2,5).
-    """
+    """a=1 overlaps b=5 by 5 and b=6 by 4; a=2 overlaps only b=5, by 4. Greedy takes (1,5)
+    and strands a=2; the optimal assignment takes (1,6) and (2,5)."""
     a = [1] * 9 + [2] * 4
     b = [5] * 5 + [6] * 4 + [5] * 4
     c = _c(a, b)

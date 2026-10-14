@@ -1,10 +1,7 @@
-"""What the CLI promises: the parser exists, `--help` is cheap, and the flags are wired.
+"""The CLI: the parser the docs site renders, cheap imports, and the flags' wiring.
 
-``build_parser`` is a **hard contract with the docs site**, which imports this module and
-renders the reference from the real parser object so the published `--help` cannot drift
-from the code. The site builds with no conda and no tensorstore, so importing the module
-must not reach for either — which is what the ``sys.modules`` assertions below are for, and
-the reason neu-vol and neu-morpho carry the same pair of tests.
+The docs site builds without conda or tensorstore and imports this module to render the
+reference from `build_parser()`, so importing it must not reach for a store stack.
 """
 
 from __future__ import annotations
@@ -30,19 +27,14 @@ def test_build_parser_exists_and_is_named_what_the_docs_look_for():
     assert parser.prog == "neu-eval"
 
 
-def test_importing_the_cli_does_not_pull_in_a_store_stack():
-    """The docs job has no tensorstore, so an import-time dependency breaks the build."""
+@pytest.mark.parametrize("code", [
+    "import neu_eval.cli",
+    "from neu_eval.cli import build_parser; build_parser()",
+])
+def test_the_cli_and_its_parser_do_not_pull_in_a_store_stack(code):
     leaked = _run(
-        "import sys, neu_eval.cli;"
+        f"import sys; {code};"
         "print(','.join(m for m in ['neu_vol','tensorstore','h5py','pandas','dask'] "
-        "if m in sys.modules))")
-    assert leaked == ""
-
-
-def test_help_does_not_pay_for_the_reading_stack():
-    leaked = _run(
-        "import sys; from neu_eval.cli import build_parser; build_parser();"
-        "print(','.join(m for m in ['neu_vol','tensorstore','h5py','pandas'] "
         "if m in sys.modules))")
     assert leaked == ""
 
@@ -57,7 +49,7 @@ def test_compare_is_the_subcommand_and_it_requires_both_sides():
 
 
 def test_the_parsed_defaults_match_the_library_defaults():
-    """A CLI default that drifts from the function's is a silent behaviour change."""
+    """A CLI default drifting from the function's would silently change behaviour."""
     from neu_eval.compare import compare
     import inspect
 
@@ -101,7 +93,6 @@ def test_id_lists_tolerate_an_empty_string():
 
 
 def test_voxel_sizes_parse_as_floats_not_ints():
-    """They are nanometres and 6.8 is a real voxel size."""
     assert cli._floats("6.8,8,8") == (6.8, 8.0, 8.0)
 
 
@@ -114,7 +105,7 @@ def test_a_plain_source_is_passed_through_unchanged():
 
 
 def test_a_container_holding_the_name_is_addressed_to_it(tmp_path):
-    """The --all-datasets case where BOTH sides are per-crop containers."""
+    """--all-datasets where both sides are per-crop containers."""
     h5py = pytest.importorskip("h5py")
     import numpy as np
 

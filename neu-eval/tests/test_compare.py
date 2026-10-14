@@ -95,11 +95,7 @@ def test_no_verdicts_means_no_adjudicated_fields():
 
 
 def test_verdicts_that_match_nothing_say_so_in_the_headline():
-    """Because "changed nothing" and "matched nothing" are the same numbers.
-
-    A verdict file outlives the table it came from, so it can be full of perfectly valid
-    verdicts that name no pair here.
-    """
+    """"Changed nothing" and "matched nothing" give the same numbers, so say which."""
     a, b = _split_pair()
     report = compare(a, b, ignore_a=(), locate=False,
                      verdicts={"999:888": "seg_correct"})
@@ -126,7 +122,7 @@ def test_mismatched_shapes_are_refused_with_the_fix_in_the_message():
 
 
 def test_two_pieces_in_different_places_are_refused():
-    """Same shape, different physical box — comparing them measures the offset."""
+    """Same shape, different physical box: the comparison would measure the offset."""
     a = _piece(np.ones((4, 4, 4), np.uint64), origin=(0.0, 0.0, 0.0))
     b = _piece(np.ones((4, 4, 4), np.uint64), origin=(1000.0, 0.0, 0.0))
     with pytest.raises(ValueError, match="different physical boxes"):
@@ -134,8 +130,7 @@ def test_two_pieces_in_different_places_are_refused():
 
 
 def test_sub_voxel_drift_is_tolerated():
-    """read_piece grows a physical box outward to whole voxels, so two levels of one
-    volume legitimately differ by less than a voxel."""
+    """Two levels of one volume, read by `read_piece`, can differ by under a voxel."""
     a = _piece(np.ones((4, 4, 4), np.uint64), origin=(0.0, 0.0, 0.0))
     b = _piece(np.ones((4, 4, 4), np.uint64), origin=(4.0, 0.0, 0.0))
     compare(a, b, ignore_a=())
@@ -163,32 +158,23 @@ def test_a_scattered_reference_label_is_reported_not_raised():
     assert any("neu-vol relabel" in w for w in report.warnings)
 
 
-def test_a_compact_reference_produces_no_scatter_warning():
+def _scatter_case(case):
     arr = np.zeros((80, 80, 80), dtype=np.uint64)
     arr[20:60, 20:60, 20:60] = 8
+    if case == "tiny":                   # two voxels in opposite corners: no evidence
+        arr[0, 0, 0] = arr[79, 79, 79] = 7
+    elif case == "checked-off":
+        arr[:4, :4, :4] = arr[76:, 76:, 76:] = 7
+    return arr
+
+
+@pytest.mark.parametrize("case", ["compact", "tiny", "checked-off"])
+def test_no_scatter_warning_without_evidence_or_when_switched_off(case):
+    arr = _scatter_case(case)
     a = _piece(arr)
     b = _piece(np.where(arr > 0, 5, 0).astype(np.uint64))
-    assert compare(a, b, locate=False).warnings == []
-
-
-def test_the_scatter_check_can_be_turned_off():
-    arr = np.zeros((80, 80, 80), dtype=np.uint64)
-    arr[:4, :4, :4] = 7
-    arr[76:, 76:, 76:] = 7
-    a = _piece(arr)
-    b = _piece(np.where(arr > 0, 5, 0).astype(np.uint64))
-    assert compare(a, b, locate=False, check_scattered=False).warnings == []
-
-
-def test_tiny_labels_are_never_flagged_as_scattered():
-    """A two-voxel label in opposite corners has a huge ratio and tells you nothing."""
-    arr = np.zeros((80, 80, 80), dtype=np.uint64)
-    arr[0, 0, 0] = 7
-    arr[79, 79, 79] = 7
-    arr[20:60, 20:60, 20:60] = 8
-    a = _piece(arr)
-    b = _piece(np.where(arr > 0, 5, 0).astype(np.uint64))
-    assert compare(a, b, locate=False).warnings == []
+    report = compare(a, b, locate=False, check_scattered=case != "checked-off")
+    assert report.warnings == []
 
 
 def test_a_non_overlapping_pair_is_reported_rather_than_scored_silently():
@@ -201,12 +187,8 @@ def test_a_non_overlapping_pair_is_reported_rather_than_scored_silently():
 # -- pooling -----------------------------------------------------------------------------
 
 def test_pooling_keeps_separate_crops_separate():
-    """The whole point: two crops that both number their bodies from 1.
-
-    Added directly, id 1 in crop A and id 1 in crop B would fuse into one "body" — the
-    chimera bug in table form, producing a plausible pooled number from a partition that
-    does not exist. Pooled, each crop's labels get their own range.
-    """
+    """Two crops that both number from 1: `+` fuses their id 1s into one chimera body,
+    `pool` gives each crop its own labels."""
     one = contingency(
         np.asarray([1, 1, 2, 2], np.uint64).reshape(1, 1, -1),
         np.asarray([5, 5, 6, 6], np.uint64).reshape(1, 1, -1), ignore_a=())

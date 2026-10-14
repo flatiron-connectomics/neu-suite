@@ -25,25 +25,17 @@ def _piece(arr):
 
 # -- classification ---------------------------------------------------------------------
 
-def test_a_split_is_classified_as_a_split():
-    rows = disagree.rows(_c([1] * 10, [5] * 5 + [6] * 5))
-    assert {r["kind"] for r in rows} == {"split"}
-    assert len(rows) == 2
-
-
-def test_a_merge_is_classified_as_a_merge():
-    rows = disagree.rows(_c([1] * 5 + [2] * 5, [5] * 10))
-    assert {r["kind"] for r in rows} == {"merge"}
-
-
-def test_a_tangle_is_classified_as_neither_alone():
-    """Both bodies spread over both segments — the case one edit cannot fix."""
-    rows = disagree.rows(_c([1, 1, 2, 2], [5, 6, 5, 6]))
-    assert {r["kind"] for r in rows} == {"tangle"}
-
-
-def test_a_clean_correspondence_produces_no_rows():
-    assert disagree.rows(_c([1, 1, 2, 2], [5, 5, 6, 6])) == []
+@pytest.mark.parametrize("a, b, kinds, n_rows", [
+    ([1] * 10, [5] * 5 + [6] * 5, {"split"}, 2),
+    ([1] * 5 + [2] * 5, [5] * 10, {"merge"}, 2),
+    ([1, 1, 2, 2], [5, 6, 5, 6], {"tangle"}, 4),     # both bodies over both segments
+    ([1, 1, 2, 2], [5, 5, 6, 6], set(), 0),          # a clean correspondence
+    ([], [], set(), 0),
+], ids=["split", "merge", "tangle", "clean", "empty"])
+def test_disagreements_are_classified(a, b, kinds, n_rows):
+    rows = disagree.rows(_c(a, b))
+    assert {r["kind"] for r in rows} == kinds
+    assert len(rows) == n_rows
 
 
 def test_matches_can_be_asked_for():
@@ -55,12 +47,8 @@ def test_matches_can_be_asked_for():
 # -- the speck filter -------------------------------------------------------------------
 
 def test_specks_do_not_make_a_body_look_split():
-    """The property the whole module depends on.
-
-    One reference body, 1000 voxels, essentially all in one segment plus 20 single-voxel
-    strays. Unfiltered that is 21 partners and reads as a catastrophic split; it is a clean
-    match with noise, which is what these volumes actually contain.
-    """
+    """One 1000-voxel body in one segment plus 20 single-voxel strays is a clean match,
+    not a 21-way split."""
     a = [1] * 1000
     b = [5] * 980 + list(range(100, 120))
     rows = disagree.rows(_c(a, b))
@@ -80,33 +68,18 @@ def test_an_out_of_range_min_frac_is_refused():
         disagree.rows(_c([1], [5]), min_frac=1.5)
 
 
-def test_an_empty_table_has_no_rows():
-    assert disagree.rows(_c([], [])) == []
-
-
 # -- ranking ----------------------------------------------------------------------------
 
-def test_rows_are_ranked_by_severity_by_default():
-    a = [1] * 600 + [2] * 100_000
-    b = [5] * 300 + [6] * 300 + [7] * 94_000 + [8] * 6_000
-    rows = disagree.rows(_c(a, b))
-    assert [r["severity"] for r in rows] == sorted(
-        (r["severity"] for r in rows), reverse=True)
-
-
 def test_severity_ranking_inherits_vois_size_bias_and_fraction_ranking_fixes_it():
-    """The known limitation, pinned so it stays known rather than being rediscovered.
-
-    Reference body 1 (600 voxels) is cut clean in half — a total structural failure of that
-    body. Body 2 (100,000 voxels) loses a 6% sliver. By VOI contribution the sliver is
-    **eighty times** worse (0.242 vs 0.003), because VOI weights by size; this is the
-    standard criticism of the metric and severity ranking inherits it in full. Ranking by
-    fraction puts the halved body first, where a human looking for broken bodies wants it.
-    """
+    """Body 1 (600 voxels) cut in half vs body 2 (100,000 voxels) losing a 6% sliver: VOI
+    weights by size, so severity (the default rank) puts the sliver first; ranking by
+    fraction puts the halved body first."""
     a = [1] * 600 + [2] * 100_000
     b = [5] * 300 + [6] * 300 + [7] * 94_000 + [8] * 6_000
 
     by_severity = disagree.rows(_c(a, b))
+    severities = [r["severity"] for r in by_severity]
+    assert severities == sorted(severities, reverse=True)
     assert by_severity[0]["gt_id"] == 2, "VOI is dominated by the large body"
     assert by_severity[0]["severity"] > 50 * by_severity[-1]["severity"]
 
@@ -115,12 +88,7 @@ def test_severity_ranking_inherits_vois_size_bias_and_fraction_ranking_fixes_it(
 
 
 def test_one_merge_event_is_grouped_not_repeated():
-    """A segment swallowing three bodies is three rows, and they say so.
-
-    Measured on real deliveries: 1,049 merge rows came from 565 segments, and one segment
-    contributed 21 rows of a top-100. The rows are not duplicates -- a segment usually
-    merges bodies in several places -- so they are grouped, not collapsed.
-    """
+    """A segment swallowing three bodies is three rows, grouped under the segment."""
     c = _c([1] * 4 + [2] * 4 + [3] * 4, [9] * 12)
     rows = disagree.rows(c)
     assert {r["kind"] for r in rows} == {"merge"}
@@ -137,7 +105,7 @@ def test_a_split_is_grouped_by_the_body_that_came_apart():
 
 
 def test_max_per_group_keeps_the_worst_of_each():
-    """So one bad segment cannot crowd a top-N list, while its size stays visible."""
+    """One bad segment cannot crowd a top-N list; its group size stays visible."""
     c = _c([1] * 4 + [2] * 4 + [3] * 4, [9] * 12)
     capped = disagree.rows(c, max_per_group=1)
     assert len(capped) == 1
@@ -210,12 +178,8 @@ def _slab():
 
 
 def test_the_seam_point_sits_on_the_false_cut():
-    """The default, and the whole point of `at="seam"`.
-
-    The body runs the full depth; the segmentation cuts it at z=5 and z=11. The place to
-    look is one of those cuts, not the middle of the slab — the middle is where the two
-    labelings *agree*.
-    """
+    """`at="seam"` (the default) points at a cut, z=5 or z=11, not the slab's middle,
+    where the two labelings agree."""
     a, b = _slab()
     rows = disagree.locate(
         disagree.rows(contingency(a, b, ignore_a=())), _piece(a), _piece(b))
@@ -229,7 +193,7 @@ def test_the_seam_point_sits_on_the_false_cut():
 
 
 def test_the_overlap_point_is_still_available_and_is_interior():
-    """`at="overlap"` is the old behaviour, kept for when you want the agreeing middle."""
+    """`at="overlap"` points into the agreeing interior."""
     a, b = _slab()
     rows = disagree.locate(
         disagree.rows(contingency(a, b, ignore_a=())), _piece(a), _piece(b),
@@ -240,7 +204,7 @@ def test_the_overlap_point_is_still_available_and_is_interior():
 
 
 def test_a_merge_seam_is_where_the_reference_bodies_meet():
-    """Mirror image: one segment spanning two bodies, so the seam is inside the segment."""
+    """One segment spanning two bodies: the seam is inside the segment."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     a[8:] = 2
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
@@ -253,12 +217,8 @@ def test_a_merge_seam_is_where_the_reference_bodies_meet():
 
 
 def test_an_ignored_label_is_not_a_seam_partner():
-    """The membrane case, and it decides whether the answer is useful at all.
-
-    Here segment 0 is membrane and ignored. The body's contact with membrane is its own
-    ordinary surface, not a false cut — so it must not be picked. The real cut is at z=8,
-    where segment 6 takes over from segment 5.
-    """
+    """Membrane (ignored segment 0) is the body's ordinary surface, not a cut; the real cut
+    is at z=8."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
     b[8:] = 6
@@ -283,19 +243,14 @@ def test_a_disconnected_fragment_falls_back_and_says_so():
     rows = disagree.locate(
         disagree.rows(contingency(a, b)), _piece(a), _piece(b), ignore_a=(0,))
     six = [r for r in rows if r["b_id"] == 6]
-    if six:                          # only if it survives the structural filter
-        assert six[0]["point_at"] == "overlap"
-        assert int(b[six[0]["z_vox"], six[0]["y_vox"], six[0]["x_vox"]]) == 6
+    assert six, "the fixture must keep segment 6's row"
+    assert six[0]["point_at"] == "overlap"
+    assert int(b[six[0]["z_vox"], six[0]["y_vox"], six[0]["x_vox"]]) == 6
 
 
 def test_cropping_to_the_pair_changes_nothing(monkeypatch):
-    """The optimisation must be invisible in the answer, only in the time.
-
-    `locate` bounds each row's work to the two labels it names rather than passing over
-    the whole array. That is only sound if the window contains both containers whole --
-    a split's depth is measured inside the body, a merge's inside the segment -- so this
-    pins that the cropped and uncropped paths agree voxel for voxel.
-    """
+    """`locate` crops each row's work to its two labels; the result must match the
+    uncropped path voxel for voxel."""
     rng = np.random.default_rng(0)
     a = rng.integers(1, 7, size=(24, 24, 24), dtype=np.uint64)
     b = rng.integers(1, 9, size=(24, 24, 24), dtype=np.uint64)
@@ -315,7 +270,7 @@ def test_cropping_to_the_pair_changes_nothing(monkeypatch):
 
 
 def test_a_label_missing_from_the_box_map_falls_back_to_the_whole_array():
-    """`_window` returns None rather than guessing, so an unknown label still works."""
+    """No box for a label means the whole array, not a guess."""
     a = np.ones((8, 8, 8), dtype=np.uint64)
     b = np.full((8, 8, 8), 5, dtype=np.uint64)
     b[4:] = 6
@@ -357,7 +312,7 @@ def test_world_coordinates_come_from_the_frame():
 
 
 def test_the_strided_fallback_still_lands_inside_the_pair():
-    """Forced by a tiny cap, so the approximate path is exercised rather than assumed."""
+    """Forced by a tiny cap, so the approximate path is exercised."""
     a = np.ones((12, 12, 12), dtype=np.uint64)
     b = np.full((12, 12, 12), 5, dtype=np.uint64)
     b[3:9, 3:9, 3:9] = 6
@@ -396,8 +351,7 @@ def _shaped(a, b, **kw):
 
 
 def test_a_merge_is_a_line_from_one_reference_body_to_the_other():
-    """The line is the annotation for a merge because it connects the two things that
-    should not be connected: one end in each body, both ends in the one segment."""
+    """One end in each body, both ends in the one segment."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     a[8:] = 2
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
@@ -413,8 +367,7 @@ def test_a_merge_is_a_line_from_one_reference_body_to_the_other():
 
 
 def test_a_split_is_an_ellipsoid_flat_across_the_cut():
-    """The cut is a z-plane, so the ellipsoid must be thin in z and wide in y and x -- its
-    shape is what says how big the false boundary is."""
+    """The cut is a z-plane, so the ellipsoid is thin in z and wide in y and x."""
     a, b = _slab()
     six = next(r for r in _shaped(a, b) if r["b_id"] == 6)
     (s,) = six["shapes"]
@@ -426,8 +379,7 @@ def test_a_split_is_an_ellipsoid_flat_across_the_cut():
 
 
 def test_the_largest_patch_wins_not_a_stray_contact():
-    """Two segments meeting over a whole plane AND at one stray voxel: the shape must sit
-    on the plane. A single deepest voxel can land on the stray contact; a patch cannot."""
+    """Segments meeting over a plane and at one stray voxel: the shape sits on the plane."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
     b[8:] = 6
@@ -438,9 +390,8 @@ def test_the_largest_patch_wins_not_a_stray_contact():
 
 
 def test_a_cut_drawn_as_membrane_is_still_a_cut():
-    """A delivery that marks membrane as an ignored 0 separates the two pieces of a split
-    body by that membrane, so they never touch. Bridging `gap` ignored voxels is what
-    finds the cut at all; with gap=0 there is nothing to draw."""
+    """With membrane as an ignored 0, the two pieces never touch; bridging `gap` ignored
+    voxels finds the cut, and gap=0 finds nothing."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
     b[8:] = 6
@@ -467,19 +418,18 @@ def test_a_tangle_gets_both_shapes():
 
 
 def test_sample_ids_names_what_every_layer_has_at_the_anchors():
-    """The rule behind linking every layer: whatever each labelling has at the two ends.
-    Here a third labelling agrees with the reference, so it names TWO objects -- which is
-    exactly what tells a viewer that delivery did not make this merge."""
+    """Each labelling names what it has at the two ends. A third that agrees with the
+    reference names two objects, which shows it did not make this merge."""
     a = np.ones((16, 16, 16), dtype=np.uint64)
     a[8:] = 2
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
     third = np.where(a == 1, 70, 80).astype(np.uint64)
     third[0] = 0                                       # membrane, never named
-    rows = disagree.sample_ids(_shaped(a, b), {"gt": _piece(a), "vi": _piece(b),
-                                              "zetta": _piece(third)},
-                               ignore={"zetta": (0,)})
+    rows = disagree.sample_ids(_shaped(a, b), {"gt": _piece(a), "seg": _piece(b),
+                                              "other": _piece(third)},
+                               ignore={"other": (0,)})
     ids = rows[0]["shapes"][0]["ids"]
-    assert ids["gt"] == ["1", "2"] and ids["vi"] == ["5"] and ids["zetta"] == ["70", "80"]
+    assert ids["gt"] == ["1", "2"] and ids["seg"] == ["5"] and ids["other"] == ["70", "80"]
 
 
 def test_sample_ids_refuses_pieces_on_different_grids():
@@ -495,11 +445,9 @@ def test_without_shapes_the_rows_are_as_before():
 
 
 def test_a_boundary_sliver_is_not_taken_for_the_other_half_of_a_split():
-    """The real-data failure. Reference and segmentation draw a cell boundary a voxel apart,
-    so a strip of the NEIGHBOURING cell's segment lies inside the body -- along its whole
-    boundary, which can give it more contact than the true cut has. Chosen by contact, the
-    shape lands on an ordinary cell boundary. The other half of a split must be a piece
-    that is mostly INSIDE the body."""
+    """Boundaries drawn a voxel apart put a strip of the neighbour's segment inside the
+    body, possibly with more contact than the true cut. The other half of a split must be
+    a piece mostly inside the body."""
     a = np.full((16, 16, 16), 1, dtype=np.uint64)
     a[:, :, 12:] = 2                                    # body 1 is x<12, body 2 beyond
     b = np.full((16, 16, 16), 5, dtype=np.uint64)       # segment 5: most of body 1
@@ -517,9 +465,8 @@ def test_a_boundary_sliver_is_not_taken_for_the_other_half_of_a_split():
 # -- the thin-pair gate: boundary disagreements are not structure -----------------------
 
 def _strip_fixture():
-    """Body 1 (x<12) cut at z=8 into segments 5 and 6 -- a real split -- and segment 9
-    (body 2, x>=12) reaching one voxel into body 1 along their boundary: the offset two
-    labelings produce when they place one cell boundary a voxel apart."""
+    """Body 1 (x<12) cut at z=8 into segments 5 and 6, a real split, and segment 9 (body 2)
+    reaching one voxel into body 1 along their boundary."""
     a = np.full((16, 16, 16), 1, dtype=np.uint64)
     a[:, :, 12:] = 2
     b = np.full((16, 16, 16), 5, dtype=np.uint64)
@@ -538,8 +485,7 @@ def test_thin_pairs_finds_the_strip_and_not_the_real_piece():
 
 
 def test_excluding_thin_pairs_removes_the_false_merge_and_keeps_the_split():
-    """The strip is dropped from partner COUNTING too: otherwise segment 9 would still be
-    "a merge of bodies 1 and 2" even with the strip's own row gone."""
+    """The strip is dropped from partner counting too, so segment 9 is no longer a merge."""
     a, b = _strip_fixture()
     c = contingency(a, b, ignore_a=())
     before = disagree.rows(c)

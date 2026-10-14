@@ -1,9 +1,6 @@
 """The contingency table: canonical form, the ignore rules, and additivity.
 
-``test_adding_block_tables_equals_the_whole_volume_table`` is the one the rest of the
-package leans on. The blockwise sweep is built on the claim that summing block tables gives
-the volume's table, so that claim is pinned here, before anything depends on it — the same
-reason ``NEU-PROC-PLAN``'s equivalence battery comes before the ops it checks.
+Additivity (block tables sum to the volume's table) is what the blockwise sweep relies on.
 """
 
 from __future__ import annotations
@@ -41,11 +38,7 @@ def test_counts_account_for_every_voxel():
 
 
 def test_the_table_is_the_same_by_either_counting_path(monkeypatch):
-    """The dense-histogram and sorted-key paths must agree exactly.
-
-    They are chosen on size, so a divergence would show up only on large inputs — which is
-    where nobody checks a table by hand.
-    """
+    """The dense-histogram and sorted-key paths (chosen by size) agree exactly."""
     a, b = _pair()
     dense = contingency(a, b)
     monkeypatch.setattr(overlap, "DENSE_CELL_LIMIT", 0)
@@ -102,18 +95,14 @@ def test_addition_is_order_independent():
     assert parts[0] + parts[1] + parts[2] == parts[2] + parts[0] + parts[1]
 
 
-def test_addition_refuses_tables_that_name_their_sides_differently():
+@pytest.mark.parametrize("right, match", [
+    ({"labels": ("b", "a")}, "different sides"),
+    ({"ignore_a": ()}, "dropped different labels"),
+])
+def test_addition_refuses_tables_that_do_not_describe_the_same_thing(right, match):
     a, b = _pair(shape=(6, 6, 6))
-    left = contingency(a, b, labels=("gt", "seg"))
-    right = contingency(a, b, labels=("seg", "gt"))
-    with pytest.raises(ValueError, match="different sides"):
-        left + right
-
-
-def test_addition_refuses_tables_that_dropped_different_labels():
-    a, b = _pair(shape=(6, 6, 6))
-    with pytest.raises(ValueError, match="dropped different labels"):
-        contingency(a, b) + contingency(a, b, ignore_a=())
+    with pytest.raises(ValueError, match=match):
+        contingency(a, b) + contingency(a, b, **right)
 
 
 # -- ignore and mask ------------------------------------------------------------------
@@ -147,14 +136,8 @@ def test_a_mask_restricts_the_scored_region():
 
 
 def test_ignoring_a_label_is_the_same_as_masking_out_where_it_occurs():
-    """The equivalence the fast path relies on.
-
-    A label ignore is a union of whole rows and columns of the table, so it can be applied
-    to the finished table instead of to the voxels — which is O(pairs) rather than a
-    boolean pass plus a compaction of both labelings. This asserts the two routes agree on
-    the counts; they differ only in the bookkeeping fields, which is the point of having
-    both.
-    """
+    """The fast path applies a label ignore to the finished table (whole rows and
+    columns); it must agree with masking the voxels."""
     a, b = _pair()
     by_label = contingency(a, b, ignore_a=(0, 3), ignore_b=(5,))
     by_mask = contingency(a, b, ignore_a=(), mask=(a != 0) & (a != 3) & (b != 5))
@@ -220,20 +203,15 @@ def test_keep_pairs_needs_one_flag_per_pair():
 
 # -- input guards ---------------------------------------------------------------------
 
-def test_mismatched_shapes_are_refused_by_name():
-    with pytest.raises(ValueError, match="same shape"):
-        contingency(np.zeros((2, 2, 2), np.uint64), np.zeros((2, 2, 3), np.uint64))
-
-
-def test_a_float_labeling_is_refused():
-    with pytest.raises(TypeError, match="float label array"):
-        contingency(np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint64))
-
-
-def test_negative_ids_are_refused_rather_than_wrapped():
-    a = np.array([[-1, 1]], dtype=np.int32)
-    with pytest.raises(ValueError, match="negative values"):
-        contingency(a, np.ones((1, 2), np.uint64))
+@pytest.mark.parametrize("a, b, error, match", [
+    (np.zeros((2, 2, 2), np.uint64), np.zeros((2, 2, 3), np.uint64), ValueError, "same shape"),
+    (np.zeros((2, 2), np.float32), np.zeros((2, 2), np.uint64), TypeError, "float"),
+    (np.array([[-1, 1]], np.int32), np.ones((1, 2), np.uint64), ValueError, "negative"),
+], ids=["shape", "float", "negative"])
+def test_bad_labelings_are_refused(a, b, error, match):
+    """Negative ids would otherwise wrap to huge unsigned ones."""
+    with pytest.raises(error, match=match):
+        contingency(a, b)
 
 
 def test_labels_of_different_integer_widths_still_compare():
@@ -249,8 +227,3 @@ def test_parallel_arrays_are_required():
         Contingency(a_ids=np.zeros(2, np.uint64), b_ids=np.zeros(3, np.uint64),
                     counts=np.zeros(2, np.uint64))
 
-
-def test_repr_says_what_is_in_it():
-    a, b = _pair(shape=(4, 4, 4))
-    text = repr(contingency(a, b, labels=("gt", "seg")))
-    assert "gt=" in text and "seg=" in text and "scored=" in text

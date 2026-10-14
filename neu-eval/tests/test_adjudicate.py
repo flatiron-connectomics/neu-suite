@@ -18,25 +18,13 @@ def _c(a, b, labels=("gt", "seg")):
 
 # -- what the vocabulary is -------------------------------------------------------------
 
-def test_the_verdicts_follow_the_side_names():
-    assert adjudicate.verdict_names(("gt", "seg"))[:2] == ("gt_correct", "seg_correct")
-    assert adjudicate.verdict_names(("v1", "v2"))[:2] == ("v1_correct", "v2_correct")
-
-
-def test_the_default_exclusion_follows_the_side_names_too():
-    """The bug this caught: a constant `seg_correct` matched nothing under other names.
-
-    With --labels v1,v2 the reviewer writes `v2_correct`, no verdict matched, and the
-    adjudicated score came back exactly equal to the raw one with nothing to say why.
-    """
-    assert adjudicate.default_exclude(("gt", "seg")) == ("seg_correct",)
-    assert adjudicate.default_exclude(("v1", "v2")) == ("v2_correct",)
-
-
-def test_nothing_says_right_anywhere_in_the_vocabulary():
-    """`right` reads as a tuple position; the verdicts say `correct`."""
-    for name in adjudicate.verdict_names(("gt", "seg")):
-        assert "right" not in name
+@pytest.mark.parametrize("labels", [("gt", "seg"), ("v1", "v2")])
+def test_the_verdicts_and_the_default_exclusion_follow_the_side_names(labels):
+    """A fixed `seg_correct` would match nothing under other side names, leaving the
+    adjudicated score silently equal to the raw one."""
+    first, second = labels
+    assert adjudicate.verdict_names(labels)[:2] == (f"{first}_correct", f"{second}_correct")
+    assert adjudicate.default_exclude(labels) == (f"{second}_correct",)
 
 
 # -- exclusion --------------------------------------------------------------------------
@@ -51,11 +39,8 @@ def test_excluding_a_pair_moves_its_voxels_out_of_the_denominator():
 
 
 def test_the_region_total_is_conserved():
-    """`n_scored + n_ignored` still totals the box, however much is adjudicated away.
-
-    Which is what lets a report state the price of the correction instead of quietly
-    shrinking the thing the score is about.
-    """
+    """`n_scored + n_ignored` still totals the box, so a report can state what the
+    correction excluded."""
     c = _c([1] * 5 + [2] * 5, [5] * 10)
     total = c.n_scored + c.n_ignored
     after = adjudicate.apply(c, {"1:5": "seg_correct", "2:5": "seg_correct"})
@@ -70,11 +55,8 @@ def test_only_the_reference_is_wrong_verdict_excludes_by_default():
 
 
 def test_ambiguous_is_kept_on_purpose_and_can_be_excluded_explicitly():
-    """"I could not tell" is not evidence the reference was wrong.
-
-    Excluding it by default is how an adjudicated score drifts upward one judgement call at
-    a time — so it takes an explicit `exclude=`.
-    """
+    """"I could not tell" is not evidence the reference was wrong, so excluding it takes an
+    explicit `exclude=`."""
     c = _c([1] * 5 + [2] * 5, [5] * 10)
     assert adjudicate.apply(c, {"1:5": "ambiguous"}) == c
     widened = adjudicate.apply(c, {"1:5": "ambiguous"}, exclude=("ambiguous",))
@@ -82,8 +64,7 @@ def test_ambiguous_is_kept_on_purpose_and_can_be_excluded_explicitly():
 
 
 def test_a_verdict_for_a_pair_that_is_not_in_the_table_is_ignored():
-    """A verdict file outlives the table it came from, and min_frac legitimately changes
-    which pairs appear."""
+    """Verdict files outlive their table; `min_frac` changes which pairs appear."""
     c = _c([1] * 5 + [2] * 5, [5] * 10)
     assert adjudicate.apply(c, {"999:888": "seg_correct"}) == c
 
@@ -103,7 +84,7 @@ def test_excluding_everything_leaves_an_empty_but_valid_table():
 # -- guards -----------------------------------------------------------------------------
 
 def test_an_unrecognised_verdict_is_refused_rather_than_ignored():
-    """A typo would otherwise read as "not excluded", which is the direction that flatters."""
+    """A typo would otherwise read as "not excluded", which flatters the score."""
     c = _c([1] * 5 + [2] * 5, [5] * 10)
     with pytest.raises(ValueError, match="unrecognised verdict"):
         adjudicate.apply(c, {"1:5": "sg_corect"})

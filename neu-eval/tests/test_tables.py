@@ -25,7 +25,7 @@ def _rows():
 # -- the csv, which needs no optional dependency -----------------------------------------
 
 def test_the_disagreement_csv_needs_no_pandas(tmp_path, monkeypatch):
-    """The one file a reviewer edits must not require an optional extra to produce."""
+    """The file a reviewer edits must not need the `report` extra."""
     monkeypatch.setitem(__import__("sys").modules, "pandas", None)
     path = tables.write_disagreements(_rows(), tmp_path / "d.csv")
     assert csv.DictReader(open(path)).fieldnames is not None
@@ -39,11 +39,8 @@ def test_the_csv_has_a_blank_verdict_and_note_column(tmp_path):
 
 
 def test_ids_are_written_as_text(tmp_path):
-    """A spreadsheet parses a long integer as float64 and hands back a rounded id.
-
-    So the ids go out as text and `pair_key` is the join key — a reviewer who reformats a
-    column still cannot break the round trip.
-    """
+    """A spreadsheet would round a long integer id through float64; `pair_key` is the join
+    key, so reformatting a column cannot break the round trip."""
     huge = 2**63 + 12345
     rows = [{"pair_key": f"{huge}:5", "kind": "merge", "gt_id": huge, "seg_id": 5,
              "n_voxels": 10, "severity": 0.5}]
@@ -95,20 +92,15 @@ def test_a_file_without_a_verdict_column_is_refused_by_name(tmp_path):
 
 
 def test_rows_with_different_columns_all_keep_their_values(tmp_path):
-    """The header is the UNION, because `rows[0].keys()` silently dropped the rest.
-
-    Real case: one comparison per vendor, each labelled with that vendor's name, appended
-    into one table. The first vendor's id column became the header and 450 of 600 rows came
-    out with no segment id — `pair_key` survived, so adjudication still worked and nothing
-    looked wrong.
-    """
-    rows = [{"pair_key": "1:5", "kind": "split", "gt_id": 1, "zetta_id": 5},
-            {"pair_key": "2:9", "kind": "merge", "gt_id": 2, "vi_id": 9}]
+    """The header is the union of all rows' columns, so tables from comparisons with
+    different side names can be appended without losing ids."""
+    rows = [{"pair_key": "1:5", "kind": "split", "gt_id": 1, "alpha_id": 5},
+            {"pair_key": "2:9", "kind": "merge", "gt_id": 2, "beta_id": 9}]
     path = tables.write_disagreements(rows, tmp_path / "d.csv")
     back = list(csv.DictReader(open(path)))
-    assert {"zetta_id", "vi_id"} <= set(back[0])
-    assert back[0]["zetta_id"] == "5" and back[0]["vi_id"] == ""
-    assert back[1]["vi_id"] == "9" and back[1]["zetta_id"] == ""
+    assert {"alpha_id", "beta_id"} <= set(back[0])
+    assert back[0]["alpha_id"] == "5" and back[0]["beta_id"] == ""
+    assert back[1]["beta_id"] == "9" and back[1]["alpha_id"] == ""
 
 
 def test_a_row_that_already_has_a_verdict_does_not_get_a_second_column(tmp_path):
@@ -126,7 +118,9 @@ def test_an_empty_row_set_still_writes_a_usable_header(tmp_path):
 
 # -- the annotation point list -----------------------------------------------------------
 
-def test_the_annotation_csv_is_three_coordinates_and_a_description(tmp_path):
+def test_the_annotation_csv_has_the_columns_neu_glance_reads(tmp_path):
+    """Pinned as a literal: neu-glance rejects any other header (z_nm/y_nm/x_nm, say), and
+    nothing on this side would notice. The next test runs the real reader."""
     a = np.ones((8, 8, 8), dtype=np.uint64)
     b = np.full((8, 8, 8), 5, dtype=np.uint64)
     b[4:] = 6
@@ -141,28 +135,8 @@ def test_the_annotation_csv_is_three_coordinates_and_a_description(tmp_path):
     assert "split" in got[0]["description"]
 
 
-def test_the_annotation_columns_are_the_ones_neu_glance_demands(tmp_path):
-    """Pinned as a literal, because getting it wrong is invisible from this side.
-
-    `annotation_csv` shipped writing z_nm/y_nm/x_nm, which neu-glance's reader rejects —
-    and three of our own docs advertised the command that fails. A unit test on our own
-    output could not have caught that; only running the consumer could. So this pins the
-    header, and the test below runs the real reader when it is available.
-    """
-    rows = [{"z_nm": 1.0, "y_nm": 2.0, "x_nm": 3.0, "kind": "split",
-             "pair_key": "7:9", "severity": 0.5, "worst_fraction": 0.5,
-             "gt_id": 7, "seg_id": 9}]
-    path = tables.annotation_csv(rows, tmp_path / "ann.csv")
-    assert csv.DictReader(open(path)).fieldnames == [
-        "z", "y", "x", "description", "segments"]
-
-
 def test_neu_glance_actually_accepts_the_annotation_file(tmp_path):
-    """The cross-package contract, checked against the real reader.
-
-    Skips when neu-glance is absent (it is the `link` extra, not a dependency) — the
-    table is the interface and this package must not import it to work.
-    """
+    """Against neu-glance's real reader; skips without the `link` extra."""
     layers = pytest.importorskip("neu_glance.layers")
 
     rows = [{"z_nm": 1000.0, "y_nm": 2000.0, "x_nm": 3000.0, "kind": "merge",
@@ -245,7 +219,7 @@ def test_shape_csvs_write_neu_glances_columns_one_set_per_kind(tmp_path):
 
     from neu_eval.tables import shape_csvs
 
-    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+    out = shape_csvs(_shaped_rows(), tmp_path, "seg", labels=("a", "b"),
                      relationships=("a", "b", "c"))
     assert set(out) == {"merges", "splits"}
     lines = list(csv.DictReader(open(out["merges"]["lines"])))
@@ -263,7 +237,7 @@ def test_a_row_without_a_shape_is_kept_as_a_point(tmp_path):
 
     from neu_eval.tables import shape_csvs
 
-    out = shape_csvs(_shaped_rows(), tmp_path, "vi", labels=("a", "b"),
+    out = shape_csvs(_shaped_rows(), tmp_path, "seg", labels=("a", "b"),
                      relationships=("a", "b"))
     (pt,) = list(csv.DictReader(open(out["splits"]["points"])))
     assert pt["id"] == "4:8:point" and "no seam found" in pt["description"]
