@@ -1,19 +1,15 @@
 """Layers built from something on a store: a volume, or a precomputed annotation source.
 
-This is the only module that reads a store, and it reads as little as it can. The whole
-neu-vol dependency is concentrated here so :mod:`neu_glance.state` and
-:mod:`neu_glance.layers` stay pure — which matters beyond tidiness: a layer whose source is a
-locally served volume (`http://localhost:PORT/...`) has no store to inspect, so state
-assembly must never require one.
+The only module in this package that reads a store, so :mod:`neu_glance.state` and
+:mod:`neu_glance.layers` stay pure and work for locally served sources that have no store.
 
-Two things here fail silently if you get them wrong:
+Two choices here fail silently if made wrong:
 
-- **The source scheme.** `precomputed://` vs `zarr://` is decided by
-  :func:`~neu_vol.source_metadata.detect_backend`, not by the path.
-- **Volume or annotation source.** Both are addressed `precomputed://` and both have an
-  `info` at the root, so nothing about the URL tells them apart — and an annotation layer
-  pointed at a volume loads happily and draws nothing at all. The ``@type`` is the only
-  honest check, so :func:`read_annotation_info` makes it.
+- **The source scheme** (``precomputed://`` or ``zarr://``) comes from
+  :func:`~neu_vol.source_metadata.detect_backend`, not from the path.
+- **Volume or annotation source.** Both are ``precomputed://`` with an ``info`` at the
+  root, and an annotation layer pointed at a volume loads and draws nothing. Only the
+  ``@type`` tells them apart, so :func:`read_annotation_info` checks it.
 """
 
 from __future__ import annotations
@@ -23,10 +19,8 @@ from typing import Any, Mapping, Sequence
 
 from .shaders import SPLIT_CONTROLS, ShaderProblem, pick_shader
 
-#: How neuroglancer addresses each backend. The classic `scheme://` form rather than the
-#: newer `kvstore|adapter:` pipeline syntax: both work in current builds, only this one
-#: works in older ones, and a link is the thing most likely to be opened by someone
-#: running a different viewer.
+#: How neuroglancer addresses each backend: the classic ``scheme://`` form, which older
+#: viewers read too, rather than the newer ``kvstore|adapter:`` syntax.
 def _scheme_map() -> dict[str, str]:
     from neu_vol.source_metadata import PRECOMPUTED_GZ
 
@@ -38,9 +32,8 @@ def _scheme_map() -> dict[str, str]:
 #: The `@type` a precomputed annotation source declares.
 ANNOTATION_TYPE = "neuroglancer_annotations_v1"
 
-#: The relationship whose *own* end of the line is the given side, and the shader controls that
-#: show only that end. Filtering on `body_pre` gives the selected body's OUTPUTS; on `body_post`
-#: its INPUTS. Two layers on one source, which is how the reference dataset presents them.
+#: ``(side, relationship)`` for the two halves of a synapse source. Filtering on ``body_pre``
+#: gives the selected body's outputs; on ``body_post``, its inputs.
 SPLIT_SIDES = (("pre", "body_pre"), ("post", "body_post"))
 
 
@@ -49,13 +42,8 @@ class SourceProblem(RuntimeError):
 
 
 def _quiet(fn):
-    """Filter the benign store-credential logging every S3/GCS open emits.
-
-    Wrapped here, not left to the caller: a manual call is worse than the noise, because
-    forgetting it looks identical to the filter being broken. Same treatment
-    `neu_draw.sources` gives its readers. `neu_vol.logs.quiet_reads` nests and is
-    thread-safe; set `neu_vol.logs.reads_quiet = False` to see the raw lines.
-    """
+    """Filter the benign credential log lines every S3/GCS open emits, so callers need not.
+    Set ``neu_vol.logs.reads_quiet = False`` to see them."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         from neu_vol.logs import quiet_reads
@@ -69,10 +57,7 @@ def _quiet(fn):
 def volume_extent(volume: str, fmt: str) -> tuple[tuple, tuple] | None:
     """``(extent_zyx, offset_zyx)`` in level-0 voxels, or None if not determinable.
 
-    Read as cheaply as the format allows: precomputed carries every scale's ``size`` and
-    ``voxel_offset`` in the one ``info`` this has already fetched, so it costs nothing,
-    while zarr needs the level-0 array's own metadata — one open, not the every-level
-    probe that ``describe`` does.
+    Precomputed answers from the root ``info``; zarr opens the level-0 array once.
     """
     from neu_vol.location import read_json
     from neu_vol.source_metadata import read_source_metadata
@@ -106,9 +91,8 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
                  opacity: float | None = None) -> tuple[dict, dict]:
     """One layer for ``volume``, plus what its metadata says about the frame.
 
-    ``kind`` overrides the volume's own record of whether it is an image or a
-    segmentation; without it the recorded value decides, because a segmentation shown as
-    an image is a grey mush and the mistake is easy to miss on a small ROI.
+    ``kind`` (``"image"`` or ``"segmentation"``) overrides what the volume records; without
+    it the recorded kind decides, defaulting to image.
     """
     from neu_vol.source_metadata import detect_backend, read_source_metadata
 
@@ -120,11 +104,8 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
     if scheme is None:
         raise SourceProblem(f"{volume} is {fmt}, which neuroglancer cannot read")
 
-    # `read_source_metadata`, NOT `describe`: this needs the voxel size, the units and
-    # the recorded kind, all of which are in `info`. `describe` additionally OPENS EVERY
-    # LEVEL and probes for a foreign marker — the expensive tier documented in
-    # source_metadata — and a link needs none of it. Two volumes here meant ~20 store
-    # opens for numbers already read.
+    # read_source_metadata, not describe: everything needed is in `info`, and describe
+    # opens every level.
     meta = read_source_metadata({"backend": fmt, "path": volume}) or {}
     resolved = kind or meta.get("kind") or "image"
     layer: dict[str, Any] = {
@@ -133,8 +114,7 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
         "source": f"{scheme}://{volume}",
     }
     if segments:
-        # Strings, not ints: neuroglancer segment ids are uint64 and JSON numbers are
-        # doubles, so a real id above 2**53 would arrive rounded.
+        # Strings: segment ids are uint64, and a JSON number above 2**53 is rounded.
         layer["segments"] = [str(int(s)) for s in segments]
     if opacity is not None:
         layer["opacity"] = float(opacity)
@@ -169,16 +149,13 @@ def annotation_layer(source: str, *, name: str | None = None,
                      info: Mapping[str, Any] | None = None) -> tuple[dict, dict]:
     """One annotation layer for a precomputed annotation source, plus its frame.
 
-    ``linked_segmentation`` is the name of a segmentation layer in the same state, and it is
-    **what makes the relationship index do anything in the viewer**. The source's
-    ``relationships`` are keyed on segment id, but neuroglancer only consults them once each
-    relationship is bound to a layer whose selected segments it can read; without the binding
-    the layer draws every annotation and "this body's synapses" is not available at all.
+    ``linked_segmentation`` names a segmentation layer in the same state. Without it the
+    source's ``relationships`` index does nothing: neuroglancer only uses a relationship once
+    it is bound to a layer whose selected segments it can read, and otherwise draws every
+    annotation.
 
-    ``filter_relationships`` narrows which of them the filter uses. Every relationship stays
-    *bound* regardless — binding is what makes a relationship usable, filtering is what decides
-    whether it restricts the view — and filtering on a subset is what turns one source into
-    "this body's outputs" and "this body's inputs" as separate layers.
+    Every relationship is bound; ``filter_relationships`` chooses which ones restrict the
+    view, e.g. only ``body_pre`` for the selected body's outputs.
     """
     source = source.rstrip("/")
     info = dict(info) if info is not None else read_annotation_info(source)
@@ -218,13 +195,9 @@ def annotation_layer_pair(source: str, *, name: str | None = None,
                           filter_by_segmentation: bool = True) -> tuple[list[dict], dict]:
     """Two layers on one source: the selected body's outputs, then its inputs.
 
-    A single layer filtered on both relationships answers "every synapse touching this body",
-    which conflates the two directions — and drawn together the endpoint markers overlap at any
-    zoom that shows more than a few. Splitting costs nothing on the store (one source, two
-    layers) and each half then has its own visibility, colour and marker size.
-
-    The ``info`` is read ONCE and reused for both halves, so a split costs no extra store
-    access.
+    One layer filtered on both relationships mixes the two directions, and their markers
+    overlap. Split, each half has its own visibility, colour and marker size. The ``info`` is
+    read once for both.
     """
     base = (name or source.rstrip("/").rsplit("/", 1)[-1])
     info = read_annotation_info(source)
@@ -244,9 +217,8 @@ def annotation_layer_pair(source: str, *, name: str | None = None,
 def annotation_source_extent(info: Mapping[str, Any]) -> tuple[tuple, tuple] | None:
     """``(extent_zyx, offset_zyx)`` from an annotation source's declared bounds.
 
-    The format requires ``lower_bound``/``upper_bound``, so an annotations-only link can
-    still open framed on its data rather than at the origin corner — the same job
-    :func:`volume_extent` does for a volume.
+    Lets an annotations-only link open framed on its data, as :func:`volume_extent` does
+    for a volume.
     """
     lower, upper = info.get("lower_bound"), info.get("upper_bound")
     if not lower or not upper or len(lower) != 3 or len(upper) != 3:
@@ -260,8 +232,8 @@ def annotation_source_extent(info: Mapping[str, Any]) -> tuple[tuple, tuple] | N
 def annotation_source_voxel_size(info: Mapping[str, Any]) -> tuple | None:
     """Level-0 voxel size in nm, zyx, from the source's ``dimensions``.
 
-    ``dimensions`` is ``{axis: [scale, unit]}`` in SI, so metres become nanometres here.
-    Lets an annotations-only link establish the viewer's frame without --voxel-size.
+    ``dimensions`` is ``{axis: [scale, unit]}`` in SI units (metres). None if absent or not
+    in metres.
     """
     dims = info.get("dimensions")
     if not isinstance(dims, Mapping):
@@ -279,23 +251,9 @@ def annotation_source_voxel_size(info: Mapping[str, Any]) -> tuple | None:
 
 
 def _readback():
-    """`neu_morpho.readback`, or a clear error naming the extra.
-
-    **This is a `neu-codecs` dependency wearing neu-morpho's clothes**, not a new hole in the
-    layering. `RENAME-PLAN.md`'s stage 6 already AGREES that `neu_morpho/readback.py` — "the
-    mesh and skeleton readers" — belongs in a bottom-tier `neu-codecs` package beside
-    blockrun, because decoding the precomputed format needs no store and no meshing library.
-    neu-draw reached for the same reader for the same reason and took the same temporary
-    dependency (`neu_draw/sources.py`, its `sources` extra). So this is a **second consumer
-    confirming that extraction**, and when stage 6 lands it becomes an ordinary downward
-    dependency and this function changes by one import line.
-
-    Until then it is deferred and behind an extra, exactly like `serving._neuroglancer`, so
-    `import neu_glance` and every pure path stay off neu-morpho's import graph and neu-glance's
-    conda-free CI is unaffected. Verified: `readback` imports with `vol2mesh`, `dvidutils`,
-    `neuclease` and `kimimaro` all absent, pulling in only numpy — the conda-only packages are
-    the *meshing* pipeline's, not the reader's.
-    """
+    """``neu_morpho.readback`` (the ``framing`` extra), imported on first use, or a clear
+    error naming the extra. The reader needs only numpy, none of neu-morpho's conda-only
+    meshing dependencies."""
     try:
         from neu_morpho import readback
     except ImportError as e:
@@ -312,35 +270,19 @@ def segment_boxes(volume: str, segment_ids: Sequence[Any], *, lod: int | None = 
                   skip_missing: bool = True) -> dict[str, tuple[tuple, tuple]]:
     """``{segment_id: (lo_zyx, hi_zyx)}`` in **nanometres**, from each segment's mesh.
 
-    What :meth:`neu_glance.animate.Timeline.frame_on` needs in order to point the camera at a
-    named object rather than at coordinates someone read off the screen.
+    For :meth:`neu_glance.animate.Timeline.frame_on`. Bounds come from the mesh rather than
+    a coarse level of the segmentation, where a thin arbor can shrink or vanish and the box
+    would be wrong. ``lod=None`` reads the coarsest level of detail, which is small and
+    bounds the object just as well. Sharded sources and a source's own ``transform`` are
+    handled, so the result is in nm.
 
-    **The mesh is the right source for this, which is why it is worth the layering
-    exception.** The obvious alternative — read a coarse level of the segmentation and take
-    each label's extent — needs no new dependency but is wrong in a way that does not
-    announce itself: a thin arbor thins out of existence on the way down a pyramid (the
-    suite's OCCUPANCY-DILATION invariant is about exactly this non-convergence), so a neuron
-    gets a box that is too small, or no box at all, and the camera frames the wrong thing. A
-    mesh's vertices are the object.
-
-    Cheap despite that: ``lod=None`` takes the **coarsest** level of detail, which is a small
-    download and gives bounds indistinguishable from LOD 0's for framing. `readback` also
-    handles sharded and unsharded sources alike and applies a foreign source's own
-    ``transform``, so bounds come back in the same nanometre model space everything else
-    uses — the NM-SPACE invariant — rather than in whatever the publisher happened to store.
-
-    ``skip_missing`` drops a segment with no mesh; a structurally broken source still raises,
-    since "no meshes here" and "this reader cannot decode this" look identical otherwise.
+    ``skip_missing`` drops a segment with no mesh; a structurally broken source still raises.
     """
     readback = _readback()
     ids = [str(s).lstrip("!") for s in segment_ids]
     boxes: dict[str, tuple[tuple, tuple]] = {}
-    # Resolved from `info` rather than left to default. `read_body_mesh` declares
-    # `mesh_dir: str = "mesh"`, so passing None through OVERRIDES its default with None and it
-    # goes looking for a subresource directory literally named "None" — which is absent, so
-    # every body comes back "no mesh" and the batch returns an empty dict. Structurally broken
-    # and indistinguishable from a volume that simply has no meshes, which is invariant
-    # SKIP-MISSING's whole subject. Resolving here makes a missing subresource raise instead.
+    # Resolved from `info`: passing None to read_body_mesh would look for a directory named
+    # "None" and report every body as having no mesh.
     directory = mesh_dir or _subresource(volume, "mesh")
 
     from concurrent.futures import ThreadPoolExecutor
@@ -364,11 +306,8 @@ def segment_boxes(volume: str, segment_ids: Sequence[Any], *, lod: int | None = 
 
 
 def _subresource(volume: str, key: str, info: Mapping[str, Any] | None = None) -> str:
-    """The subdirectory a volume's ``info`` names for ``key``. Never guessed.
-
-    A default would be a guess that loads and finds nothing — the same class of failure
-    `read_annotation_info` exists to prevent.
-    """
+    """The subdirectory a volume's ``info`` names for ``key``. Raises if there is none,
+    rather than guessing a name that would find nothing."""
     from neu_vol import read_json
 
     info = info if info is not None else read_json(volume, "info")
@@ -386,14 +325,8 @@ def _subresource(volume: str, key: str, info: Mapping[str, Any] | None = None) -
 def segment_labels(volume: str, *, info: Mapping[str, Any] | None = None) -> dict[str, str]:
     """``{segment_id: label}`` from a volume's ``segment_properties`` subresource.
 
-    The human-readable half of a segmentation. A neuropil is ``"LAL(L)"`` to anyone reading a
-    figure and ``22`` only to the file format, so this is what lets an animation be written in
-    names — which are reviewable — instead of ids nobody can check.
-
-    Reads the one ``info`` document and nothing else. The format keeps ids and each property's
-    values as parallel arrays, so the pairing is positional; a source whose arrays disagree in
-    length is refused rather than zipped short, since that would silently mislabel every
-    segment after the first mismatch.
+    Lets code name segments (``"LAL(L)"``) rather than ids. The format pairs ids and values
+    by position, so arrays of different lengths raise rather than mislabel segments.
     """
     from neu_vol import read_json
 
@@ -428,10 +361,8 @@ def segment_ids(volume: str, names: Sequence[str], *,
                 info: Mapping[str, Any] | None = None) -> list[str]:
     """Segment ids for ``names``, in order. Raises on a name the source does not carry.
 
-    Refusing is the point: a mistyped region silently dropped from an animation is a shot that
-    renders perfectly and is missing a piece, which nobody notices until the video is watched.
-    Labels are not guaranteed unique, so a name matching several segments raises too rather
-    than picking one.
+    A mistyped name raises (with close matches suggested) rather than being dropped. Labels
+    are not unique in this format, so a name matching several segments also raises.
     """
     labels = segment_labels(volume, info=info)
     by_name: dict[str, list[str]] = {}
@@ -466,15 +397,10 @@ def segment_ids(volume: str, names: Sequence[str], *,
 def read_segment_properties(volume: str, *, info: Mapping[str, Any] | None = None) -> dict:
     """Everything a volume's ``segment_properties`` carries, in ONE read.
 
-    ``{"ids", "labels", "tags", "numbers", "vocabulary"}`` — ids as strings, labels parallel
-    to them, tags already resolved from indices to strings, and each numeric property under
-    its own name. The document is a single object holding every segment (19,983 on the
-    reference volume), so reading it once and slicing is the difference between one fetch and
-    one per question asked.
-
-    The format keeps every property as an array parallel to ``ids``, so **everything here is
-    positional** and a length mismatch is refused rather than zipped short — that would
-    silently attach one segment's label and another's tags to the same body.
+    Returns ``{"ids", "labels", "tags", "numbers", "vocabulary"}``: ids as strings, labels
+    parallel to them, tags resolved from indices to strings, and each numeric property under
+    its own name. Pass the result to :func:`select_segments` to query it without re-reading.
+    Properties are paired with ids by position, so a length mismatch raises.
     """
     from neu_vol import read_json
 
@@ -531,25 +457,17 @@ def select_segments(volume: str, *, tags: Sequence[str] | None = None,
                     label: str | None = None, limit: int | None = None,
                     order_by: str | None = "voxels", properties: Mapping | None = None
                     ) -> list[str]:
-    """Segment ids matching a tag and/or label query. The way a NAMED SET gets built.
+    """Segment ids matching a tag and/or label query.
 
-    - ``tags`` — every one must be present (and);
-    - ``any_tags`` — at least one must be (or);
-    - ``without`` — none may be, which is how ``fragment`` and ``truncated`` get excluded;
-    - ``label`` — a regular expression, searched (not anchored) against the label string.
+    - ``tags``: all must be present;
+    - ``any_tags``: at least one must be;
+    - ``without``: none may be (e.g. ``fragment``, ``truncated``);
+    - ``label``: a regular expression, searched (not anchored) in the label.
 
-    Combined with **and**, so ``tags=["side:L"], label=r"^KC"`` is left-side KCs. An empty
-    result is returned as such rather than raised on: a query matching nothing is a normal
-    answer while composing a set, unlike a *name* that does not exist.
-
-    ``limit`` keeps the largest by ``order_by`` (``voxels`` by default), because a set is
-    almost always trimmed for rendering and the biggest bodies are the ones that read on
-    screen — taking an arbitrary slice instead would drop exactly the ones worth seeing. Pass
-    ``order_by=None`` to keep the source's own order.
-
-    **Sets can be enormous** — ``side:R`` alone is 9,004 bodies on the reference volume, which
-    is a scene no viewer will draw. The count comes back for the caller to check; nothing here
-    guesses a ceiling.
+    Conditions combine with "and", so ``tags=["side:L"], label=r"^KC"`` is left-side KCs.
+    No match returns an empty list; an unknown tag raises. ``limit`` keeps the largest by
+    ``order_by`` (``voxels``); ``order_by=None`` keeps the source's order. Sets can be very
+    large (thousands of bodies), so check the count before rendering.
     """
     import re
 
@@ -560,8 +478,7 @@ def select_segments(volume: str, *, tags: Sequence[str] | None = None,
     known = set(read.get("vocabulary") or ())
     unknown = (tags | any_tags | without) - known
     if unknown and known:
-        # A misspelled tag matches nothing and silently empties a set, which looks exactly
-        # like a set that legitimately has no members.
+        # A misspelled tag would otherwise silently empty the set.
         raise SourceProblem(
             f"{volume} has no tag(s) {', '.join(sorted(unknown))}. It has {len(known)}, "
             f"e.g. {', '.join(sorted(known)[:8])}")
@@ -592,21 +509,13 @@ def segments_with_meshes(volume: str, segment_ids: Sequence[Any], *,
                          mesh_dir: str | None = None, threads: int = 32) -> list[str]:
     """The subset of ``segment_ids`` whose meshes are actually in the store, in order.
 
-    **One segment with no mesh hangs a whole render, and nothing says so.** Neuroglancer
-    counts it among the layer's visible chunks and waits for it forever, so the viewer never
-    reports itself ready, so no screenshot is ever sent — the capture blocks at
-    ``N-1 / N chunks, 0 downloading`` indefinitely. Measured: eight real bodies render; the
-    same eight plus one nonexistent id sit at 32/33 and never finish.
+    **One segment with no mesh hangs a render indefinitely.** Neuroglancer waits for its
+    mesh chunk forever, so the viewer never reports ready and the capture stalls at
+    ``N-1 / N chunks``. ``segment_properties`` lists every segment, including unmeshed ones,
+    so filter a set through this before rendering it.
 
-    Bodies get into a set through ``segment_properties``, which lists everything in the
-    segmentation — including whatever was never meshed. So the two disagree by a handful out
-    of thousands, and the handful is enough.
-
-    An existence probe per body, not a read: for an unsharded multi-resolution mesh the
-    manifest is one object per segment, so this is O(1) each and threads well. **A sharded
-    source has no per-body object**, so there is nothing to probe and every id is returned
-    unchecked rather than silently dropped — the same reasoning as invariant
-    SHARDED-SUBRESOURCE, where the unsharded reader reported every body absent.
+    One existence check per body (cheap for unsharded meshes). A sharded source has no
+    per-body object to check, so every id is returned unchecked.
     """
     from concurrent.futures import ThreadPoolExecutor
 

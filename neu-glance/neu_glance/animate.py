@@ -1,36 +1,18 @@
 """Keyframe animation over neuroglancer states — a timeline, and the interpolation under it.
 
-A :class:`Timeline` wraps one **base state** (the link you tuned in the browser) and a list
-of :class:`Tween`\\ s, each naming a single property, a window in time and an easing.
-Everything no tween mentions holds its base value, so a state can be edited — a new segment,
-a different source, a colour change — without re-applying that edit to twenty near-identical
-keyframes.
+A :class:`Timeline` wraps one **base state** (a link tuned in the browser) and a list of
+tweens (:class:`Tween`), each moving one property over a window of time with an easing.
+Anything no tween mentions keeps its base value, so the base can be edited without
+touching the tweens.
 
-**Pure, like :mod:`neu_glance.state` and :mod:`neu_glance.layers`.** Plain dicts in, plain
-dicts out; stdlib only, no numpy, no store, and — deliberately — no ``neuroglancer``. Which
-means the whole of this module, where all the subtle bugs are, is covered by a CI that
-installs no extras. :mod:`neu_glance.rendering` is the half that needs a viewer.
+Pure: plain dicts in and out, stdlib only, no neuroglancer. :mod:`neu_glance.rendering`
+is the half that needs a viewer.
 
-**Why the interpolation is ours rather than neuroglancer's.** ``ViewerState.interpolate``
-exists and looks like exactly the thing to call. Three reasons not to, in order of weight:
-
-1. **It is broken.** ``Layer.interpolate`` (``viewer_state.py:437-443`` in 2.41.2) reads
-   ``a.layer_position``; the property is ``local_position``/``localPosition``. It raises
-   ``AttributeError`` for a state carrying *any* layer, of any type — so
-   ``neuroglancer.tool.video_tool`` is dead as shipped too.
-2. **Even fixed, it does not cover this.** ``SegmentationLayer.interpolate`` handles
-   ``selectedAlpha``, ``notSelectedAlpha`` and ``objectAlpha`` — not
-   ``meshSilhouetteRendering``, not ``segmentColors``. Calling it would mean reimplementing
-   most of it anyway.
-3. **It does not round-trip a state.** On a state carrying no orientation it *invents*
-   ``projectionOrientation`` and ``crossSectionOrientation``, because
-   ``quaternion_slerp(None, None, t)`` returns the identity. What comes back is not what went
-   in. This module writes only what a tween touched.
-
-The *maths*, though, is right and worth not re-deriving: :func:`interpolate_zoom` and
-:func:`interpolate_quaternion` are ported from ``viewer_state.py:75-111``, sign flip and
-small-angle fallback included, and a test pins ours against theirs to 1e-6 so the two cannot
-drift.
+neuroglancer's own ``ViewerState.interpolate`` is not used: in 2.41.2 it raises for any
+state with a layer (it reads a nonexistent ``layer_position``), it covers few layer
+properties, and it adds orientations a state did not have. Its zoom and quaternion
+formulas are ported here (:func:`interpolate_zoom`, :func:`interpolate_quaternion`), and a
+test checks them against neuroglancer's.
 """
 
 from __future__ import annotations
@@ -50,28 +32,19 @@ class AnimateProblem(RuntimeError):
     """A timeline could not be built, or would not animate what it claims to."""
 
 
-#: Where a fade starts, rather than exactly zero. Neuroglancer's mesh draw path is
-#: ``if (objectAlpha <= 0) return``, so a layer at a true zero is skipped entirely — and it
-#: is not established whether its chunks then still count as "visible" for the screenshot
-#: reply, which is what makes a capture wait for data to load. A hair above zero is
-#: indistinguishable on screen and keeps the layer unambiguously in the scene, so the mesh is
-#: there by the time the fade becomes visible.
+#: Where a fade starts, just above zero: neuroglancer skips drawing a layer at
+#: ``objectAlpha <= 0``, and a layer that is not drawn may not have its mesh loaded when it
+#: fades in. 0.001 looks the same as zero on screen.
 FADE_FROM = 0.001
 
-#: The top-level keys :meth:`Timeline.view` lifts out of a state. Everything a camera move
-#: consists of, and nothing else — a keyframe URL also carries layers and a layout, which are
-#: emphatically not what "move the camera to here" should change.
+#: The top-level keys :meth:`Timeline.view` takes from a state: the camera, not the layers
+#: or layout.
 CAMERA_KEYS = ("position", "projectionOrientation", "projectionScale", "projectionDepth",
                "crossSectionOrientation", "crossSectionScale")
 
-#: Neuroglancer's own defaults, read off the ``optional(...)`` declarations in
-#: ``viewer_state.py`` (``SegmentationLayer`` at :941-975, ``ImageLayer.opacity`` at :604).
-#:
-#: **A property absent from a state does not mean zero**, and this is the table that keeps a
-#: fade from starting in the wrong place. ``objectAlpha`` absent means fully opaque;
-#: ``selectedAlpha`` absent means a half-transparent cross-section, not an invisible one. A
-#: tween with no explicit ``start`` on a property the state never mentions reads its opening
-#: value from here, and getting it wrong is invisible in the code and obvious only on screen.
+#: Neuroglancer's layer defaults (from ``viewer_state.py``), used as a tween's start when
+#: the state omits the property. An absent property is not zero: an absent ``objectAlpha``
+#: is fully opaque.
 LAYER_DEFAULTS: dict[str, Any] = {
     "objectAlpha": 1.0,
     "selectedAlpha": 0.5,
@@ -88,10 +61,8 @@ LAYER_DEFAULTS: dict[str, Any] = {
     "pick": True,
 }
 
-#: The same, for the top-level view keys. ``projectionScale`` and ``crossSectionScale`` are
-#: deliberately absent: neuroglancer declares them ``optional(float)`` with no default (it
-#: fits the data instead), so there is no honest value to start a zoom from and a tween on one
-#: must either find it in the state or be given an explicit ``start``.
+#: The same for top-level view keys. The zoom scales have no default (neuroglancer fits the
+#: data), so a zoom tween needs them in the state or an explicit ``start``.
 VIEW_DEFAULTS: dict[str, Any] = {
     "projectionOrientation": [0.0, 0.0, 0.0, 1.0],
     "crossSectionOrientation": [0.0, 0.0, 0.0, 1.0],
@@ -114,14 +85,10 @@ def _smootherstep(t: float) -> float:
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
-#: Easing curves, applied to the normalized parameter **before** the interpolator — so an
-#: eased exponential zoom is still exponential, and an eased slerp is still a great-circle
-#: arc, just traversed at a varying rate.
-#:
-#: Every entry must satisfy ``e(0) == 0``, ``e(1) == 1`` and be monotone, and a test pins
-#: that across the whole table. An overshooting curve (a "back" or "elastic" ease) would drive
-#: ``objectAlpha`` past 1 or a colour channel out of range, and neuroglancer clamps without
-#: saying anything — so the animation would simply flatten at the ends for no visible reason.
+#: Easing curves, applied to the time fraction before interpolating, so an eased zoom is
+#: still exponential and an eased slerp still a great-circle arc. Each must satisfy
+#: ``e(0) == 0`` and ``e(1) == 1`` and be monotone: an overshooting curve would push values
+#: out of range, which neuroglancer silently clamps.
 EASINGS: dict[str, Callable[[float], float]] = {
     "linear": lambda t: t,
     "in": lambda t: t * t,
@@ -131,9 +98,8 @@ EASINGS: dict[str, Callable[[float], float]] = {
     "step": lambda t: 0.0 if t < 1.0 else 1.0,
 }
 
-#: The default. "Slow and smooth" is a request for zero velocity at both ends, which is what
-#: smoothstep gives and what a linear ramp conspicuously does not — a linear camera move
-#: starts and stops with a jerk that reads as a dropped frame.
+#: The default: smoothstep, with zero velocity at both ends. A linear camera move starts and
+#: stops with a visible jerk.
 DEFAULT_EASE = "in-out"
 
 
@@ -153,9 +119,7 @@ def ease(name: str, t: float) -> float:
 def interpolate_linear(a: Any, b: Any, t: float) -> Any:
     """Straight lerp, element-wise for equal-length sequences.
 
-    Sequences of differing length hold ``a``, matching neuroglancer's
-    ``interpolate_linear_optional_vectors``: a 3-vector and a 4-vector have no meaningful
-    midpoint, and inventing one would put the camera somewhere neither state asked for.
+    Sequences of different lengths hold ``a``, as neuroglancer does.
     """
     if a is None or b is None:
         return a if b is None else b
@@ -170,13 +134,9 @@ def interpolate_linear(a: Any, b: Any, t: float) -> Any:
 def interpolate_zoom(a: Any, b: Any, t: float) -> Any:
     """Exponential interpolation, for the two zoom scales. Ported from ``viewer_state.py:107``.
 
-    **This is the "slow and smooth" requirement itself, not a refinement of it.** Zoom is
-    perceived multiplicatively: linear interpolation from 1000 to 4000 puts the midpoint at
-    2500 where the eye expects 2000, so the move visibly accelerates towards the close end and
-    reads as a camera that lost control.
-
-    A non-positive endpoint has no logarithm, and a state can carry one. Rather than raising
-    mid-render, fall back to a lerp — a slightly wrong-feeling move beats a dead render.
+    Zoom is perceived multiplicatively, so a linear zoom visibly accelerates towards the
+    close end. A non-positive endpoint falls back to a linear lerp rather than raising
+    mid-render.
     """
     if a is None or b is None:
         return a if b is None else b
@@ -189,13 +149,9 @@ def interpolate_zoom(a: Any, b: Any, t: float) -> Any:
 def interpolate_quaternion(a: Any, b: Any, t: float) -> list[float]:
     """Spherical linear interpolation. Ported from ``viewer_state.py:75-104`` (via gl-matrix).
 
-    **The sign flip is the point.** ``q`` and ``-q`` are the same rotation, so without it a
-    pair 20° apart can be interpolated the 340° way round and the camera takes a full lazy
-    spin to arrive somewhere it was nearly already pointing. That is why this is a port rather
-    than "a lerp plus a normalize".
-
-    Inputs are assumed unit, as every orientation neuroglancer writes is; a non-unit input
-    gives a non-unit output, exactly as upstream.
+    ``q`` and ``-q`` are the same rotation, so ``b`` is negated when needed to take the short
+    way round (otherwise two views 20 degrees apart can turn 340 degrees). Inputs are assumed
+    to be unit quaternions, as neuroglancer writes them.
     """
     a = list(VIEW_DEFAULTS["projectionOrientation"]) if a is None else [float(v) for v in a]
     b = list(VIEW_DEFAULTS["projectionOrientation"]) if b is None else [float(v) for v in b]
@@ -213,10 +169,9 @@ def interpolate_quaternion(a: Any, b: Any, t: float) -> list[float]:
     return [scale0 * x + scale1 * y for x, y in zip(a, b)]
 
 
-#: Named rotation axes for :meth:`Timeline.orbit`. ``up``/``right``/``forward`` are the
-#: **screen's** axes, so they mean the same thing from any starting view — "spin it
-#: left-to-right as I am looking at it" — while ``x``/``y``/``z`` are the **volume's** own,
-#: so a shot is reproducible across scenes and anatomically meaningful.
+#: Named rotation axes for :meth:`Timeline.orbit`. ``up``, ``right`` and ``forward`` are the
+#: screen's axes, the same from any starting view; ``x``, ``y`` and ``z`` are the volume's,
+#: reproducible across scenes.
 AXES: dict[str, tuple[float, float, float]] = {
     "up": (0.0, 1.0, 0.0), "right": (1.0, 0.0, 0.0), "forward": (0.0, 0.0, 1.0),
     "x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0),
@@ -227,7 +182,7 @@ SCREEN_AXES = frozenset({"up", "right", "forward"})
 
 
 def _quaternion_multiply(a: Sequence[float], b: Sequence[float]) -> list[float]:
-    """Hamilton product, ``xyzw`` order — neuroglancer's, and gl-matrix's."""
+    """Hamilton product, ``xyzw`` order (as in neuroglancer and gl-matrix)."""
     ax, ay, az, aw = (float(v) for v in a)
     bx, by, bz, bw = (float(v) for v in b)
     return [aw * bx + ax * bw + ay * bz - az * by,
@@ -254,16 +209,10 @@ def axis_quaternion(axis: Any, degrees: float) -> list[float]:
 def interpolate_orbit(a: Any, b: Any, t: float) -> list[float]:
     """Rotate ``a`` progressively about an axis. ``b`` is ``{"axis", "degrees", "screen"}``.
 
-    **This is why orbiting cannot be expressed as an interpolation between two captured
-    views, and the reason it exists as its own kind.** Slerp always takes the shortest arc
-    between two orientations, so a full turn is a no-op (start and end are the same rotation)
-    and 200 degrees silently becomes 160 the other way. No number of keyframes fixes that; it
-    is a property of the interpolation. Here the *angle* is what varies, so any rotation is
-    expressible, including several full turns.
-
-    ``screen`` picks the frame the axis is read in — the camera's own (post-multiply, so the
-    scene spins the way it looks on screen from any starting view) or the volume's
-    (pre-multiply, so the shot is reproducible and anatomically meaningful).
+    Slerp between two views always takes the shortest arc, so a full turn would be a no-op
+    and 200 degrees would become 160 the other way. Here the angle varies, so any rotation
+    works, including several turns. ``screen`` reads the axis in the camera's frame
+    (post-multiply) or, if false, the volume's (pre-multiply).
     """
     start = list(VIEW_DEFAULTS["projectionOrientation"]) if a is None else [float(v) for v in a]
     spin = axis_quaternion(b["axis"], float(b["degrees"]) * t)
@@ -274,9 +223,8 @@ def interpolate_orbit(a: Any, b: Any, t: float) -> list[float]:
 def interpolate_zoom_by(a: Any, b: Any, t: float) -> Any:
     """Scale ``a`` by a factor, geometrically. ``b`` is the factor at the end of the window.
 
-    The relative sibling of :func:`interpolate_zoom`: ``zoom(0.5)`` halves the scale — twice
-    as close — from wherever the camera happens to be, without the caller having to know that
-    number. Exponential for the same reason, so the rate of approach is even.
+    Relative and exponential, like :func:`interpolate_zoom`: a factor of 0.5 is twice as
+    close, from wherever the camera is.
     """
     if a is None:
         return a
@@ -294,18 +242,10 @@ def _linear_to_srgb(c: float) -> float:
 def interpolate_hex_color(a: Any, b: Any, t: float, *, space: str = "linear") -> str:
     """A colour ramp, in **linear light** by default. Returns ``#rrggbb``.
 
-    Both endpoints go through :func:`neu_glance.shaders.as_hex_color`, so a name (``"red"``),
-    a hex string and a 3-sequence all work and there is no second colour parser here.
-
-    **Why linear light.** Hex channels are sRGB-encoded, i.e. already gamma-compressed, so
-    averaging them is not averaging light. Halfway from black to red is ``#800000`` that way,
-    which reads as a dark maroon rather than half-lit — and every ramp in a fade-in animation
-    has black or white at one end, so this is the common case, not a corner. Decoding to
-    linear, mixing, and re-encoding gives a midpoint that looks like a midpoint.
-
-    ``space="srgb"`` is the naive form, kept reachable for matching a ramp made in another
-    tool. The linear midpoint is pinned by a test, because a later "simplification" to a
-    straight lerp would silently change the look of every render.
+    Endpoints are anything :func:`neu_glance.shaders.as_hex_color` accepts. Hex channels are
+    gamma-encoded, so averaging them directly makes black-to-red pass through a dark maroon;
+    mixing in linear light gives a midpoint that looks halfway. ``space="srgb"`` mixes the
+    encoded values, to match ramps made elsewhere.
     """
     lo = as_hex_color(a, "colour")
     hi = as_hex_color(b, "colour")
@@ -324,10 +264,9 @@ def interpolate_hex_color(a: Any, b: Any, t: float, *, space: str = "linear") ->
 def interpolate_color_map(a: Any, b: Any, t: float, *, default: str | None = None) -> dict:
     """``segmentColors``, interpolated per segment id.
 
-    A key on both sides ramps. A key on only one side has nothing to ramp *from*, so it falls
-    back to the layer's ``segmentDefaultColor`` when there is one and otherwise **steps** —
-    said out loud here because a segment popping to a new colour partway through a fade, with
-    no explanation, gets blamed on the data rather than on this.
+    A key on both sides ramps. A key on one side only ramps to or from ``default`` (the
+    layer's ``segmentDefaultColor``) if given, and otherwise **steps** at the end of the
+    window.
     """
     a = {str(k): v for k, v in (a or {}).items()}
     b = {str(k): v for k, v in (b or {}).items()}
@@ -349,11 +288,8 @@ def interpolate_color_map(a: Any, b: Any, t: float, *, default: str | None = Non
 def interpolate_step(a: Any, b: Any, t: float) -> Any:
     """Hold ``a``, take ``b`` at the **end** of the transition.
 
-    Not at the midpoint: a boolean or a layout flipping halfway through an otherwise smooth
-    move is a visible artefact with nothing on screen to motivate it. "It changes when the
-    transition completes" is the reading that matches what an author writing
-    ``visible=False`` at ``t=8`` means, and a change wanted elsewhere is a zero-length tween
-    placed there.
+    Not at the midpoint, where a flip mid-move looks like an artefact. For a change at
+    another time, use a zero-length tween there.
     """
     return b if t >= 1.0 else a
 
@@ -366,16 +302,14 @@ INTERPOLATORS: dict[str, Callable[[Any, Any, float], Any]] = {
     "color": interpolate_hex_color,
     "colors": interpolate_color_map,
     "step": interpolate_step,
-    # Relative moves. Their `end` is a delta rather than a destination, so they are never
-    # reached through PROPERTY_KINDS — a tween has to name them explicitly, which
-    # `Timeline.orbit` and `Timeline.zoom` do.
+    # Relative moves: `end` is a delta, so a tween must name these explicitly
+    # (Timeline.orbit and Timeline.zoom do).
     "orbit": interpolate_orbit,
     "zoom_by": interpolate_zoom_by,
 }
 
-#: Which interpolator a property gets. **Anything not named here STEPS**, and that default is
-#: load-bearing: a property nobody thought about must not quietly acquire a plausible-looking
-#: midpoint. A blended ``source`` URL or a two-thirds-applied shader is not a thing.
+#: Which interpolator a property gets. **Anything not named here steps**, so an unlisted
+#: property never gets an invented midpoint.
 PROPERTY_KINDS: dict[str, str] = {
     # per-layer, continuous
     "objectAlpha": "linear",
@@ -398,9 +332,7 @@ PROPERTY_KINDS: dict[str, str] = {
     "segmentDefaultColor": "color",
     "annotationColor": "color",
     "segmentColors": "colors",
-    # explicitly stepped, so the table documents the decision rather than relying on the
-    # default. `segments` above all: a fractional segment list is meaningless, and it is the
-    # property most likely to be reached for instead of splitting the layer.
+    # stepped, listed explicitly (fade individual segments by splitting the layer instead)
     "segments": "step",
     "visible": "step",
     "archived": "step",
@@ -418,11 +350,8 @@ def kind_for(prop: str) -> str:
 # --------------------------------------------------------------------------- #
 # addressing
 # --------------------------------------------------------------------------- #
-# A path is ("<view property>",) or ("layers", "<layer name>", "<layer property>").
-#
-# A TUPLE, never a dotted string. Layer names routinely contain dots and spaces — the wasp
-# scene has `primary.precomputed` and `head.precomputed` — so any dotted grammar needs an
-# escaping scheme, and an escaping scheme needs a parser nobody wants to own or debug.
+# A path is ("<view property>",) or ("layers", "<layer name>", "<layer property>"). A tuple,
+# not a dotted string, because layer names often contain dots and spaces.
 def _layer_in(state: Mapping[str, Any], name: str) -> dict | None:
     for lyr in state.get("layers") or []:
         if isinstance(lyr, dict) and lyr.get("name") == name:
@@ -475,22 +404,11 @@ class Tween:
         return self.at + self.seconds
 
     def value_at(self, t: float, start: Any) -> Any:
-        """The value at ``t``, or :data:`_NOTHING` when this tween has not begun.
-
-        Two boundaries, each of which fails quietly if put the other way round:
-
-        - **After the window closes the tween PINS its end value.** A fade that quietly
-          un-fades once its window passes reads as a data problem, not a timeline bug.
-        - **Before it opens the tween contributes nothing**, so whatever held the property
-          before — the base state, or an earlier tween — still shows.
-        """
+        """The value at ``t``, or :data:`_NOTHING` before the tween begins (so the earlier
+        value shows). After the window, the end value holds."""
         interpolate = INTERPOLATORS[self.kind or kind_for(self.path[-1])]
-        # Past the window, the pinned value is the interpolator AT t=1, never `end` itself.
-        # For an absolute kind those are the same thing; for a RELATIVE one `end` is a delta —
-        # an orbit's axis and angle, a zoom's factor — so returning it verbatim would put a
-        # dict where the quaternion belongs, or a bare 0.25 where the zoom belongs. It is the
-        # last frame of the move that is wrong, which is the one most likely to be checked
-        # last.
+        # The held value is the interpolator at t=1, not `end`: for a relative kind (orbit,
+        # zoom_by), `end` is a delta.
         if self.seconds <= 0.0:
             return interpolate(start, self.end, 1.0) if t >= self.at else _NOTHING
         if t >= self.stop:
@@ -523,9 +441,8 @@ class _Nothing:
 #: Distinct from ``None``, which is a legitimate property value.
 _NOTHING = _Nothing()
 
-#: How close two window edges have to be to count as touching rather than overlapping.
-#: A nanosecond is far below any timing an animation expresses — the shortest sensible
-#: interval is a frame, ~33 ms — and far above the float error in the sums that produce them.
+#: Tolerance for two window edges to count as touching rather than overlapping: far below a
+#: frame, far above float rounding.
 _TIME_EPSILON = 1e-9
 
 
@@ -536,9 +453,8 @@ _TIME_EPSILON = 1e-9
 class Timeline:
     """A base state plus tweens over it. Every frame it emits is a plain state dict.
 
-    ``fps`` is carried here rather than passed to the renderer so that a timeline written
-    beside its frames describes them completely — the frame at index *i* is at ``i / fps``,
-    and nothing outside this object is needed to say so.
+    Frame *i* is at ``i / fps``; ``fps`` is kept here so a saved timeline fully describes its
+    frames.
     """
 
     base: dict
@@ -558,10 +474,8 @@ class Timeline:
               segments: Sequence[Any] | None = None) -> dict[str, str]:
         """One layer per segment of ``layer``. Returns ``{segment_id: layer_name}``.
 
-        This is what makes a per-object fade possible at all — see
-        :func:`neu_glance.split_segment_layer` for why neuroglancer leaves no alternative.
-        The returned mapping is what group definitions are written against, so segment ids
-        stay the thing you name and layer names stay an implementation detail.
+        Needed to fade objects individually (:func:`neu_glance.split_segment_layer`). Build
+        groups from the returned layer names.
         """
         template = f"{prefix} {{segment}}" if prefix else "{layer} {segment}"
         self.base, created, notes = split_segment_layer(
@@ -574,10 +488,8 @@ class Timeline:
              object_alpha: float | None = None) -> dict[str, str]:
         """One layer per named SET of segments. Returns ``{set: layer_name}``.
 
-        The populations sibling of :meth:`split` — see
-        :func:`neu_glance.subset_layers`. Use this when whole groups fade together and
-        :meth:`split` when individual objects do; four hundred Kenyon cells want one layer,
-        not four hundred.
+        For populations that fade together (:func:`neu_glance.subset_layers`); use
+        :meth:`split` for individual objects.
         """
         self.base, created, notes = subset_layers(
             self.base, layer, subsets, colors=colors, object_alpha=object_alpha)
@@ -595,14 +507,11 @@ class Timeline:
               kind: str | None = None, **props: Any) -> "Timeline":
         """Move each named property to its given value over ``seconds``, starting at ``at``.
 
-        ``at=None`` uses the cursor, which only :meth:`hold` moves — nothing here advances it
-        implicitly, so two tweens written one after the other run *together* unless you say
-        otherwise. That is the behaviour a fade-and-move-at-once needs, and the alternative
-        (an implicitly advancing cursor) makes simultaneity the awkward case.
+        ``at=None`` uses the cursor, which only :meth:`hold` moves, so consecutive calls run
+        at the same time unless the cursor is advanced.
 
-        ``start=None`` reads the value the property last held: an earlier tween's end if there
-        is one, else the base state, else :data:`LAYER_DEFAULTS`/:data:`VIEW_DEFAULTS`. **Not
-        zero** — a property a state does not mention is very often 1.0.
+        ``start=None`` takes the value the property last held: an earlier tween's end, else
+        the base state, else :data:`LAYER_DEFAULTS` / :data:`VIEW_DEFAULTS` (not zero).
         """
         when = self.cursor if at is None else float(at)
         for prop, value in props.items():
@@ -625,13 +534,8 @@ class Timeline:
                  ease: str = DEFAULT_EASE, fade_from: float = FADE_FROM) -> "Timeline":
         """Fade in each group in turn, ``stagger`` seconds apart. Returns ``self``.
 
-        ``stagger=None`` means back to back (``stagger = seconds``). A stagger shorter than
-        ``seconds`` overlaps the fades, which usually reads better than strict succession.
-
-        Each layer also gets an opening ``objectAlpha`` of ``fade_from`` at ``t=0``, so the
-        scene starts empty without the caller having to remember to say so — the failure
-        otherwise being an animation where everything is already visible and the fades do
-        nothing at all.
+        ``stagger=None`` means back to back; a shorter stagger overlaps the fades. Each layer
+        also starts at ``objectAlpha = fade_from`` from ``t=0``, so the scene starts empty.
         """
         begin = self.cursor if start is None else float(start)
         step = float(seconds) if stagger is None else float(stagger)
@@ -652,12 +556,9 @@ class Timeline:
              seconds: float, ease: str = DEFAULT_EASE) -> "Timeline":
         """Move the camera to the view held by another state. Returns ``self``.
 
-        ``target`` is a state dict or a neuroglancer URL — **the ergonomic centre of this
-        module**. Framing a 3D view well is a thing done by dragging, not by writing
-        quaternions, so the intended workflow is to fly the camera in the browser, copy the
-        link, and paste it here. Only :data:`CAMERA_KEYS` are taken; the target's layers,
-        layout and segment lists are ignored, because "move the camera to here" must not
-        quietly swap the scene.
+        ``target`` is a state dict or a neuroglancer URL: fly the camera in the browser, copy
+        the link, paste it here. Only :data:`CAMERA_KEYS` are taken; the target's layers and
+        layout are ignored.
         """
         if isinstance(target, str):
             try:
@@ -677,16 +578,11 @@ class Timeline:
               seconds: float, ease: str = DEFAULT_EASE) -> "Timeline":
         """Rotate the camera ``degrees`` about ``axis``. Relative — no keyframe needed.
 
-        ``axis`` defaults to ``"up"``, the **screen's** vertical, so the scene spins
-        left-to-right as you are looking at it whatever the starting view: a turntable. Name
-        a volume axis (``"z"``, or a 3-sequence) when the shot should be anatomically
-        meaningful and reproducible across scenes instead.
-
-        A full turn is ``orbit(360)``. That is the case :func:`interpolate_orbit` exists for —
-        it cannot be written as an interpolation between two views, because slerp takes the
-        shortest arc and the two ends of a full turn are the same orientation.
+        ``axis`` defaults to ``"up"``, the screen's vertical: a turntable from any starting
+        view. A volume axis (``"z"``, or a 3-sequence) is reproducible across scenes. A full
+        turn is ``orbit(360)`` (see :func:`interpolate_orbit`).
         """
-        axis_quaternion(axis, 0.0)      # validate NOW, not at frame 400 of the render
+        axis_quaternion(axis, 0.0)      # validate now rather than mid-render
         return self.tween(at=at, seconds=seconds, ease=ease, kind="orbit",
                           projectionOrientation={"axis": axis, "degrees": float(degrees),
                                                  "screen": (isinstance(axis, str)
@@ -696,9 +592,7 @@ class Timeline:
              ease: str = DEFAULT_EASE) -> "Timeline":
         """Scale the 3D zoom by ``factor``. Relative: ``0.5`` is twice as close.
 
-        Multiplicative rather than absolute so it composes with everything else and needs no
-        knowledge of the current ``projectionScale`` — which after a :meth:`frame_on` is a
-        number nobody wrote down.
+        Needs no knowledge of the current ``projectionScale``.
         """
         if factor <= 0:
             raise AnimateProblem(f"a zoom factor must be positive, got {factor!r}")
@@ -722,33 +616,19 @@ class Timeline:
                  rotation_safe: bool = False) -> "Timeline":
         """Pan (and by default zoom) so ``box`` fills the view.
 
-        ``box`` is ``(lo_zyx, hi_zyx)``, or anything with ``.lo``/``.hi`` so a
-        :class:`neu_lib.BBox` works. :func:`neu_glance.sources.segment_boxes` produces them
-        from a volume's meshes, which is the intended way to say "point the camera at that
-        neuron" without reading coordinates off the screen.
+        ``box`` is ``(lo_zyx, hi_zyx)`` or anything with ``.lo`` / ``.hi`` (a
+        :class:`neu_lib.BBox`), e.g. from :func:`neu_glance.sources.segment_boxes`.
 
-        ``units`` defaults to ``"nm"``, because nanometres are the suite's model space
-        (NM-SPACE) and what `segment_boxes` returns — but neuroglancer's ``position`` is in
-        the state's own **voxels**, so the two are converted here using the state's
-        ``dimensions``. Getting that wrong does not raise: it points the camera somewhere
-        plausible and wrong by the voxel size, which on an 8 nm volume is a factor of eight.
-        Pass ``units="voxels"`` for a box already in the viewer's coordinates.
+        ``units="nm"`` (the default, what ``segment_boxes`` returns) is converted to the
+        state's voxels with its ``dimensions``, since neuroglancer's ``position`` is in voxels;
+        pass ``units="voxels"`` for a box already in viewer coordinates. A wrong choice does
+        not raise; it misplaces the camera by the voxel size.
 
-        The framing itself is :func:`neu_glance.state.default_view` — what ``neu-glance gen``
-        already uses to open a link on a whole volume, so a framed shot and a generated link
-        agree about what "fits" means. ``margin`` is its ``FIT_MARGIN``, room around the
-        object; ``zoom=False`` pans without changing the zoom, for following something at a
-        fixed scale rather than fitting it.
-
-        **``rotation_safe=True`` if the shot turns.** ``projectionScale`` sets how much world
-        the frame's HEIGHT spans (measured: the vertical fill of a fixed object is constant
-        across aspect ratios while the horizontal is not), so a box framed at one angle can
-        exceed the frame at another as its long axis swings towards the vertical. This fits
-        the box's diagonal — its bounding sphere — which no rotation can grow.
-
-        Centring matters as much as scale here, and this does both: an orbit pivots about the
-        state's ``position``, so an object framed at a pivot 10 um off its centre swings
-        bodily through the frame and leaves it, whatever the zoom.
+        Framing matches :func:`neu_glance.state.default_view`, with ``margin`` as the room
+        around the box; ``zoom=False`` only pans. ``rotation_safe=True`` fits the box's
+        diagonal, for a shot that turns: ``projectionScale`` fixes the vertical extent, so a box
+        framed at one angle can overflow at another. ``min_scale`` caps how close the camera
+        goes. An orbit pivots about ``position``, which this also centres.
         """
         lo, hi = (box.lo, box.hi) if hasattr(box, "lo") else box
         lo, hi = [float(v) for v in lo], [float(v) for v in hi]
@@ -764,18 +644,10 @@ class Timeline:
         if zoom:
             scale = float(projection) * float(margin) / FIT_MARGIN
             if rotation_safe:
-                # The box's DIAGONAL, i.e. its bounding sphere — the only extent that cannot
-                # grow under rotation. Framing on the box itself fits the object at the angle
-                # you framed it and clips at others, and the clipping is worst where the long
-                # axis swings towards the vertical. Costs empty space at every angle in
-                # exchange for never losing the subject at any.
+                # Fit the diagonal (the bounding sphere), which no rotation can grow.
                 scale *= math.sqrt(sum(e * e for e in extent)) / max(extent)
-            # `min_scale` is a floor on how CLOSE the camera will go, and it is about motion
-            # rather than framing. Fitting each object exactly means the zoom travels as far
-            # as the objects differ in size, so a sequence visiting a large region and then a
-            # small one lurches in and out — the small ones read as rushed however long the
-            # move is given, because the distance covered is what makes it feel fast. A floor
-            # keeps the small ones a little loose and the sequence even.
+            # A floor on how close the camera goes, so a sequence over objects of very
+            # different sizes does not lurch in and out.
             moves["projectionScale"] = max(scale, float(min_scale)) if min_scale else scale
         return self.tween(at=at, seconds=seconds, ease=ease, **moves)
 
@@ -798,18 +670,8 @@ class Timeline:
         for other in self.tweens:
             if other.path != tween.path:
                 continue
-            # Touching endpoints are fine — one tween handing off to the next is the normal
-            # way to write a there-and-back. Genuine overlap is not: silently dropping one of
-            # two fades on one property would leave an animation that is subtly wrong and has
-            # nothing anywhere to point at.
-            #
-            # The tolerance is what makes "abutting" survive arithmetic. A caller building a
-            # sequence writes `start + i * step` for one window and `start + (i+1) * step` for
-            # the next, and those reach the same instant by different routes:
-            # `4.0 + 7*0.8 + 0.8` is 10.400000000000002 while `4.0 + 8*0.8` is 10.4. Without
-            # a tolerance a perfectly-formed follow-the-action sequence is refused for an
-            # overlap of two femtoseconds, and the message is baffling because the printed
-            # numbers are identical.
+            # Windows may touch (one tween handing off to the next) but not overlap. The
+            # tolerance absorbs float rounding: 4.0 + 7*0.8 + 0.8 != 4.0 + 8*0.8.
             if tween.at < other.stop - _TIME_EPSILON and other.at < tween.stop - _TIME_EPSILON:
                 raise AnimateProblem(
                     f"two tweens on {_describe(tween.path)} overlap: "
@@ -840,11 +702,8 @@ class Timeline:
     def resolved(self) -> list[Tween]:
         """The tweens in application order, each with its ``start`` filled in.
 
-        Chaining happens here: on any one property the first tween starts from the base state
-        and each later one starts where the previous ended. Resolving once, up front, is what
-        makes ``tween(...); tween(...)`` on the same property mean what it looks like — a
-        second tween reading the *base* value instead would snap back to the opening state
-        every time.
+        On each property, the first tween starts from the base state and each later one from
+        where the previous ended.
         """
         out: list[Tween] = []
         previous: dict[tuple[str, ...], Any] = {}
@@ -862,11 +721,8 @@ class Timeline:
                     f"nothing to start from for {_describe(tween.path)}: the state does not "
                     f"carry it and there is no known default. Pass start= explicitly")
             out.append(replace(tween, start=start))
-            # What the NEXT tween on this path starts from is where this one ends up, which
-            # is not always its `end`: a relative move's `end` is a delta (an orbit's axis and
-            # angle, a zoom's factor), so the value has to be evaluated. Running the
-            # interpolator at t=1 is exactly that, and for every absolute kind it returns
-            # `end` unchanged — so one rule covers both.
+            # The next tween starts where this one ends: the interpolator at t=1, since a
+            # relative move's `end` is a delta.
             previous[tween.path] = INTERPOLATORS[tween.kind or kind_for(tween.path[-1])](
                 start, tween.end, 1.0)
         return sorted(out, key=lambda t: (t.at, t.seconds, t.path))
@@ -884,8 +740,7 @@ class Timeline:
                end_frame: int | None = None) -> Iterator[tuple[int, float, dict]]:
         """``(index, seconds, state)`` per frame.
 
-        Times are ``index / fps`` exactly, never accumulated — a running sum drifts, and a
-        drifting clock puts the last frames of a long render at times no keyframe ever named.
+        Times are ``index / fps``, computed rather than accumulated, so they do not drift.
         """
         stop = self.frame_count if end_frame is None else min(end_frame, self.frame_count)
         for i in range(max(0, start_frame), stop):

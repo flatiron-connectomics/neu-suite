@@ -1,10 +1,7 @@
 """``neu-glance`` — the command line over neu_glance.
 
-Argparse, matching its siblings (`neu-vol`, `neu-morpho`, `neu-mark`) rather than introducing a
-second CLI framework into the family. Heavy imports stay inside the subcommand that needs them
-so ``--help`` is fast.
-
-Six subcommands, and the division between them is *what they produce*:
+Argparse, like the other neu-* commands. Heavy imports stay inside each subcommand, so
+``--help`` is fast. The subcommands, by what they produce:
 
 - ``gen`` composes a **state** from volumes, annotation sources and layer files
 - ``annotate`` makes a **layer** from coordinates or a CSV
@@ -13,14 +10,9 @@ Six subcommands, and the division between them is *what they produce*:
 - ``parse`` reads a URL back into its state JSON
 - ``shaders`` lists or prints the built-in shaders
 
-The three producers share one output stage: ``--format {layer,state,url}`` decides the
-serialization and ``--into`` merges into an existing state instead of building a new one. That
-is why they are separate subcommands rather than one — the *inputs* differ completely, while
-the output is uniform.
-
-``serve`` is the odd one and takes none of that stage: what it produces is a *running
-server*, and a served array's source is a ``python://volume/<token>`` URL scoped to the
-process, so there is no link to emit and no state worth saving.
+The three producers share one output stage: ``--format {layer,state,url}`` and ``--into``
+(merge into an existing state). ``serve`` produces a running server instead, whose sources
+are valid only in this process, so it has no output stage.
 """
 
 from __future__ import annotations
@@ -35,10 +27,8 @@ from . import __version__
 _ANN_FLAGS = (("points", "point"), ("boxes", "box"), ("lines", "line"),
               ("ellipsoids", "ellipsoid"))
 
-#: The same column spec as ``layers.CSV_COLUMNS``, repeated here because the parser needs it at
-#: build time and importing the module at parser-build time would pull neu-vol into
-#: every ``neu-glance --help``. A test asserts the two agree, which is what keeps the duplication
-#: honest.
+#: A copy of ``layers.CSV_COLUMNS``, so building the parser imports nothing heavy. A test
+#: checks the two agree.
 _ANN_CSV_COLUMNS = {
     "point": (("z", "y", "x"),),
     "box": (("z0", "y0", "x0"), ("z1", "y1", "x1")),
@@ -49,9 +39,7 @@ _ANN_CSV_COLUMNS = {
 _LAYOUTS = ("4panel", "xy", "yz", "xz", "xy-3d", "yz-3d", "xz-3d", "3d")
 _DEFAULT_VIEWER = "https://neuroglancer-demo.appspot.com/"
 _SHADER_NAMES = ("synapse",)
-#: Image-shader names, duplicated from `shaders.IMAGE_SHADERS` for the same reason
-#: `_ANN_CSV_COLUMNS` is: the parser needs them at build time, and importing the module
-#: then would pull neu-vol into every `neu-glance --help`. A test asserts they agree.
+#: A copy of the ``shaders.IMAGE_SHADERS`` names, for the same reason. A test checks them.
 _IMAGE_SHADER_NAMES = ("grayscale", "probability", "colormap", "rgb", "none")
 
 
@@ -125,12 +113,9 @@ def _inline_records(args) -> list[dict]:
 def _volume_frame(volume: str | None, voxel_size: str | None):
     """``(voxel_size_zyx, units, level-0 spatial shape or None)`` for a layer's frame.
 
-    The frame is what makes the coordinates mean anything: an annotation layer declares its own
-    ``outputDimensions``, and one that disagrees with the volume puts every annotation in the
-    wrong place while still loading.
-
-    Uses ``read_source_metadata`` plus ``volume_extent``, never ``describe`` — the latter opens
-    every level to probe for a foreign marker, which a frame does not need.
+    An annotation layer whose ``outputDimensions`` disagree with the volume loads with every
+    annotation misplaced. Reads ``info``-level metadata only (not ``describe``, which opens
+    every level).
     """
     voxel = _ftriple(voxel_size, "voxel-size")
     if not volume:
@@ -153,8 +138,7 @@ def _volume_frame(volume: str | None, voxel_size: str | None):
 def _level0_factor(volume: str, scale: int) -> tuple[int, ...]:
     """How many level-0 voxels one scale-``scale`` voxel spans, per axis.
 
-    Read from each level's OWN recorded voxel size, never ``2**scale``: real pyramids are
-    anisotropic and ``(1, 2, 2)`` — halve x/y, leave z — is common.
+    From each level's recorded voxel size, never ``2**scale``: pyramids may be anisotropic.
     """
     from neu_vol.source_metadata import (detect_backend, location_spec,
                                                  read_level_voxel_sizes)
@@ -257,8 +241,8 @@ def _yellow(text: str, stream=None) -> str:
 def _load_into(source: str) -> dict:
     """The ``--into`` state, or exit with the reason — shared by every command taking one.
 
-    Its commonest failure is a URL bash mangled inside double quotes, which a user has no
-    reason to suspect, so the message is made to stand out.
+    The commonest failure is a URL mangled by bash inside double quotes, so the message is
+    highlighted.
     """
     from .state import StateProblem, load_state
 
@@ -271,11 +255,9 @@ def _load_into(source: str) -> dict:
 def _resolve_format(args) -> str:
     """The format actually being emitted.
 
-    ``--format`` defaults to ``None`` so an explicit choice is distinguishable from the
-    command's own default, which is what lets ``--into`` quietly promote ``layer`` to ``url``
-    while still refusing an explicit ``--format layer``. Resolved in ONE place because
-    :func:`_with_volume` needs the same answer as :func:`_emit` — reading the raw ``args.fmt``
-    in both is how the volume layer got prepended to a bare-layer output.
+    ``--format`` defaults to ``None``, so ``--into`` can promote the default ``layer`` to
+    ``url`` while still refusing an explicit ``--format layer``. Both :func:`_with_volume` and
+    :func:`_emit` use this, so they agree.
     """
     into = getattr(args, "into", None)
     if args.fmt is None:
@@ -291,8 +273,7 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
           selected: str | None = None) -> int:
     """Serialize ``layers`` per ``--format``/``--into``/``--out``. Returns an exit code.
 
-    One implementation for all three producers, which is what keeps ``neu-glance bboxes --format
-    url`` and ``neu-glance gen`` from drifting into two different notions of a state.
+    Shared by all three producers.
     """
     from .layers import render
     from .state import LONG_URL, merge_into, state_url
@@ -332,9 +313,8 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             for note in notes:
                 print(f"  {note}", file=err)
         else:
-            # Where the view will open. Worth saying because all three of these are silent
-            # in the viewer: with no frame at all neuroglancer opens at the origin CORNER
-            # fully zoomed in, which looks like an empty or broken layer.
+            # Say where the view opens: with no frame, neuroglancer opens at the origin corner
+            # fully zoomed in, which looks like a broken layer.
             if position is not None:
                 print(f"  position {tuple(position)} zyx "
                       f"(given as {getattr(args, 'position_order', 'zyx')})", file=err)
@@ -529,9 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- parse --------------------------------------------------------------
     # --- serve --------------------------------------------------------------
-    # No `_add_output_flags`: what this produces is a running server, not a
-    # serialization. `parse` and `shaders` are the precedent for a subcommand that skips
-    # the shared output stage entirely.
+    # No `_add_output_flags`: this produces a running server, not a serialization.
     q = sub.add_parser(
         "serve", help="host arrays locally and open a viewer on them",
         description="Serve one or more arrays from THIS process and print the viewer "
@@ -592,9 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="start from an existing state, given as a URL or a JSON file, and "
                         "add the served layers to it — keeping its view. Single-quote a "
                         "URL, since bash expands '!' inside double quotes")
-    # `--annotate`, not `--annotations`: `gen --annotations SOURCE` already means "load
-    # this precomputed annotation source", and one flag name meaning both that and "make me
-    # an empty layer to draw in" is the kind of thing nobody reads the help for twice.
+    # `--annotate`, not `--annotations`, which in `gen` means a source to load.
     q.add_argument("--annotate", nargs="?", const=True, default=False, metavar="NAME",
                    help="add an empty annotation layer to draw boxes in, read back by "
                         "`Server.boxes()`. Off by default: a viewer that opens with a layer "
@@ -634,16 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_help_command(sub) -> None:
     """``neu-glance help [COMMAND ...]`` — the same text ``--help`` prints.
 
-    Because `help serve` and `serve --help` are the same thing to everyone except argparse:
-    one of the two is what a person types first, and being told "invalid choice" for it is
-    a poor greeting from a tool whose whole surface is subcommands.
-
-    It **re-parses** rather than reaching into the parser, so what it prints cannot drift
-    from ``--help``: it literally is ``--help``. An unknown name gets argparse's own error
-    listing the real choices, which is better than anything written here.
-
-    Not to be confused with ``neu-glance shaders``, which prints a *shader* rather than a
-    usage message.
+    It re-parses the arguments with ``--help``, so the output cannot differ, and an unknown
+    name gets argparse's own error listing the choices.
     """
     q = sub.add_parser(
         "help", help="what `--help` prints, as a subcommand",
@@ -687,8 +655,7 @@ def cmd_gen(args) -> int:
     shader_notes: list[str] = []
 
     try:
-        # --image before --seg so the segmentation draws over the image, which is the
-        # order anyone wants and the opposite of alphabetical.
+        # --image before --seg, so the segmentation draws over the image.
         for volume in args.image or []:
             layer, info = volume_layer(volume, kind="image", opacity=args.image_opacity)
             layers.append(layer)
@@ -704,8 +671,7 @@ def cmd_gen(args) -> int:
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
 
-        # Annotations after the volumes: the relationships bind to a segmentation layer by
-        # NAME, so that layer must exist first, and the first --seg is the one they refer to.
+        # Annotations after the volumes: relationships bind to the first --seg layer by name.
         linked_layer = next((lyr for lyr in layers if lyr["type"] == "segmentation"), None)
         linked = linked_layer["name"] if linked_layer else None
         filtering = bool(args.filter_by_segmentation)
@@ -777,8 +743,7 @@ def _report_bindings(layers, *, file) -> None:
                    else "; showing every annotation")
             print(f"  {lyr['name']}: {bound} bound to {target}{how}", file=file)
             if filtered and not selected_any:
-                # Not a warning: it is what the filter means. Said out loud because an
-                # empty viewport otherwise looks like a broken layer.
+                # Not a warning, but said, since an empty viewport looks like a broken layer.
                 print(f"    no segments selected, so this opens EMPTY until you pick a "
                       f"body (or pass --no-filter-by-segmentation)", file=file)
         elif lyr["type"] == "annotation" and isinstance(lyr.get("source"), str):
@@ -830,8 +795,7 @@ def cmd_annotate(args) -> int:
         print(f"  frame       {'x'.join(f'{v:g}' for v in voxel)} {units or '?'} "
               f"per level-0 voxel", file=err)
 
-    # Coordinates land in the layer as level-0 voxels, because that is the frame
-    # `outputDimensions` states. Both other input units are one per-axis scaling.
+    # Coordinates are stored as level-0 voxels, the frame `outputDimensions` declares.
     if args.scale:
         if not args.volume:
             raise SystemExit("--scale needs --volume: the conversion uses the volume's own "
@@ -886,9 +850,8 @@ def cmd_annotate(args) -> int:
         print("  links       " + ", ".join(f"{k} -> {v}" for k, v in links.items()),
               file=err)
 
-    # A wrong unit is the failure mode here, and it does not look like one: coordinates
-    # 8x off are still valid annotations, just somewhere else. The volume's extent is the
-    # only check available, so make it loudly.
+    # A wrong unit gives valid annotations in the wrong place; the volume's extent is the
+    # only check available.
     if shape:
         outside = [i for i, r in enumerate(records)
                    if any(not (0 <= c <= shape[a])
@@ -957,12 +920,8 @@ def cmd_bboxes(args) -> int:
 def _with_volume(args, layers: list[dict], volume: str | None = None) -> list[dict]:
     """Prepend the volume's own layer when a whole state is being emitted.
 
-    A bare layer is the default output and needs no volume. A *state* without one shows
-    annotations floating in nothing, so the volume goes in — which is what the old
-    ``--state`` flag did, except now through the one state builder rather than a second.
-
-    Not with ``--into``, though: that state already has whatever volumes it was built with, and
-    adding this one again would either duplicate it or collide with its name.
+    A state without the volume would show annotations floating in nothing. Not with
+    ``--into``, whose state already has its volumes.
     """
     if _resolve_format(args) == "layer" or getattr(args, "into", None):
         return layers
@@ -994,8 +953,7 @@ def cmd_parse(args) -> int:
             if isinstance(lyr, dict):
                 print(f"{lyr.get('name', '(unnamed)')}\t{lyr.get('type', '?')}")
             else:
-                # A state's `layers` array may carry a bare string — the reference male-CNS
-                # state has a comment sitting in one — so this must not assume a dict.
+                # A state's `layers` may contain non-dict entries (such as comment strings).
                 print(f"{lyr}\t(not a layer object)")
         return 0
 
@@ -1012,8 +970,7 @@ def cmd_serve(args) -> int:
     """Host the given arrays and run a viewer on them until interrupted."""
     from .serving import ServedLayer, ServeProblem, _neuroglancer, serve
 
-    # Before anything is READ. The extra being absent is the likeliest failure here, and
-    # discovering it after pulling a few GB of crop into memory is the wrong order.
+    # Check for the extra before reading any data.
     try:
         _neuroglancer()
     except ServeProblem as e:
@@ -1027,17 +984,15 @@ def cmd_serve(args) -> int:
                  for src in (flag or ())]
     if not requested:
         raise SystemExit("nothing to serve: pass at least one --image, --seg or --prob")
-    # Also before anything is read: a URL bash mangled is found in milliseconds, a crop is not.
+    # Also before reading: a mangled URL is quick to detect.
     into = _load_into(args.into) if args.into else None
 
     layers = []
     for src, kind in requested:
-        # `ServedLayer.from_source` owns the reading, so the notebook path and this one
-        # cannot drift — this used to be a second implementation of it here.
+        # Reading goes through ServedLayer.from_source, as in a notebook.
         try:
-            # --color applies to the probability layers only: it is the one kind whose
-            # default shader has a single colour, and passing it to a grayscale image would
-            # be refused rather than quietly ignored (see `serving._shader_controls`).
+            # --color applies to probability layers only, whose default shader has a single
+            # colour; a grayscale image would refuse it.
             layer = ServedLayer.from_source(
                 src, kind, level=args.level, crop=crop, voxel_size=voxel_size,
                 shader=args.shader,
@@ -1081,9 +1036,8 @@ def cmd_serve(args) -> int:
 def cmd_shaders(args) -> int:
     """List the built-in shaders, or print one.
 
-    Two families, listed apart because what can be wrong about them differs: an
-    ANNOTATION shader names `prop_`s the source has to declare, and an IMAGE shader names
-    a channel count the volume has to have.
+    Annotation shaders (which need the source's ``prop_`` properties) and image shaders
+    (which need a channel count) are listed separately.
     """
     from .shaders import IMAGE_SHADERS, SHADERS
 
@@ -1111,11 +1065,9 @@ def cmd_shaders(args) -> int:
 def main(argv=None) -> int:
     """Dispatch, with store logging filtered unless ``--store-logs`` asks for it.
 
-    Every subcommand here but `parse` and `shaders` reads a store, and an S3 open emits two
-    `AuthCredentialsProvider` lines at `E` severity **per prefix** that are not failures —
-    only the two providers that missed before the environment one succeeded. The marker of
-    a real problem is `PERMISSION_DENIED` / `AccessDenied`, and `logs.NEVER_DROP` keeps
-    those. Same wrapping neu-vol and neu-morpho do in their own `main()`.
+    Each S3 prefix opened logs two benign ``AuthCredentialsProvider`` lines at ``E``
+    severity; they are filtered. A real problem shows as ``PERMISSION_DENIED`` or
+    ``AccessDenied``, which is never filtered.
     """
     import logging
 

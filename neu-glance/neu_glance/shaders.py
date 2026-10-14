@@ -1,34 +1,25 @@
 """GLSL shaders for annotation layers, and the rule for choosing one.
 
-**A shader lives in the viewer state, not in the source**, so a link is the only place one
-can be shipped — which is why these live here rather than in whatever wrote the annotations.
-That separation is also the reason this package exists: the writer (`neu-mark
-annotation-source`) has no business carrying a shader, and neu-vol has no business
-knowing what a synapse is.
+A shader lives in the viewer state, not in the annotation source, so it ships in a link.
 
-The one hard rule: **a shader naming a `prop_` the source does not declare fails to compile,
-and neuroglancer then draws NOTHING**, with the error visible only in the layer's shader tab.
-It does not fall back to a default. So :func:`pick_shader` checks a shader's properties
-against the source's `info` and refuses rather than shipping one that cannot run.
+**A shader naming a ``prop_`` the source does not declare fails to compile, and the layer
+draws nothing**, with the error shown only in the layer's shader tab. :func:`pick_shader`
+therefore checks a shader's properties against the source's ``info`` and refuses a
+mismatch.
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
 
-#: The endpoint markers, not the line, are what stays legible. A synapse is a few hundred
-#: nanometres long, so at any zoom that shows more than one the line is sub-pixel — and a line
-#: drawn in a blend of the two endpoint colours then swamps the markers and reads as a single
-#: flat colour. So `show_pre`/`show_post` gate the two markers independently and the line is
-#: drawn only when BOTH are on, which is also what makes one source usable as two layers.
+#: Synapse markers. ``show_pre`` / ``show_post`` toggle the two endpoint markers, and the line
+#: (sub-pixel at most zooms) is drawn only when both are on; this is also what lets one source
+#: serve as two layers.
 #:
-#: The confidence test is written as **discard-if-below**, never keep-if-at-or-above, and that
-#: is load-bearing rather than stylistic. An unknown confidence is NaN, and per the dataset's
-#: proofreaders an unknown conf usually means a synapse a HUMAN added — the most trustworthy
-#: annotations in the set, whose confidence was simply never quantified. NaN fails every
-#: comparison, so `discard if conf < min` leaves them visible at every threshold while
-#: `keep if conf >= min` would hide them at all of them. The two forms are equivalent for real
-#: numbers and opposite here.
+#: The confidence test must stay **discard-if-below**. An unknown confidence is NaN, which
+#: fails every comparison, so ``discard if conf < min`` keeps those synapses at any threshold
+#: while ``keep if conf >= min`` would hide them all. Unknown confidence usually means a
+#: synapse added by a proofreader, among the most trustworthy.
 SYNAPSE_SHADER = """\
 #uicontrol bool show_pre checkbox(default=true)
 #uicontrol bool show_post checkbox(default=true)
@@ -80,9 +71,7 @@ SHADERS: dict[str, dict[str, Any]] = {
     },
 }
 
-#: `shaderControls` overrides for the two halves of a split pair. Set in the STATE rather than
-#: by generating two shaders, so both layers carry the same code and a user editing one can see
-#: exactly which control the other flipped.
+#: ``shaderControls`` for the two halves of a split pair; both layers share one shader.
 SPLIT_CONTROLS = {
     "pre": {"show_pre": True, "show_post": False},
     "post": {"show_pre": False, "show_post": True},
@@ -97,13 +86,9 @@ def pick_shader(info: Mapping[str, Any], name: str | None,
                 read_bytes=None) -> tuple[str | None, str | None]:
     """``(shader source, why)`` for an annotation layer.
 
-    ``name`` may be a built-in name, a path to a file of GLSL, ``"none"``, or ``None`` to
-    choose automatically — meaning the first built-in whose properties the source actually
-    declares. Automatic rather than a fixed default, because a shader naming an absent
-    ``prop_`` does not degrade: it fails to compile and the layer draws nothing.
-
-    ``read_bytes`` is injected so this module needs no store access of its own; the CLI passes
-    :func:`neu_vol.location.read_bytes`.
+    ``name`` is a built-in name, a path to a GLSL file, ``"none"``, or ``None`` for the
+    first built-in whose properties the source declares. ``read_bytes`` reads a shader file
+    (default :func:`neu_vol.location.read_bytes`).
     """
     declared = {p["id"] for p in info.get("properties", []) or []}
     if name == "none":
@@ -138,21 +123,12 @@ def pick_shader(info: Mapping[str, Any], name: str | None,
 
 
 # --------------------------------------------------------------------------- #
-# Image shaders — a separate registry, and separate for a reason
-#
-# An annotation shader reads `prop_<name>()`, so `pick_shader` has to check those names
-# against what the source declares or the layer silently draws nothing. An IMAGE shader
-# reads `getDataValue(channel)`, which every image source has by construction: there is
-# nothing to validate, and no way to name a channel that does not exist except by asking
-# for one past the end — which is a shape error, catchable here.
-#
-# So these are chosen by DATA KIND and channel count, not by property matching, and
-# `pick_shader`'s refusal logic deliberately does not apply to them.
+# Image shaders: chosen by data kind and channel count. They read getDataValue(channel),
+# so the only thing to check is the number of channels.
 # --------------------------------------------------------------------------- #
 
-#: Window/level over one channel. The default for `--kind image`: EM data arrives with its
-#: useful range in some arbitrary part of the dtype, and neuroglancer's own default maps
-#: the whole range, which shows grey mud.
+#: Window/level over one channel, the default for images. Neuroglancer's own default maps
+#: the whole dtype range, which washes out EM data.
 GRAYSCALE_SHADER = """\
 #uicontrol invlerp normalized
 #uicontrol float gamma slider(min=0.05, max=3.0, default=1.0, step=0.05)
@@ -163,27 +139,13 @@ void main() {
 }
 """
 
-#: One colour, **opacity carrying the probability**. The default for `--kind probability`.
+#: One colour with opacity carrying the probability, the default for probability maps: EM
+#: drawn underneath stays visible where the model is unsure. The ``color`` uicontrol
+#: defaults to red, and ``ServedLayer(color=...)`` sets it.
 #:
-#: This is the shape a probability map wants when it is shown *over* something: the EM
-#: underneath stays visible where the model is unsure and is progressively covered where it
-#: is confident, so one look answers "where does this fire, and how hard". A two-colour
-#: gradient at full alpha (:data:`COLORMAP_SHADER`, still available as ``colormap``) hides
-#: the image everywhere and spends the whole colour axis on a value the alpha already
-#: carries.
-#:
-#: Red by default because these are drawn over greyscale EM, where red is the channel that
-#: reads at low alpha; `color` is a uicontrol so the viewer can change it, and
-#: ``ServedLayer(color=...)`` sets it from Python for a second map in a second colour.
-#:
-#: Two properties worth keeping if this is edited:
-#:
-#: * the threshold is **discard-if-below**, never keep-if-at-or-above — NaN fails every
-#:   comparison, so this form leaves an unscored voxel visible at every threshold while the
-#:   inverted one would hide it at all of them (the rule :data:`SYNAPSE_SHADER` documents);
-#: * and because the alpha now comes from the value, NaN needs saying twice: `clamp(NaN)` is
-#:   not defined to give anything in particular, so a NaN voxel is pinned to full alpha
-#:   explicitly. Without that the voxel the threshold deliberately kept could still vanish.
+#: Keep the threshold discard-if-below, so NaN voxels stay visible (see
+#: :data:`SYNAPSE_SHADER`), and keep NaN pinned to full alpha, since ``clamp(NaN)`` is
+#: undefined.
 PROBABILITY_SHADER = """\
 #uicontrol invlerp normalized
 #uicontrol vec3 color color(default="#ff0000")
@@ -201,13 +163,8 @@ void main() {
 }
 """
 
-#: One channel through a two-colour gradient, with a floor. For a probability map, where
-#: the interesting question is "where is this above t", not "what is the whole range".
-#:
-#: The threshold is written **discard-if-below**, never keep-if-at-or-above, for the reason
-#: `SYNAPSE_SHADER` is: NaN fails every comparison, so `discard if v < t` leaves an
-#: unscored voxel visible at every threshold while the inverted form would hide it at all
-#: of them. A probability map from a model can carry NaN wherever it declined to predict.
+#: One channel through a two-colour gradient, with a threshold (discard-if-below, so NaN
+#: voxels stay visible).
 COLORMAP_SHADER = """\
 #uicontrol invlerp normalized
 #uicontrol vec3 low_color color(default="#000060")
@@ -223,9 +180,7 @@ void main() {
 }
 """
 
-#: Three channels to three colours with independent gains. For a 3-channel probability map
-#: — affinities, or a boundary/interior/background triple — where the useful view is all
-#: three at once rather than one at a time.
+#: Three channels to three colours with independent gains, e.g. affinities.
 RGB_SHADER = """\
 #uicontrol vec3 color0 color(default="#ff2000")
 #uicontrol vec3 color1 color(default="#00c000")
@@ -243,14 +198,9 @@ void main() {
 }
 """
 
-#: Built-in image shaders by name. Unlike :data:`SHADERS` these declare no properties —
-#: see the section comment — but they do declare how many channels they read, which is the
-#: one thing that can be wrong about them.
-#: ``color`` names the single colour uicontrol a shader exposes, where it has exactly one —
-#: which is what ``ServedLayer(color=...)`` sets. Absent means the shader has no single
-#: colour to set: `grayscale` has none at all and `rgb` has three, and there is no sensible
-#: reading of one colour for either. **A shaderControl neuroglancer does not recognise is
-#: ignored in silence**, so the caller is told instead.
+#: Built-in image shaders by name, with the channel count each reads. ``color`` names the
+#: shader's single colour uicontrol, which ``ServedLayer(color=...)`` sets; it is absent for
+#: shaders with none or several. Neuroglancer silently ignores an unknown shaderControl.
 IMAGE_SHADERS: dict[str, dict[str, Any]] = {
     "grayscale": {"channels": 1, "doc": "window/level with gamma, single channel",
                   "source": GRAYSCALE_SHADER},
@@ -266,26 +216,13 @@ IMAGE_SHADERS: dict[str, dict[str, Any]] = {
             "source": RGB_SHADER},
 }
 
-#: Which shader a served layer gets when the caller names none. A probability map gets
-#: colour-plus-alpha rather than a gradient, so it composites over the EM it is drawn on;
-#: `colormap` is the old default and still selectable by name.
+#: The image shader a layer gets when none is named, by kind.
 _DEFAULT_IMAGE_SHADER = {"image": "grayscale", "probability": "probability"}
 
 
-#: Colour names understood with **nothing installed**, so `color="red"` works in a bare
-#: install. Deliberately a short list rather than the whole CSS4 table: these are the
-#: colours anyone actually types for a probability map drawn over greyscale EM, and 150
-#: lines of name-to-hex data is not worth carrying to catch `"papayawhip"` — matplotlib
-#: covers that where it is installed, and the error names both routes where it is not.
-#:
-#: **Every value here is matplotlib's own for that name**, which is the property that makes
-#: a partial table safe: installing matplotlib later cannot change what a colour means.
-#: `test_the_builtin_color_names_agree_with_matplotlib` pins that.
-#:
-#: Single letters (`"r"`, `"c"`) are left out on purpose — they are matplotlib's idiom, not
-#: CSS's, and its `"c"` is #00bfbf where CSS `"cyan"` is #00ffff. A caller writing `"c"`
-#: means the matplotlib one, so that falls through to matplotlib rather than being
-#: reinterpreted here.
+#: Common colour names that work without matplotlib. Each value is matplotlib's own, so
+#: installing it never changes a colour. Single letters (``"c"``) are left to matplotlib,
+#: whose ``"c"`` differs from CSS ``"cyan"``.
 BUILTIN_COLORS = {
     "red": "#ff0000",
     "green": "#008000",
@@ -309,21 +246,8 @@ def _hex_from_rgb(values: Sequence[float], scale: float) -> str:
 
 
 def _named_color(color: str, what: str) -> str:
-    """A named colour as ``#rrggbb``: :data:`BUILTIN_COLORS`, else matplotlib if it is there.
-
-    **matplotlib is not a dependency of this package, and this does not make it one** (the
-    pyproject lists what is deliberately not declared, and a colour convenience is not the
-    thing to break that for). Nor is a lighter dependency worth adding for it: the whole
-    feature is a name-to-hex lookup, so the built-in table above covers the names that get
-    typed and matplotlib is used *if already installed* for the long tail.
-
-    The import sits on this branch alone and only past the table, so neither ``"#ff0000"``
-    nor ``"red"`` ever pays matplotlib's ~0.6 s.
-
-    ``to_hex`` rather than ``to_rgb``, since ``#rrggbb`` is exactly what a shaderControl
-    takes — matplotlib's own rounding then applies, instead of a second one here that could
-    land a channel a step away from the colour it names.
-    """
+    """A named colour as ``#rrggbb``: from :data:`BUILTIN_COLORS`, else from matplotlib if
+    it is installed (it is not a dependency, and is imported only here)."""
     known = BUILTIN_COLORS.get(color.lower())
     if known:
         return known
@@ -346,21 +270,13 @@ def _named_color(color: str, what: str) -> str:
 def as_hex_color(color: Any, what: str = "color") -> str:
     """A colour as ``#rrggbb``, which is the only form a shaderControl takes.
 
-    Accepts what a caller is likely to have:
+    Accepts:
 
-    * ``"#ff0000"`` or ``"ff0000"`` — parsed here, so hex needs nothing installed;
-    * a common name — ``"red"``, ``"cyan"``, ``"orange"`` — from :data:`BUILTIN_COLORS`,
-      which also needs nothing installed;
-    * anything else matplotlib names — ``"forestgreen"``, ``"tab:blue"``, ``"#f00"``,
-      ``"0.5"`` — **when matplotlib happens to be installed** (:func:`_named_color`);
-    * a 3-sequence, floats read as 0..1 and integers as 0..255. The two are told apart by
-      whether every value is ≤ 1, which makes ``(1, 1, 1)`` white rather than
-      very-nearly-black; the ambiguity is unavoidable and white is the reading that cannot
-      be mistaken for a bug.
-
-    Hex is tried first rather than handing every string to matplotlib, so the ordinary form
-    behaves identically whether or not it is installed — a convenience that silently changes
-    what the *documented* input does is worse than not having it.
+    * ``"#ff0000"`` or ``"ff0000"``;
+    * a name from :data:`BUILTIN_COLORS` (``"red"``, ``"cyan"``, ...);
+    * any other name matplotlib knows (``"tab:blue"``), if matplotlib is installed;
+    * a 3-sequence, read as 0..1 if every value is at most 1, else as 0..255 (so
+      ``(1, 1, 1)`` is white).
     """
     if isinstance(color, str):
         text = color.strip().lstrip("#")
@@ -384,9 +300,8 @@ def shader_color_control(name: str | None, *, kind: str = "image",
                          channels: int = 1) -> str:
     """The uicontrol a caller's ``color`` should set, for the shader that will be chosen.
 
-    Raises when that shader has no single colour, rather than setting a control
-    neuroglancer will ignore without saying so — the failure being a viewer that opens in
-    the default colour and no reason anywhere for why the argument did nothing.
+    Raises when that shader has no single colour, since neuroglancer would silently ignore
+    the control.
     """
     resolved = name
     if resolved in (None, "none"):
@@ -407,14 +322,9 @@ def shader_color_control(name: str | None, *, kind: str = "image",
 def image_shader(name: str | None, *, kind: str = "image", channels: int = 1) -> str | None:
     """GLSL for an image-like layer, or ``None`` for neuroglancer's own default.
 
-    ``name`` may be a built-in name, ``"none"``, or ``None`` to take the default for
-    ``kind`` — grayscale for an image, a gradient for a probability map. A 3-channel array
-    defaults to ``rgb`` whatever the kind, since showing one channel of three and calling
-    it the picture is the more surprising choice.
-
-    A shader/channel-count mismatch **raises**: `rgb` on a single-channel volume reads
-    `getDataValue(1)` past the end, and a one-channel shader on a 3-channel volume shows a
-    third of the data with nothing to say so.
+    ``name`` is a built-in name, ``"none"``, or ``None`` for the default for ``kind``:
+    ``grayscale`` for an image, ``probability`` for a probability map, and ``rgb`` for any
+    3-channel array. A shader whose channel count does not match the volume raises.
     """
     if name == "none":
         return None
