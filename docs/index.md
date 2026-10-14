@@ -115,7 +115,6 @@ _generated/blockrun-readme
 _generated/dask-slurm
 _generated/neu-vol-readme
 _generated/neu-morpho-readme
-_generated/neu-morpho-skeletonization
 _generated/neu-mark-readme
 _generated/neu-glance-readme
 _generated/neu-draw-readme

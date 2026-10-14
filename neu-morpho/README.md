@@ -244,9 +244,3 @@ area without checking the bias against `decimation_fraction=1.0` on a sample.
 
 Licensed under the [Apache License, Version 2.0](LICENSE). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for how contributions are licensed.
-
-The skeleton tracers are in [`neu-skel`], under GPL-3.0-or-later, because they import
-`kimimaro` and `dijkstra3d`. `neu-skel` depends on this package, never the reverse, so
-nothing here loads GPL code. A later option is for `neu-morpho run` to discover an
-installed `neu-skel` and offer the `skel` stage itself; it is not done, because that would
-load GPL code into this package's process.

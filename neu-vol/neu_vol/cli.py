@@ -2286,7 +2286,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     q.add_argument("pattern", nargs="?", default=None,
                    help="dataset names to show: a substring, or a glob if it contains "
-                        "*, ? or [ (case-insensitive)")
+                        "'*', '?' or '[' (case-insensitive)")
     q.add_argument("--org", default=None, metavar="ID",
                    help="list this organization's datasets (default: the credentials "
                         "file's `organization`)")
