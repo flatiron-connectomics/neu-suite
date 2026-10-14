@@ -34,7 +34,7 @@ from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
                         skeletonize_block)
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import (FAILED, FailureBreaker, check_manifest_matches_output,
+from ._manifest import (FAILED, FailureBreaker, check_manifest_matches_output,
                         group_counts, guarded, is_complete, write_failures)
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _fuse_one_body(body_id: int, *, chunked_dir: str, out_dir: str,
     it (its whole skeleton was shorter than ``postprocess_dust_nm``). They are
     distinct statuses because the second is a thresholding decision that silently
     deletes small bodies, and you should be able to see how often it fires.
-    Exceptions become ``failed`` via ``_progress.guarded``.
+    Exceptions become ``failed`` via ``_manifest.guarded``.
     """
     frags = _frag.read_body_skel_fragments(chunked_dir, body_id, cfg.fragment_format)
     if not frags:
@@ -116,7 +116,7 @@ def skeletonize_segments(
     ``fusion_stats_path`` to also dump the per-body rows as JSONL.
 
     Stage-2 failures are isolated per body (stage 1 is not — see
-    ``ops/_progress.py``). ``max_consecutive_failures`` stops the stage when the
+    ``ops/_manifest.py``). ``max_consecutive_failures`` stops the stage when the
     failures stop looking incidental; 0 disables it. A systemic error
     (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
@@ -167,12 +167,12 @@ def skeletonize_segments(
         db = MetricsDB(db_path)
     fused = 0
     fusion_stats: list[dict] = []       # per-body accounting of what fusion changed
-    failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
+    failures: list[dict] = []           # isolated stage-2 failures (see _manifest.py)
     failures_path = None
     breaker = FailureBreaker(max_consecutive_failures)
     try:
         if "skel-chunk" in stages:
-            # Stage 1 is deliberately NOT fault-isolated: see ops/_progress.py.
+            # Stage 1 is deliberately NOT fault-isolated: see ops/_manifest.py.
             todo = [b for b in blocks if not (resume and is_complete(manifest, "skel-chunk", b.index))]
             worker = functools.partial(_chunk_block, seg_spec=seg_spec,
                                        chunked_dir=chunked_dir, cfg=cfg, allow=allow)

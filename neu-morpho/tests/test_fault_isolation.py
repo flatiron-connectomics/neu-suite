@@ -11,7 +11,7 @@ import pytest
 
 from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from neu_morpho.ops import meshify, skeletonize_segments
-from neu_morpho.ops._progress import FAILED, guarded, is_complete
+from neu_morpho.ops._manifest import FAILED, guarded, is_complete
 
 
 def _write_seg_zarr(path, vol):
@@ -180,7 +180,7 @@ def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
 def test_is_systemic_classification():
     import errno as E
 
-    from neu_morpho.ops._progress import is_systemic
+    from neu_morpho.ops._manifest import is_systemic
 
     assert is_systemic(MemoryError())
     assert is_systemic(ImportError("no module"))
@@ -193,7 +193,7 @@ def test_is_systemic_classification():
 
 
 def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
-    from neu_morpho.ops._progress import FailureBreaker, StageAborted
+    from neu_morpho.ops._manifest import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=3)
     for i in range(2):
@@ -211,7 +211,7 @@ def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
 
 
 def test_breaker_trips_immediately_on_systemic():
-    from neu_morpho.ops._progress import FailureBreaker, StageAborted
+    from neu_morpho.ops._manifest import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=1000)
     b.failure(7, {"error": "MemoryError: ", "systemic": True})
@@ -220,7 +220,7 @@ def test_breaker_trips_immediately_on_systemic():
 
 
 def test_breaker_can_be_disabled():
-    from neu_morpho.ops._progress import FailureBreaker
+    from neu_morpho.ops._manifest import FailureBreaker
 
     b = FailureBreaker(max_consecutive=0)
     for i in range(50):
@@ -232,7 +232,7 @@ def test_breaker_can_be_disabled():
 def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path, monkeypatch):
     """An abort still leaves the failure records, and they stay retryable."""
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-    from neu_morpho.ops._progress import StageAborted
+    from neu_morpho.ops._manifest import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -258,7 +258,7 @@ def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path,
 
 def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-    from neu_morpho.ops._progress import StageAborted
+    from neu_morpho.ops._manifest import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -279,7 +279,7 @@ def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monke
     """An abort leaves no skeleton on disk without its metrics in the DB."""
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
     from neu_morpho.metrics_db import MetricsDB
-    from neu_morpho.ops._progress import StageAborted
+    from neu_morpho.ops._manifest import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))

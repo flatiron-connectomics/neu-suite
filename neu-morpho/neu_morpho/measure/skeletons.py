@@ -52,7 +52,7 @@ def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
     from neu_lib import Skeleton
 
     from ..readback import read_body_skeleton
-    from .metrics import cable_length_nm, diameter_stats, topology
+    from .metrics import cable_length_nm, max_radius_nm, topology
 
     try:
         got = read_body_skeleton(volume, body_id, skeleton_dir,
@@ -67,13 +67,9 @@ def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
         # and silent if omitted. It cost a debugging round earlier today.
         skel = Skeleton(vertices_zyx_nm=np.asarray(verts_xyz, dtype=float)[:, ::-1],
                         edges=edges, radii_nm=radii, name=str(body_id))
-        row = {"cable_length_nm": cable_length_nm(skel)}
+        row = {"cable_length_nm": cable_length_nm(skel),
+               "max_radius_nm": max_radius_nm(skel)}
         row.update(topology(skel))
-        d = diameter_stats(skel)
-        # max_radius_nm, not a diameter: the column is a radius in the pipeline's schema
-        # and mixing the two is a silent factor of 2.
-        row["max_radius_nm"] = (np.nan if not np.isfinite(d["diameter_nm_max"])
-                                else d["diameter_nm_max"] / 2.0)
         return (body_id, "written", {k: row[k] for k in _COLUMNS if k in row})
     except Exception as exc:                                   # noqa: BLE001 - isolated
         return (body_id, "failed", f"{type(exc).__name__}: {exc}"[:400])

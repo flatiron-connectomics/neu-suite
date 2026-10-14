@@ -61,6 +61,21 @@ def test_cable_length_and_columns(tmp_path):
         == pytest.approx(500.0)
 
 
+def test_the_measured_columns_match_the_pipelines(tmp_path):
+    """Both paths write the same four columns; they must mean the same numbers."""
+    from neu_morpho.skeleton import skeleton_metrics
+
+    verts, edges, _ = _line(5, 100.0)
+    radii = np.array([20.0, 90.0, 30.0, 10.0, 40.0])     # widest edge mean: 60
+    vol = _write_skeletons(tmp_path, {100: (verts, edges, radii)})
+    _, status, measured = _measure_one(100, volume=vol, skeleton_dir="skeleton",
+                                       require_radii=True)
+    assert status == "written"
+    assert measured["max_radius_nm"] == pytest.approx(90.0)   # a vertex, not an edge mean
+    piped = skeleton_metrics(_Skel(verts, edges, radii))
+    assert piped == pytest.approx(measured)
+
+
 def test_a_missing_body_is_absent_and_terminal(tmp_path):
     """Absence is terminal and not retried; `failed` is the state that is retried."""
     vol = _write_skeletons(tmp_path, {100: _line()})

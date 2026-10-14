@@ -35,7 +35,7 @@ import numpy as np
 
 from blockrun import Manifest, block_map, iter_blocks
 
-from ._progress import check_manifest_matches_output, group_counts, is_complete
+from ._manifest import check_manifest_matches_output, group_counts, is_complete
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[i
                 attempts: int = 5) -> tuple:
     """Copy one block, retrying transient store failures.
 
-    Stage-1 block tasks are fail-fast on purpose (see ops/_progress.py), which is
+    Stage-1 block tasks are fail-fast on purpose (see ops/_manifest.py), which is
     right for meshing — but a *copy* block feeds no aggregation and rewriting the
     same voxels to the same region is idempotent, so a transient blip should not
     end a run that has already copied terabytes. Observed: a single

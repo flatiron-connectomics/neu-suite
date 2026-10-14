@@ -127,7 +127,7 @@ def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_pat
     import pytest
 
     from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-    from neu_morpho.ops._progress import StaleManifest
+    from neu_morpho.ops._manifest import StaleManifest
     from neu_morpho.ops.meshify import meshify
     from neu_morpho.ops.skeletonize_segments import skeletonize_segments
 

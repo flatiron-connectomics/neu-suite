@@ -353,12 +353,24 @@ def fusion_stats_summary(per_body: Sequence[dict]) -> dict:
 
 
 def skeleton_metrics(skeleton) -> dict:
-    """Per-body morphology metrics for the metrics DB (all lengths in nm)."""
-    radius = np.asarray(getattr(skeleton, "radius", []), dtype=float)
-    radius = radius[radius > 0]                 # kimimaro leaves -1 where unknown
+    """Per-body morphology metrics for the metrics DB (all lengths in nm).
+
+    The same functions ``neu-morpho measure`` applies to a published skeleton, so a run's
+    columns and a measured dataset's mean the same thing.
+    """
+    from neu_lib import Skeleton
+
+    from .measure.metrics import cable_length_nm, max_radius_nm, topology
+
+    radius = getattr(skeleton, "radius", None)
+    skel = Skeleton(vertices_zyx_nm=np.asarray(skeleton.vertices, dtype=float),
+                    edges=np.asarray(skeleton.edges).reshape(-1, 2),
+                    radii_nm=None if radius is None or not len(radius) else radius)
+    top = topology(skel)
+    max_r = max_radius_nm(skel)
     return {
-        "cable_length_nm": float(skeleton.cable_length()),
-        "n_branches": int(len(skeleton.branches())),
-        "n_tips": int(len(skeleton.terminals())),
-        "max_radius_nm": float(radius.max()) if radius.size else None,
+        "cable_length_nm": cable_length_nm(skel),
+        "n_branches": top["n_branches"],
+        "n_tips": top["n_tips"],
+        "max_radius_nm": max_r if np.isfinite(max_r) else None,
     }

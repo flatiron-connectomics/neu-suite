@@ -61,6 +61,18 @@ def cable_length_nm(skeleton: Skeleton) -> float:
     return float(lengths.sum())
 
 
+def max_radius_nm(skeleton: Skeleton) -> float:
+    """The largest vertex radius; NaN without radii.
+
+    Non-positive radii are skipped: kimimaro writes -1 where a radius is unknown.
+    """
+    if skeleton.radii_nm is None:
+        return float("nan")
+    r = np.asarray(skeleton.radii_nm, dtype=float)
+    r = r[r > 0]
+    return float(r.max()) if r.size else float("nan")
+
+
 def weighted_quantile(values: Any, weights: Any, q: Any) -> np.ndarray:
     """Quantiles of ``values`` weighted by ``weights``. **Step, not interpolated.**
 

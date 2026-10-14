@@ -193,3 +193,15 @@ def test_every_row_has_the_same_keys_whatever_the_skeleton():
     with_radii = set(measure_skeleton(_rod()))
     without = set(measure_skeleton(Skeleton(np.zeros((2, 3)), np.array([[0, 1]]))))
     assert with_radii == without
+
+
+def test_max_radius_is_the_largest_known_vertex_radius():
+    from neu_morpho.measure.metrics import max_radius_nm
+
+    v = np.array([[0.0, 0, 0], [100.0, 0, 0], [200.0, 0, 0]])
+    e = np.array([[0, 1], [1, 2]])
+    assert max_radius_nm(Skeleton(vertices_zyx_nm=v, edges=e,
+                                  radii_nm=np.array([-1.0, 30.0, 12.0]))) == 30.0
+    assert np.isnan(max_radius_nm(Skeleton(vertices_zyx_nm=v, edges=e)))
+    assert np.isnan(max_radius_nm(Skeleton(vertices_zyx_nm=v, edges=e,
+                                           radii_nm=np.full(3, -1.0))))

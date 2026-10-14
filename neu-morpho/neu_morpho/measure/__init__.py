@@ -29,7 +29,7 @@ from .paths import (attach_points, bridge_gaps, compartment_graph, dvid_roi_regi
                     path_distances, synapse_distance_table, synapse_distances,
                     volume_roi_region)
 from .metrics import (cable_length_nm, diameter_stats, frustum_area_nm2,
-                      frustum_volume_nm3, measure_skeleton, topology,
+                      frustum_volume_nm3, max_radius_nm, measure_skeleton, topology,
                       weighted_quantile)
 from .tables import (compare, load_bodies, load_segment_properties,
                      log_histogram, summarize, write_table)
@@ -44,6 +44,7 @@ __all__ = [
     "diameter_stats",
     "frustum_area_nm2",
     "frustum_volume_nm3",
+    "max_radius_nm",
     "measure_skeleton",
     "topology",
     "weighted_quantile",
