@@ -18,15 +18,15 @@ dependencies = [
     "neu-vol",     # volume metadata and store reads
 ]
 # Deliberately NOT declared as hard requirements:
-#   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `geometry` and `scene`
-#     are pure array and dataclass work; importing the package must not need a GPU, a
+#   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `scene` is pure array and
+#     dataclass work; importing the package must not need a GPU, a
 #     canvas backend, or a display. A renderer import on a headless box fails outright
 #     for want of glfw/Qt, and that is the failure this split exists to avoid.
 #   neu-morpho — the SOURCES extra. Reading precomputed meshes and skeletons needs it
 #     (and through it vol2mesh and osteoid, which are conda-only); building a scene from
 #     arrays you already hold does not.
 #   pandas — only the table-shaped source adapters want it.
-#   neuclease — DVID only. See the RLE note in NEU-DRAW-PLAN.md.
+#   neuclease — the DVID extra, for DVID sources only; conda-only (flyem-forge).
 
 [project.optional-dependencies]
 # `imageio` is for `View.save` and for the image the toolbar's "close" leaves behind;
