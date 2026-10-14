@@ -325,9 +325,8 @@ with nothing to say so.
 
 `--prob` is for continuous scalar data and picks its shader by channel count: one channel
 gets a two-colour gradient with a threshold, three get three colours with independent gains.
-The threshold is written **discard-if-below**, so a NaN voxel — a model declining to predict
-— stays visible at every threshold rather than disappearing at all of them. `neu-glance
-shaders` lists them and prints one to edit.
+A NaN voxel, where a model declined to predict, is not drawn, so it never covers the EM
+underneath. `neu-glance shaders` lists them and prints one to edit.
 
 ### The frame travels with the array
 

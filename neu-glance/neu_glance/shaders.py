@@ -143,9 +143,7 @@ void main() {
 #: drawn underneath stays visible where the model is unsure. The ``color`` uicontrol
 #: defaults to red, and ``ServedLayer(color=...)`` sets it.
 #:
-#: Keep the threshold discard-if-below, so NaN voxels stay visible (see
-#: :data:`SYNAPSE_SHADER`), and keep NaN pinned to full alpha, since ``clamp(NaN)`` is
-#: undefined.
+#: NaN voxels (no prediction) are discarded, so they never cover the EM.
 PROBABILITY_SHADER = """\
 #uicontrol invlerp normalized
 #uicontrol vec3 color color(default="#ff0000")
@@ -154,17 +152,13 @@ PROBABILITY_SHADER = """\
 
 void main() {
   float v = normalized();
-  // discard-if-below, so a NaN voxel stays visible at every threshold
-  if (v < threshold) discard;
-  // v != v is true only for NaN. The alpha comes from the value here, so an unscored voxel
-  // would otherwise be kept by the line above and then drawn at an undefined alpha.
-  float a = (v != v) ? 1.0 : clamp(v * gain, 0.0, 1.0);
-  emitRGBA(vec4(color, a));
+  // v != v is true only for NaN: a voxel with no prediction is not drawn.
+  if (v != v || v < threshold) discard;
+  emitRGBA(vec4(color, clamp(v * gain, 0.0, 1.0)));
 }
 """
 
-#: One channel through a two-colour gradient, with a threshold (discard-if-below, so NaN
-#: voxels stay visible).
+#: One channel through a two-colour gradient, with a threshold. NaN voxels are discarded.
 COLORMAP_SHADER = """\
 #uicontrol invlerp normalized
 #uicontrol vec3 low_color color(default="#000060")
@@ -174,8 +168,8 @@ COLORMAP_SHADER = """\
 
 void main() {
   float v = normalized();
-  // discard-if-below, so a NaN voxel stays visible at every threshold
-  if (v < threshold) discard;
+  // v != v is true only for NaN: a voxel with no prediction is not drawn.
+  if (v != v || v < threshold) discard;
   emitRGBA(vec4(mix(low_color, high_color, v), opacity));
 }
 """
