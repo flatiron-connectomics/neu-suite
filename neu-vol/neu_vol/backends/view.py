@@ -1,16 +1,12 @@
 """Read-only view backends that wrap another backend.
 
-``CropBackend`` presents a shifted/resized window over a source backend, padding
-out-of-bounds regions with a fill value. ``MaskBackend`` presents a source with regions
-blanked to a fill value — copying a volume *except* some box. Because both satisfy the
-ArrayBackend protocol and open from a spec, the materialize engine can crop, pad, mask
-and pyramid a region exactly as it would any other source (see ops/roi.py, ops/convert.py).
-Read-only.
+``CropBackend`` is a shifted/resized window over a source, padding out-of-bounds regions
+with a fill value; ``MaskBackend`` blanks boxes to a fill value; ``RemapBackend`` replaces
+values. Each opens from a spec, so the engine can crop, pad, mask and pyramid a region as it
+would any other source.
 
-Masking on the **read** side is what makes it hold at every scale: the engine derives each
-pyramid level from the level below it in the *output*, so a hole in level 0 propagates
-upward on its own. A post-pass over a finished volume would have to repeat itself per
-level and could not be resumed.
+Masking on the read side holds at every scale: each pyramid level is derived from the level
+below it in the output, so a hole in level 0 propagates upward on its own.
 """
 
 from __future__ import annotations
@@ -155,16 +151,10 @@ REMAP_TAG = "remap"
 class RemapBackend:
     """A source with ``values`` replaced by ``to`` (default 0) as it is read.
 
-    Manual segmentation does not always call background 0 — a tool that numbers labels from
-    0 makes it 1 — and that single fact breaks the sparsity every other assumption here
-    rests on: **an all-background block of 1s is not all-fill, so it gets stored.** The
-    volume then has a chunk object everywhere data was written, whether or not it holds
-    anything, and "which chunks exist" stops answering "where is the data" — which is what
-    `bboxes-json`, `relabel`, `--sparse` and neu-morpho's occupancy all ask it.
-
-    Doing it here, on the read side, is therefore not a convenience: it is the only place
-    the correction happens *before* the storage decision. Applied after the fact, the dense
-    chunks are already written.
+    For a segmentation whose background is not 0: **a block of background 1s is not
+    all-fill, so it gets stored**, and "which chunks exist" stops answering "where is the
+    data", which occupancy, ``relabel`` and ``--sparse`` rely on. Remapping on the read
+    side corrects it before the storage decision.
     """
 
     def __init__(self, spec: Mapping[str, Any]):
@@ -196,22 +186,15 @@ class RemapBackend:
         if not data.flags.writeable:
             data = data.copy()
         values = self._values.astype(data.dtype, copy=False)
-        # `isin` for a handful of values is a small number of equality passes; building a
-        # lookup table would need one entry per possible value, which for uint64 is absurd.
+        # `isin`: a lookup table would need one entry per possible uint64 value.
         data[np.isin(data, values)] = self._to
         return data
 
     def write_region(self, region: Region, data: np.ndarray) -> None:
         raise TypeError("remap views are read-only")
 
-    # A remap changes values, not geometry, so everything the source recorded about where
-    # it sits and at what scale is still true and forwards. `ops/write` asks a source for
-    # these, and a wrapper that swallowed them would silently turn "the offset came from
-    # the file" back into "no offset given".
-    #
-    # A *crop* must not do this: it moves the data, so the source's recorded offset is no
-    # longer the view's. That asymmetry is why this is written out here rather than being a
-    # generic __getattr__ on every view.
+    # A remap changes values, not geometry, so the source's recorded frame still holds and
+    # is forwarded. A crop moves the data, so it must not forward the source's offset.
     def stored_offset(self, name: str = "voxel_offset"):
         return self._forward("stored_offset", name)
 

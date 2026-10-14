@@ -8,9 +8,8 @@ while precomputed's multiscale ``info`` is written incrementally at scale create
 A leading channel axis ``(c, z, y, x)`` is supported and
 never downsampled.
 
-Every per-block worker is wrapped in :func:`neu_vol.retry.with_retry`. At this
-scale transient object-store failures are not hypothetical — one bad connection or DNS
-lookup among tens of thousands of tasks would otherwise end a run that is succeeding.
+Every per-block worker is wrapped in :func:`neu_vol.retry.with_retry`: one transient
+connection or DNS failure among tens of thousands of tasks would otherwise end a run.
 
 Resume + sparsity: each block worker returns ``(index, status)`` where status is
 ``written`` / ``empty`` (equalled fill value, elided) / ``skipped`` (verify found
@@ -54,15 +53,10 @@ def _input_region(out_region: Region, factor: Sequence[int], src_shape: Sequence
     )
 
 
-# Per-block work is wrapped in `with_retry`, and the whole block is the retry unit:
-# open, read and write are all idempotent for a fixed region, so repeating them
-# produces the same result. Blocks fail fast (CLAUDE.md invariant 5) and that stays
-# true — retry only removes the failures that would have fixed themselves. Without it
-# a single transient network error anywhere across tens of thousands of tasks kills a
-# run that is otherwise succeeding: observed as a connection reset on an 11 TB copy,
-# and again as one worker failing to resolve the S3 hostname (curl_code=6) two seconds
-# into an 85,536-task level. A permanent error (403, malformed spec) is re-raised
-# immediately — see retry.is_transient, which checks permanent markers first.
+# The whole block is the retry unit: open, read and write are idempotent for a fixed
+# region. Blocks still fail fast on an error that persists, since a skipped block would
+# silently truncate the output; a permanent error (403, malformed spec) is re-raised at
+# once (retry.is_transient checks permanent markers first).
 def _copy_block(block: Block, *, src_spec: dict, dst_spec: dict, out_dtype: str,
                 verify: bool = False) -> tuple:
     def once():
@@ -119,18 +113,14 @@ def plan_task_shape(src_chunks, dst_chunks, dst_shape, itemsize=1,
                     max_bytes=DEFAULT_TASK_BYTES):
     """A task shape that covers whole source AND whole destination chunks.
 
-    Tasks used to be one destination chunk each, ignoring the source entirely. When
-    the source's unit is larger, every task re-fetches a source unit its neighbours
-    also need — measured on a CloudVolume source with 128x2048x2048 chunks written to
-    128^3: **256 destination chunks per source chunk, so 256x the reads** (~331 TB for
-    1.5 TB of data). For a PNG stack, where a slice cannot be partially decoded, the
-    same effect was 13,886x.
+    A task of one destination chunk re-fetches any larger source unit its neighbours also
+    need: a 128x2048x2048 source written to 128^3 chunks is read 256 times over.
 
     The natural unit is the per-axis LCM of the two chunkings, clamped to the volume.
-    Where that exceeds ``max_bytes`` it is halved along its largest axis until it
-    fits, **always staying a multiple of the destination chunk** — that multiple is
-    not negotiable, because two tasks sharing a destination chunk race on a partial
-    write (see CLAUDE.md). Falling below a whole source unit only costs re-reads.
+    Where that exceeds ``max_bytes`` it is halved along its largest axis until it fits,
+    **always staying a multiple of the destination chunk**, since two tasks sharing a
+    destination chunk race on a partial write. Falling below a whole source unit only
+    costs re-reads.
     """
     if not src_chunks or len(src_chunks) != len(dst_chunks):
         return tuple(dst_chunks)                       # nothing to align to
@@ -172,11 +162,9 @@ class NothingStored(RuntimeError):
 def _stored_cells_fn(dst: str, fmt: str):
     """``(level, cell_shape) -> {stored chunk cells}`` for this destination.
 
-    Deferred to :func:`neu_vol.ops.occupancy.occupied_cells`, which already knows
-    how each format spells a chunk key — precomputed's ``x0-x1_y0-y1_z0-z1`` in xyz under
-    a per-scale prefix, zarr v3's ``c/z/y/x``. It raises ``NoOccupancy`` on a **sharded**
-    level, which is the right answer rather than a wrong one: a shard hides which of its
-    chunks exist, so presence stops being the same question as occupancy.
+    Through :func:`neu_vol.ops.occupancy.occupied_cells`, which knows each format's chunk
+    keys. It raises ``NoOccupancy`` on a **sharded** level, where a shard hides which of
+    its chunks exist.
     """
     def stored_cells(level: int, cell: tuple[int, ...]) -> set:
         from .occupancy import occupied_cells
@@ -190,30 +178,19 @@ def _sparse_skip(stored_cells, src_level, src_shape, src_chunks, factor, has_cha
                  *, strict: bool):
     """A predicate: does this output block's input contain no stored chunk at all?
 
-    **This is exact, not a heuristic, and that is what separates it from the occupancy
-    prefilters elsewhere** (CLAUDE.md invariant 6, where coarse-scale *label* occupancy
-    misses blocks and needs dilating). Here the question is not "does this region
-    probably hold labels" but "does the source object exist": TensorStore never persists
-    an all-fill chunk, so a chunk with no object *is* all fill. If none of the source
-    chunks a block reads exists, its input is entirely fill, its output is entirely fill,
-    and :func:`_downsample_block` would return ``"empty"`` and write nothing. Skipping
-    changes not one byte of output — it only skips the read that discovers the zeros.
-
-    The error direction is safe too: a writer that *did* store all-fill chunks (anything
-    not TensorStore) only makes this keep blocks it needn't, costing a read.
-
-    One listing per level, not one probe per block — an existence check per task is the
-    round trip we are trying to avoid.
+    **Exact, not a heuristic** (unlike a coarse-scale label-occupancy prefilter, which
+    misses blocks): TensorStore never persists an all-fill chunk, so if none of the source
+    chunks a block reads exists, its output is all fill and would be written nowhere.
+    Skipping changes no output byte. A writer that did store all-fill chunks only makes
+    this keep blocks it need not. One listing per level, not a probe per block.
     """
     spatial = slice(1, None) if has_channels else slice(None)
     cell = tuple(int(c) for c in src_chunks[spatial])
     cells = stored_cells(src_level, cell)
     if not cells:
-        # An empty SEED means the run would write nothing and report success — invariant
-        # 4's failure mode, and what a wrong --start-level looks like. An empty level
-        # part-way up is ordinary: mode-reducing a handful of labelled voxels among
-        # background yields background, so sparse data legitimately dies out below the
-        # top of the pyramid. Nothing above an empty level can hold data either.
+        # An empty SEED means the run would write nothing and report success, which is
+        # what a wrong --start-level looks like. An empty level part-way up is ordinary:
+        # sparse labels legitimately reduce to background below the top of the pyramid.
         if strict:
             raise NothingStored(
                 f"level {src_level} has no stored chunks, so every task above it would "
@@ -238,16 +215,9 @@ def _run_level(manifest, level, backend, worker_factory, *, resume, verify, clie
                npartitions, task_shape=None, skip=None):
     """Dispatch one level's blocks, filtering already-done ones and recording results.
 
-    The task total goes into the manifest **before** dispatch. It is the only place
-    it is known — a task may span many destination chunks (see ``plan_task_shape``),
-    so a reader counting the chunk grid gets a denominator up to 256x too large, and
-    `neu-vol progress` did exactly that. Logging is likewise before *and* after: the
-    single after-the-fact line this replaced arrived only once the level finished,
-    reporting "0 already done" about work that had by then all been done.
-
-    ``skip`` drops blocks before anything else, and therefore before the total is
-    recorded: the denominator has to be the work actually dispatched, or `neu-vol
-    progress` reports against a grid the run never intended to cover.
+    The task total goes into the manifest **before** dispatch; only the driver knows it,
+    since a task may span many destination chunks (``plan_task_shape``). ``skip`` drops
+    blocks first, so the total is the work actually dispatched.
     """
     unit = tuple(int(c) for c in (task_shape or backend.chunks))
     blocks = list(iter_blocks(backend.shape, unit))
@@ -312,26 +282,16 @@ def _run_multiscale(
     copied into it, then the pyramid cascades from there.
 
     An integer ``seed_level`` rebuilds an **existing** pyramid in place: that level is
-    read as the input, levels below it are left alone, and everything above is
-    regenerated. **Zero is a legitimate seed** — rebuilding the whole pyramid from
-    level 0 is the ordinary repair — which is why this is a separate parameter rather
-    than ``start_level == 0`` doing double duty. It did once, and a rebuild from level
-    0 took the conversion path and died trying to create a level that already existed.
+    the input, levels below it are left alone, and everything above is regenerated.
+    **Zero is a legitimate seed** (rebuilding the whole pyramid is the ordinary repair),
+    hence a separate parameter. The schedule is still computed from level 0, so
+    regenerated levels keep the original factors and complete metadata can be rewritten.
+    The seed comes from ``open_level``, never ``create_level``, which could recreate the
+    very level being read.
 
-    The schedule is still computed from level 0, so regenerated levels keep the factors
-    the original run used — ``downsample_schedule`` is iterative, so its tail from the
-    seed is what a schedule rooted there would produce anyway, and computing the whole
-    thing also yields the shapes needed to rewrite complete metadata.
-
-    The seed is obtained through ``open_level``, never ``create_level``: opening
-    for creation with ``resume=False`` would recreate the very level being
-    regenerated from, destroying the input.
-
-    ``sparse`` skips pyramid tasks whose input holds no stored chunk — exact, not a
-    guess, see :func:`_sparse_skip`. It applies to levels 1..L only: **level 0 is never
-    filtered**, because its source is foreign and its emptiness is not ours to know. So
-    it makes a `downsample`/`rebuild` of a sparse volume nearly free while leaving a
-    `convert`'s level-0 copy exactly as expensive as it was.
+    ``sparse`` skips pyramid tasks whose input holds no stored chunk (exact; see
+    :func:`_sparse_skip`), for levels 1..L only: level 0's source is foreign, so its
+    emptiness is not ours to know.
     """
     src_shape = tuple(int(s) for s in src_shape)
     identity = tuple([1] * n_spatial)
@@ -368,9 +328,7 @@ def _run_multiscale(
         if seed_level is None:
             lvl0 = create_level(0, src_shape, identity)
             prev_spec = lvl0.to_spec()
-            # Level 0 is the ONLY level that reads a foreign source, so it is the only
-            # one whose task shape has to reconcile two chunkings. Levels above read
-            # the level below, where the two already agree.
+            # Only level 0 reads a foreign source, so only it reconciles two chunkings.
             task_shape = None
             try:
                 src_chunks = open_backend(src_spec).chunks

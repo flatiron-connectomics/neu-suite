@@ -21,10 +21,8 @@ from .base import Region, register_backend
 
 TAG = "image_stack"
 
-#: Slice extensions this reader accepts. Public because it is also the *detection*
-#: vocabulary: ``detect.detect_file_backend`` asks whether a directory holds
-#: any of these, and the two must not drift — a directory detected as a stack whose
-#: files this reader then filters out would fail with "no image files matched".
+#: Slice extensions this reader accepts; also what ``detect.detect_file_backend`` looks
+#: for in a directory, so the two cannot disagree.
 IMAGE_EXTENSIONS = (".tif", ".tiff", ".png")
 
 
@@ -34,9 +32,7 @@ def _natural_key(s: str) -> list:
 
 
 def _list_files(source: str) -> list[str]:
-    # `~` is expanded here for the same reason `require_local_path` does it: glob and
-    # listdir take a relative path but not a tilde, so it would reach them verbatim and
-    # match nothing, reported as "no image files matched" rather than as a path problem.
+    # glob and listdir do not expand `~`.
     source = os.path.expanduser(source)
     if _glob.has_magic(source):
         files = _glob.glob(source)
@@ -56,13 +52,9 @@ def _list_files(source: str) -> list[str]:
 def _lift_pillow_bomb_guard() -> None:
     """Let Pillow open slices larger than its 179 Mpx "decompression bomb" limit.
 
-    That guard exists to stop a small hostile file from expanding to gigabytes in a
-    web service. An EM section is legitimately far past it — a 16648x13544 slice is
-    225 Mpx — so with the guard in place every read of a real dataset fails with
-    ``DecompressionBombError`` and no conversion is possible.
-
-    This is a deliberate trade for trusted, local scientific data, and it is scoped to
-    this reader rather than set process-wide by a caller who may not expect it.
+    An EM section is legitimately far past it (a 16648x13544 slice is 225 Mpx), and with
+    the guard every read fails with ``DecompressionBombError``. A deliberate trade for
+    trusted local data, made only when this reader opens a PNG.
     """
     try:
         from PIL import Image

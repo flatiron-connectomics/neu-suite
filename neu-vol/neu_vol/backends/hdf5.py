@@ -1,25 +1,16 @@
 """HDF5-backed reader (h5py).
 
-Reads a dataset from an HDF5 file as a volume. **Reading only**: the dataset is assumed to
-be in canonical ``(z, y, x)`` / ``(c, z, y, x)`` order, and each backend instance holds an
-open file handle, reopened from its spec on each dask worker (specs are picklable; open
-handles are not). Writing an HDF5 file is not a region operation and does not happen here —
-:meth:`HDF5Backend.write_region` says where it does happen and why.
+Reads one dataset of an HDF5 file as a volume, in canonical ``(z, y, x)`` /
+``(c, z, y, x)`` order. **Reading only**; :meth:`HDF5Backend.write_region` says where HDF5
+output is written instead. Each instance holds an open file, reopened from its spec on each
+dask worker.
 
-HDF5 is a container rather than an array, so two things a path alone cannot say are
-answered here: :func:`sole_dataset` picks the dataset when there is exactly one, and
-:meth:`HDF5Backend.stored_offset` reads a voxel offset the writer recorded beside the
-array. The second is an **optional** backend capability — ``ops/write.py`` asks any
-backend for it and does not care that only this one answers today.
-
-``stored_offset`` / ``stored_voxel_size`` / ``stored_axes`` / ``stored_units`` /
-``stored_kind`` are the five of those, and together they are what makes an HDF5 file
-describable: ``source_metadata.read_source_metadata`` composes them into the same
-coordinate-metadata dict a precomputed ``info`` or an OME group yields, so ``neu-vol info``
-and ``create --like`` work on a file this package packed. They are read strictly — an axis
-order the file states but nobody can interpret is an error, never a guess — because getting
-the order wrong places the data mirrored through the z=x diagonal and nothing downstream can
-tell.
+HDF5 is a container, so a path alone is ambiguous: :func:`sole_dataset` picks the dataset
+when there is exactly one. The optional ``stored_offset`` / ``stored_voxel_size`` /
+``stored_axes`` / ``stored_units`` / ``stored_kind`` readers return the frame a writer
+recorded beside the array, which ``source_metadata`` composes into the same metadata a
+precomputed ``info`` yields. An axis order the file states but nobody can interpret is an
+error, never a guess: reversed, the data lands mirrored through the z=x diagonal.
 """
 
 from __future__ import annotations
@@ -32,10 +23,8 @@ from .base import Region, register_backend
 
 TAG = "hdf5"
 
-#: Extensions that name an HDF5 container. Public because it is the *detection*
-#: vocabulary too: HDF5 has no marker object to probe for — the format signature is
-#: inside the file — so ``detect.detect_file_backend`` goes by the name, and the
-#: two lists must not drift.
+#: Extensions that name an HDF5 container. Also what ``detect.detect_file_backend`` goes
+#: by, since HDF5 has no marker object to probe for.
 HDF5_EXTENSIONS = (".h5", ".hdf5", ".hdf", ".he5")
 
 
@@ -52,11 +41,8 @@ def _as_offset(value: Any, where: str) -> tuple[int, ...]:
 def require_local_path(path: str, what: str = "an HDF5 file") -> str:
     """``path`` if it is an ordinary filesystem path; a useful error if it is not.
 
-    h5py needs a real path — there is no kvstore in front of it as there is for zarr and
-    precomputed, and a container that cannot be read a chunk at a time would be a poor fit
-    for one anyway. Without this check the failure is h5py's: it tries to *create a local
-    file called* ``s3://bucket/piece.h5`` and reports ``errno = 2, No such file or
-    directory``, which says nothing about what is actually wrong.
+    h5py has no object-store driver; without this check it tries to create a local file
+    called ``s3://bucket/piece.h5`` and reports ``errno = 2``.
     """
     from ..location import is_local, local_path
 
@@ -66,10 +52,7 @@ def require_local_path(path: str, what: str = "an HDF5 file") -> str:
             f"object-store driver, so nothing here can read or write HDF5 on one. Copy the "
             f"file to local storage first (`rclone copy`, `aws s3 cp`), or write it locally "
             f"and upload it afterwards.")
-    # Resolved, not just vetted: h5py takes a relative path but does **not** expand `~`, so
-    # `~/data/piece.h5` reaches it verbatim and fails with errno 2 on a path that plainly
-    # exists. `local_path` goes through `to_kvstore`, so this and every store path get the
-    # same treatment.
+    # Resolved, not just vetted: h5py does not expand `~`.
     return local_path(path)
 
 
@@ -84,8 +67,7 @@ def _as_floats(value: Any, where: str) -> tuple[float, ...]:
 def axes_string(value: Any) -> str:
     """An axis-order attribute as ``"zyx"``, however h5py handed it over.
 
-    ``"zyx"``, ``b"zyx"``, ``["z","y","x"]`` and ``[b"z",b"y",b"x"]`` are all things a
-    writer may leave behind, and h5py's own round-tripping decides which one comes back.
+    ``"zyx"``, ``b"zyx"``, ``["z","y","x"]`` and ``[b"z",b"y",b"x"]`` are all accepted.
     """
     if isinstance(value, bytes):
         return value.decode()
@@ -107,10 +89,7 @@ def datasets(path: str, *, min_ndim: int = 3) -> list[str]:
 
 
 #: The attribute names read as a frame, and what each one means. Reported when a file
-#: records none, because "no coordinate metadata" and "this file spells it differently"
-#: look identical otherwise, and the field names are parameters everywhere else
-#: (``voxel_size_field`` / ``offset_field``) precisely because another writer's choice is
-#: not this package's to assume.
+#: records none, so "no metadata" and "spelled differently" can be told apart.
 FRAME_ATTRIBUTES = {
     "voxel_size": "physical size of one voxel, in `units`",
     "voxel_offset": "where this array starts, in whole voxels",
@@ -119,10 +98,8 @@ FRAME_ATTRIBUTES = {
     "axes": "the axis order of the three vectors above ('zyx' or 'xyz')",
 }
 
-#: What :func:`describe_datasets` reports on top of the frame. Separate from
-#: :data:`FRAME_ATTRIBUTES` because that one is quoted verbatim by ``neu-vol info`` when a
-#: file records **no frame**, to say which names were searched — and ``kind`` is not one of
-#: them: a file can state what its voxels mean and still have no physical scale.
+#: What :func:`describe_datasets` reports on top of the frame. ``kind`` is not a frame
+#: attribute: a file can state what its voxels mean and still have no physical scale.
 DESCRIBED_ATTRIBUTES = {
     **FRAME_ATTRIBUTES,
     "kind": "what the voxels mean: image, probability or segmentation",
@@ -133,21 +110,12 @@ def describe_datasets(path: str, *, min_ndim: int = 3) -> dict[str, dict]:
     """Every volumetric dataset in the file, with its geometry and recorded frame.
 
     ``{name: {"shape", "dtype", "chunks", "ndim", <frame attributes>}}``, in file order,
-    from **one** file open — attributes only, so it is cheap however large the arrays are.
+    from one file open, attributes only. What ``neu-vol info`` lists for a container of
+    several arrays, such as a file of ground-truth crops.
 
-    This is the *container's* answer, and it exists because an HDF5 file is not usually
-    one volume: a bag of ground-truth crops, each with its own ``voxel_offset``, is the
-    ordinary shape of one here, and asking a 13-piece file to name its "sole dataset" can
-    only fail. :func:`~neu_vol.source_metadata.describe` still describes one array —
-    everything downstream of it needs exactly one — so this is what ``neu-vol info``
-    falls back to in order to say *which* arrays there are to choose from.
-
-    Frame values come back **exactly as recorded**, not reoriented into zyx: each entry
-    carries its own ``axes``, and normalising here would mean either dropping that column
-    or silently disagreeing with it. The single-array path
-    (``source_metadata._read_hdf5``) is where the reorientation happens, and it is strict
-    there. Values fall back to the root group's, which is where a file-wide
-    ``voxel_size``/``units`` usually lives.
+    Frame values come back **as recorded**, each with its own ``axes``, not reoriented to
+    zyx (``source_metadata._read_hdf5`` does that, strictly, for one array). Values fall
+    back to the root group's.
     """
     import h5py
 
@@ -184,12 +152,8 @@ def describe_datasets(path: str, *, min_ndim: int = 3) -> dict[str, dict]:
 def sole_dataset(path: str) -> str:
     """The file's one volumetric dataset, for callers that did not name one.
 
-    HDF5 is a container, not an array, so a path alone is ambiguous. Guessing wrongly
-    is worse than asking — so this only answers when there is exactly one candidate,
-    and otherwise raises listing what it found. A bag of ground-truth crops in one file
-    is the ordinary case, not an edge one, so the error says how to choose: `neu-vol
-    info` lists them with their shapes and offsets, and every command that reads an HDF5
-    array takes the name.
+    Answers only when there is exactly one 3D+ dataset; otherwise raises listing them and
+    saying how to choose one.
     """
     found = datasets(path)
     if len(found) == 1:
@@ -215,29 +179,17 @@ def open_hdf5(path: str, dataset: str | None = None) -> "HDF5Backend":
         be.read_region((slice(0, 64), slice(0, 64), slice(0, 64)))
 
     ``dataset`` is optional only when the file holds exactly one 3D+ array; with several
-    it is **required**, and the error lists them (:func:`sole_dataset`). That is not
-    strictness for its own sake — a bag of annotated crops in one file is the ordinary
-    arrangement here, and picking one of thirteen on the caller's behalf would be
-    picking the wrong one twelve times out of thirteen.
+    it is required, and the error lists them (:func:`sole_dataset`).
 
-    **Deliberately not a general "open anything" helper**, and deliberately not folded
-    into :func:`~neu_vol.backends.base.open_backend`. The format is in the name, so this
-    needs no detection at all — no marker probes, no store reads. ``open_backend`` stays
-    what its docstring says it is: the spec-driven primitive a per-block dask task
-    reopens on a worker, thousands of times a run, with the reader named rather than
-    inferred (CLAUDE.md invariant 9). To *find out* what something is, use
-    :func:`~neu_vol.source_metadata.describe`.
-
-    Goes through ``open_backend`` rather than constructing the backend directly, so the
-    handle joins the per-process cache: an ``HDF5Backend`` holds an open ``h5py.File``,
-    and two calls for one array should not mean two file handles.
+    Not a general "open anything" helper: the format is in the name, so nothing is
+    detected. To find out what something is, use :func:`~neu_vol.source_metadata.describe`.
+    Goes through :func:`~neu_vol.backends.base.open_backend`, so the open file joins the
+    per-process cache.
     """
     from ..logs import quiet_reads
     from .base import open_backend
 
-    # A notebook-facing entry point with no `main()` to wrap; see `source_metadata.describe`.
-    # HDF5 itself is local and silent, but `require_local_path` goes through `location`, and
-    # a caller reaching for this in a loop should not have to think about it.
+    # A notebook entry point, so it filters store logs itself.
     with quiet_reads():
         path = require_local_path(path)
         return open_backend({"backend": TAG, "path": path,
@@ -280,17 +232,12 @@ class HDF5Backend:
     def stored_offset(self, name: str = "voxel_offset"):
         """A voxel offset recorded in the file as ``(value, where_it_was_found)``.
 
-        ``None`` if the file records none. Three places are searched, most specific
-        first: the dataset's own attributes, the root group's attributes, then a
-        top-level dataset of that name — writers put it in all three depending on
-        which tool wrote the file.
+        ``None`` if the file records none. Searched in the dataset's attributes, then the
+        root group's, then a top-level dataset of that name.
 
-        **The axis order is not knowable from here.** The name is precomputed's, where
-        it means *xyz*; a file whose array is canonical ``(z, y, x)`` most likely means
-        zyx. Nothing in the file distinguishes them, so this returns the numbers as
-        stored and leaves the decision to the caller — which reports it, because
-        getting it backwards places the subvolume mirrored through the z=x diagonal
-        and nothing downstream can tell.
+        **The axis order is not knowable from here**: the name is precomputed's, where it
+        means xyz. The numbers come back as stored and the caller decides, using
+        :meth:`stored_axes` when the file has it.
         """
         import h5py
 
@@ -306,10 +253,8 @@ class HDF5Backend:
     def stored_voxel_size(self, name: str = "voxel_size"):
         """A physical voxel size recorded in the file, as ``(value, where)``, or ``None``.
 
-        Same three places and same order as :meth:`stored_offset`, and ``name`` is a
-        parameter for the same reason: ``voxel_size`` is this package's own vocabulary, but
-        a file written by something else may have called it whatever it liked, and the
-        caller is the one who knows.
+        Searched as :meth:`stored_offset` is. ``name`` is a parameter because another
+        writer may call it something else.
         """
         import h5py
 
@@ -325,13 +270,8 @@ class HDF5Backend:
     def stored_axes(self, name: str = "axes"):
         """The axis order the writer recorded, as ``(order, where)``, or ``None``.
 
-        This is what makes :meth:`stored_offset`'s numbers unambiguous. Without it the
-        order genuinely cannot be known — ``voxel_offset`` is precomputed's field name and
-        means xyz there, while everything in this package is zyx — so ``ops/write`` has to
-        ask. A file written by ``neu-vol to-hdf5`` says which, and then nobody has to.
-
-        Searched on the dataset first and the root group second, as :meth:`stored_offset`
-        does.
+        What makes :meth:`stored_offset`'s numbers unambiguous; ``neu-vol to-hdf5`` writes
+        it. Dataset attributes first, then the root group's.
         """
         for attrs, where in ((self._dset.attrs, f"{self._dataset}.attrs[{name!r}]"),
                              (self._file.attrs, f"/.attrs[{name!r}]")):
@@ -342,12 +282,8 @@ class HDF5Backend:
     def stored_units(self, name: str = "units"):
         """The physical unit the writer recorded, as ``(unit, where)``, or ``None``.
 
-        Attributes only, dataset before root — a unit is a string, so the
-        top-level-dataset fallback the other three readers have would be a 1-element
-        string array nobody writes. ``neu-vol to-hdf5`` records it beside
-        ``voxel_size``, which is the pairing that makes those numbers mean anything:
-        the rest of the suite works in nm, and a file whose voxel size is in
-        micrometres is off by a thousand with nothing to show for it.
+        Attributes only, dataset before root. ``neu-vol to-hdf5`` records it beside
+        ``voxel_size``; the suite works in nm.
         """
         for attrs, where in ((self._dset.attrs, f"{self._dataset}.attrs[{name!r}]"),
                              (self._file.attrs, f"/.attrs[{name!r}]")):
@@ -359,15 +295,9 @@ class HDF5Backend:
     def stored_kind(self, name: str = "kind"):
         """What the writer said the voxels MEAN, as ``(kind, where)``, or ``None``.
 
-        Attributes only, dataset before root, like :meth:`stored_units` — and for the same
-        reason, a kind being a string. Written by ``neu_vol.write_piece`` and by
-        ``to-hdf5`` when the source recorded one (``ops/pack.KIND_ATTR``).
-
-        **Only a value this package would have written is worth trusting**; the caller
-        checks that (``source_metadata._read_hdf5`` against :data:`neu_lib.KINDS`), because
-        ``kind`` is a plain word another tool may have used for something else entirely,
-        and the failure mode is the one that averages label ids into ids that were never in
-        the data.
+        Attributes only, dataset before root. Written by ``neu_vol.write_piece`` and
+        ``to-hdf5`` (``ops/pack.KIND_ATTR``). The caller trusts only values in
+        :data:`neu_lib.KINDS`, since another tool may use the word for something else.
         """
         for attrs, where in ((self._dset.attrs, f"{self._dataset}.attrs[{name!r}]"),
                              (self._file.attrs, f"/.attrs[{name!r}]")):
@@ -379,11 +309,8 @@ class HDF5Backend:
     def close(self) -> None:
         """Release the open ``h5py.File``.
 
-        An optional capability, like the ``stored_*`` readers, and
-        :func:`~neu_vol.backends.base.release_backends` is what calls it: HDF5 refuses to
-        open a file for writing while any handle holds it read-only, so a *cached* reader is
-        what stops a file being rewritten in the same process. Idempotent — h5py tolerates
-        closing twice — so nothing has to track whether it has happened.
+        Called by :func:`~neu_vol.backends.base.release_backends`: HDF5 refuses to open a
+        file for writing while any handle holds it read-only. Idempotent.
         """
         self._file.close()
 
@@ -393,17 +320,10 @@ class HDF5Backend:
     def write_region(self, region: Region, data: np.ndarray) -> None:
         """Never: HDF5 output is written whole, by a different path.
 
-        Not an unimplemented stub waiting for someone — **region writing is the wrong shape
-        for this container** and there is no consumer for it. The block engine writes into a
-        *volume*, and an HDF5 file is refused as a destination for reasons that have nothing
-        to do with h5py: one array in one container has no pyramid to rebuild and no chunk
-        objects whose presence answers "where is the data". Handing back a half-supported
-        write would also mean opening the file ``r+`` and holding it across a fan-out, where
-        HDF5 has no concurrent-writer story at all.
-
-        So an HDF5 piece is produced in one call, from the two doors that own the file
-        layout: :func:`neu_vol.write_piece` for an array already in memory, and
-        :func:`neu_vol.pack_hdf5` (``neu-vol to-hdf5``) to stream one out of another source.
+        The block engine writes into a volume; one array in a container has no pyramid and
+        no chunk objects, and HDF5 has no concurrent writers. A piece is written in one
+        call by :func:`neu_vol.write_piece` (an array in memory) or
+        :func:`neu_vol.pack_hdf5` (``neu-vol to-hdf5``, from another source).
         """
         raise NotImplementedError(
             "an HDF5 file is written whole, not region by region: use "

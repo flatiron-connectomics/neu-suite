@@ -1,19 +1,9 @@
 """Extract / crop / pad a region of interest into a new multiscale volume.
 
-A thin wrapper over :func:`~neu_vol.convert`, which owns the crop (it wraps
-the source in the read-only crop view from ``backends/view.py`` and runs the shared
-materialize engine). What this adds is the crop-*and*-pad contract: ``start`` may be
-negative and ``stop`` may exceed the source extent, and the out-of-bounds margin is
-filled with ``pad_value`` rather than trimmed away.
-
-It used to resolve the source itself, and that was the weaker of two paths — it never
-called ``read_source_metadata``, so it demanded an explicit ``voxel_size``, defaulted
-the offset to zero instead of the source's, and addressed the source by a hand-built
-``{"backend": ..., "path": ...}`` spec, which cannot open an OME-NGFF *group* and
-contradicts detection for CloudVolume-style ``.gz`` precomputed (invariant 9).
-Delegating fixes all of that; the one visible change is that a source carrying an
-offset now contributes it, so the ROI lands in the source's frame rather than
-``start * voxel_size`` from the origin.
+A thin wrapper over :func:`~neu_vol.convert`, adding the crop-*and*-pad contract:
+``start`` may be negative and ``stop`` may exceed the source extent, and the margin is
+filled with ``pad_value`` rather than trimmed. Metadata, including the source's offset,
+comes from the source as in ``convert``, so the ROI lands in the source's frame.
 """
 
 from __future__ import annotations

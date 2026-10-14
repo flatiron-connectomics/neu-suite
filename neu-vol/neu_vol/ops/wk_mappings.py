@@ -68,9 +68,7 @@ def fetch_mapping_tables(src: str, out: str, *, volume: str | None = None,
         if detect_backend(volume) is None:
             raise FileNotFoundError(f"--volume {volume} is not a volume")
 
-    # Everything below goes through `location`, so `out` may be a local directory or an
-    # object-store prefix. (It used to be os-only, and `--out s3://…` silently became a
-    # local directory named `s3:` under the working directory.)
+    # Through `location`, so `out` may be a local directory or an object-store prefix.
     from ..location import read_json, read_range, write_bytes, write_json
 
     def at(name: str) -> str:
@@ -117,17 +115,14 @@ def fetch_mapping_tables(src: str, out: str, *, volume: str | None = None,
 
     todo = []
     for name in wanted:
-        # One byte, not `exists`: that reads the whole object, and twenty tables is
-        # ~360 MB of download just to learn they are already there.
+        # One byte, not `exists`, which reads the whole object.
         if not overwrite and read_range(at(f"{name}.npy"), 0, 1) is not None:
             logger.info("%s: table exists, skipped (overwrite to refetch)", name)
             record(name)
         else:
             todo.append(name)
 
-    # Threads, not processes or dask: a view is ~two dozen HTTP requests and the time is
-    # the server's, so concurrency is all that helps. Bounded, because the server is
-    # usually a shared public service.
+    # Threads: the time is the server's, and it is usually shared, so bounded.
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     with ThreadPoolExecutor(max_workers=max(1, int(threads))) as pool:

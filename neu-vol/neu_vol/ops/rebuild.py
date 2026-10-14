@@ -8,11 +8,8 @@ lowest good one.
 
     rebuild_pyramid("s3://bucket/prefix/volume", start_level=2, kind="image")
 
-Levels at or below ``start_level`` are never opened for writing; the level itself
-is the input. Everything above it is rebuilt with the same factors the original
-run used, because the schedule is recomputed from level 0 rather than from the
-seed (``downsample_schedule`` is iterative, so its tail matches, and the full
-computation also yields the shapes needed to rewrite complete metadata).
+Levels at or below ``start_level`` are never opened for writing. Everything above is
+rebuilt with the original factors, since the schedule is recomputed from level 0.
 """
 
 from __future__ import annotations
@@ -34,16 +31,10 @@ logger = logging.getLogger(__name__)
 def resolve_max_levels(recorded: Sequence[Any] | None) -> tuple[int, str]:
     """The level cap for a rebuild, and why — from the volume where it says anything.
 
-    How many levels a pyramid has is a property of the volume, written in its own
-    metadata; it is not a preference, and it is certainly not a *conversion's* default.
-    Inheriting 8 from ``convert`` made a rebuild plan one level fewer than the 9-level
-    volume it was repairing, and because every shape matched, nothing caught it — the top
-    level was simply left serving whatever it held before.
-
-    **A volume recording one level or none is the opposite case**: there is no pyramid to
-    match, and `neu-vol write` and `neu-vol relabel` both end by telling you to run
-    `downsample` to *build* one. Deriving 1 there would turn that documented step into a
-    silent no-op, so it falls back to the conversion default instead.
+    A pyramid's depth is the volume's own, so a rebuild matches it; a conversion's default
+    would leave the top levels of a deeper pyramid untouched. A volume recording one level
+    or none has no pyramid to match (``write`` and ``relabel`` tell you to run
+    ``downsample`` to build one), so it gets the conversion default.
     """
     n = len(recorded or ())
     if n > 1:
@@ -88,18 +79,15 @@ def rebuild_pyramid(
 
     ``kind`` picks the reducer: ``"image"`` is a mask-weighted mean (anti-aliased),
     ``"segmentation"`` a label-preserving mode. It defaults to whatever the volume
-    already records — precomputed stores it as ``info["type"]``, OME as the
-    multiscales ``type`` — because guessing wrong is silent and destructive:
-    averaging label ids invents ids that were never in the data. If the volume
-    records nothing usable, it must be passed.
+    already records (precomputed ``info["type"]``, OME multiscales ``type``), since
+    averaging label ids invents ids. If the volume records nothing usable, pass it.
 
     Metadata (shape, voxel size, offset, axes) comes from the existing volume.
     ``voxel_size`` overrides it, for a volume whose recorded scale is itself the
     thing that was wrong.
 
-    The progress manifest defaults to a name distinct from a conversion's, because
-    reusing that one would mark the levels you are rebuilding as already done and
-    the run would silently do nothing.
+    The progress manifest defaults to a name distinct from a conversion's, which would
+    mark the levels being rebuilt as already done.
     """
     if start_level < 0:
         raise ValueError(f"start_level must be >= 0, got {start_level}")
@@ -108,10 +96,7 @@ def rebuild_pyramid(
     if fmt is None:
         raise ValueError(
             f"could not detect a volume at {dst!r} (no info / zarr.json / .zarray)")
-    # A pyramid is the thing being rebuilt, so a format that cannot have one is not a
-    # volume with a problem — it is the wrong argument. Said here rather than left to the
-    # schedule, which would otherwise plan levels for a single array and then fail on the
-    # first write.
+    # A format that cannot have a pyramid is the wrong argument, not a broken volume.
     require_chunked_volume(fmt, dst, "neu-vol downsample")
     spec = {"backend": fmt, "path": dst}
     meta = read_source_metadata(spec)
@@ -163,8 +148,7 @@ def rebuild_pyramid(
                 dst, start_level, tuple(level0.shape), voxel_size, kind)
 
     return materialize_multiscale(
-        # Never read: a rebuild seeds from a level that already exists, so there is no
-        # level-0 copy. It is passed because the signature is shared with `convert`.
+        # Never read (no level-0 copy in a rebuild); the signature is shared with convert.
         src_spec=level0_spec,
         src_shape=level0.shape,
         src_dtype=str(level0.dtype),
@@ -194,9 +178,6 @@ def rebuild_pyramid(
         sparse=sparse,
         progress_path=progress_path,
         validate=validate,
-        # An int, never None: every level of a rebuild is seeded from one that exists,
-        # including level 0. None would mean "convert" — create level 0 and copy a
-        # source into it — which is how `--start-level 0` used to die with
-        # ALREADY_EXISTS on a volume it was supposed to be repairing.
+        # An int, never None, which would mean "convert" and try to create level 0.
         seed_level=start_level,
     )

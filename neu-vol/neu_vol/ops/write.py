@@ -1,26 +1,17 @@
 """Write one subvolume into an existing volume, at a voxel offset and one level.
 
-The companion to :mod:`neu_vol.ops.create`: the frame exists, and each piece
-— an image stack, an HDF5 dataset, a region of another volume — gets placed into it
-independently. Deliberately **single-scale**: it writes the level you name and does
-not touch any other, because the pieces are usually annotations or corrections whose
-correct coarse representation is a separate decision (averaging a label map invents
-ids). Build the pyramid afterwards with ``neu-vol downsample`` if you want one.
+The companion to :mod:`neu_vol.ops.create`: the frame exists, and each piece (an image
+stack, an HDF5 dataset, a region of another volume) is placed into it. **Single-scale**:
+only the named level is written, since a piece's coarse representation is a separate
+decision (averaging a label map invents ids); run ``neu-vol downsample`` afterwards.
+Serial, in this process; no dask, no manifest.
 
-No dask, no manifest. These are small pieces; the run is a loop in this process,
-which is also what makes it safe to reason about the one real hazard here —
+**Partial-chunk writes race.** A region off the destination's chunk grid makes
+tensorstore read-modify-write its boundary chunks, and two such writes into a shared chunk
+at once lose one update. The plan reports alignment and the CLI says so.
 
-**Partial-chunk writes race.** A write that does not start and end on the
-destination's chunk grid makes tensorstore read-modify-write the boundary chunks.
-Serially that is merely slower; but two subvolumes that share a boundary chunk,
-written by two processes at once, will lose one of the two updates. The plan reports
-whether the region is chunk-aligned, and the CLI says so out loud, because nothing
-downstream can detect the loss afterwards.
-
-Tiling exists for the same reason it does in ``convert``: the source's natural read
-unit is not the destination's chunk, and a task that ignores one of them re-reads it.
-Tiles are cut on the *global* destination chunk grid, so no two tiles ever share a
-destination chunk.
+Tiles are cut on the global destination chunk grid (sized to the source's read unit, as
+in ``convert``), so no two tiles share a destination chunk.
 """
 
 from __future__ import annotations
@@ -66,30 +57,20 @@ def container_sources(src: str | Mapping[str, Any], pattern: str = "*", *,
                       src_format: str | None = None) -> list[dict[str, Any]]:
     """Every volumetric dataset of an HDF5 container, as one source spec each.
 
-    The batch form of pointing at a file. A bag of ground-truth crops in one HDF5 file is
-    the ordinary arrangement here — each dataset carrying its own ``voxel_offset``, which is
-    what makes it placeable — so writing the file back into a volume means writing every
-    dataset in it, and naming them one at a time is transcription rather than a decision::
+    For a file of several pieces, each with its own ``voxel_offset``::
 
         write_subvolumes(volume, container_sources("gt_v1_eval_cleaned.h5"))
 
     ``pattern`` is an fnmatch glob, tried against the **full path** (``/edge_z07801``) and
-    against the **basename** (``edge_z07801``), so both ``'/edge_*'`` and ``'z*'`` mean what
-    they look like. Datasets come back sorted, so a run's order does not depend on how h5py
-    happened to walk the file.
-
-    **A pattern that matches nothing raises**, listing what is there. The alternative is a
-    write that reports success and places no data, which for a resumed or scripted run is
-    the failure that gets noticed a week later.
+    against the **basename** (``edge_z07801``). Datasets come back sorted. **A pattern that
+    matches nothing raises**, listing what is there, rather than writing nothing.
     """
     import posixpath
     from fnmatch import fnmatch
 
     from ..backends.hdf5 import datasets
 
-    # **Not `source_spec`**: for an HDF5 path with no dataset it resolves the *sole* one,
-    # which raises for exactly the containers this function is for. The format is settled
-    # first and the specs are built per dataset afterwards.
+    # Not `source_spec`, which resolves the *sole* dataset and so raises for a container.
     base: dict[str, Any] = dict(src) if isinstance(src, Mapping) else {}
     path = str(base.get("path") if base else src)
     fmt = base.get("backend") if base else (src_format or detect_backend(path))
@@ -112,23 +93,13 @@ def resolve_offset(backend, offset, *, field: str, order: str | None, ndim: int)
     """The offset to write at, as ``(offset, provenance)``, taking it from the source
     if none was given.
 
-    Some writers record where a subvolume came from beside the array — HDF5 files
-    routinely carry a ``voxel_offset``. Re-typing that by hand is both tedious and a
-    chance to mistype a coordinate, so any backend may expose ``stored_offset(name)``
-    and this uses it when the caller passes no offset. Only HDF5 implements it today;
-    nothing here is specific to HDF5.
+    Any backend may expose ``stored_offset(name)`` (HDF5 does), used when no offset is
+    given.
 
-    ``order`` is the axis order of the numbers, ``"zyx"`` (this package's convention
-    everywhere else) or ``"xyz"``. It has to be *said* rather than guessed because
-    ``voxel_offset`` is precomputed's field name, and precomputed means xyz — so a
-    stored value could legitimately be either, with a wrong guess placing the piece
-    mirrored through the z=x diagonal and nothing downstream able to tell.
-
-    ``order=None`` means "ask the file": a source may expose ``stored_axes()`` and say
-    which order it wrote, in which case reading it is not a guess at all. `neu-vol to-hdf5`
-    records it; falling back to zyx when nothing does. An explicit ``order`` always wins,
-    and the provenance string says which of the three happened, because this is the one
-    decision here whose mistakes are invisible afterwards.
+    ``order`` is the axis order of the numbers, ``"zyx"`` or ``"xyz"``: ``voxel_offset`` is
+    precomputed's field name, where it means xyz, and a wrong guess mirrors the piece
+    through the z=x diagonal. ``order=None`` reads ``stored_axes()`` if the source has it
+    (``neu-vol to-hdf5`` records it), else assumes zyx. The provenance string says which.
     """
     if order is not None and order not in ("zyx", "xyz"):
         raise ValueError(f"offset order must be 'zyx' or 'xyz', got {order!r}")
@@ -159,8 +130,7 @@ def resolve_offset(backend, offset, *, field: str, order: str | None, ndim: int)
     if len(offset) != ndim:
         raise ValueError(f"offset {offset} ({provenance}) has {len(offset)} entries "
                          f"but the data is {ndim}-D")
-    # Only the source having *stated* an order is news; a given order and the zyx default
-    # were already the reader's assumption, so their wording stays as it was.
+    # Only an order the source stated is worth reporting.
     note = f", {order_from}" if order_from.startswith("recorded") else ""
     if order == "xyz":
         offset = offset[::-1]
@@ -174,10 +144,8 @@ def _offset_at_level(volume: str, fmt: str, offset: Sequence[int],
                      from_level: int, to_level: int) -> tuple[int, ...]:
     """Re-express a voxel offset given at ``from_level`` in ``to_level``'s voxels.
 
-    Uses each level's **recorded** voxel size, never ``2**level`` — real pyramids are
-    anisotropic, and a level's shape ratio is inexact because shapes are ceil-divided.
-    A non-integral result is an error: silently rounding would shift the subvolume by
-    up to half a coarse voxel with nothing to show for it.
+    From each level's **recorded** voxel size, never ``2**level`` (pyramids may be
+    anisotropic). A non-integral result is an error rather than a rounding.
     """
     if from_level == to_level:
         return tuple(int(o) for o in offset)
@@ -202,10 +170,8 @@ def _offset_at_level(volume: str, fmt: str, offset: Sequence[int],
 def _tiles(start: Sequence[int], stop: Sequence[int], unit: Sequence[int]) -> list[Region]:
     """Cut ``[start, stop)`` into tiles on the global grid of multiples of ``unit``.
 
-    Anchoring to the global grid rather than to ``start`` is what keeps two tiles from
-    landing in one destination chunk: ``unit`` is a whole number of chunks, so every
-    interior cut falls on a chunk boundary. Only the first and last tile of each axis
-    can be partial, and only where the caller's own region is unaligned.
+    ``unit`` is a whole number of chunks, so every interior cut falls on a chunk boundary
+    and no two tiles share a chunk; only edge tiles of an unaligned region are partial.
     """
     per_axis = []
     for a, b, u in zip(start, stop, unit):
@@ -223,11 +189,8 @@ def _tiles(start: Sequence[int], stop: Sequence[int], unit: Sequence[int]) -> li
 def _misaligned_axes(start, stop, shape, chunk) -> list[int]:
     """Axes where the region's edges fall inside a destination chunk.
 
-    Delegates to :func:`neu_vol.grid.misaligned_axes`, which `neu-vol align-bbox`
-    also uses — the volume-end exemption (an edge at the end of the volume is aligned by
-    definition, since there is no neighbouring data in that partial chunk to
-    read-modify-write against) has to be one rule, or the two commands will eventually
-    disagree about the same box.
+    :func:`neu_lib.grid.misaligned_axes`, shared with ``neu-vol align-bbox``; an edge at
+    the end of the volume counts as aligned.
     """
     from neu_lib.grid import misaligned_axes
 
@@ -260,11 +223,7 @@ def plan_subvolume_write(
     if fmt is None:
         raise FileNotFoundError(
             f"no volume found at {volume} — create one first with `neu-vol create`")
-    # The DESTINATION has to be a volume. Detection reaches HDF5 files and image stacks,
-    # and both are read-only here — `HDF5Backend.write_region` raises NotImplementedError
-    # and the stack backend refuses outright — so without this the piece is read, the
-    # geometry checked, and the failure arrives from the writer with nothing about which
-    # of the two arguments was wrong.
+    # The destination must be a volume: HDF5 files and image stacks are read-only here.
     require_chunked_volume(fmt, volume, "neu-vol write")
 
     levels = existing_levels(volume, fmt)
@@ -275,10 +234,8 @@ def plan_subvolume_write(
 
     src_spec = source_spec(src, src_format, dataset)
     if background:
-        # Under everything else, because it corrects what the source means by background.
-        # Applied here rather than to the volume afterwards: an all-background block of 1s
-        # is not all-fill, so writing it stores a chunk that holds nothing, and the volume
-        # stops answering "where is the data" by which chunks exist.
+        # Before writing: an all-background block of 1s is not all-fill, so it would be
+        # stored.
         src_spec = {"backend": "remap", "source": dict(src_spec),
                     "values": [int(v) for v in background], "to": 0}
     src_backend = open_backend(src_spec)
@@ -301,9 +258,8 @@ def plan_subvolume_write(
             f"the subvolume does not fit: {src_shape} at {start} would span "
             f"{tuple(zip(start, stop))} in a level-{level} volume of {dst_shape}")
 
-    # A piece that records its own scale can be checked against the level it is going
-    # into. Extracted at level 1 and written to level 0, the numbers all fit and the data
-    # is simply at the wrong resolution — nothing else here would notice.
+    # A piece that records its scale is checked against the level: one extracted at
+    # level 1 and written to level 0 fits, at the wrong resolution.
     scale_note = None
     read_size = getattr(src_backend, "stored_voxel_size", None)
     stored_size = read_size(voxel_size_field) if read_size is not None else None
@@ -372,9 +328,8 @@ def _overlaps(a: dict, b: dict) -> bool:
 def _warn_overlaps(plans: Sequence[dict]) -> list[tuple[int, int]]:
     """Report pieces that cover the same voxels. Later wins, and that is rarely meant.
 
-    Not an error: overwriting part of an earlier piece is a legitimate thing to do
-    deliberately. Silence is what would be wrong — the result looks identical either
-    way, so a mistyped offset that buries an earlier piece leaves no trace.
+    Not an error (it may be deliberate), but a mistyped offset that buries an earlier
+    piece would otherwise leave no trace.
     """
     clashes = [(i, j) for i in range(len(plans)) for j in range(i + 1, len(plans))
                if _overlaps(plans[i], plans[j])]
@@ -433,16 +388,10 @@ def write_subvolumes(volume: str, srcs: Sequence[Any],
                      *, dry_run: bool = False, **kw: Any) -> list[dict]:
     """Write several subvolumes into one volume. Returns one result per source.
 
-    **Every source is planned before any is written.** Planning is where the offsets
-    are resolved and the bounds, dtype and level are checked, and it touches nothing —
-    so doing all of it up front means a mistyped offset in the last file is caught
-    while the volume is still untouched, rather than after three pieces have already
-    landed in it. Writing itself then fails fast: a failure there is a storage problem,
-    and continuing past one would bury it under later output.
+    **Every source is planned before any is written**, so a bad offset in the last file
+    is caught while the volume is untouched. Writing then fails fast.
 
-    ``offsets`` is either ``None`` — every source supplies its own, which is the point
-    of a batch — or one entry per source, in order. There is no single offset shared
-    across sources: pieces that all belong at the same place are one piece.
+    ``offsets`` is ``None`` (every source supplies its own) or one entry per source.
     """
     srcs = list(srcs)
     if offsets is None:

@@ -81,11 +81,9 @@ def _add_server_source_args(p):
 def _add_convert_args(p, *, source_defaults: bool):
     """The arguments shared by ``convert`` and ``copy``.
 
-    ``source_defaults`` is the only difference between the two subcommands: with it,
-    ``--format`` / ``--kind`` / ``--voxel-size`` / ``--chunk`` default to whatever the
-    source records instead of to fixed values, and a source that records none of them
-    is an error rather than a silent guess. Everything else — the pyramid schedule, the
-    crop, resume, the cluster — is identical, so it lives here and cannot drift.
+    ``source_defaults`` is the only difference: with it, ``--format`` / ``--kind`` /
+    ``--voxel-size`` / ``--chunk`` default to what the source records, and a source
+    recording none of them is an error rather than a guess.
     """
     from_source = " (default: from the source)" if source_defaults else ""
     p.add_argument("--src", required=True,
@@ -120,10 +118,8 @@ def _add_convert_args(p, *, source_defaults: bool):
     p.add_argument("--format", choices=("precomputed", "zarr", "both"),
                    default=None if source_defaults else "precomputed",
                    help="output format" + (from_source or " (default: precomputed)"))
-    # Default None for BOTH commands now: `convert` resolves explicit > source > image,
-    # so a source that records `segmentation` is no longer downgraded to `image` and
-    # averaged into label ids that were never in the data. Only a source recording
-    # nothing (image stack, HDF5, bare array) still falls back to image.
+    # Default None for both: `convert` resolves explicit > source > image, so a recorded
+    # `segmentation` is never averaged as an image.
     p.add_argument("--kind", choices=("image", "probability", "segmentation"),
                    default=None,
                    help="reducer for the pyramid: mean for image/probability, "
@@ -225,9 +221,8 @@ def _ftriple(value, name):
 def _sextuple(value, name, order="zyx"):
     """'z0,y0,x0,z1,y1,x1' -> two 3-tuples of ints (start, stop), always zyx.
 
-    ``order="xyz"`` reverses **each corner**, not the six values: the input is then
-    ``x0,y0,z0,x1,y1,z1``, which is the order neuroglancer displays and therefore the
-    order a box gets copied out of a viewer in.
+    ``order="xyz"`` reverses **each corner**: the input is then ``x0,y0,z0,x1,y1,z1``,
+    as neuroglancer displays it.
     """
     parts = tuple(int(v) for v in value.split(","))
     if len(parts) != 6:
@@ -271,12 +266,8 @@ from neu_vol.source_metadata import describe, level0_chunking  # noqa: E402
 def _describe(volume: str, dataset: str | None = None) -> dict:
     """``describe`` with a missing or unaddressable volume turned into a clean CLI exit.
 
-    ``ValueError`` is caught alongside ``FileNotFoundError`` because a location can now
-    be malformed rather than merely absent: a ``dvid://`` URL with the wrong number of
-    segments is a user typo, and its message already says exactly what is wrong, so it
-    should read as an error rather than as a traceback. ``KeyError`` joins them for the
-    same reason — it is what an HDF5 container raises when it holds several datasets and
-    nobody said which, and its message lists them, so ``--dataset`` is the whole fix.
+    ``ValueError`` covers a malformed location (a ``dvid://`` URL with the wrong segments),
+    ``KeyError`` an HDF5 container holding several datasets; both messages say the fix.
     """
     try:
         return describe(volume, dataset=dataset)
@@ -302,10 +293,8 @@ def _one_array(described: dict, volume: str, op: str) -> dict:
 def _print_dvid_nodes(volume: str) -> None:
     """Which node a ref points at now, and the newest locked one.
 
-    Both, because they are different answers to "which version would I get" and the
-    difference is exactly the reproducibility question: HEAD of a branch is the open,
-    still-mutable node in a lock-and-spawn repo. The uuids are printed in full so a
-    destination name can be built from one — that is the usual reason to run this.
+    HEAD of a branch is the open, still-mutable node in a lock-and-spawn repo, so the two
+    differ exactly when reproducibility is in question. Uuids are printed in full.
     """
     from neu_vol.dvid import node_summary
     from neu_vol.source_metadata import location_spec
@@ -335,8 +324,7 @@ def _print_dvid_nodes(volume: str) -> None:
 def _print_wk_mappings(d) -> None:
     """The dataset a name resolved to, and every mapping the layer can be read through.
 
-    Listed because choosing one is the decision a webknossos export turns on: no mapping
-    is supervoxels, and each agglomerate view is a different segmentation.
+    No mapping is supervoxels, and each agglomerate view is a different segmentation.
     """
     from neu_vol.webknossos import mappings
 
@@ -359,9 +347,7 @@ def _print_wk_mappings(d) -> None:
 def _print_provenance(volume: str, full: bool) -> None:
     """Report ``provenance.json`` if the volume has one.
 
-    A one-line summary by default and the whole document under ``--provenance``: the
-    record is what answers "which proofreading snapshot is this", which is worth
-    surfacing without being asked, but it is too long to print in full every time.
+    A one-line summary by default, the whole document under ``--provenance``.
     """
     import json
 
@@ -395,14 +381,9 @@ def _print_provenance(volume: str, full: bool) -> None:
 def cmd_info(args) -> int:
     """Report a volume's format, coordinate metadata and the levels present.
 
-    **The table itself is `Description`'s, not this function's.** It used to be built
-    here with print statements, which made this the only place that could produce it —
-    so `neu_vol.describe` in a notebook returned a dict of nested tuples and people ran
-    `neu-vol info` in a subprocess to read the same thing. The rendering moved to
-    `neu_vol/report.py`; what stays here is the two sections that need a STORE read, and
-    they are the reason the header and the table are separate methods: `provenance.json`
-    and the DVID node summary belong between them, and a `__repr__` that makes network
-    calls is a trap in a notebook, where anything can echo an object.
+    The header and table are `Description`'s (`neu_vol/report.py`). Only the sections
+    needing a store read live here, between them, since a `__repr__` making network calls
+    is a trap in a notebook.
     """
     d = _describe(args.volume, getattr(args, "dataset", None))
     print("\n".join(d.header_lines()))
@@ -434,11 +415,8 @@ def _warn_if_no_aws(dst: str) -> None:
 def _src_spec(args, src: str | None = None):
     """The source spec for a peek at metadata, carrying this command's source options.
 
-    The crop helpers below read the source's voxel sizes *before* `convert` runs, so
-    they build their own spec — and if that spec omits `--dvid-locked`, the peek
-    resolves the branch ref to a different node than the run does, and warns that the
-    node is open when the run is about to use a locked one. One builder, so the peek and
-    the run always ask about the same thing.
+    One builder, so a metadata peek before `convert` resolves the same DVID node (e.g.
+    under `--dvid-locked`) as the run.
 
     Returns ``(spec, fmt)``; ``fmt`` is None when nothing at the location is a volume.
     """
@@ -463,9 +441,8 @@ def _src_spec(args, src: str | None = None):
 def _level0_factor(src: str, scale: int, per_level=None, args=None) -> tuple[int, ...]:
     """How many level-0 voxels one scale-``scale`` voxel spans, per axis.
 
-    ``args`` is optional so the volume-argument commands (``align-bbox``, ``relabel``)
-    can call with a bare path; where it is given the source options travel with it, so a
-    DVID peek resolves the same node the run will use.
+    ``args`` is optional, for commands taking a bare volume path; when given, its
+    source options travel with the peek.
     """
     from neu_vol.detect import detect_backend
     from neu_vol.scales import level_factor
@@ -500,11 +477,8 @@ def _src_voxel_size(args):
 def _resolve_bbox(value, name, args, per_level=None):
     """One ``--*-bbox`` value as ``(lo, hi)`` in level-0 zyx voxels.
 
-    Applies the command's two shared bbox conventions in order: ``--bbox-order``, then
-    ``--bbox-scale``. One flag each per command rather than per box argument, because a
-    crop at one scale and a mask at another is a mistake nobody makes on purpose — while
-    setting only one of two scale flags is a mistake anyone could make once, and it puts
-    the mask in the wrong place with nothing to show for it.
+    Applies ``--bbox-order``, then ``--bbox-scale``: one flag each per command, not per
+    box argument, so a crop and a mask cannot silently use different scales.
     """
     lo, hi = _sextuple(value, name, order=getattr(args, "bbox_order", "zyx"))
     scale = getattr(args, "bbox_scale", 0) or 0
@@ -550,13 +524,9 @@ def _pyramid_levels(shape, voxel, args):
 def _warn_if_crop_unaligned(start, shape, voxel, args) -> None:
     """A crop origin off the pyramid's own grid shifts every coarse level.
 
-    The output's pyramid is built from the *cropped* level 0, so its reduction windows
-    start at the crop origin. When that origin is not a multiple of a level's
-    cumulative factor, that level's voxels straddle the source's coarse voxels
-    differently and its ``voxel_offset`` rounds to the nearest coarse voxel — the
-    output still overlays the source at level 0 while drifting by up to half a voxel at
-    the top. Aligning the origin avoids it; nothing else can, since the crop defines
-    the grid.
+    The pyramid's reduction windows start at the crop origin, so an origin off a level's
+    cumulative factor rounds that level's ``voxel_offset``: exact at level 0, up to half
+    a voxel off at the top. Only aligning the origin avoids it.
     """
     from neu_vol.pyramid import cumulative_factors, downsample_schedule
 
@@ -577,8 +547,7 @@ def _warn_if_crop_unaligned(start, shape, voxel, args) -> None:
 def _convert_targets(fmt, dst, profile_arg, chunk, shard):
     """``(profile, destination)`` per requested output format.
 
-    ``both`` writes two volumes from one read-side setup: precomputed for viewing, zarr
-    for downstream compute. Suffixes keep them distinguishable at one ``--dst``.
+    ``both`` writes two volumes, suffixed, from one ``--dst``.
     """
     from neu_vol.profiles import StorageProfile
 
@@ -601,10 +570,8 @@ def _warn_if_masking_a_destination_that_exists(args, dst, masks) -> None:
     """The one way a mask leaks: a destination that already holds the region.
 
     A block wholly inside the mask reads as all fill, and ``_copy_block`` returns "empty"
-    *without writing* — that elision is what keeps a sparse copy cheap (8,615 of 10,692
-    blocks on this dataset). So nothing clears an object already sitting at that key from
-    an earlier, unmasked run: the excluded region would survive in the new volume, and
-    every level above it, with the run reporting success.
+    *without writing*, so an object left at that key by an earlier, unmasked run survives,
+    in every level, with the run reporting success.
     """
     from neu_vol.location import exists
 
@@ -622,8 +589,7 @@ def _warn_if_masking_a_destination_that_exists(args, dst, masks) -> None:
 def _expand_dst(args, dst: str) -> str:
     """Resolve ``{uuid}``-style placeholders in a destination, and say what they became.
 
-    Reported rather than done quietly: the resolved path is where the data lands and
-    what the progress manifest is named after, so it is the thing to copy out of the log.
+    Logged, since the resolved path is where the data lands.
     """
     from neu_vol.ops.naming import expand, has_placeholder
 
@@ -650,9 +616,7 @@ def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int
     """The shared body of ``convert`` and ``copy``: block-map the copy per target."""
     from neu_vol import convert
 
-    # Before anything derives from it: the format-suffixed targets, the progress
-    # manifest name and the resume check all take the destination as given, so a path
-    # still holding `{uuid}` would reach every one of them.
+    # Before the targets, manifest name and resume check derive from it.
     dst = _expand_dst(args, args.dst.rstrip("/"))
     _warn_if_no_aws(dst)
     crop_start, crop_stop = crop
@@ -660,8 +624,7 @@ def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int
         for profile, target in _convert_targets(fmt, dst, args.profile, chunk, shard):
             _warn_if_masking_a_destination_that_exists(args, target, masks)
             log.info("%s %s -> %s (%s)", args.command, args.src, target, kind)
-            # Said before the run, not after: it is what you watch progress with, and the
-            # digest in a remote destination's name is not something to reconstruct by eye.
+            # Before the run: a remote destination's manifest name carries a digest.
             from neu_vol.location import default_progress_path
 
             log.info("progress: %s", default_progress_path(target))
@@ -706,13 +669,9 @@ def cmd_convert(args) -> int:
 
 def cmd_copy(args) -> int:
     """Copy a volume, or a box out of it, keeping the source's own parameters."""
-    # DVID is not a storage format we can reproduce, so there is nothing here to
-    # "copy": every one of `copy`'s source-derived defaults either does not exist
-    # (format) or is the wrong choice for an output (DVID's 64^3 blocks, which give 8x
-    # the object count of the usual 128^3 — and ceph enforces inode quotas). Calling it
-    # `copy` also suggests the result is a duplicate of a thing that is, in the open-node
-    # case, still changing. `convert` now inherits kind and voxel size from the source
-    # anyway, so it does everything `copy` would have here and says what it does.
+    # DVID is a server, not a storage format: `copy`'s source-derived defaults either do
+    # not exist (format) or are wrong for an output (64^3 blocks, 8x the object count).
+    # `convert` inherits kind and voxel size from the source anyway.
     from neu_vol.dvid import is_url as _is_dvid_url
 
     if _is_dvid_url(args.src):
@@ -726,8 +685,7 @@ def cmd_copy(args) -> int:
     from neu_vol.webknossos import is_url as _is_wk_url
 
     if _is_wk_url(args.src):
-        # The same argument as DVID: webknossos is a server, and its 512^3 request size is
-        # not a chunking anyone wants on disk.
+        # As for DVID: a server, whose 512^3 request size is no chunking for disk.
         raise SystemExit(
             f"`copy` does not take a webknossos source; use `convert`, which reads the "
             f"kind and voxel size from the layer:\n\n"
@@ -735,9 +693,7 @@ def cmd_copy(args) -> int:
             f"Add --wk-mapping NAME for an agglomerate view (default: supervoxels).")
 
     try:
-        # `level=` so every source-derived default below — voxel size, chunking, dtype,
-        # the reported extent — comes from the scale that will actually be read, rather
-        # than from a finer one the volume may only have declared.
+        # `level=` so every source-derived default comes from the scale actually read.
         d = describe(args.src, level=args.src_level)
     except ValueError as e:
         raise SystemExit(str(e)) from None       # malformed location, not a missing one
@@ -749,16 +705,12 @@ def cmd_copy(args) -> int:
             f"DVID labelmap (dvid://server/uuid/instance). For an image stack, HDF5 or "
             f"a bare array, use `neu-vol convert` and state them.") \
             from None
-    # An HDF5 container resolves no array, so `copy`'s source-derived defaults have
-    # nothing to come from. It is refused above for other reasons anyway; this is the
-    # message that names the actual problem if that ever changes.
+    # An HDF5 container resolves no array, so there is nothing to take defaults from.
     d = _one_array(d, args.src, "neu-vol copy")
     meta = d["meta"] or {}
 
-    # Before the plan is printed, not just before the run: --dry-run is where you check
-    # a copy, and an unwritten source scale otherwise reports a perfectly plausible
-    # 10.1 TiB of level 0 that would all read as the fill value. `convert` guards again
-    # for callers that never come through here.
+    # Before the plan is printed, so --dry-run does not report a plausible level 0 that
+    # would all read as the fill value. `convert` guards again for other callers.
     from neu_vol.detect import require_populated_scale
 
     if meta.get("data_spec"):
@@ -767,11 +719,8 @@ def cmd_copy(args) -> int:
         except ValueError as e:
             raise SystemExit(str(e)) from None
 
-    # A `.gz`-chunked source (CloudVolume) copies out as PLAIN precomputed, which is
-    # much of the point: the copy is addressable by tensorstore, the original is not.
-    # DVID is the same case for a different reason: it is not a storage format we can
-    # write at all, so precomputed here is a DEFAULT rather than the source's own —
-    # which is why `from_source` below excludes it from the "(from the source)" note.
+    # A `.gz`-chunked (CloudVolume) source copies out as plain precomputed, addressable
+    # by tensorstore; that is a default, not the source's own format, hence `from_source`.
     fmt = args.format or ("zarr" if d["format"] == "zarr3" else "precomputed")
     fmt_from_source = not args.format and d["format"] in ("zarr3",
                                                           "neuroglancer_precomputed")
@@ -792,14 +741,10 @@ def cmd_copy(args) -> int:
     if shard is None and read_chunk and write_chunk and read_chunk != write_chunk:
         shard = write_chunk
 
-    # The box reported here is the one that will be copied: `convert` clips a crop to
-    # the source extent rather than padding, so clip before reporting or the printed
-    # shape and byte count are not what runs.
+    # `convert` clips a crop to the source extent, so clip before reporting.
     spatial = tuple(d["shape"][1:] if d["has_channels"] else d["shape"])
-    # --bbox-scale counts levels from the source's finest DECLARED scale, and level 0
-    # here is the finest one that stores data. When those differ the same number names
-    # two different boxes, and picking either silently crops the wrong region — the
-    # failure --bbox-scale exists to prevent. Refused rather than guessed.
+    # --bbox-scale counts from the finest DECLARED scale, level 0 here is the finest that
+    # stores data; when they differ the number is ambiguous, so it is refused.
     if d.get("source_level") and (getattr(args, "bbox_scale", 0) or 0):
         raise SystemExit(
             f"--bbox-scale {args.bbox_scale} is ambiguous here: this volume's level 0 "
@@ -819,8 +764,7 @@ def cmd_copy(args) -> int:
     import numpy as np
 
     levels = _pyramid_levels(out_shape, voxel, args)
-    # The OUTPUT's dtype, not the source's: a uint8 -> uint64 cast is 8x, and this
-    # number is what the run is sized against.
+    # The output's dtype, not the source's: a uint8 -> uint64 cast is 8x.
     nbytes = float(np.dtype(args.dtype or d["dtype"]).itemsize) * math.prod(out_shape)
     dst = args.dst.rstrip("/")
     print(f"{args.src}  ->  {dst}")
@@ -866,18 +810,14 @@ def cmd_copy(args) -> int:
 def _downsample_plan(args):
     """The schedule this would produce, beside what is on disk.
 
-    ``--min-dim`` / ``--max-levels`` / ``--factors`` decide how many levels a pyramid
-    has, so values differing from the original conversion rebuild a *different*
-    pyramid. Comparing against the shapes on disk is how that gets caught before
-    anything is written.
+    Values of ``--min-dim`` / ``--max-levels`` / ``--factors`` differing from the
+    original conversion would rebuild a different pyramid; the shapes on disk catch that.
     """
     from neu_vol.pyramid import downsample_schedule
     from neu_vol.detect import require_chunked_volume
 
     d = _describe(args.volume)
-    # Before the schedule, not after: this command plans in the CLI and only then calls
-    # the op, so leaving the check to `plan_regenerate` meant an HDF5 file first got a
-    # full eight-level plan and a complaint about --kind.
+    # Before the schedule: this command plans in the CLI before calling the op.
     try:
         require_chunked_volume(d["format"], args.volume, "neu-vol downsample")
     except ValueError as e:
@@ -888,9 +828,8 @@ def _downsample_plan(args):
     voxel = _triple(args.voxel_size, "voxel-size") or tuple(meta["voxel_size"])
     spatial = d["shape"][1:] if d["has_channels"] else d["shape"]
 
-    # The default comes from the volume, not from `convert`'s 8: how many levels this
-    # pyramid has is something it already records. Through the op's own resolver, so the
-    # --dry-run table cannot state a plan different from the one that runs.
+    # The default depth comes from the volume, through the op's own resolver, so the
+    # --dry-run table states the plan that runs.
     max_levels = args.max_levels
     if max_levels is None:
         from neu_vol.ops.rebuild import resolve_max_levels
@@ -945,10 +884,8 @@ def cmd_downsample(args) -> int:
             "a level on disk disagrees with the computed schedule — --min-dim / "
             "--max-levels / --factors probably differ from the original conversion. "
             "Rebuilding now would leave the pyramid inconsistent.")
-    # Levels the schedule does not reach are left exactly as they are — whatever that is.
-    # Empty (never built) means the volume vanishes at the coarsest zooms; populated from
-    # before the data changed means it serves the OLD data there. Every shape matches
-    # either way, so the mismatch check above cannot see this; only the count differs.
+    # Levels above the schedule are left as they are (empty, or holding old data); the
+    # shape check above cannot see this.
     extra = sorted(i for i in existing if i >= len(shapes))
     if extra:
         log.warning("levels %s exist on disk but are ABOVE this schedule, so they are "
@@ -1030,9 +967,8 @@ def cmd_create(args) -> int:
 def _source_label(spec: dict) -> str:
     """How a resolved source spec should be shown: where it is, and what was read.
 
-    A view backend (crop, mask) carries the real source nested under ``source``, so unwrap
-    to it — printing the wrapper's dict tells the reader nothing about which file was read.
-    The views it passed through are named after the location.
+    A view backend (crop, mask) nests the real source under ``source``; unwrap to it and
+    name the views after the location.
     """
     views = []
     while isinstance(spec.get("source"), dict):
@@ -1067,9 +1003,8 @@ def _print_one_write(r: dict) -> None:
 def _write_row_labels(results: list[dict]) -> tuple[list[str], str | None]:
     """A label per source, and the container they all came from if they share one.
 
-    **Every row of an `--all-datasets` batch has the same file name**, so labelling by
-    basename alone would print thirteen identical rows and nothing to tell them apart. The
-    dataset is the distinguishing part there, and the path is said once above the table.
+    Every row of an `--all-datasets` batch shares one file, so rows are labelled by
+    dataset and the path is printed once above the table.
     """
     paths = [str(r["src_spec"].get("path") or r["src_spec"].get("source", "?")).rstrip("/")
              for r in results]
@@ -1309,9 +1244,7 @@ def cmd_mask_by_value(args) -> int:
 def cmd_to_hdf5(args) -> int:
     """Pack a small volume into an HDF5 file that `neu-vol write` can place.
 
-    The inverse of `write`: this makes the piece, that puts it somewhere. The frame and
-    the position travel with the data, so nobody re-types an offset — and because the
-    axis order is recorded, `write` no longer has to be told it.
+    The inverse of `write`: the frame, position and axis order travel with the data.
     """
     from neu_vol.ops.pack import pack_hdf5
 
@@ -1384,9 +1317,7 @@ def _align_grid(args, d):
 def _box_line(label: str, lo, hi) -> str:
     """``label  z a:b  y a:b  x a:b   (extent) = N voxels``.
 
-    The voxel count is the number that says whether aligning outward matters: growing a
-    box by one block per axis is a small-looking change to three numbers and a large one
-    to the product.
+    The voxel count shows what aligning outward costs.
     """
     extent = tuple(b - a for a, b in zip(lo, hi))
     return (f"  {label:<12}" + "  ".join(f"{ax} {a}:{b}"
@@ -1683,9 +1614,8 @@ def _maybe_cluster(args):
 def build_parser() -> argparse.ArgumentParser:
     """The full ``neu-vol`` parser, built but not run.
 
-    Separate from :func:`_parse_args` so the documentation can render it: the CLI
-    reference is generated from *this* object by ``sphinx-argparse``, which is what
-    stops the published usage from drifting away from ``--help``.
+    Separate from :func:`_parse_args` so ``sphinx-argparse`` can render the CLI
+    reference from it.
     """
     p = argparse.ArgumentParser(
         prog="neu-vol", description=__doc__,
@@ -2048,11 +1978,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "What it records: `voxel_offset` (whole voxels, on the dataset — the "
                     "field `write` already looks for), and `voxel_size` / `offset` / "
                     "`units` / `axes` in this package's own vocabulary, on the root and "
-                    "the dataset both. `axes` is the one that earns its keep: the axis "
-                    "order of a stored voxel_offset was previously unknowable from the "
-                    "file — precomputed means xyz, this package means zyx, and reversed, "
-                    "a piece lands mirrored through the z=x diagonal. A file written here "
-                    "says which.\n\n"
+                    "the dataset both. `axes` matters most: precomputed means xyz, this "
+                    "package means zyx, and reversed, a piece lands mirrored through the "
+                    "z=x diagonal. A file written here says which.\n\n"
                     f"The dataset defaults to {DEFAULT_DATASET}, which is also what the "
                     "reader assumes, so a file packed with no arguments reads with none. "
                     "An existing file is ADDED TO when its recorded frame matches — "
@@ -2307,14 +2235,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_help_command(sub) -> None:
     """``neu-vol help [COMMAND ...]`` — the same text ``--help`` prints.
 
-    Because ``help write`` and ``write --help`` are the same thing to everyone except
-    argparse: one of the two is what a person types first, and being told "invalid choice"
-    for it is a poor greeting from a tool whose whole surface is subcommands.
-
-    It **re-parses** rather than reaching into the parser, so what it prints cannot drift
-    from ``--help``: it literally is ``--help``. A nested command works for the same reason
-    (``neu-morpho help measure run``), and an unknown one gets argparse's own error listing
-    the real choices, which is better than anything written here.
+    It **re-parses** with ``--help`` appended, so the output cannot drift, nested commands
+    work, and an unknown one gets argparse's own error listing the choices.
     """
     q = sub.add_parser(
         "help", help="what `--help` prints, as a subcommand",

@@ -1,34 +1,14 @@
 """Replace label values with background, in a volume that already has them.
 
-Manual segmentation does not always call background 0. A tool that numbers labels from 0
-makes it 1, and then a "background" voxel is a perfectly ordinary label as far as anything
-here is concerned. Two consequences, and the second is the one that costs:
+For a segmentation whose background is not 0 (a tool numbering labels from 0 makes it 1):
+meshed, background becomes one enormous body, and **an all-background block of 1s is not
+all-fill, so it is stored**, after which "which chunks exist" no longer says where the data
+is. The better fix is at ingest (``--background`` on ``write``/``to-hdf5``/``convert``);
+this op is for data that has already landed.
 
-1. Meshed or skeletonised, background becomes a body — an enormous one.
-2. **An all-background block of 1s is not all-fill, so it is stored.** The volume ends up
-   with a chunk object everywhere data was written, whether or not it holds anything, and
-   "which chunk objects exist" stops answering "where is the data". That question is what
-   `bboxes-json`, `relabel`, `downsample --sparse` and neu-morpho's occupancy filter all
-   ask, so they all quietly start saying "everywhere".
-
-Which is why the better fix is at ingest — `neu-vol write`/`to-hdf5`/`convert` take
-``--background``, and correcting it there happens *before* the storage decision. This op is
-for data that has already landed.
-
-**Both destinations restore the sparsity**, which is worth stating because the opposite is
-easy to assume: writing zeros over a stored chunk *deletes the object* — measured on both
-zarr v3 and precomputed, 8 chunk objects down to 7 after zeroing one block — so in place
-fixes the storage as well as the values. (The `--mask-bbox` warning on `convert`/`copy` is
-about a different situation: there the block worker returns ``"empty"`` and **never issues
-the write**, so nothing removes what was already at that key.)
-
-``--out`` is still the preferred destination, for :mod:`neu_vol.ops.relabel`'s
-reason rather than a storage one: a sparse copy is cheap and the original stays as the
-record of what was actually annotated.
-
-Only the level given is touched, so the levels above it keep the old values. Single-scale
-like ``write`` and ``relabel``, and for the same reason: run
-``neu-vol downsample --start-level <level>`` afterwards.
+Both destinations restore the sparsity: writing zeros over a stored chunk deletes the
+object. ``--out`` is still preferred, so the original stays as the record of what was
+annotated. Single-scale: run ``neu-vol downsample --start-level <level>`` afterwards.
 """
 
 from __future__ import annotations
@@ -75,8 +55,7 @@ def plan_mask_values(volume: str, values: Sequence[int], *, out: str | None = No
                      to: int = 0) -> dict:
     """What :func:`apply_mask_values` would do. Reads metadata and occupancy only.
 
-    Exactly one of ``out`` / ``in_place``, as in ``relabel``: overwriting a volume is a
-    thing to ask for, never a default.
+    Exactly one of ``out`` / ``in_place``, as in ``relabel``.
     """
     if bool(out) == bool(in_place):
         raise ValueError("give either out= (a new volume) or in_place=True, not both. "
@@ -119,9 +98,8 @@ def apply_mask_values(plan: dict, *, dry_run: bool = False, overwrite: bool = Fa
                       max_bytes: int = DEFAULT_BLOCK_BYTES) -> dict:
     """Carry out a :func:`plan_mask_values`, returning what it changed.
 
-    Counts are exact rather than sampled, because they are the only evidence that the
-    values you named were the values that were there: ``replaced`` of 0 means nothing
-    matched, and ``already_background`` above 0 means two labels have just become one.
+    Counts are exact: ``replaced`` of 0 means nothing matched, and
+    ``already_background`` above 0 means two labels have just become one.
     """
     volume, fmt, level = plan["volume"], plan["format"], plan["level"]
     values = np.asarray(plan["values"], dtype=np.dtype(plan["dtype"]))
@@ -153,8 +131,7 @@ def apply_mask_values(plan: dict, *, dry_run: bool = False, overwrite: bool = Fa
                 data = data.copy() if not data.flags.writeable else data
                 data[hit] = to
             elif plan["in_place"]:
-                # Nothing to change, and in place the block is already correct. Writing it
-                # back would only risk touching a chunk this op has no business in.
+                # In place and nothing to change: leave the chunk alone.
                 skipped += 1
                 continue
             if not dry_run:

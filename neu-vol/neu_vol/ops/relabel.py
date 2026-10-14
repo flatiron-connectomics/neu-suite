@@ -1,33 +1,19 @@
 """Give every occupied region of a sparse volume its own range of label ids.
 
 Ground truth annotated chunk by chunk comes back with each chunk numbered from 1, so the
-same integer means a different cell in every chunk. Meshed or skeletonised, those become
-one body with components scattered across the volume — correct for the label, useless as
-ground truth. Measured on sample3's gt_v1: 3,637 label-instances over 12 regions but only
-1,824 distinct ids, 496 of them used by more than one region.
+same integer means a different cell in every chunk, and a mesh of one id is a dozen
+unrelated cells. This renumbers each occupied region into a range of its own.
 
-This walks the occupied regions in order and renumbers each into a range of its own, so
-an id identifies one cell in one region. Two properties make it safe and simple:
+- **The regions come from stored-chunk occupancy** (:mod:`neu_vol.ops.occupancy`), so they
+  are pairwise disjoint; the run is serial, each range starting where the last ended.
+- **Boxes are not tightened**: mode downsampling can drop a stray voxel, so a tightened box
+  could leave level-0 data with its old id. The chunk-aligned box covers every stored
+  chunk, and its writes are whole chunks.
+- **The mapping is an output**, written by default: it is the only way back from a new id
+  to its region and original label.
 
-- **The regions come from stored-chunk occupancy** (:mod:`neu_vol.ops.occupancy`),
-  so they are pairwise disjoint by construction and every voxel belongs to at most one.
-- **It is serial by construction.** The next region's range starts where the last one
-  ended, so there is nothing to coordinate and no way for two workers to race.
-
-**Boxes are deliberately NOT tightened.** ``labeled_regions`` can shrink a box to the
-nonzero voxels found at a coarse level, and that is right for annotation but wrong here:
-mode downsampling can drop a stray voxel, so a tightened box may exclude scale-0 data
-that really is there — and anything outside the box keeps its old id, silently mixing two
-numbering schemes. The chunk-aligned box provably covers every stored chunk. It is also
-aligned to the destination's chunk grid, so no write is a partial-chunk read-modify-write.
-
-**The mapping is an output, not a side effect.** Without the old-to-new table there is no
-way back from a new id to the region and original label it came from, and once the volume
-is overwritten that is unrecoverable. It is written by default.
-
-Renumbering one level leaves the levels above it holding the old ids, so this is
-single-scale like :mod:`neu_vol.ops.write` and for the same reason. Run
-``neu-vol downsample --start-level <level>`` afterwards.
+Single-scale, like :mod:`neu_vol.ops.write`: run ``neu-vol downsample --start-level
+<level>`` afterwards.
 """
 
 from __future__ import annotations
@@ -43,19 +29,15 @@ from ..detect import detect_backend, require_chunked_volume
 from ..source_metadata import existing_levels, level_spec
 from .occupancy import labeled_regions
 
-# A whole region is read at once so its ids can be collected in one pass. 8 GiB is far
-# above any ground-truth chunk (a 384^3 uint64 box is 226 MiB) and well below what a
-# worker node has; a region bigger than this is a sign the volume is not the sparse kind
-# this op is for, so it raises rather than quietly thrashing.
+# A region is read whole, to collect its ids in one pass. A region over this is a sign
+# the volume is not the sparse kind this op is for.
 DEFAULT_MAX_REGION_BYTES = 8 * 1024 ** 3
 
 
 def _apply_map(data: np.ndarray, old: np.ndarray, new: np.ndarray) -> np.ndarray:
     """Relabel ``data`` by the sorted ``old`` -> ``new`` correspondence, keeping 0 as 0.
 
-    ``old`` must be sorted and must contain every nonzero value in ``data`` — both hold
-    because it *is* ``np.unique(data)`` minus the zero. That is what lets this be a
-    searchsorted rather than a dict lookup per voxel.
+    ``old`` is ``np.unique(data)`` minus 0, so sorted and complete: a searchsorted works.
     """
     flat = data.reshape(-1)
     out = np.zeros_like(flat)
@@ -70,9 +52,8 @@ def plan_relabel(volume: str, *, out: str | None = None, in_place: bool = False,
                  fmt: str | None = None) -> dict:
     """Resolve the geometry of the relabel. Reads chunk keys only; writes nothing.
 
-    The id mapping is deliberately *not* resolved here — it needs the voxels, and doing
-    it twice would double the reads. :func:`apply_relabel` resolves it, and reports it
-    without writing when ``dry_run=True``.
+    The id mapping needs the voxels, so :func:`apply_relabel` resolves it (and reports it
+    without writing when ``dry_run=True``).
     """
     volume = volume.rstrip("/")
     if bool(out) == bool(in_place):
@@ -118,8 +99,7 @@ def plan_relabel(volume: str, *, out: str | None = None, in_place: bool = False,
         "chunk": ctx["cell"],
         "n_chunks": ctx["n_chunks"],
         "regions": regions,
-        # Levels above the one being renumbered keep the old ids and would disagree
-        # with it. Reported rather than fixed: coarsening is a separate decision.
+        # Levels above keep the old ids; reported, not fixed.
         "stale_levels": stale,
     }
 
@@ -140,8 +120,7 @@ def apply_relabel(plan: dict, *, dry_run: bool = False, overwrite: bool = False,
     dst = None
     if not dry_run:
         if not plan["in_place"]:
-            # Empty and nearly free: no chunk objects, and `like` copies the frame
-            # verbatim so a voxel index means the same thing in both volumes.
+            # Empty, with the source's frame copied verbatim.
             from .create import create_volume
             create_volume(dest, like=volume, overwrite=overwrite)
         dst = open_backend(level_spec(dest, fmt, level))
@@ -193,10 +172,7 @@ def apply_relabel(plan: dict, *, dry_run: bool = False, overwrite: bool = False,
         "dry_run": bool(dry_run),
     }
     if map_path and not dry_run:
-        # Through `location`, not `open()`, so the mapping can be written beside a remote
-        # volume. It is the only route from a new id back to its region and original
-        # label, so "keep it with the volume" has to be possible when the volume is on
-        # an object store.
+        # Through `location`, so it can live beside a remote volume.
         write_json(map_path, result, indent=1)
         result["map_path"] = map_path
     return result
@@ -205,8 +181,7 @@ def apply_relabel(plan: dict, *, dry_run: bool = False, overwrite: bool = False,
 def default_map_path(destination: str, level: int) -> str:
     """``<last path component>.relabel-<level>.json``, in the working directory.
 
-    Derived rather than required so the mapping cannot be lost by forgetting a flag,
-    and named after the destination because that is the volume the ids belong to.
+    A default, so the mapping cannot be lost by forgetting a flag.
     """
     name = destination.rstrip("/").rsplit("/", 1)[-1]
     return f"{name}.relabel-{level}.json"

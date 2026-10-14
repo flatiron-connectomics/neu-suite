@@ -9,11 +9,9 @@ overrides the read value. Sources that record nothing (bare arrays, image stacks
 plain HDF5 file) require the caller to supply at least ``voxel_size``.
 
 ``crop_start``/``crop_stop`` restrict the copy to a box **without changing the model
-space**: the physical offset shifts by the crop origin, so the output lands on top of
-the source in a viewer rather than at the origin (CLAUDE.md invariant 1). This is
-where cropping belongs, rather than beside the metadata resolution above — the crop
-view wraps the resolved ``data_spec``, so a cropped copy reads through exactly the
-reader detection chose (invariant 9). ``ops/roi.py`` is a thin wrapper over it.
+space**: the physical offset shifts by the crop origin, so the output lands on top of the
+source in a viewer. The crop view wraps the resolved ``data_spec``, so a cropped copy
+reads through the reader detection chose. ``ops/roi.py`` is a thin wrapper over this.
 """
 
 from __future__ import annotations
@@ -47,11 +45,8 @@ def _resolve_crop(
     be ``None``, meaning the volume's own bound, so a half-open box needs only the end
     that matters.
 
-    ``clip`` trims the box to the source extent — the default, because the alternative
-    is inventing voxels: :class:`~neu_vol.backends.view.CropBackend` happily
-    reads outside the volume and fills with ``pad_value``, which for a copy would
-    publish fabricated data at the margin with nothing to show it was fabricated.
-    ``clip=False`` is the crop-*and*-pad contract of :func:`~neu_vol.extract_roi`.
+    ``clip`` (the default) trims the box to the source extent; without it the margin is
+    filled with ``pad_value``, the crop-and-pad contract of :func:`~neu_vol.extract_roi`.
     """
     spatial = tuple(int(s) for s in (src_shape[1:] if has_channels else src_shape))
     start = (0,) * n_spatial if start is None else tuple(int(v) for v in start)
@@ -94,9 +89,8 @@ def _resolve_masks(
     Boxes are spatial ``(z, y, x)`` in the source's own level-0 voxels; a channel axis is
     always masked in full, since "exclude this region" is not a per-channel statement.
 
-    **A box that misses the volume raises.** The caller asked for a region to be excluded;
-    copying everything instead is the one outcome that cannot be allowed to pass quietly,
-    and a box in the wrong axis order or the wrong scale looks exactly like this.
+    **A box that misses the volume raises**: that is what a box in the wrong axis order or
+    scale looks like, and copying everything instead must not pass quietly.
     """
     spatial = tuple(int(s) for s in (src_shape[1:] if has_channels else src_shape))
     full = []
@@ -202,16 +196,13 @@ def convert(
     With ``resume=True`` an interrupted run continues, skipping already-done blocks
     instead of recreating them.
 
-    ``background`` names the values the source uses for background — manual segmentation
-    numbered from 0 makes it 1 — and replaces them with 0 as the source is read. Do this
-    rather than fixing it afterwards: an all-background block of 1s is not all-fill, so
-    every one of them would be *stored*, and the volume would no longer answer "where is
-    the data" by which chunks exist.
+    ``background`` names the values the source uses for background (manual segmentation
+    numbered from 0 makes it 1) and replaces them with 0 as the source is read. Afterwards
+    is too late: an all-background block of 1s is not all-fill, so it would be stored.
 
     ``sparse=True`` skips **pyramid** tasks whose input holds no stored chunk, which on a
-    sparse volume is nearly all of them. It cannot skip any of the level-0 copy: the
-    source there is foreign, and whether it has stored a chunk is not a question this
-    package can ask of it.
+    sparse volume is nearly all of them. The level-0 copy is never skipped, since its
+    source is foreign.
 
     ``mask_boxes`` is a list of spatial ``(lo, hi)`` pairs to *exclude*: everything else
     is copied and those regions are written as ``mask_value``. Because the pyramid is
@@ -221,16 +212,12 @@ def convert(
     ``crop_start``/``crop_stop`` copy only ``src[crop_start:crop_stop]`` (spatial
     ``(z, y, x)`` voxels of the source's level 0, either bound optional). The output's
     physical offset shifts by the crop origin, so it stays in the source's coordinate
-    frame. The pyramid is then built **from the cropped level 0**, so its coarse levels
-    are the crop's own reductions rather than slices of the source's coarse levels —
-    for a crop whose origin is not a multiple of the cumulative factor, a coarse voxel
-    of the output straddles the source's differently.
+    frame. The pyramid is built **from the cropped level 0**, so for a crop origin that is
+    not a multiple of the cumulative factor, coarse voxels straddle the source's differently.
 
-    ``crop_to_data`` (default on) crops a source that records the box its data lies in —
-    a webknossos layer's bounding box — to that box when no crop is given. The layer is
-    presented origin-anchored, so without it the output runs from voxel 0 and the run
-    steps through every empty block of the margin; the crop keeps the frame (the offset
-    shifts), so the output still overlays the source. ``False`` keeps the full extent.
+    ``crop_to_data`` (default on) crops a source that records the box its data lies in (a
+    webknossos layer's bounding box) to that box when no crop is given, keeping the frame.
+    ``False`` keeps the full origin-anchored extent.
     """
     if isinstance(src, dict):
         src_spec = dict(src)
@@ -242,17 +229,12 @@ def convert(
                 f".zarray marker, and the name is neither an HDF5 file nor a glob, "
                 f"file or directory of 2D slices. Pass src_format= explicitly"
             )
-        # Not every source is a store: an image stack is addressed by `source`, an HDF5
-        # file by path plus the dataset inside it, and a DVID instance by
-        # server/uuid/instance. `location_spec` owns all four forms.
+        # `location_spec` knows every source's address form.
         src_spec = location_spec(src, fmt)
 
     if src_level is not None:
-        # Which scale of a multiscale SOURCE becomes the output's level 0. Left unset,
-        # `read_source_metadata` picks the finest one that actually stores chunks; this
-        # names a scale instead. The output is a new volume either way — its own level 0
-        # is whatever was read, at that scale's real voxel size (invariant NM-SPACE),
-        # never at an assumed 2**level of the source's finest.
+        # Which source scale becomes the output's level 0 (default: the finest that
+        # stores data), at that scale's own voxel size, never an assumed 2**level.
         src_spec["scale_index"] = int(src_level)
 
     src_spec = with_source_options(src_spec, prefer_locked=prefer_locked,
@@ -263,17 +245,13 @@ def convert(
     # scale that stores data, or `src_level` if it was named).
     data_spec = meta["data_spec"] if meta else src_spec
 
-    # Refuse a source scale that was declared but never written, BEFORE any work: it
-    # opens, reports the extent its `info` claims and reads as the fill value at every
-    # block, so the run would succeed and write a volume of zeros. Only fires when some
-    # other scale stores data and this one does not — see `require_populated_scale`.
-    # A mapped view is checked through its source: the guard reads precomputed specs only.
+    # Refuse, before any work, a scale that was declared but never written: it reads as
+    # the fill value everywhere and the run would write a volume of zeros. A mapped view
+    # is checked through its source.
     require_populated_scale(data_spec["source"] if data_spec.get("backend") == "mapped"
                             else data_spec, op="convert")
 
-    # Warned here rather than in the metadata reader, which is also on the read-only
-    # inspection path: this is where an export is about to happen, which is what makes
-    # an open node a problem worth interrupting for.
+    # Warned here, not in the metadata reader, which read-only inspection also uses.
     if data_spec.get("backend") == "dvid" and meta:
         from ..dvid import resolve_node, spec_url
 
@@ -314,11 +292,8 @@ def convert(
     if has_channels is None and meta is not None:
         has_channels = meta["has_channels"]
     if kind is None:
-        # Explicit > what the source records > image. Falling back to `image` when the
-        # source SAYS `segmentation` was the old behaviour and it is indefensible: the
-        # pyramid would average label ids into ids that were never in the data, silently.
-        # That footgun is the reason `copy` exists; inheriting here narrows it to sources
-        # that genuinely record nothing (image stacks, HDF5, bare arrays).
+        # Explicit > what the source records > image. Treating a segmentation as an
+        # image would average label ids into ids that were never in the data.
         kind = (meta or {}).get("kind") or "image"
         if meta and meta.get("kind"):
             logger.info("kind=%s, from the source's own metadata", kind)
@@ -342,20 +317,12 @@ def convert(
         )
     num_channels = int(src_shape[0]) if has_channels else 1
 
-    # The views wrap the *resolved* data_spec, so the read goes through the reader
-    # detection chose rather than a hand-built one (invariant 9), and the crop's offset
-    # shift keeps the output in the source's frame (invariant 1).
-    #
-    # Mask first, crop over it: the mask's boxes are then in the source's own coordinates
-    # rather than the crop's, which is what a caller means by "exclude this region of the
-    # volume" and keeps the two arguments independent.
+    # The views wrap the resolved data_spec, so reads go through the reader detection
+    # chose. Mask first, crop over it, so mask boxes are in the source's own coordinates.
     read_spec, read_shape = data_spec, src_shape
     out_offset = tuple(offset) if offset else (0.0,) * n_spatial
     if background:
-        # Innermost, under mask and crop: it corrects what the source *means* by background,
-        # which is true of the data itself and not of any box laid over it. It has to happen
-        # here rather than afterwards because an all-background block of 1s is not all-fill,
-        # so without it every such block is stored and the volume stops being sparse.
+        # Innermost: it corrects the data itself, before any box is laid over it.
         read_spec = {"backend": "remap", "source": dict(read_spec),
                      "values": [int(v) for v in background], "to": 0}
         logger.info("treating %s as background: replaced with 0 as the source is read",
@@ -409,10 +376,8 @@ def convert(
         validate=validate,
     )
 
-    # After the data, never before: a provenance record for a run that died half way
-    # through would claim a volume exists that does not. The spec recorded is the
-    # *resolved* one — for DVID that is the concrete node, not the branch ref, which is
-    # the entire point of writing this at all.
+    # After the data, so a run that died half way leaves no record claiming a volume.
+    # The spec is the resolved one: for DVID the concrete node, not the branch ref.
     from . import provenance as _provenance
 
     _provenance.write(dst, _provenance.build_record(

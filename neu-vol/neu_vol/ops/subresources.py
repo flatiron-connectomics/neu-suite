@@ -6,9 +6,8 @@ set, one neuroglancer layer shows the labels together with their meshes, skeleto
 per-segment properties; without them each is a separate source the viewer has no reason
 to associate with the labels.
 
-This lives here rather than in a consumer because it edits a *volume's* ``info``, which is
-this package's business, and because more than one consumer needs it: neu-morpho links
-``mesh``/``skeletons`` after its seg stage, neu-mark links ``segment_properties``.
+Here because it edits a volume's ``info``; neu-morpho links ``mesh``, neu-skel
+``skeletons`` and neu-mark ``segment_properties``.
 """
 
 from __future__ import annotations
@@ -16,8 +15,7 @@ from __future__ import annotations
 from ..location import read_json, write_json
 
 #: The ``@type`` each subresource's own ``info`` must declare. Pointing a volume at the
-#: wrong directory is spec-legal and fails **silently** in the viewer (invariant 7), so it
-#: is checked at write time instead of discovered in a browser.
+#: wrong directory is spec-legal and fails silently in the viewer, so it is checked here.
 SUBRESOURCE_TYPES = {
     "mesh": "neuroglancer_multilod_draco",
     "skeletons": "neuroglancer_skeletons",
@@ -33,9 +31,7 @@ def link_subresources(volume_dir: str, *, mesh: str | None = None,
     Each named subresource must exist and carry the right ``@type``. Returns the keys
     that were set.
 
-    Existence is tested by reading ``<sub>/info``, not by listing a directory: object
-    stores have no directories, and the subresource's own ``info`` is the thing that
-    actually has to be there for the viewer.
+    Existence is tested by reading ``<sub>/info``; object stores have no directories.
     """
     info = read_json(volume_dir, "info")
     if info is None:
@@ -62,7 +58,6 @@ def link_subresources(volume_dir: str, *, mesh: str | None = None,
         info[key] = sub
         changed[key] = sub
 
-    # A single kvstore write; no tmp+rename dance, because both the file driver
-    # and object stores make an individual key write atomic.
+    # One kvstore write, which is atomic on both drivers.
     write_json(volume_dir, info, "info")
     return changed

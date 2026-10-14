@@ -1,19 +1,15 @@
 """Read-only backend over one layer of a webknossos dataset.
 
-Addressed by ``wk://DATASET/LAYER``; addressing, credentials and the REST calls live in
-``neu_vol/webknossos.py`` — see there for why the token never enters a spec, and why no
-mapping (i.e. supervoxels) is the default.
+Addressed by ``wk://DATASET/LAYER``; addressing, credentials and the REST calls are in
+``neu_vol/webknossos.py``.
 
-**Presented zyx and origin-anchored, like DVID.** webknossos speaks x,y,z everywhere and
-serves voxels Fortran-ordered as ``(c, x, y, z)``, which is the same bytes as a C-ordered
-``(z, y, x)`` array for one channel — so the reshape below *is* the axis flip (invariant
-ZYX-XYZ). The volume's shape runs from voxel 0 to the layer's bounding box's far corner,
-so a voxel index means the same thing here as in the viewer; reads outside the bounding
-box are zeros **without a request**, so the empty margin costs nothing.
+**Presented zyx and origin-anchored, like DVID.** webknossos serves voxels
+Fortran-ordered as ``(c, x, y, z)``, the same bytes as a C-ordered ``(z, y, x)`` array for
+one channel, so the reshape below is the axis flip. The shape runs from voxel 0 to the far
+corner of the layer's bounding box; reads outside the box are zeros without a request.
 
 **Levels are the layer's mags, finest first**, each with its true voxel size (the
-dataset's ``scale`` times the mag), never ``2**level`` — webknossos mags may be
-anisotropic (``2-2-1``), invariant NM-SPACE.
+dataset's ``scale`` times the mag), never ``2**level``: mags may be anisotropic (``2-2-1``).
 """
 
 from __future__ import annotations
@@ -28,12 +24,9 @@ from .base import Region, register_backend
 TAG = "webknossos"
 
 #: The largest box sent in one request, and the read unit reported to the task planner.
-#: **Not 512^3**, which `webknossos`' own download uses: the server's throughput is shared
-#: (~100-125 MB/s total, measured 2026-10-11, however split), so a request's time is its
-#: size times the concurrency, and past a deadline of ~47 s the server returns buckets it
-#: has not loaded as ZEROS, with a 200 and every bucket header empty. 12 concurrent 512^3
-#: requests took 47-49 s and 9 of 12 came back with thousands of zero 32^3 buckets; 48
-#: concurrent 128^3 requests took <= 5 s and lost none, at the same throughput.
+#: Small, because the server's throughput is shared and past a deadline (~47 s) it returns
+#: buckets it has not loaded as ZEROS, with a 200 and no error header: concurrent 512^3
+#: requests lost data where 128^3 requests at the same throughput lost none.
 REQUEST_CHUNK = (128, 128, 128)
 
 #: A response slower than this is retried rather than trusted, since the zero-filling
@@ -194,10 +187,9 @@ class WebknossosBackend:
                 f"UNAVAILABLE: webknossos took {elapsed:.0f} s for a {tuple(size)} box "
                 f"(> {SLOW_REQUEST_S:.0f} s); a slow response may hold buckets the server "
                 f"zero-filled without saying so — retrying. Persistent? Use fewer workers.")
-        # The server's own report of buckets it could not load, which it otherwise serves
-        # ZERO-FILLED with a 200. Not sufficient on its own: the deadline zero-filling under
-        # REQUEST_CHUNK leaves these headers empty, hence the timing check below too.
-        # Raising UNAVAILABLE makes the block retry (invariant FAULT-POLICY).
+        # The server's report of buckets it could not load and served zero-filled. Not
+        # sufficient alone (the deadline zero-filling leaves it empty, hence the timing
+        # check). UNAVAILABLE makes the block retry.
         lower = {k.lower(): v for k, v in headers.items()}
         for name in ("failure-bucket-indices", "missing-buckets"):
             bad = lower.get(name)

@@ -61,16 +61,10 @@ def register_backend(tag: str, opener: Any) -> None:
     _OPENERS[tag] = opener
 
 
-# Opened backends, keyed by their spec. Opening is NOT cheap: for
-# neuroglancer_precomputed it reads `info` from the store, so a remote destination
-# costs an HTTPS round trip and a TLS handshake *per open*. Workers call
-# open_backend once per block, so an uncached open turns one copy stage into tens
-# of thousands of handshakes — and one of those eventually gets reset by the peer,
-# which is fatal to a fail-fast stage. Measured: a whole-volume scale-0 copy is
-# 10,692 blocks x 2 opens.
-#
-# Keyed on the full spec, so a different scale_index / path / kvstore is a
-# different entry. Per process, so dask workers each build their own.
+# Opened backends, keyed on the full spec, per process. Opening a precomputed volume
+# reads `info`, a TLS round trip for a remote one; workers open once per block, so
+# without the cache a copy makes tens of thousands of handshakes, and one reset kills
+# a fail-fast stage.
 _BACKENDS: dict[str, ArrayBackend] = {}
 
 
@@ -109,21 +103,11 @@ def spec_names_path(spec: Any, path: str) -> bool:
 def release_backends(path: str) -> int:
     """Drop and **close** every cached backend that reads ``path``. Returns how many.
 
-    Call before rewriting a file in place. This exists because of a failure that says
-    nothing about caching: an ``HDF5Backend`` holds an open ``h5py.File`` for the life of
-    the cache entry, and HDF5 refuses to open a file for writing while any handle has it
-    open read-only — ``OSError: Unable to synchronously open file (file is already open for
-    read-only)``. So reading a file and then writing to it *in the same process* — exactly
-    what a notebook cleaning pass does, and what a re-run of one does — failed on the
-    write with an error pointing at the file rather than at the reader still holding it.
-
-    The other half is staleness: an entry that survived a rewrite would keep serving the
-    array and the attributes from before it, which is the same hazard
-    :func:`clear_backend_cache` was written for and is silent instead of loud.
-
-    Closing, not merely dropping, is the load-bearing part — the lock belongs to the open
-    handle, and waiting for garbage collection to release it makes the failure depend on
-    when a reference happens to die. A backend with no ``close`` is simply dropped.
+    Call before rewriting a file in place. A cached ``HDF5Backend`` holds an open
+    ``h5py.File``, and HDF5 refuses to open a file for writing while any handle has it
+    open read-only (``file is already open for read-only``); a surviving entry would also
+    keep serving the pre-rewrite array. Closing, not just dropping, is what releases the
+    lock deterministically. A backend with no ``close`` is simply dropped.
     """
     dropped = 0
     for key, backend in list(_BACKENDS.items()):

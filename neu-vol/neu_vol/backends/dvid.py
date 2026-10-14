@@ -1,28 +1,15 @@
 """Read-only backend over a DVID ``labelmap`` instance.
 
-DVID is not a kvstore, so this backend is addressed by ``server``/``uuid``/``instance``
-rather than by a path — see ``neu_vol.dvid.parse_url`` for the URL form and
-``detect.detect_backend`` for where it is recognised.
+Addressed by ``server``/``uuid``/``instance`` rather than a path (``neu_vol.dvid.parse_url``);
+addressing and version resolution are in ``neu_vol/dvid.py``, and this module is the
+labelmap geometry and array view.
 
-**Addressing and version resolution live in** ``neu_vol/dvid.py``, not here: they
-are the same for every instance type, and consumers above this package need them without
-wanting an array. This module is only the labelmap part — geometry and the array view.
+DVID omits blocks that hold no labels, so an empty region costs a round trip and no
+bandwidth, and no occupancy prefilter is needed. Reads request ``?compression=blocks``
+(DVID's stored form) and inflate here with libdvid, on the dask worker. DVID is typically a
+shared service and answers overload with 503, which ``retry`` treats as transient.
 
-**Blocks that hold no labels are omitted from DVID's response**, which is why there is
-no occupancy prefilter anywhere in this package for DVID sources: an empty region costs
-a round trip and no bandwidth (measured at the 512^3 task size: 0.03 s and zero bytes,
-against 0.4-0.6 s and ~12 MB for a full one). Filtering them out would save the cheap
-tasks and leave the expensive ones untouched. See NOTES-TODO for the measurements.
-
-Reads go through ``fetch_labelmap_voxels``, which requests ``?compression=blocks`` —
-DVID's *stored* form, so the server never decompresses. Inflation happens here, in this
-process, via libdvid; under dask that is the worker, so it is already spread across the
-fleet. It is also the dominant per-task cost (~1.4 s of a 1.9 s 512^3 read), which means
-throughput is bounded by DVID's serving rate rather than by our CPU. DVID is typically a
-**shared** service and answers overload with 503 — see ``retry.TRANSIENT_MARKERS``.
-
-Read-only: this package converts a labelmap into a neuroglancer volume; it never writes
-segmentation back to DVID, which is the proofreading tool's job.
+Read-only: segmentation is never written back to DVID.
 """
 
 from __future__ import annotations
@@ -44,9 +31,8 @@ _MISSING = _dvid.MISSING
 def provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
     """What this labelmap pull came from — the shared node record plus label facts.
 
-    ``maxlabel`` advances as proofreading creates bodies, so together with the node's DAG
-    metadata it characterises the snapshot. It is per-*instance*, unlike DVID's mutation
-    id and lastmod endpoints, which are both per-body and therefore useless here.
+    ``maxlabel`` advances as proofreading creates bodies, so with the node it characterises
+    the snapshot; DVID's mutation id and lastmod are per body, so not usable here.
     """
     out = _dvid.node_provenance(spec, node)
     out["supervoxels"] = bool(spec.get("supervoxels", False))
@@ -64,12 +50,9 @@ def provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
 def geometry(info: Mapping[str, Any], spec: Mapping[str, Any]) -> dict:
     """Shape / chunks / voxel size / max scale, all zyx, from DVID's ``/info``.
 
-    The volume is presented **origin-anchored**: shape is ``MaxPoint + 1``, so a voxel
-    index means the same thing here as it does in DVID and in any other view of the
-    same dataset. The margin below ``MinPoint`` is empty, which costs one 30 ms round
-    trip per task and nothing on disk — the alternative, translating by ``MinPoint``,
-    would buy a slightly smaller volume at the price of every coordinate disagreeing
-    with DVID's own.
+    Presented **origin-anchored**: shape is ``MaxPoint + 1``, so a voxel index means the
+    same as in DVID. The empty margin below ``MinPoint`` costs a quick round trip per task
+    and nothing on disk.
     """
     ext = info.get("Extended", {})
     _dvid.check_instance_type(info, spec, "labelmap")
@@ -102,9 +85,8 @@ def geometry(info: Mapping[str, Any], spec: Mapping[str, Any]) -> dict:
 def level_shape(shape0, scale: int) -> tuple[int, ...]:
     """Shape at a DVID downres level.
 
-    DVID halves every axis per level, so unlike a general pyramid this factor really is
-    ``2**scale`` — it is DVID's documented model rather than the assumption CLAUDE.md
-    invariant 1 warns against, and it must not be copied to any other backend.
+    DVID halves every axis per level, so here, unlike a general pyramid, the factor
+    really is ``2**scale``. Do not copy this to another backend.
     """
     return tuple(-(-int(s) // 2 ** int(scale)) for s in shape0)
 
@@ -152,9 +134,8 @@ class DVIDBackend:
 
         box = np.array([[int(s.start) for s in region],
                         [int(s.stop) for s in region]], dtype=np.int64)
-        # fetch_labelmap_voxels rounds the request out to DVID's 64-voxel block grid and
-        # truncates the result back, so an unaligned region is correct but wasteful. Our
-        # task shapes are whole multiples of `chunks`, so in practice no rounding occurs.
+        # Rounded out to DVID's 64-voxel blocks and truncated back: an unaligned region is
+        # correct but wasteful. Task shapes are whole multiples of `chunks`.
         out = fetch_labelmap_voxels(
             self._server, self._uuid, self._instance, box,
             scale=self._scale, supervoxels=self._supervoxels)

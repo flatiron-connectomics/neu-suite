@@ -1,26 +1,15 @@
 """Where a sparse volume's data actually is: occupied chunks, covered by maximal boxes.
 
-**This is analysis, not presentation.** It answers "which regions of this volume hold
-anything" and returns boxes in level-0 voxels. Turning those into a neuroglancer layer is
-`neu-glance bboxes`, in a package that sits above this one — neu-vol knows nothing about
-viewers. `ops.relabel`, `ops.maskvalue` and `ops._multiscale` (the ``--sparse`` path) are the
-other callers, and they want the boxes rather than a layer.
-
-The boxes come from the volume itself rather than from whatever was written
-into it, so they cannot drift from the data. Three steps, cheapest first:
+Analysis, not presentation: boxes in level-0 voxels, **zyx**. ``neu-glance bboxes`` turns
+them into a layer; ``ops.relabel``, ``ops.maskvalue`` and ``--sparse`` use them directly.
+The boxes come from the volume itself, in three steps, cheapest first:
 
 1. **Which chunk objects exist.** TensorStore never persists an all-fill chunk, so the
-   set of present keys *is* the occupied footprint. No voxel reads at all.
-2. **Cover the occupied cells with maximal boxes.** Connected components would be
-   wrong: two regions written face to face merge into one component whenever their
-   chunk-aligned footprints touch, even with a real gap in the data between them.
-3. **Tighten each box to its nonzero voxels at a coarse level.** A 384-voxel level-0
-   box is 96 voxels at 32 nm, so this is nearly free, at the cost of quantizing the
-   answer to one coarse voxel — which is why extents come back as 252 or 256 rather
-   than a uniform 256. Raise ``tighten_level`` for cheaper, ``0`` for exact.
-
-Coordinates are **zyx** throughout, as everywhere in this package. The flip to xyz belongs to
-whatever presents them, which is `neu-glance`.
+   present keys *are* the occupied footprint. No voxel reads.
+2. **Cover the occupied cells with maximal boxes.** Connected components would merge
+   two regions written face to face.
+3. **Tighten each box to its nonzero voxels at a coarse level**, nearly free, quantized
+   to one coarse voxel. Raise ``tighten_level`` for cheaper, ``0`` for exact.
 """
 
 from __future__ import annotations
@@ -50,9 +39,7 @@ class NoOccupancy(RuntimeError):
 def _precomputed_cell(key: str, cell: tuple[int, ...]) -> tuple[int, ...] | None:
     """``x0-x1_y0-y1_z0-z1`` -> zyx cell index.
 
-    A CloudVolume-written volume appends ``.gz`` to every chunk key, which is exactly
-    the kind of volume most likely to be sparse — strip it rather than failing to
-    parse the whole level.
+    A CloudVolume-written ``.gz`` suffix is stripped.
     """
     name = key.rsplit("/", 1)[-1]
     if name.endswith(".gz"):
@@ -71,8 +58,7 @@ def _precomputed_cell(key: str, cell: tuple[int, ...]) -> tuple[int, ...] | None
 def _zarr_cell(key: str, ndim: int) -> tuple[int, ...] | None:
     """``c/0/1/2`` (or ``c.0.1.2``) -> zyx cell index.
 
-    zarr v3 permits either separator. A leading channel axis shows up as one extra
-    index, which is dropped: this reports spatial occupancy.
+    A leading channel axis's index is dropped: this reports spatial occupancy.
     """
     if not (key.startswith("c/") or key.startswith("c.")):
         return None
@@ -90,15 +76,10 @@ def occupied_cells(volume: str, fmt: str, level: int,
                    cell: tuple[int, ...]) -> set[tuple[int, ...]]:
     """The zyx chunk-grid cells that have a stored object at ``level``.
 
-    This is the only listing the whole operation does, and it is what makes the result
-    trustworthy on a sparse volume: an all-fill chunk is never written, so presence and
-    occupancy are the same question.
+    One listing; an all-fill chunk is never written, so presence is occupancy.
     """
     if fmt == "zarr3":
-        # The array's own metadata document is not a chunk and must not count towards the
-        # "objects exist but none are chunk keys" test below — an EMPTY level holds
-        # exactly `zarr.json`, and letting that through reported a freshly created volume
-        # as sharded.
+        # Metadata documents are not chunks; an empty level holds just `zarr.json`.
         keys = [k for k in list_keys(volume, str(level))
                 if k.rsplit("/", 1)[-1] not in ZARR_METADATA]
         cells = {c for c in (_zarr_cell(k, len(cell)) for k in keys) if c}
@@ -122,16 +103,10 @@ def occupied_cells(volume: str, fmt: str, level: int,
 def maximal_boxes(cells: set[tuple[int, ...]]) -> list[tuple[tuple, tuple]]:
     """Cover a set of grid cells with axis-aligned boxes, as ``(lo, hi)`` cell ranges.
 
-    Each pass takes the lexicographically smallest remaining cell and grows it along
-    each axis in turn while every cell of the candidate box is still present, then
-    removes it. For a footprint that is a union of a few written blocks this recovers
-    the blocks; in the worst case it degrades to one box per cell. It can never emit a
-    box containing an absent cell, which is the property that matters — a box is a
-    claim that there is data there.
-
-    Connected components would be simpler and wrong: two blocks written face to face
-    share a chunk boundary and merge into a single region spanning both, plus the empty
-    corner between them.
+    Each pass takes the smallest remaining cell and grows it along each axis in turn
+    while every cell of the box is present. For a union of a few written blocks this
+    recovers the blocks; at worst it is one box per cell. It never emits a box containing
+    an absent cell.
     """
     left, out = set(cells), []
     while left:
@@ -162,9 +137,7 @@ def _grid(spans):
 def _factor(voxel_sizes, level: int) -> tuple[int, ...]:
     """Level-0 voxels per ``level`` voxel, per axis.
 
-    Read from the recorded per-level voxel sizes rather than assumed to be
-    ``2**level``: real pyramids are anisotropic, and shape ratios are ceil-divided and
-    do not divide exactly.
+    From the recorded per-level voxel sizes, never ``2**level``.
     """
     if voxel_sizes is None:
         if level:
@@ -189,8 +162,7 @@ def labeled_regions(volume: str, *, level: int = 0, tighten_level: int | None = 
 
     Each region is ``{"lo", "hi", "cells", "n_labels"}``; ``n_labels`` is the number of
     distinct nonzero values seen at ``tighten_level`` and is ``None`` when tightening is
-    off. It is a floor, not a count — a label too small to survive to that level is
-    invisible there.
+    off. It is a floor: a label too small to survive to that level is invisible there.
     """
     from ..backends.base import open_backend
     from ..source_metadata import read_level_voxel_sizes
@@ -199,27 +171,18 @@ def labeled_regions(volume: str, *, level: int = 0, tighten_level: int | None = 
     fmt = fmt or detect_backend(volume)
     if fmt is None:
         raise FileNotFoundError(f"no volume found at {volume}")
-    # Occupancy IS chunk presence — an all-fill chunk is never written, which is what
-    # makes the answer exact — so a format with no chunk keyspace cannot answer at all.
-    # Without this the precomputed branch of `occupied_cells` reads an `info` that is not
-    # there and reports "has no scale 0", which reads as a broken volume.
+    # Occupancy is chunk presence, so a format with no chunk keyspace cannot answer.
     require_chunked_volume(fmt, volume, "occupancy analysis")
-    # Only the chunk KEYS differ between the two precomputed flavours, and level
-    # geometry comes from `info`, which is the same document either way.
+    # The two precomputed flavours differ only in chunk keys.
     open_fmt = "neuroglancer_precomputed" if fmt == PRECOMPUTED_GZ else fmt
 
     levels = existing_levels(volume, open_fmt)
     if level not in levels:
-        # Strict, unlike tightening below: occupancy at another level is an answer to
-        # a different question, and silently substituting one would be misreported.
+        # Strict, unlike tightening: another level would answer a different question.
         raise ValueError(f"{volume} has no level {level} "
                          f"(present: {sorted(levels)})")
-    # Tightening is an optimisation — a coarse read standing in for an exact one — so a
-    # missing level is not an error, it just means the shortcut isn't available. A
-    # single-level volume (what `create` makes, and what `write` fills) has only level
-    # 0, and refusing to read it because level 2 is absent would be absurd.
-    # Clamping goes FINER, so the result is more exact and only slower, bounded by the
-    # occupied footprint. Recorded in the context so the caller can say it happened.
+    # Tightening is an optimisation, so a missing level is clamped to the deepest one
+    # present (finer: more exact, only slower), and the context records it.
     tighten_asked, deepest = tighten_level, max(levels)
     if tighten_level is not None:
         tighten_level = min(tighten_level, deepest)
@@ -258,9 +221,8 @@ def labeled_regions(volume: str, *, level: int = 0, tighten_level: int | None = 
         data = coarse.read_region(tuple(slice(c_lo[a], c_hi[a]) for a in range(3)))
         nz = data.nonzero()
         if not len(nz[0]):
-            # Chunks exist but hold nothing at this level: either genuinely all-fill
-            # objects, or a region too thin to survive the coarsening. Keep the box —
-            # dropping it would hide data — but say so.
+            # Chunks exist but are empty at this level (all-fill objects, or too thin to
+            # survive coarsening). Kept, with n_labels 0.
             regions.append({"lo": lo, "hi": hi, "cells": n_cells, "n_labels": 0})
             continue
         tlo = tuple((c_lo[a] + int(nz[a].min())) * tight_step[a] for a in range(3))

@@ -1,20 +1,11 @@
 """Placeholders in a destination path, resolved from the source.
 
-``--dst /data/wasp_seg_{uuid:8}`` becomes ``/data/wasp_seg_d38898ac``. The point is
-naming an export after the *node it came from*: a DVID branch ref means a different node
-tomorrow, so a fixed destination name silently accumulates exports of different
-segmentations under one path, and nothing afterwards can tell them apart. This is the
-same problem ``provenance.json`` solves from the inside; a name solves it from the
-outside, where a human browsing a directory sees it.
+``--dst /path/to/seg_{uuid:8}`` becomes ``/path/to/seg_d38898ac``: an export named after
+the DVID node it came from, since a branch ref means a different node tomorrow.
 
-**Expanded once, in the caller, before anything uses the path.** The destination is used
-to derive the format-suffixed targets, the progress manifest name and the resume check,
-so expanding it late would leave those referring to a path with braces in it. Expansion
-is idempotent — an expanded path has no placeholders left — so ``convert`` can call it
-again harmlessly on a path the CLI already resolved.
-
-Substitution is by regex, never ``str.format``: a real path may contain braces of its
-own, and ``format`` would raise on them or, worse, interpret them.
+Expanded once, in the caller, before anything derives a target, manifest name or resume
+check from the path; idempotent. By regex, never ``str.format``, since a real path may
+contain braces of its own.
 """
 
 from __future__ import annotations
@@ -22,20 +13,14 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-#: ``{name}`` or ``{name:spec}``. The NAME is narrow (a bare lowercase word) so an
-#: unrelated brace in a path is left alone; the SPEC is anything up to the closing brace,
-#: deliberately, so that a malformed one like ``{uuid:-2}`` is caught and reported rather
-#: than failing to match and passing through as a literal directory name.
+#: ``{name}`` or ``{name:spec}``. A narrow name leaves unrelated braces alone; a loose
+#: spec means a malformed one like ``{uuid:-2}`` is reported, not passed through.
 _FIELD = re.compile(r"\{([a-z_]+)(?::([^}]*))?\}")
 
-#: Default length for ``{uuid}``. Eight hex characters, matching how these are referred
-#: to in practice (`93fdbc`, git short shas) and short enough to read in a path. A
-#: collision would need two nodes of one repo sharing a 32-bit prefix.
+#: Default length for ``{uuid}``, as short uuids are written in practice.
 _UUID_DEFAULT = 8
 
-#: What may appear in an expanded value. DVID uuids are hex and instance names are
-#: usually plain, but a branch can carry `~`, and object-store keys are happier without
-#: surprises.
+#: What may appear in an expanded value; anything else becomes ``-``.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -46,8 +31,7 @@ def has_placeholder(dst: str) -> bool:
 def _branch_of(ref: str) -> str:
     """The branch part of a ``repo:branch`` ref, or the whole ref when there is none.
 
-    Taken from the ref rather than the node's DAG entry so this costs no extra request;
-    the ref is what the caller typed, which is also what they mean by "the branch".
+    From the ref the caller typed, which costs no request.
     """
     return ref.split(":", 1)[1] if ":" in ref else ref
 

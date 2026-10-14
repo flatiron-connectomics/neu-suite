@@ -1,22 +1,14 @@
 """Read precomputed volumes written by CloudVolume, whose chunks are ``.gz``-suffixed.
 
-CloudVolume gzips each chunk and appends ``.gz`` to the key. That is fine for
-something serving them over HTTP with ``Content-Encoding: gzip``, but it is not what
-the neuroglancer-precomputed spec addresses, so tensorstore requests the *unsuffixed*
-key, finds nothing, and returns the fill value. **The volume reads as all zeros and
-nothing raises** — a 1.9 M-block conversion was lost to it before detection existed.
+CloudVolume gzips each chunk and appends ``.gz`` to the key, which the precomputed spec
+does not address: tensorstore requests the unsuffixed key and returns the fill value, so
+**the volume reads as all zeros and nothing raises**. ``detect.detect_backend`` returns
+:data:`~neu_vol.detect.PRECOMPUTED_GZ` for such volumes, which routes here, to the library
+that wrote them.
 
-So this backend exists to read those volumes with the library that wrote them.
-``detect.detect_backend`` returns
-:data:`~neu_vol.detect.PRECOMPUTED_GZ` for them, which routes here.
-
-**cloud-volume is an optional dependency and deliberately not in the main env.** It
-pins ``DracoPy<2``, and installing it alongside neu-morpho would downgrade
-DracoPy 2.0.0 -> 1.7.0 — the Draco codec behind ``vol2mesh``'s mesh serialisation.
-Use the separate ``neu-vol-cv`` environment (see ``neu-vol-cv-environment.yml``), which
-carries blockrun and neu-vol but never neu-morpho.
-
-Read-only on purpose: nothing here should *write* the format that caused the problem.
+**cloud-volume is optional and not in the main environment**: it pins ``DracoPy<2``,
+which would downgrade the Draco codec neu-morpho's meshes need. Use a separate
+environment holding blockrun and neu-vol but not neu-morpho. Read-only.
 """
 
 from __future__ import annotations
@@ -47,12 +39,8 @@ _MISSING = (
 def _url(spec: Mapping[str, Any]) -> str:
     """A CloudVolume URL for this spec's location.
 
-    Goes through ``spec_kvstore``, which resolves all three spec forms — a bare
-    ``path``, a scheme URL, and a ``kvstore`` dict. That last one is what actually
-    reaches this backend in production: ``convert`` reads the source's metadata and
-    passes the resulting ``data_spec``, which carries ``kvstore`` and no ``path``.
-    Reading ``spec["path"]`` here produced ``precomputed://s3:///`` — empty bucket and
-    path — and only failed on the real path, not on specs built by hand in a test.
+    Through ``spec_kvstore``, which resolves all three spec forms: ``convert`` passes a
+    ``data_spec`` carrying a ``kvstore`` and no ``path``.
     """
     from ..location import spec_kvstore
 
@@ -81,9 +69,7 @@ class CloudVolumeBackend:
             raise ImportError(_MISSING) from exc
 
         self._spec = dict(spec)
-        # fill_missing: a genuinely absent chunk should read as the fill value rather
-        # than raise — same semantics as every other backend here. It does NOT mask
-        # the .gz problem, which is what routed us to this backend in the first place.
+        # fill_missing: an absent chunk reads as the fill value, as in every other backend.
         self._cv = CloudVolume(_url(spec), mip=int(spec.get("scale_index", 0)),
                                fill_missing=True, progress=False, parallel=False)
 

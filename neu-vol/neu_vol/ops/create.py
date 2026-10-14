@@ -1,31 +1,17 @@
 """Create an **empty** multiscale volume, from explicit specs or a reference.
 
-``convert``/``ingest`` create a volume and fill it in one pass, from one source.
-This is the other shape of the problem: you have several small subvolumes — image
-stacks, HDF5 files — that belong at known positions inside one larger frame, and
-you want the frame to exist first so each piece can be written into it
-independently (see :mod:`neu_vol.ops.write`).
+For several small pieces that belong at known positions in one frame: create the frame
+first, then write each piece into it (:mod:`neu_vol.ops.write`). No chunk is written, so
+an empty pyramid is a few JSON documents.
 
-Creating a level costs one ``zarr.json``: a zarr array with no chunks written reads
-back as the fill value everywhere, so an empty pyramid is a few hundred bytes, not a
-volume-sized allocation.
+``like`` copies a reference volume's geometry (level shapes, per-level voxel sizes and
+chunking, dtype, origin, axes), so a voxel index means the same in both; explicit
+arguments override it. **The reference's level shapes are mirrored verbatim** unless
+``shape`` or ``factors`` is overridden: shapes are ceil-divided, so a recomputed schedule
+can land a voxel off.
 
-``like`` is the point of the module. Passing a reference volume copies its geometry —
-level shapes, per-level voxel sizes and chunking, dtype, origin, axes — so the new
-volume shares the reference's coordinate frame and a voxel index means the same thing
-in both. That is what makes "write this chunk at (z, y, x) of level 2" well defined.
-Any explicit argument overrides what the reference says.
-
-**The reference's own level shapes are mirrored verbatim**, rather than recomputed
-from a downsample schedule, whenever ``shape`` and ``factors`` are not overridden.
-Recomputing is how two volumes that should be aligned end up one voxel apart: level
-shapes are ceil-divided, so a schedule that differs from the reference's by a single
-``min_dim``/``max_levels`` choice produces a different pyramid.
-
-Either target format: zarr v3 (+ OME-NGFF group metadata) or neuroglancer-precomputed
-(scales in one intrinsic ``info``), chosen by the storage profile exactly as
-``convert`` chooses it. With no profile given it follows the reference's own format,
-which is what "like this volume" ought to mean.
+Either format, zarr v3 (+ OME-NGFF metadata) or precomputed, chosen by the storage profile
+as in ``convert``; with no profile, the reference's own.
 """
 
 from __future__ import annotations
@@ -50,10 +36,8 @@ def _spatial(shape: Sequence[int], has_channels: bool) -> tuple[int, ...]:
     return tuple(int(s) for s in (shape[1:] if has_channels else shape))
 
 
-#: Level cap when the pyramid is computed and the caller named none. Matches
-#: :func:`~neu_vol.pyramid.downsample_schedule`'s own default, and like it counts
-#: level 0. Distinct from ``None``, which means "no cap" and is what keeps a mirrored
-#: reference whole.
+#: Level cap when the pyramid is computed and the caller named none, counting level 0.
+#: ``None`` means no cap, which keeps a mirrored reference whole.
 DEFAULT_MAX_LEVELS = 8
 
 
@@ -67,15 +51,9 @@ def _mirror_levels(ref: dict, has_channels: bool, voxel_size: Sequence[float],
                    ) -> tuple[list[tuple[int, ...]], list[tuple[float, ...]]]:
     """Level shapes and voxel sizes copied from a reference volume.
 
-    ``limit`` (``--levels``) and ``max_levels`` both truncate, and truncating is the only
-    thing they may do here: taking fewer of the reference's levels keeps each one
-    verbatim, whereas recomputing a schedule that "should" match is how two volumes meant
-    to share a frame end up a voxel apart at level 3.
-
-    ``max_levels`` is ``None`` unless the caller said otherwise, and that matters — with a
-    default of 8 it would silently drop level 8 from every mirror of a 9-level reference.
-    ``min_dim`` is deliberately *not* applied for the same reason: its default of 128 would
-    quietly discard every level below 128 voxels that the reference has.
+    ``limit`` (``--levels``) and ``max_levels`` only truncate, keeping each level verbatim.
+    ``max_levels`` defaults to ``None`` and ``min_dim`` is not applied, so a mirror never
+    silently drops levels the reference has.
     """
     caps = [n for n in (limit, max_levels) if n]
     indices = sorted(ref["levels"])[: min(caps) if caps else None]
@@ -86,9 +64,8 @@ def _mirror_levels(ref: dict, has_channels: bool, voxel_size: Sequence[float],
         if per_level and i < len(per_level):
             voxels.append(tuple(float(v) for v in per_level[i]))
         else:
-            # No recorded per-level scale (a bare array, or metadata we don't trust).
-            # Shape ratios are ceil-divided so they are inexact — 13750/3438 is 3.9994
-            # — but rounding an integer factor out of them is safe.
+            # No recorded per-level scale: shape ratios are inexact (ceil-divided), but
+            # rounding an integer factor out of them is safe.
             factor = tuple(max(1, int(round(a / b))) for a, b in zip(shapes[0], shapes[n]))
             voxels.append(tuple(float(v * f) for v, f in zip(voxel_size, factor)))
     return shapes, voxels
@@ -131,18 +108,9 @@ def _level_chunking(ref: dict | None, index: int, has_channels: bool,
 def profile_for(format: str | None, ref: dict | None, dst: str) -> str:
     """The storage profile implied by a target format, a reference, and a destination.
 
-    With no format given it follows the **reference's own format**: "like this volume"
-    most usefully includes *what kind of volume it is*, and asking to mirror a
-    precomputed frame and silently getting zarr is the sort of thing you only discover
-    when the viewer cannot open the result. With neither, zarr v3.
-
-    A reference in a format this cannot *write* — ``--like`` an HDF5 file or an image
-    stack, both of which detection reaches now — falls back to zarr rather than
-    erroring: "like this" is a request to mirror the frame, and there is no HDF5 volume
-    format to produce. Only an explicit ``format`` that is unwritable is an error, since
-    that one was asked for.
-
-    Shared with the CLI so `--format` cannot come to mean something different there.
+    With no format given it follows the **reference's own format**; with neither, zarr v3.
+    A reference in a format this cannot write (an HDF5 file, an image stack) falls back to
+    zarr; only an explicit unwritable ``format`` is an error. Shared with the CLI.
     """
     fmt = str(format or (ref["format"] if ref else "zarr"))
     if fmt.startswith("neuroglancer_precomputed") or fmt == "precomputed":
@@ -159,9 +127,8 @@ def profile_for(format: str | None, ref: dict | None, dst: str) -> str:
 def _precomputed_encoding(encoding: str | None, kind: str, dtype: str) -> str:
     """Chunk encoding for a precomputed scale, defaulted from the data kind.
 
-    Same rule ``convert`` uses: ``compressed_segmentation`` for labels, ``raw``
-    otherwise. It is checked against the dtype here rather than at create time
-    because tensorstore's failure for the wrong pairing is not obviously about this.
+    As in ``convert``: ``compressed_segmentation`` for labels, ``raw`` otherwise. Checked
+    against the dtype here, since tensorstore's error for a wrong pairing is unclear.
     """
     if encoding is None:
         encoding = "compressed_segmentation" if kind == "segmentation" else "raw"
@@ -198,19 +165,14 @@ def plan_volume(
 ) -> dict:
     """Resolve the geometry of the volume ``create_volume`` would build. Writes nothing.
 
-    Split out so ``--dry-run`` reports exactly what a real run would create, rather
-    than a second implementation of the same arithmetic.
-
-    ``format`` is ``"zarr"`` or ``"precomputed"``, defaulting to the reference's own
+    What ``--dry-run`` reports. ``format`` is ``"zarr"`` or ``"precomputed"``, defaulting to the reference's own
     (see :func:`profile_for`); ``profile`` overrides it with a named storage profile
     and its chunk/compressor defaults. ``encoding`` and
     ``compressed_segmentation_block_size`` apply to precomputed only.
     """
     ref = describe(like) if like else None
     if ref is not None:
-        # `describe` describes a multi-array HDF5 container by resolving no array, so
-        # `ref["shape"]` can be None — and `_spatial` would then raise a TypeError that
-        # says nothing about the container or how to pick from it.
+        # A multi-array HDF5 container resolves no array; say how to pick one.
         ref = require_one_array(ref, str(like), "create --like")
     prof = get_profile(profile if profile is not None
                        else profile_for(format, ref, dst))
@@ -262,9 +224,7 @@ def plan_volume(
                            "nowhere to put units=%r; the numbers %s will be read as "
                            "nm", units, voxel_size)
 
-    # Mirror the reference's pyramid verbatim unless something that changes it was
-    # overridden. Recomputing a schedule that "should" match is how two volumes meant
-    # to share a frame end up disagreeing by a voxel at level 3.
+    # Mirror the reference's pyramid verbatim unless something that changes it was given.
     mirrored = bool(ref) and shape is None and factors is None and bool(ref["levels"])
     if mirrored:
         level_shapes, level_voxels = _mirror_levels(ref, has_channels, voxel_size,
@@ -325,8 +285,7 @@ def plan_volume(
 def _record_chunk(lv: dict, backend, has_channels: bool) -> None:
     """Fill in the level's actual chunk shape, which only the opened store knows.
 
-    ``chunk`` is ``None`` in the plan whenever it was left to the profile, so the
-    returned summary would otherwise be less informative than what was created.
+    ``chunk`` is ``None`` in the plan when it was left to the profile.
     """
     if lv["chunk"] is None:
         lv["chunk"] = _spatial(backend.chunks, has_channels)
@@ -355,10 +314,8 @@ def _create_zarr_levels(dst, plan: dict, *, overwrite: bool, validate: bool) -> 
 def _create_precomputed_scales(dst, plan: dict, *, overwrite: bool) -> None:
     """Create every scale of a precomputed volume, which share one ``info``.
 
-    That sharing is the whole difference from zarr, and it has one sharp edge:
-    ``delete_existing`` must apply to **scale 0 only**. Every scale lives under the
-    same prefix, so deleting on scale 1 would take the scale 0 just created with it.
-    Creating scale *i* appends to the ``info`` the earlier scales wrote.
+    ``delete_existing`` applies to **scale 0 only**: every scale lives under one prefix,
+    so deleting on scale 1 would take scale 0 with it. Each scale appends to ``info``.
     """
     base_kv = to_kvstore(dst)
     pc_type = "segmentation" if plan["kind"] == "segmentation" else "image"
@@ -381,8 +338,7 @@ def create_volume(dst: str, *, overwrite: bool = False, validate: bool = True,
                   **kw: Any) -> dict:
     """Create an empty multiscale volume at ``dst``. See :func:`plan_volume`.
 
-    Every level is created and none holds data — no chunk objects, so the whole volume
-    is a handful of JSON documents until something writes into it.
+    Every level is created and none holds data.
     """
     plan = plan_volume(dst, **kw)
     base_kv = to_kvstore(dst)
@@ -390,13 +346,8 @@ def create_volume(dst: str, *, overwrite: bool = False, validate: bool = True,
     marker = "info" if precomputed else "zarr.json"
     before = existing_levels(dst, plan["format"])
 
-    # A volume of the OTHER format here is not something --overwrite can fix, and it is
-    # the one case where proceeding is silently destructive: each format writes only
-    # its own marker, so the two would sit in one directory with `detect_backend`
-    # reading `info` first — the zarr becomes unreachable while its chunks still take
-    # up the store. Neither --overwrite path cleans this up either: precomputed's
-    # delete_existing wipes the prefix (taking a zarr with it, unannounced), and
-    # zarr's deletes only its own level arrays, leaving a stale `info` in charge.
+    # A volume of the other format here cannot be fixed by --overwrite: both would sit
+    # in one directory and `detect_backend` reads `info` first, hiding the zarr.
     foreign = other_format_markers(dst, plan["format"])
     if foreign:
         raise FileExistsError(
@@ -412,11 +363,8 @@ def create_volume(dst: str, *, overwrite: bool = False, validate: bool = True,
             f"replace it. To add data to it instead, use `neu-vol write`.")
     stale = [i for i in before if i >= plan["num_levels"]]
     if stale and not precomputed:
-        # Left in place rather than deleted: dropping a level means deleting a whole
-        # key prefix, which is not something to do implicitly. But `existing_levels`
-        # probes upward, so these WILL be found by other commands and disagree with
-        # the group metadata written below. (Precomputed cannot get here: recreating
-        # it starts by deleting scale 0's prefix, which is the whole volume.)
+        # Not deleted implicitly, but `existing_levels` will still find them. (Precomputed
+        # cannot get here: recreating it deletes the whole prefix.)
         logger.warning("levels %s already exist above the %d being created and are "
                        "NOT removed; they will still be found on disk but are absent "
                        "from the group metadata. Delete them by hand if unwanted.",

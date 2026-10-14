@@ -8,8 +8,7 @@ granularity the engine tiles by.
 Axis order: everything the engine sees is canonical ``(z, y, x)`` /
 ``(c, z, y, x)``. zarr v3 arrays are created in that order directly. Precomputed
 is natively ``(x, y, z, channel)``; this backend presents a **transposed view**
-and reads with ``order="C"`` so canonical, C-contiguous arrays reach the engine
-(see the precomputed-axis-order note).
+and reads with ``order="C"`` so canonical, C-contiguous arrays reach the engine.
 """
 
 from __future__ import annotations

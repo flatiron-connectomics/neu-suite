@@ -1,20 +1,11 @@
 """What a volume was made from, written beside it as ``provenance.json``.
 
-Written for **every** source, not just DVID — "where did this come from" is not a
-DVID-specific question, and a record that only sometimes exists is one nobody learns to
-look for. DVID is what forced the issue: a branch ref like ``93fdbc:main`` names a
-different node tomorrow, so without recording the resolved uuid there is no way to say
-afterwards which proofreading snapshot a volume holds.
+Written for every source. For DVID it records the resolved node: a branch ref like
+``93fdbc:main`` names a different node tomorrow.
 
-**A sidecar file, not a field inside the format's own metadata.** It would be tempting
-to put this in precomputed's ``info`` or zarr's OME attributes, but those documents are
-read by neuroglancer and by ngff-zarr's validator, and an unrecognised key is at best
-ignored and at worst a validation failure. A sidecar is uniform across precomputed,
-zarr and anything added later, and it cannot break a viewer.
-
-Written through ``location.write_json``, so it lands the same way on a local path or an
-object store, and it is written **after** the data — a provenance record for a run that
-died half way through would be a lie.
+A sidecar rather than a field in ``info`` or the OME attributes, which viewers and
+validators read and may reject. Written through ``location``, so local or object store,
+and **after** the data, so a run that died half way leaves no record.
 """
 
 from __future__ import annotations
@@ -39,23 +30,18 @@ def source_provenance(spec: Mapping[str, Any]) -> dict[str, Any]:
         from ..backends.dvid import provenance
         from ..dvid import resolve_node
 
-        # Already resolved by `read_source_metadata`, so this re-reads a concrete node
-        # rather than a ref and cannot pick a different one. `requested_ref` carries
-        # what was typed, which resolution has by now replaced.
+        # A concrete node by now; `requested_ref` keeps what was typed.
         node = resolve_node(spec)
         node = {**node, "ref": spec.get("requested_ref", node["ref"]),
                 "walked": spec.get("ancestors_walked", node["walked"])}
         return provenance(spec, node)
     if backend == "webknossos":
-        # The resolved spec already holds everything that identifies the read — server,
-        # dataset id, layer, mapping — and never the token. Said explicitly so a missing
-        # `mapping` reads as a statement rather than an omission.
+        # The resolved spec identifies the read (never the token); `mapping` is explicit.
         return {"source": backend, **{k: v for k, v in spec.items() if k != "backend"},
                 "mapping": spec.get("mapping"),
                 "ids": "agglomerates" if spec.get("mapping") else "supervoxels (raw ids)"}
     if backend == "mapped":
-        # A view of another volume: record both halves. Said explicitly because the
-        # generic form below would let the spec's own `source` key overwrite this one.
+        # A view of another volume: record both halves.
         from ..mapped import read_descriptor
 
         rec = {"source": "mapped", "mapping": spec.get("mapping"),
@@ -85,9 +71,7 @@ def build_record(*, src_spec: Mapping[str, Any], dst: str, **run: Any) -> dict[s
 def write(dst: str, record: Mapping[str, Any]) -> None:
     """Write ``provenance.json`` at ``dst``. Never fails the run.
 
-    A conversion that succeeded and then could not write its sidecar has still produced
-    the data, and losing it to a permissions problem on one small file would be a poor
-    trade. The failure is logged loudly instead.
+    The data is already written, so a failure here is logged, not raised.
     """
     from ..location import write_json
 
