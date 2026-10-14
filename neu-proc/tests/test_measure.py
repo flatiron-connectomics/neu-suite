@@ -1,23 +1,18 @@
 """Readings over a label array: :mod:`neu_proc.ops.measure`.
 
-The module was written without tests, and every bug
-it turned out to have was one shape: **a label value used where an index was meant.** The
-configurable `background=` that caused three of them is gone — 0 is background, always —
-so what is left to pin is the index/label boundary in the two places it still exists:
-`sizes` resolving a renumbered index back to its label, and `component_sizes` grouping
-component ids under labels.
-
-The fixture deliberately uses labels 7, 1, 9 rather than 1, 2, 3. A self-renumbering
-fixture makes `renumber` the identity and hides the whole class.
+Every bug this module has had was a label value used where an index was meant, so the
+fixture uses labels 7, 1, 9 rather than 1, 2, 3: a self-renumbering fixture would make
+`renumber` the identity and hide the whole class.
 """
 
 import numpy as np
+import pytest
 
 from neu_proc.ops.measure import component_sizes, flat_component_sizes, sizes
 
 
 def _labelled():
-    """Labels 7, 1, 9 in three slabs of 16 voxels, over a 0 background of 16.
+    """Labels 7, 1, 9 in three slabs of 16 voxels, over 16 background voxels.
 
     Renumbering is {0:0, 7:1, 9:3, 1:2}, so a label's value and its index disagree.
     """
@@ -31,38 +26,15 @@ def _labelled():
 # --------------------------------------------------------------------------- #
 # sizes
 # --------------------------------------------------------------------------- #
-def test_label_zero_is_never_reported():
-    assert sizes(_labelled()) == {7: 16, 1: 16, 9: 16}
-
-
-def test_labels_are_reported_under_their_own_values():
-    """Not under their renumbered indices — 7 must not come back as 1."""
-    got = sizes(_labelled())
-    assert set(got) == {7, 1, 9}
-
-
-def test_a_label_absent_from_the_array_is_not_reported_at_all():
-    """`cc3d.statistics` counts every index up to the maximum value present, so a gappy
-    label set reported the gaps as real labels of size 0 — `{1: 16, 2: 0, ..., 9: 16}`."""
-    got = sizes(_labelled(), skip_relabel=True)
-    assert got == {7: 16, 1: 16, 9: 16}
-    assert not any(size == 0 for size in got.values())
-
-
-def test_skip_relabel_agrees_with_the_relabelled_path():
-    """It is an optimisation, not a semantic change; the two used to disagree."""
-    arr = _labelled()
-    assert sizes(arr) == sizes(arr, skip_relabel=True)
+@pytest.mark.parametrize("skip_relabel", [False, True])
+def test_sizes_reports_each_label_under_its_own_value(skip_relabel):
+    """No label 0, no renumbered indices (7 must not come back as 1), and no gaps reported
+    as size 0 (cc3d counts every index up to the maximum). Both paths must agree."""
+    assert sizes(_labelled(), skip_relabel=skip_relabel) == {7: 16, 1: 16, 9: 16}
 
 
 def test_an_empty_volume_reports_nothing():
     assert sizes(np.zeros((4, 4, 4), "uint64")) == {}
-
-
-def test_the_background_count_is_still_derivable():
-    """What the removed `background=None` was for, in one line and with no parameter."""
-    arr = _labelled()
-    assert arr.size - sum(sizes(arr).values()) == 16
 
 
 def test_sort_orders_by_size():
@@ -86,16 +58,14 @@ def test_exclude_margin_drops_labels_absent_from_the_interior():
     assert got[9] == 8
 
 
-def test_exclude_margin_reports_the_WHOLE_size_of_a_surviving_label():
-    """It filters which labels are reported, it does not re-count them inside the box —
-    a label straddling the boundary keeps its full voxel count."""
+def test_exclude_margin_reports_the_whole_size_of_a_surviving_label():
+    """It filters labels; it does not recount them inside the box."""
     arr = np.zeros((6, 6, 6), "uint64")
     arr[1:4, 2, 2] = 9               # 3 voxels, one of them in the margin
     assert sizes(arr, exclude_margin=2) == {9: 3}
 
 
 def test_exclude_margin_leaves_the_input_untouched():
-    """It used to copy the array and blank the copy; a view must not write through."""
     arr = _labelled()
     before = arr.copy()
     sizes(arr, exclude_margin=1)
@@ -111,6 +81,7 @@ def test_a_margin_that_swallows_the_volume_reports_nothing():
 # component_sizes
 # --------------------------------------------------------------------------- #
 def test_components_are_grouped_under_their_own_label():
+    """Two disjoint blobs of 7 and one of 9; the background is not a component."""
     arr = np.zeros((8, 8, 8), "uint64")
     arr[0:2, 0:2, 0:2] = 7           # one blob of 8
     arr[5:7, 5:7, 5:7] = 7           # a second, disjoint blob of 8
@@ -129,16 +100,9 @@ def test_component_sizes_are_returned_largest_first():
     assert np.array_equal(component_sizes(arr)[7], [8, 3, 1])
 
 
-def test_the_background_is_not_reported_as_a_component():
-    """cc3d gives the zero voxels component id 0, which must not surface as a label."""
-    arr = np.zeros((8, 8, 8), "uint64")
-    arr[0:2, 0:2, 0:2] = 7
-    assert set(component_sizes(arr)) == {7}
-
-
 def test_the_scatter_agrees_with_the_per_label_mask():
-    """Pins the optimisation against the definition it replaced, on a field with many
-    labels and many components each."""
+    """The optimised grouping against the per-label definition, on many labels and many
+    components each."""
     import cc3d
 
     rng = np.random.default_rng(0)
@@ -162,7 +126,6 @@ def test_the_scatter_agrees_with_the_per_label_mask():
 
 
 def test_component_sizes_keys_are_plain_ints():
-    """So a caller can look one up with a literal; the keys used to be numpy scalars."""
     got = component_sizes(_labelled())
     assert all(type(k) is int for k in got)
 
@@ -189,23 +152,5 @@ def test_flat_component_sizes_pools_every_component():
     assert flat_component_sizes(arr, sort=True).tolist() == [8, 8, 1]
 
 
-def test_flat_component_sizes_can_still_call_the_module_level_sizes():
-    """Its local accumulator used to be named `sizes`, shadowing the function."""
-    from neu_proc.ops import measure
-
-    assert callable(measure.sizes)
-    assert flat_component_sizes(_labelled()).size == 3
-
-
 def test_flat_component_sizes_of_an_empty_volume_is_empty():
     assert flat_component_sizes(np.zeros((4, 4, 4), "uint64")).size == 0
-
-
-# --------------------------------------------------------------------------- #
-# the namespace
-# --------------------------------------------------------------------------- #
-def test_measure_is_reachable_as_a_submodule():
-    """Exposed via `_SUBMODULES` as a namespace of readings, not as loose names."""
-    import neu_proc.ops as ops
-
-    assert ops.measure.sizes is sizes

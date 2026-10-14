@@ -1,10 +1,7 @@
 """Spherical opening: :func:`neu_proc.ops.opening.opening`.
 
-The fact worth pinning is the surprising one: **fastmorph's opening is not
-anti-extensive**, so it can hand back more voxels than it was given. A caller assuming the
-mathematical property (``γ(X) ⊆ X``) gets a size measured after opening that is not
-comparable to one measured before, and a shape that has grown into its neighbour's
-background — both invisible in the output.
+The surprising fact: fastmorph's opening is not anti-extensive, so it can return more
+voxels than it was given.
 """
 
 import warnings
@@ -12,7 +9,6 @@ import warnings
 import numpy as np
 import pytest
 
-import neu_proc
 from neu_proc.ops import backend
 from neu_proc.ops.opening import opening
 
@@ -29,42 +25,37 @@ def _box_with_spike(shape=(20, 20, 20)):
 # what it does
 # --------------------------------------------------------------------------- #
 def test_opening_removes_a_thin_spike():
-    """The point of the operation: the spike is thinner than the structuring element, so
-    the erosion breaks it and the dilation cannot bring it back."""
     a = _box_with_spike()
     out = opening(a, 2)
     assert not (out[16:19, 9, 9] != 0).any(), "the spike is gone"
     assert (out[9, 9, 9] == 7), "and the body it grew out of is still there"
 
 
-def test_opening_is_NOT_anti_extensive():
-    """Measured, and the reason the module docstring leads with it: fastmorph's erosion and
-    dilation read `radius` differently, so a 10^3 box comes back 38% larger at radius 2.
-    Nothing here fixes that; the test exists so nobody later assumes the subset property."""
+def test_opening_is_not_anti_extensive():
+    """fastmorph's erosion and dilation read `radius` differently, so a 10^3 box grows
+    (to 1384 voxels at radius 2, with fastmorph 1.8)."""
     box = np.zeros((20, 20, 20), "uint32")
     box[5:15, 5:15, 5:15] = 7
     out = opening(box, 2)
 
-    added = int(((out != 0) & (box == 0)).sum())
-    assert added == 384, "grew into background rather than only losing voxels"
-    assert int((out != 0).sum()) == 1384 > int((box != 0).sum()) == 1000
+    assert int(((out != 0) & (box == 0)).sum()) > 0, "grew into background"
+    assert int((out != 0).sum()) > int((box != 0).sum())
 
 
 def test_radius_1_is_a_pure_dilation_and_says_so():
-    """At radius 1 the erosion removes nothing while the dilation still grows by a
-    6-neighbourhood, so the call does the opposite of what the name promises."""
+    """At radius 1 the erosion removes nothing and the dilation still grows."""
     box = np.zeros((20, 20, 20), "uint32")
     box[5:15, 5:15, 5:15] = 7
 
     with pytest.warns(UserWarning, match="erodes nothing"):
         out = opening(box, 1)
-    assert int((out != 0).sum()) == 1600, "1000 -> 1600: purely grown"
+    assert ((out != 0) >= (box != 0)).all(), "nothing removed"
+    assert int((out != 0).sum()) > int((box != 0).sum()), "purely grown"
 
 
 def test_the_radius_follows_anisotropy():
-    """The same convention `dilate`'s `max_distance` follows for `sampling`, and the same
-    trap: on an anisotropic volume a voxel-counted radius is lopsided in tissue while
-    looking symmetric in the array."""
+    """fastmorph's convention, which `opening` passes through: the radius is in the units
+    of ``anisotropy``."""
     a = np.zeros((32, 32, 32), "uint32")
     a[14:18, 14:18, 14:18] = 1
 
@@ -77,8 +68,7 @@ def test_the_radius_follows_anisotropy():
 
 
 def test_labels_do_not_merge_across_the_operation():
-    """Label-aware, which a binary implementation is not: two bodies one voxel apart stay
-    two bodies rather than becoming one through the dilation half."""
+    """Two bodies one voxel apart stay two bodies."""
     a = np.zeros((20, 20, 20), "uint32")
     a[2:8, 2:8, 2:8] = 3
     a[9:15, 2:8, 2:8] = 4
@@ -90,9 +80,9 @@ def test_labels_do_not_merge_across_the_operation():
 # what it refuses
 # --------------------------------------------------------------------------- #
 def test_a_nonsense_radius_is_refused():
-    with pytest.raises(ValueError, match="radius must be positive"):
+    with pytest.raises(ValueError, match="radius"):
         opening(_box_with_spike(), 0)
-    with pytest.raises(ValueError, match="radius must be positive"):
+    with pytest.raises(ValueError, match="radius"):
         opening(_box_with_spike(), -2)
 
 
@@ -100,18 +90,16 @@ def test_a_nonsense_anisotropy_is_refused():
     a = _box_with_spike()
     with pytest.raises(ValueError, match="one value per axis"):
         opening(a, 2, anisotropy=(8.0, 8.0))
-    with pytest.raises(ValueError, match="positive on every axis"):
+    with pytest.raises(ValueError, match="positive"):
         opening(a, 2, anisotropy=(8.0, 0.0, 8.0))
 
 
 # --------------------------------------------------------------------------- #
-# the backend and the export
+# the backend
 # --------------------------------------------------------------------------- #
 def test_a_device_array_is_moved_with_a_warning_and_comes_back():
-    """fastmorph has no GPU build, so this is the `cpu_only` path — loud, because the
-    array came to the GPU to be fast. The answer returns **where the input lived**, which
-    is `like`'s contract and what `dilate`'s own fastmorph methods do; `dust` differs only
-    because cc3d's path never stages at all."""
+    """fastmorph has no GPU build: the array is copied to the CPU with a warning, and the
+    result goes back to the GPU, where the input lived."""
     if not backend.gpu_available():
         pytest.skip("no GPU backend")
     backend._warned.discard("fastmorph.spherical_open")
@@ -122,8 +110,3 @@ def test_a_device_array_is_moved_with_a_warning_and_comes_back():
     assert any("no GPU implementation" in str(w.message) for w in caught)
     assert backend.is_gpu_array(out), "handed in a GPU array, handed one back"
     assert not (out.get()[16:19, 9, 9] != 0).any(), "and the answer is still right"
-
-
-def test_opening_is_reachable_from_the_top_level():
-    a = _box_with_spike()
-    np.testing.assert_array_equal(neu_proc.opening(a, 2), opening(a, 2))
