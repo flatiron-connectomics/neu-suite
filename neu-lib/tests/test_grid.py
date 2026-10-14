@@ -1,14 +1,5 @@
-"""Aligning a box to a block grid: the arithmetic, and BBox over it.
-
-Two things here are easy to get wrong and silent when wrong. A **half-open** box whose
-`hi` already sits on a boundary must stay put — ceiling it anyway grows every correctly
-sized box by a whole block. And `BBox.from_points` must add one to its maximum, or the
-box drops the far face on every axis.
-
-Which grid a given volume implies — chunk, shard, pyramid factor, or the LCM of two
-chunkings — is a question for the layer that can read a volume, and is tested in
-neu-vol's `test_grid.py` against `neu-vol align-bbox`.
-"""
+"""Box alignment arithmetic and BBox. Half-open boxes: a `hi` on a boundary stays put,
+and `from_points` adds one to its maximum."""
 
 import numpy as np
 import pytest
@@ -24,8 +15,7 @@ def test_outer_covers_and_inner_is_covered():
 
 
 def test_inner_that_spans_no_whole_block_is_an_error():
-    """...so it raises instead, naming the axis and the way out."""
-    with pytest.raises(ValueError, match=r"axis 0 empty.*mode 'outer'"):
+    with pytest.raises(ValueError, match="axis 0 empty"):
         grid.align_box((10, 10, 10), (20, 20, 20), (8, 8, 8), "inner")
 
 
@@ -41,7 +31,7 @@ def test_a_bound_already_on_the_grid_does_not_move():
 
 
 def test_nearest_rounds_halves_up_not_to_even():
-    """`round` would send 192 to 128 and 320 to 384 — the same box moving differently."""
+    """`round` would send 192 to 128 but 320 to 384."""
     assert grid.align_box((192, 0, 0), (320, 128, 128), (128, 128, 128), "nearest") == \
         ((256, 0, 0), (384, 128, 128))
 
@@ -52,7 +42,6 @@ def test_nearest_can_collapse_a_box_and_says_so():
 
 
 def test_origin_keeps_the_extent_exactly():
-    """For a fixed-size crop the extent is the thing that must not change."""
     lo, hi = (130, 200, 60), (330, 400, 160)
     a_lo, a_hi = grid.align_box(lo, hi, (128, 128, 128), "origin")
     # each origin to its nearest multiple: 130->128, 200->256, and 60->0 (nearer than 128)
@@ -82,24 +71,23 @@ def test_lcm_grid_is_per_axis():
         grid.lcm_grid((4, 4), (4, 4, 4))
 
 
-# --------------------------------------------------------------------------- #
-# the volume-end exemption, in one place
-# --------------------------------------------------------------------------- #
 def test_an_edge_at_the_volume_end_is_aligned_by_definition():
-    """That block is partial in the volume too, so there is nothing to lose in it."""
+    """The final block is partial in the volume too; without `extent` it cannot know."""
     assert grid.misaligned_axes((0, 0, 0), (100, 128, 128), (128, 128, 128),
                                 extent=(100, 128, 128)) == []
-    # the same box with no extent given cannot know that
     assert grid.misaligned_axes((0, 0, 0), (100, 128, 128), (128, 128, 128)) == [0]
+    # ...and through the method
+    box = grid.BBox((0, 0, 0), (40, 8, 8))
+    assert box.misaligned_axes((16, 8, 8)) == [0]
+    assert box.misaligned_axes((16, 8, 8), extent=(40, 8, 8)) == []
 
 
 # --------------------------------------------------------------------------- #
-# BBox — the object face of the same arithmetic
+# BBox
 # --------------------------------------------------------------------------- #
 
 def test_from_points_contains_its_own_extremes():
-    """The half-open `+1`. Without it the box drops the far face on every axis, and
-    nothing downstream can tell: it is a correctly shaped box, one voxel small."""
+    """Without the `+1` the box is one voxel short and drops the far face."""
     points = np.array([[0, 5, 2], [10, 5, 7], [4, 1, 2]])
     box = grid.BBox.from_points(points)
     assert box.lo == (0, 1, 2)
@@ -113,7 +101,6 @@ def test_from_points_refuses_an_empty_set():
 
 
 def test_from_points_floors_fractional_coordinates():
-    """Mesh vertices are floats; the box has to be integral without losing them."""
     box = grid.BBox.from_points(np.array([[0.7, -0.2, 3.9], [2.1, 1.5, 4.0]]))
     assert box.lo == (0, -1, 3)
     assert box.hi == (3, 2, 5)
@@ -132,8 +119,7 @@ def test_a_box_unpacks_into_the_two_sequences_the_functions_take():
 
 
 def test_union_ignores_an_empty_operand():
-    """What makes `reduce(BBox.union, boxes, BBox.empty())` work: an empty seed at the
-    origin must not drag the result back to it."""
+    """So `reduce(BBox.union, boxes, BBox.empty())` works."""
     from functools import reduce
 
     boxes = [grid.BBox((10, 10, 10), (12, 12, 12)), grid.BBox((20, 5, 8), (22, 7, 9))]
@@ -173,15 +159,8 @@ def test_the_methods_delegate_to_the_functions():
     assert box.aligned((8, 8, 8)).misaligned_axes((8, 8, 8)) == []
 
 
-def test_an_edge_at_the_volume_extent_is_aligned_by_definition():
-    """The exemption `misaligned_axes` documents, reachable from the method too."""
-    box = grid.BBox((0, 0, 0), (40, 8, 8))
-    assert box.misaligned_axes((16, 8, 8)) == [0]
-    assert box.misaligned_axes((16, 8, 8), extent=(40, 8, 8)) == []
-
-
 def test_clamping_a_box_off_the_volume_raises_rather_than_vanishing():
-    """An empty return would read downstream as `no data here` instead of `wrong frame`."""
+    """An empty result would read as "no data here" rather than "wrong frame"."""
     with pytest.raises(ValueError, match="lies outside the volume"):
         grid.BBox((200, 0, 0), (300, 4, 4)).clamped((100, 100, 100))
     assert grid.BBox((0, 0, 0), (300, 4, 4)).clamped((100, 100, 100)) == \

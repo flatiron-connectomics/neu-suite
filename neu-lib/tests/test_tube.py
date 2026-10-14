@@ -1,9 +1,5 @@
-"""The tube builder: one truncated cone per skeleton edge, from its radii.
-
-Pure geometry — numpy in, numpy out. The property worth asserting is that a ring sits at
-the node's own radius and perpendicular to its edge, because that is what makes a radius
-which does not fit inside the body show up as the tube breaking the surface.
-"""
+"""The tube builder: one truncated cone per edge, each ring at its node's radius and
+perpendicular to the edge."""
 
 import numpy as np
 import pytest
@@ -32,12 +28,7 @@ def test_frustum_rings_have_the_node_radii_at_each_end():
     (-3.0, 0.5, 2.0),
 ])
 def test_frustum_rings_are_perpendicular_to_the_edge(direction):
-    """The per-edge basis must stay orthonormal in every orientation.
-
-    The reference direction is swapped near x to keep the cross product from
-    degenerating; if that guard were wrong, the ring would collapse or tilt only for
-    edges pointing that way — a defect no single-orientation test would find.
-    """
+    """Including along x, where the reference direction is swapped."""
     d = np.asarray(direction, float)
     v = np.array([[0.0, 0.0, 0.0], d * 9.0])
     fv, _ = frustum_mesh(v, np.array([[0, 1]]), np.array([2.0, 2.0]), sides=6)
@@ -60,7 +51,6 @@ def test_frustum_handles_an_empty_skeleton():
 
 
 def test_frustum_face_indices_stay_within_each_edges_own_block():
-    """Faces must never bridge two edges: the base offset is per-edge, not global."""
     v = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 5.0, 5.0]])
     sides = 4
     fv, ff = frustum_mesh(v, np.array([[0, 1], [1, 2]]), np.ones(3), sides=sides)
@@ -79,7 +69,6 @@ def test_a_skeleton_without_radii_has_no_tube():
 
 
 def test_the_tube_surrounds_the_centreline():
-    """A tube of radius r around a segment must contain the segment's own box."""
     skel = Skeleton(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1000.0]]),
                     np.array([[0, 1]]), radii_nm=np.array([50.0, 50.0]), name="s")
     tube = skeleton_tube(skel, sides=8)
@@ -88,8 +77,7 @@ def test_the_tube_surrounds_the_centreline():
 
 
 def test_the_tube_is_built_in_xyz_so_winding_survives_the_round_trip():
-    """Feeding zyx straight in reverses handedness and the normals face inward, which
-    renders dark rather than raising — so the flip is asserted, not trusted."""
+    """Built in zyx, the normals would face inward and the tube render dark."""
     skel = Skeleton(np.array([[0.0, 0.0, 0.0], [1000.0, 0.0, 0.0]]),
                     np.array([[0, 1]]), radii_nm=np.array([100.0, 100.0]), name="z")
     tube = skeleton_tube(skel, sides=6)

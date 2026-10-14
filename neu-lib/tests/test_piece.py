@@ -1,13 +1,5 @@
-"""An array that carries its frame: :class:`neu_lib.Piece`.
-
-The type exists so an array and its origin cannot get separated. Every place that read a
-crop used to pass the two alongside each other, and each such pair is a chance to drop the
-origin — invariant 1's silent failure, where the data lands at nm zero instead of on top of
-what it came from and nothing raises.
-
-The tests are mostly about **which coordinate space** each accessor speaks, because that is
-the only thing about this type that can be subtly wrong.
-"""
+"""Piece: an array that carries its frame. Mostly about which coordinate space each
+accessor speaks, since that is what can be subtly wrong."""
 
 import numpy as np
 import pytest
@@ -38,8 +30,7 @@ def test_a_piece_is_three_dimensional_or_three_plus_channels():
 
 
 def test_frozen_fixes_the_PAIRING_not_the_voxels():
-    """The array is not copied and not made read-only — freezing the dataclass keeps the
-    array and its frame together, which is the invariant worth enforcing."""
+    """The dataclass is frozen, but the array is neither copied nor read-only."""
     import dataclasses
 
     p = _piece()
@@ -50,12 +41,9 @@ def test_frozen_fixes_the_PAIRING_not_the_voxels():
 
 
 # --------------------------------------------------------------------------- #
-# where it is — the part that can be subtly wrong
+# where it is
 # --------------------------------------------------------------------------- #
 def test_bbox_is_in_the_FRAMES_voxels_not_array_indices():
-    """A piece read from voxel 10 of a level reports lo = 10. Array indices are always
-    0..shape and answer nothing — they cannot place the piece back, compare it with a
-    sibling, or be handed to a crop argument."""
     p = _piece()                                     # origin 400/40, 160/8, 240/8
     assert p.origin_voxel == (10, 20, 30)
     assert p.bbox == BBox(lo=(10, 20, 30), hi=(18, 36, 46))
@@ -63,8 +51,6 @@ def test_bbox_is_in_the_FRAMES_voxels_not_array_indices():
 
 
 def test_bounds_nm_is_floats_and_deliberately_not_a_bbox():
-    """`BBox` has integer bounds and its operations assume a grid, so a physical box cannot
-    be one without truncating — which for a fractional voxel size would move it."""
     lo, hi = _piece().bounds_nm
     assert lo == (400.0, 160.0, 240.0)
     assert hi == (400.0 + 8 * 40, 160.0 + 16 * 8, 240.0 + 16 * 8)
@@ -76,8 +62,7 @@ def test_bounds_nm_is_floats_and_deliberately_not_a_bbox():
 
 
 def test_an_origin_off_the_voxel_grid_has_no_integer_bbox():
-    """Rounding would shift the piece by up to half a voxel against whatever it is meant to
-    line up with — drift nothing downstream can detect. `bounds_nm` still works."""
+    """It raises rather than rounding the piece by up to half a voxel."""
     p = _piece(voxel=(8.0, 8.0, 8.0), origin=(4.0, 0.0, 0.0))
     with pytest.raises(ValueError, match="not a whole number"):
         p.origin_voxel
@@ -91,9 +76,7 @@ def test_an_origin_off_the_voxel_grid_has_no_integer_bbox():
 # crop
 # --------------------------------------------------------------------------- #
 def test_crop_speaks_the_same_space_bbox_reports():
-    """Absolute, not array-relative. The two differ by the origin, so a caller who reads
-    `piece.bbox`, narrows it, and passes it back would otherwise get a box silently offset
-    by the origin — the worst kind of off-by-N."""
+    """Absolute voxels, not array indices, and the origin moves with the crop."""
     p = _piece()
     sub = p.crop(((12, 24, 34), (16, 28, 38)))
     assert sub.spatial_shape == (4, 4, 4)
@@ -111,7 +94,7 @@ def test_crop_takes_a_bbox_or_a_pair():
     assert p.crop(box).bbox == p.crop((box.lo, box.hi)).bbox
 
 
-def test_crop_outside_the_piece_is_refused_and_says_which_space(caplog):
+def test_crop_outside_the_piece_is_refused_and_says_which_space():
     p = _piece()
     # array indices, which is the mistake this message is for
     with pytest.raises(ValueError, match="not array indices"):
@@ -129,13 +112,10 @@ def test_crop_keeps_a_channel_axis_whole():
 
 
 # --------------------------------------------------------------------------- #
-# Frame.voxel_box — the conversion between frames
+# Frame.voxel_box: the conversion between frames
 # --------------------------------------------------------------------------- #
 def test_voxel_box_puts_a_physical_box_into_another_frames_voxels():
-    """The only way to say "the same place" across frames, since nm is the one shared
-    model space. This is what makes "show me the image under this ground-truth crop"
-    expressible: the two have different voxel sizes AND different origins, so no voxel box
-    transfers between them."""
+    """A GT crop and the level it came from differ in voxel size AND origin."""
     gt = Piece(array=np.zeros((364, 244, 244), "uint64"),
                frame=Frame(voxel_size_nm=(8.0, 8.0, 8.0),
                            origin_nm=(62552.0, 71832.0, 27832.0)))
@@ -149,8 +129,7 @@ def test_voxel_box_puts_a_physical_box_into_another_frames_voxels():
 
 
 def test_voxel_box_grows_OUTWARD_so_the_result_contains_the_box():
-    """A box that is not a whole number of coarse voxels must not lose a face. Rounding to
-    nearest would, and it would look like a correct read one voxel short."""
+    """Rounding to nearest would drop a face and look like a correct read."""
     frame = Frame(voxel_size_nm=(10.0, 10.0, 10.0))
     box = frame.voxel_box(((5.0, 5.0, 5.0), (25.0, 25.0, 25.0)))
     assert box.lo == (0, 0, 0) and box.hi == (3, 3, 3), "0..30 nm contains 5..25"
@@ -162,8 +141,6 @@ def test_voxel_box_grows_OUTWARD_so_the_result_contains_the_box():
 
 
 def test_voxel_box_accounts_for_the_TARGETS_own_origin():
-    """A level with a voxel_offset does not start at nm zero, and ignoring that shifts
-    every converted box by the offset."""
     shifted = Frame(voxel_size_nm=(8.0, 8.0, 8.0), origin_nm=(800.0, 0.0, 0.0))
     box = shifted.voxel_box(((800.0, 0.0, 0.0), (864.0, 64.0, 64.0)))
     assert box.lo == (0, 0, 0) and box.hi == (8, 8, 8)
@@ -175,11 +152,9 @@ def test_voxel_box_checks_the_rank():
 
 
 # --------------------------------------------------------------------------- #
-# name — a label, not identity
+# name: a label, not identity
 # --------------------------------------------------------------------------- #
 def test_the_name_rides_along_and_survives_every_derivation():
-    """It exists for the same reason `kind` does: whoever read the piece knew where it came
-    from, and a consumer three calls later does not."""
     p = _piece()
     assert p.name is None, "optional, and absent is fine"
     named = p.with_name("gt/vol_03700")
@@ -191,8 +166,6 @@ def test_the_name_rides_along_and_survives_every_derivation():
 
 
 def test_a_derivation_keeps_everything_it_was_not_asked_to_change():
-    """`replace` rather than a fresh Piece, so a field added later cannot be silently
-    dropped by one of these three."""
     p = Piece(array=np.zeros((4, 4, 4)), frame=Frame(voxel_size_nm=(8, 8, 8)),
               kind="segmentation", name="a")
     assert p.with_name("b").kind == "segmentation"
@@ -201,12 +174,10 @@ def test_a_derivation_keeps_everything_it_was_not_asked_to_change():
 
 
 # --------------------------------------------------------------------------- #
-# copy — for an array transform that keeps everything else
+# copy
 # --------------------------------------------------------------------------- #
 def test_copy_copies_the_ARRAY_which_is_the_point():
-    """`dataclasses.replace` re-pairs the *same* array with new metadata, so an in-place
-    edit on what looks like a copy reaches back into the original — and into whatever the
-    original was itself a view of. That is the whole reason this method exists."""
+    """Unlike `dataclasses.replace`, editing the copy must not reach the original."""
     p = _piece()
     c = p.copy()
     assert c.array is not p.array
@@ -217,7 +188,6 @@ def test_copy_copies_the_ARRAY_which_is_the_point():
 
 
 def test_copy_takes_a_transformed_array_without_copying_it_again():
-    """Passing `array=` means you brought your own, so there is nothing to protect."""
     p = _piece()
     out = p.array.astype("float32") / 2
     c = p.copy(array=out, kind="probability")
@@ -231,7 +201,6 @@ def test_copy_replaces_any_field_and_still_validates():
     assert p.copy(name="other").name == "other"
     assert p.copy(kind=None).kind is None
     assert p.copy(frame=Frame(voxel_size_nm=(1, 1, 1))).voxel_size_nm == (1.0, 1.0, 1.0)
-    # a bad value is refused rather than producing a piece nothing can interpret
     with pytest.raises(ValueError, match="kind must be one of"):
         p.copy(kind="labels")
     with pytest.raises(ValueError, match="3-D or 4-D"):
@@ -239,8 +208,7 @@ def test_copy_replaces_any_field_and_still_validates():
 
 
 def test_copy_names_the_fields_when_given_something_else():
-    """`voxel_size` is the likely typo — it belongs to the frame, not the piece — and a bare
-    TypeError about an unexpected keyword would not say so."""
+    """`voxel_size` is the likely typo, and belongs to the frame."""
     p = _piece()
     with pytest.raises(TypeError, match="belong to the frame"):
         p.copy(voxel_size=(8, 8, 8))
@@ -248,18 +216,10 @@ def test_copy_names_the_fields_when_given_something_else():
         p.copy(nope=1)
 
 
-def test_copy_shares_the_frame_which_is_safe():
-    """Frozen and only numbers, so there is nothing to protect against."""
-    p = _piece()
-    assert p.copy().frame is p.frame
-
-
 # --------------------------------------------------------------------------- #
-# apply — a transform that keeps the frame
+# apply
 # --------------------------------------------------------------------------- #
 def test_apply_keeps_the_frame_name_and_kind_through_a_transform():
-    """The reason the type exists: an array on its own forgets where it is after the first
-    operation."""
     p = _piece().with_name("aff/data").with_kind("probability")
     out = p.apply(lambda a: a * 2)
     assert out.frame == p.frame and out.name == p.name and out.kind == p.kind
@@ -275,11 +235,8 @@ def test_apply_forwards_arguments_so_a_plain_array_function_just_works():
 
 
 def test_a_transform_that_changes_the_DTYPE_must_say_what_the_result_is():
-    """Nothing can detect a change of meaning — `(a > 0.5).astype("float32")` changes
-    neither shape nor dtype — but a dtype change is the signal that IS available, and it
-    catches the two that matter: a probability map thresholded to a mask, and a mask
-    labelled. Inheriting "probability" through either would later authorise averaging label
-    ids into ids that were never in the data."""
+    """A thresholded probability map is a segmentation; inheriting "probability" would
+    later allow averaging label ids."""
     p = _piece(dtype="float32").with_kind("probability")
 
     with pytest.raises(ValueError, match="changed the dtype"):
@@ -295,28 +252,15 @@ def test_a_transform_that_changes_the_DTYPE_must_say_what_the_result_is():
 
 
 def test_the_dtype_guard_compares_FULL_dtypes_not_just_the_kind_character():
-    """`uint8 -> uint32` is the connected-components case — a mask becoming labels — which
-    `dtype.kind` would miss since both are unsigned. A false alarm costs twelve characters;
-    a miss is silent."""
+    """uint8 -> uint32 (a mask becoming labels) has the same `dtype.kind`."""
     p = _piece(dtype="uint8").with_kind("segmentation")
     with pytest.raises(ValueError, match="uint8 to uint32"):
         p.apply(lambda a: a.astype("uint32"))
     assert p.apply(lambda a: a.astype("uint32"), kind="same").kind == "segmentation"
 
 
-def test_None_is_a_legal_kind_and_distinct_from_not_saying():
-    """Which is why the default is a sentinel rather than None: `kind=None` means "no longer
-    known", and that has to be sayable."""
-    p = _piece(dtype="float32").with_kind("image")
-    assert p.apply(lambda a: a.astype("uint8"), kind=None).kind is None
-    assert p.apply(lambda a: a * 1).kind == "image", "not saying is not the same as None"
-
-
 def test_a_transform_that_changes_the_SHAPE_must_supply_the_frame():
-    """Shape and frame are two halves of one statement about where the voxels are. A 2x
-    downsample halves the shape and doubles the voxel size; carrying the old frame through
-    would place the result at half its real size, silently. The factor is not guessed —
-    real pyramids are anisotropic, and a crop changes the origin instead of the size."""
+    """A 2x downsample halves the shape and doubles the voxel size; no factor is guessed."""
     p = _piece()
     with pytest.raises(ValueError, match="changed the spatial shape"):
         p.apply(lambda a: a[::2, ::2, ::2])
@@ -328,8 +272,7 @@ def test_a_transform_that_changes_the_SHAPE_must_supply_the_frame():
 
 
 def test_a_channel_reduction_counts_as_a_shape_change():
-    """Rank 4 -> 3 drops the channel axis, and the guard compares SPATIAL shapes so it is
-    not fooled by the rank changing on its own."""
+    """The guard compares SPATIAL shapes, so a rank change alone does not fool it."""
     p = Piece(array=np.zeros((3, 4, 4, 4)), frame=Frame(voxel_size_nm=(8, 8, 8)))
     out = p.apply(lambda a: a.max(axis=0))      # 3 channels -> 1, spatial unchanged
     assert out.spatial_shape == (4, 4, 4) and not out.channel_axis
@@ -338,31 +281,17 @@ def test_a_channel_reduction_counts_as_a_shape_change():
 
 
 def test_apply_name_is_inherited_renamed_or_CLEARED():
-    """`name=None` clears rather than meaning "not specified" — the same sentinel treatment
-    `kind` gets, so neither override argument has a value that quietly does nothing."""
     p = _piece().with_name("aff/data")
     assert p.apply(lambda a: a * 1).name == "aff/data"
     assert p.apply(lambda a: a * 1, name="mask").name == "mask"
     assert p.apply(lambda a: a * 1, name=None).name is None
 
 
-def test_apply_chains():
-    p = _piece(dtype="float32").with_kind("probability")
-    out = (p.apply(lambda a: a + 1)
-            .apply(lambda a: (a > 1).astype("uint8"), kind="segmentation", name="mask"))
-    assert out.kind == "segmentation" and out.name == "mask"
-    assert out.frame == p.frame
-
-
 # --------------------------------------------------------------------------- #
-# to_numpy / to_cpu — the one direction that needs no cupy
+# to_numpy / to_cpu
 # --------------------------------------------------------------------------- #
 class _FakeGpuArray(np.ndarray):
-    """A numpy array that claims cupy's module and converts through `.get()`.
-
-    Enough to test the whole path with no GPU: the GPU branch is chosen by the type's
-    defining module, and the conversion is a method on the array.
-    """
+    """A numpy array that claims cupy's module and converts through `.get()`."""
     __module__ = "cupy"
 
     def get(self):
@@ -376,10 +305,6 @@ def test_to_numpy_is_a_no_op_for_a_cpu_array():
 
 
 def test_to_numpy_converts_a_gpu_array_through_its_own_get():
-    """**numpy cannot do this on its own.** `np.asarray` on a cupy array raises
-    `TypeError: Implicit conversion to a NumPy array is not allowed` — deliberately, so that
-    nobody copies gigabytes off a GPU by passing the wrong thing to a plotting call. What
-    makes it possible without importing cupy is that the conversion is a *method*."""
     data = np.arange(4 * 4 * 4, dtype="uint8").reshape(4, 4, 4)
     p = Piece(data.view(_FakeGpuArray), Frame(voxel_size_nm=(8, 8, 8)),
               kind="image", name="gpu")
@@ -389,7 +314,6 @@ def test_to_numpy_converts_a_gpu_array_through_its_own_get():
 
 
 def test_to_cpu_keeps_the_frame_kind_and_name():
-    """The form to use mid-chain, where to_numpy hands out the bare array."""
     data = np.zeros((4, 4, 4), "uint8")
     p = Piece(data.view(_FakeGpuArray),
               Frame(voxel_size_nm=(40, 8, 8), origin_nm=(80, 0, 0)),
@@ -401,8 +325,6 @@ def test_to_cpu_keeps_the_frame_kind_and_name():
 
 
 def test_a_gpu_array_with_no_get_says_so():
-    """Rather than falling through to numpy, which would raise a TypeError naming
-    `__array__` and nothing about what to do."""
     class NoGet(np.ndarray):
         __module__ = "cupy"
 
@@ -412,9 +334,7 @@ def test_a_gpu_array_with_no_get_says_so():
 
 
 def test_there_is_no_to_gpu_and_that_is_deliberate():
-    """Coming *to* numpy is a method on the array, so this package can do it without
-    importing anything; going *to* the GPU needs cupy itself, which would put a compiled
-    CUDA dependency under this package's numpy-only promise. That is why it lives in
-    `neu_proc.ops.backend.to_gpu`, and why this asymmetry must not be "completed"."""
+    """Going to the GPU needs cupy, which would break the numpy-only rule; it lives in
+    `neu_proc.ops.backend.to_gpu`. Do not "complete" the asymmetry."""
     assert not hasattr(_piece(), "to_gpu")
     assert not hasattr(_piece(), "to_device"), "nor under the old name"

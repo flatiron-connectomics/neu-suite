@@ -1,14 +1,5 @@
-"""What importing this package is allowed to cost.
-
-**numpy and nothing else.** That is the property the package exists for: every tier of
-the suite names these types, so anything imported here lands under all of them. A stray
-`import tensorstore` would be invisible in the shared conda environment, which has the
-whole stack installed — it would only fail for someone who installed `neu-lib` alone,
-which is exactly the case this package is meant to serve.
-
-Asserted in a fresh interpreter rather than by reading the imports, because the
-regression is one convenience import away and nothing else would notice.
-"""
+"""Importing neu-lib may pull in numpy and the standard library, nothing else. Checked in a
+fresh interpreter, since the shared environment has the whole stack installed."""
 
 import subprocess
 import sys
@@ -21,9 +12,7 @@ def _import_in_a_fresh_interpreter(code: str) -> str:
 
 
 def test_importing_neu_lib_pulls_in_nothing_but_numpy():
-    """Measured as the DELTA, not the absolute set: an environment can inject namespace
-    packages at startup (`sphinxcontrib` does, via a .pth), and blaming those on this
-    import would make the test fail for reasons that have nothing to do with it."""
+    """Measured as the delta, since a .pth can inject packages at startup."""
     out = _import_in_a_fresh_interpreter("""
 import sys
 before = set(sys.modules)
@@ -38,7 +27,6 @@ print('clean')
 
 
 def test_it_does_not_import_anything_from_the_suite():
-    """The layering, from below. Nothing here may know about a store or a renderer."""
     out = _import_in_a_fresh_interpreter("""
 import sys
 import neu_lib
@@ -52,8 +40,6 @@ print('clean')
 
 
 def test_every_exported_name_is_reachable():
-    """`__all__` and the module agree — a name listed but not imported is an
-    AttributeError for the caller and nothing catches it here otherwise."""
     import neu_lib
 
     for name in neu_lib.__all__:
