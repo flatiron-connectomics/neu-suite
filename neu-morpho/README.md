@@ -106,6 +106,17 @@ is fine.
 box four times smaller per pyramid level, and the wrong one silently processes the
 wrong region instead of failing.
 
+The same run from Python, where `plan` checks the arguments against the source and
+counts blocks without writing anything:
+
+```python
+from neu_morpho import pipeline
+
+p = pipeline.plan(src, "/path/to/morpho/segmentation", work_dir="/path/to/morpho",
+                  roi=(0, 0, 0, 512, 2048, 2048), roi_scale=2)
+summary = pipeline.run(p)            # in-process; pass client= to run on a dask cluster
+```
+
 ### Cluster config
 
 `--config` takes a **bundled template name or a path**, and is **repeatable**,

@@ -1,0 +1,85 @@
+"""`pipeline.plan` / `pipeline.run`: the `neu-morpho run` command as a library call."""
+
+import json
+import os
+
+import numpy as np
+import pytest
+
+from neu_morpho import pipeline
+
+
+def _source(tmp_path):
+    """A two-level precomputed segmentation: a rod across blocks and a blob."""
+    from neu_vol import convert
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
+
+    vol = np.zeros((64, 64, 64), np.uint64)
+    vol[4:60, 30:36, 30:36] = 7
+    vol[10:22, 8:20, 8:20] = 9
+    raw = str(tmp_path / "raw.zarr")
+    be = TensorStoreBackend.create(
+        zarr3_create_spec("local", raw, vol.shape, "uint64",
+                          dimension_names=("z", "y", "x"), chunk=(16, 16, 16)),
+        delete_existing=True)
+    be.write_region(tuple(slice(0, s) for s in vol.shape), vol)
+    src = str(tmp_path / "seg")
+    convert(raw, src, voxel_size=(8, 8, 8), kind="segmentation",
+            profile="local-neuroglancer", chunk=(16, 16, 16), factors=[(2, 2, 2)],
+            min_dim=8, delete_existing=True)
+    return src
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"roi": (0, 0, 0, 8, 8, 8)}, "roi_scale is required"),
+    ({"roi_scale": 0}, "no effect without roi"),
+    ({"stages": ["index"], "metrics_db": False}, "incompatible with the index stage"),
+    ({"stages": ["nope"]}, "unknown stage"),
+])
+def test_plan_refuses_contradictory_arguments(tmp_path, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        pipeline.plan("/no/source", str(tmp_path / "out"), **kwargs)
+
+
+def test_a_remote_destination_needs_a_work_dir():
+    with pytest.raises(ValueError, match="work_dir is required"):
+        pipeline.plan("/no/source", "s3://my-bucket/volume")
+
+
+def test_plan_resolves_scales_and_counts_blocks(tmp_path):
+    src = _source(tmp_path)
+    p = pipeline.plan(src, str(tmp_path / "out" / "seg"), index_scale=0, mesh_scale=0,
+                      skel_scale=1, block=(32, 32, 32), occupancy_scale=-1,
+                      roi=(0, 0, 0, 32, 32, 32), roi_scale=1)
+    assert p.work_dir == str(tmp_path / "out")
+    assert p.scales["skel"].voxel_size == (16.0, 16.0, 16.0)
+    assert p.rois["mesh"] == (0, 0, 0, 64, 64, 64)       # the same box, in level-0 voxels
+    assert p.planned_blocks == {"index": 8, "mesh": 8, "skel": 1}
+    assert not os.path.exists(p.work_dir)                 # planning writes nothing
+
+
+def test_run_produces_one_linked_volume(tmp_path):
+    pytest.importorskip("vol2mesh")
+    pytest.importorskip("kimimaro")
+    src = _source(tmp_path)
+    work = tmp_path / "out"
+    p = pipeline.plan(src, str(work / "seg"), stages=("seg", "index", "mesh", "skel"),
+                      index_scale=0, mesh_scale=0, skel_scale=0, block=(32, 32, 32),
+                      occupancy_scale=-1)
+    summary = pipeline.run(p, command="test")
+
+    assert summary["n_failed_bodies"] == 0
+    assert set(summary["stages"]) == {"seg", "index", "mesh", "skel"}
+    assert set(summary["linked_subresources"]) == {"mesh", "skeletons"}
+    info = json.loads((work / "seg" / "info").read_text())
+    assert "mesh" in info and "skeletons" in info
+    assert json.loads((work / "run_summary.json").read_text())["command"] == "test"
+    assert json.loads((work / "run_plan.json").read_text())["planned_blocks"]["mesh"] == 8
+
+    from neu_morpho.metrics_db import MetricsDB
+
+    db = MetricsDB(str(work / "metrics.db"), read_only=True)
+    bodies = dict(db.con.execute("SELECT body_id, voxel_count FROM bodies"))
+    db.close()
+    assert bodies == {7: 56 * 36, 9: 12 * 144}

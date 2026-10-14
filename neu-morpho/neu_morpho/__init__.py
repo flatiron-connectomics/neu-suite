@@ -7,6 +7,7 @@ across segments with ``blockrun`` and reading segmentation arrays with
 ``neu-vol``. The pipeline runs from the ``neu-morpho`` command; from Python::
 
     import neu_morpho
+    summary = neu_morpho.pipeline.run(neu_morpho.pipeline.plan(src, dst))  # serial
     verts_xyz_nm, faces, lod = neu_morpho.read_body_mesh(volume, body_id)   # or None
     db = neu_morpho.MetricsDB(path)                          # per-body metrics
 
@@ -37,13 +38,14 @@ _EXPORTS: dict[str, str] = {
 #: Name -> submodule exposed whole at the top level. Keys must not overlap ``_EXPORTS``.
 _SUBMODULES: dict[str, str] = {
     "measure": "measure",
+    "pipeline": "pipeline",
     "readback": "readback",
 }
 
 __all__ = ["__version__", *sorted({*_EXPORTS, *_SUBMODULES})]
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDE completion only
-    from . import measure, readback  # noqa: F401
+    from . import measure, pipeline, readback  # noqa: F401
     from .config import MeshConfig, SkeletonConfig  # noqa: F401
     from .metrics_db import MetricsDB  # noqa: F401
     from .readback import (UnsupportedSubresource, mesh_transform,  # noqa: F401

@@ -64,52 +64,20 @@ assumption is what misaligns meshes against skeletons on non-standard pyramids.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import math
 import os
-import sys
 import time
-from datetime import datetime
 
 from blockrun import bundled_configs, load_config
 
-from neu_morpho.allowlist import load_allowlist
-from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from neu_morpho.metrics_db import MetricsDB
-from neu_morpho.ops.export_roi_seg import DEFAULT_COPY_BLOCK as SEG_COPY_BLOCK
-from neu_morpho.ops.export_roi_seg import scale_cost
-from neu_morpho.ops import (export_roi_seg, index_segments, meshify,
-                               skeletonize_segments)
-from neu_morpho.precomputed import link_subresources
-from neu_morpho.roi import parse_roi, scale_roi
-from neu_vol import read_scales, scale_spec
+from neu_morpho.roi import parse_roi
 from neu_vol import describe_scales as describe
 
 log = logging.getLogger("neu-morpho")
 
-#: Above this many indexed bodies, an unfiltered mesh/skel run logs a warning.
-UNFILTERED_WARN_BODIES = 100_000
-
-# One line per stage, and the ONLY place they are described. `--stages` help, the
-# published CLI reference and the docs cheat sheet are all built from this, because a
-# stage whose purpose you have to read the source to learn is a stage people skip or
-# run by accident — `index` especially, since mesh and skel silently depend on it.
-STAGE_DOC = {
-    "seg": "copy the ROI's labels out as a precomputed volume, so the meshes and "
-           "skeletons can be viewed against the segmentation they came from. Optional, "
-           "and off by default — it is pure I/O and usually the most expensive stage.",
-    "index": "scan the volume once and record every body's bounding box and voxel count "
-             "in a SQLite metrics DB. REQUIRED FIRST unless the DB already exists: mesh "
-             "and skel crop each body by its bbox and cannot ask the volume for one, and "
-             "the size filter that builds the allowlist reads the counts.",
-    "mesh": "multi-resolution Draco meshes, per body. Two phases — fragments per "
-            "(body, block), then one mesh assembled per body — so a re-run with only "
-            "this stage reuses the fragments already on disk.",
-    "skel": "kimimaro skeletons, per body, in the same two phases and with its own "
-            "manifest. Reads bounding boxes from the metrics DB.",
-}
-STAGES = tuple(STAGE_DOC)
+from neu_morpho.pipeline import STAGE_DOC, STAGES  # noqa: E402  (re-exported for the docs)
 
 
 def stages_help(indent: str = "  ", width: int = 79) -> str:
@@ -428,37 +396,6 @@ def _parse_args(argv=None):
     return args
 
 
-def _ng_source(volume_dir: str) -> str:
-    """The neuroglancer source URL for a volume — local paths need a file:// prefix."""
-    from neu_vol import is_local
-
-    return (f"precomputed://file://{volume_dir}" if is_local(volume_dir)
-            else f"precomputed://{volume_dir}")
-
-
-def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
-    """How many blocks a stage will actually process — the honest size estimate.
-
-    Applies BOTH filters. Reporting the ROI count alone overstates the work by
-    the occupancy factor (2.2x on this dataset), which makes --dry-run useless
-    for deciding whether a run is affordable.
-    """
-    from blockrun import iter_blocks
-
-    from neu_morpho.occupancy import occupied_blocks
-    from neu_morpho.roi import clip_to_shape, filter_blocks
-
-    blocks = filter_blocks(iter_blocks(shape, block), clip_to_shape(roi, shape))
-    if occ is None:
-        return len(blocks)
-    arr, occ_voxel, dilate = occ
-    grid = tuple(-(-shape[a] // block[a]) for a in range(3))
-    keep = occupied_blocks(arr, occ_voxel_size=occ_voxel, mesh_voxel_size=voxel_size,
-                           block_shape=block, grid_shape=grid, allowlist=None,
-                           dilate=dilate)
-    return sum(1 for b in blocks if b.index in keep)
-
-
 def _cmd_progress(args) -> int:
     """Live per-stage progress. The implementation is a script, kept out of the
     package because it is a read-only operator tool with a matplotlib-free, stdlib-only
@@ -544,6 +481,8 @@ def _cmd_measure_volumes(args) -> int:
 def _measure_dispatch(args, spec, s, *, client, keep, roi, resume):
     """--with-bbox reuses the index scan; the default is the counts-only sweep."""
     if args.with_bbox:
+        from neu_morpho.ops import index_segments
+
         return index_segments(spec, args.db, scan_voxel_size=s.voxel_size,
                               scan_scale=s.index, block_shape=(args.block,) * 3,
                               roi=roi, keep=keep, client=client, resume=resume)
@@ -770,60 +709,13 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
+    from neu_morpho import pipeline
 
-    scales = read_scales(args.src)
     if args.describe:
         print(describe(args.src))
         return 0
     if not args.dst:
         raise SystemExit("--dst is required unless --describe")
-
-    # --dst is the volume (possibly s3://); --work-dir is the POSIX run dir. For a
-    # local --dst the work dir defaults to its parent, which reproduces the layout
-    # from when --dst meant the run root: <run>/segmentation plus <run>/chunked,
-    # metrics.db and the manifests beside it.
-    from neu_vol import is_local
-
-    dst = args.dst.rstrip("/")
-    if args.work_dir:
-        work = args.work_dir.rstrip("/")
-    elif is_local(dst):
-        work = os.path.dirname(os.path.abspath(dst))
-    else:
-        raise SystemExit(
-            f"--work-dir is required when --dst is remote ({dst}). It holds the "
-            "stage-1 fragments, the sqlite metrics DB and the JSONL manifests, "
-            "none of which work over an object store.")
-    if not is_local(work):
-        raise SystemExit(f"--work-dir must be a filesystem path, got {work}")
-
-    stages = [s.strip() for s in args.stages.split(",") if s.strip()]
-    unknown = set(stages) - set(STAGES)
-    if unknown:
-        raise SystemExit(f"unknown stage(s) {sorted(unknown)}; pick from {list(STAGES)}")
-
-    block = tuple(int(v) for v in args.block.split(","))
-    finest = scales[0]
-    for name, idx in (("index", args.index_scale), ("mesh", args.mesh_scale),
-                      ("skel", args.skel_scale)):
-        if not 0 <= idx < len(scales):
-            raise SystemExit(f"--{name}-scale {idx} out of range (source has {len(scales)})")
-
-    idx_s, mesh_s, skel_s = (scales[args.index_scale], scales[args.mesh_scale],
-                             scales[args.skel_scale])
-
-    # The ROI is quoted in one scale; convert it into each stage's own voxels
-    # using real voxel sizes, so the same physical cube is used everywhere.
-    roi_base = parse_roi(args.roi)
-    # _parse_args guarantees roi_scale is set whenever there is an ROI; with no ROI
-    # the value is unused (roi_for returns None either way).
-    roi_scale = scales[args.roi_scale if args.roi_scale is not None else args.mesh_scale]
-
-    def roi_for(target):
-        factor = tuple(roi_scale.voxel_size[a] / target.voxel_size[a] for a in range(3))
-        return scale_roi(roi_base, factor)
-
-    roi_index, roi_mesh, roi_skel = roi_for(idx_s), roi_for(mesh_s), roi_for(skel_s)
 
     seg_scales = None
     if args.seg_scales and args.seg_scales != "all":
@@ -832,233 +724,40 @@ def _main(args) -> int:
             seg_scales = list(range(int(a), int(b) + 1))
         else:
             seg_scales = [int(x) for x in args.seg_scales.split(",")]
-
-    occ_spec = occ_voxel = None
-    if args.occupancy_scale is not None and args.occupancy_scale >= 0:
-        if not 0 <= args.occupancy_scale < len(scales):
-            raise SystemExit(f"--occupancy-scale {args.occupancy_scale} out of range")
-        occ = scales[args.occupancy_scale]
-        occ_spec = scale_spec(args.src, occ.index)
-        occ_voxel = occ.voxel_size
-
-    db_path = None if args.no_metrics_db else f"{work}/metrics.db"
-    allowlist_path = args.allowlist or f"{work}/allowlist.csv"
-    out = OutputConfig(dst=dst, work_dir=work)
-
-    occ = None
-    if occ_spec is not None:
-        from neu_vol.backends.base import open_backend
-        _be = open_backend(occ_spec)
-        occ = (_be.read_region(tuple(slice(0, x) for x in _be.shape)),
-               occ_voxel, args.occupancy_dilate)
-
-    log.info("source pyramid:\n%s", describe(args.src))
-    # Keep the counts: they are the denominators `neu-morpho progress` needs, and
-    # recomputing them means re-reading the occupancy array.
-    planned = {
-        "index": _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ),
-        "mesh": _blocks_in(mesh_s.shape, block, roi_mesh, mesh_s.voxel_size, occ),
-        "skel": _blocks_in(skel_s.shape, block, roi_skel, skel_s.voxel_size, occ),
-    }
-    for name, s in (("index", idx_s), ("mesh", mesh_s), ("skel", skel_s)):
-        log.info("%-5s  scale %d  voxel %s nm  shape %s  -> %d blocks",
-                 name, s.index, s.voxel_size, s.shape, planned[name])
-    log.info("stages=%s roi=%s occupancy=%s", stages, roi_base,
-             f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
-             if occ else "off")
-    # The tracer decides what the skeletons ARE, so it belongs in the log and not
-    # only in run_plan.json -- a log is what you have when diagnosing an old run.
-    if "skel" in stages:
-        log.info("tracer        = %s%s", args.tracer,
-                 f" (cost={args.neutu_cost})" if args.tracer == "neutu" else "")
-    log.info("dst (volume)  = %s", dst)
-    log.info("work dir      = %s", work)
+    try:
+        plan = pipeline.plan(
+            args.src, args.dst, work_dir=args.work_dir,
+            stages=[s.strip() for s in args.stages.split(",") if s.strip()],
+            block=tuple(int(v) for v in args.block.split(",")),
+            index_scale=args.index_scale, mesh_scale=args.mesh_scale,
+            skel_scale=args.skel_scale, roi=parse_roi(args.roi), roi_scale=args.roi_scale,
+            seg_scales=seg_scales, occupancy_scale=args.occupancy_scale,
+            occupancy_dilate=args.occupancy_dilate, allowlist=args.allowlist,
+            min_voxels=args.min_voxels, limit_bodies=args.limit_bodies,
+            metrics_db=not args.no_metrics_db, tracer=args.tracer,
+            neutu_cost=args.neutu_cost, seg_encoding=args.seg_encoding,
+            max_consecutive_failures=args.max_consecutive_failures,
+            resume=not args.no_resume)
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
     if args.dry_run:
         log.info("--dry-run: nothing executed")
         return 0
 
-    os.makedirs(work, exist_ok=True)
-    # The plan, so progress can be reported as a fraction without re-deriving the
-    # ROI ∩ occupancy block counts (which costs an occupancy-array read).
-    with open(f"{work}/run_plan.json", "w") as f:
-        json.dump({
-            "started": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "command": " ".join(sys.argv),
-            "dst": dst, "work_dir": work, "stages": stages,
-            "block_shape": list(block), "roi": list(roi_base) if roi_base else None,
-            # without the scale the six ROI numbers are uninterpretable later
-            "roi_scale": args.roi_scale,
-            "scales": {"index": idx_s.index, "mesh": mesh_s.index, "skel": skel_s.index},
-            # which skeletonizer produced this run's output — the whole point of
-            # run_plan is being able to tell later what made the data
-            "tracer": args.tracer, "neutu_cost": args.neutu_cost,
-            "planned_blocks": planned,
-            "seg_scales": [
-                {"scale": c["scale"], "shape": list(c["shape"]),
-                 "blocks": math.prod(-(-c["shape"][a] // SEG_COPY_BLOCK[a])
-                                     for a in range(3))}
-                for c in scale_cost(args.src, roi_mesh, mesh_s.voxel_size,
-                                    block_shape=block, scale_indices=seg_scales)
-            ] if "seg" in stages else [],
-        }, f, indent=2)
-    t_start = time.time()
-    mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=block)
-    skel_cfg = SkeletonConfig(skeleton_scale=skel_s.index, block_shape=block,
-                              anisotropy=skel_s.voxel_size,
-                              tracer=args.tracer, neutu_cost=args.neutu_cost)
-    resume = not args.no_resume
-    summaries: dict[str, dict] = {}
-    timing: dict[str, float] = {}          # per-stage minutes, for run_summary
-
-    def run_all(client):
-        if "seg" in stages:
-            t = time.time()
-            for c in scale_cost(args.src, roi_mesh, mesh_s.voxel_size,
-                                block_shape=block, scale_indices=seg_scales):
-                log.info("  seg scale %d (%3.0f nm): %-22s %6.2f Gvox  ~%6.2f GB raw",
-                         c["scale"], c["voxel_size"][0], str(c["shape"]),
-                         c["n_voxels"] / 1e9, c["raw_gb"])
-            summaries["seg"] = export_roi_seg(
-                args.src, out.volume_dir(), roi=roi_mesh,
-                roi_voxel_size=mesh_s.voxel_size, scale_indices=seg_scales,
-                block_shape=block, encoding=args.seg_encoding,
-                progress_path=f"{work}/progress.seg.jsonl",
-                client=client, resume=resume)
-            timing["seg"] = (time.time() - t) / 60
-            log.info("seg: %d scales, %.2f Gvox -> %s  (%.1f min)",
-                     len(summaries["seg"]["scales"]),
-                     summaries["seg"]["n_voxels_total"] / 1e9,
-                     summaries["seg"]["out_dir"], timing["seg"])
-
-        if "index" in stages:
-            if db_path is None:
-                raise SystemExit("--no-metrics-db is incompatible with the index "
-                                 "stage, whose only output is that DB")
-            t = time.time()
-            # An explicit --allowlist restricts which bodies get RECORDED. Every block is
-            # still read in full, so the rows are complete; what it removes is the
-            # driver-side upsert per speck, which on a fragmented segmentation
-            # outnumbers the verified neurons by orders of magnitude.
-            index_keep = load_allowlist(args.allowlist) if args.allowlist else None
-            summaries["index"] = index_segments(
-                scale_spec(args.src, idx_s.index), db_path,
-                scan_voxel_size=idx_s.voxel_size, scan_scale=idx_s.index,
-                fullres_factor=idx_s.factor_from(finest),
-                block_shape=block, roi=roi_index, keep=index_keep,
-                client=client, resume=resume)
-            timing["index"] = (time.time() - t) / 60
-            log.info("index: %s  (%.1f min)", summaries["index"], timing["index"])
-
-        # size-filter the indexed bodies into an allowlist the later stages honour
-        if db_path and args.allowlist is None and (args.min_voxels or args.limit_bodies):
-            db = MetricsDB(db_path)
-            n = db.write_allowlist(allowlist_path, min_voxels=args.min_voxels,
-                                   limit=args.limit_bodies)
-            db.close()
-            log.info("allowlist: %d bodies -> %s", n, allowlist_path)
-        allow = allowlist_path if os.path.exists(allowlist_path) else None
-        if allow is None and db_path and os.path.exists(db_path) and (
-                "mesh" in stages or "skel" in stages):
-            db = MetricsDB(db_path)
-            n_all = db.con.execute("SELECT COUNT(*) FROM bodies").fetchone()[0]
-            db.close()
-            if n_all > UNFILTERED_WARN_BODIES:
-                log.warning(
-                    "no --min-voxels or --allowlist: meshing/skeletonizing ALL %d indexed "
-                    "bodies. An over-segmentation is mostly tiny segments, each costing a "
-                    "directory and a fragment file in --work-dir (a 667k-segment run left "
-                    "658k files); consider --min-voxels (in voxels at --index-scale).",
-                    n_all)
-
-        if "mesh" in stages:
-            t = time.time()
-            summaries["mesh"] = meshify(
-                scale_spec(args.src, mesh_s.index), out, mesh_cfg,
-                mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=roi_mesh,
-                occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
-                occupancy_dilate=args.occupancy_dilate, db_path=db_path,
-                max_consecutive_failures=args.max_consecutive_failures,
-                client=client, resume=resume)
-            timing["mesh"] = (time.time() - t) / 60
-            log.info("mesh: %s  (%.1f min)", summaries["mesh"], timing["mesh"])
-
-        if "skel" in stages:
-            t = time.time()
-            summaries["skel"] = skeletonize_segments(
-                scale_spec(args.src, skel_s.index), out, skel_cfg,
-                allowlist=allow, roi=roi_skel,
-                occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
-                occupancy_dilate=args.occupancy_dilate, db_path=db_path,
-                fusion_stats_path=f"{work}/fusion_stats.jsonl",
-                max_consecutive_failures=args.max_consecutive_failures,
-                client=client, resume=resume)
-            timing["skel"] = (time.time() - t) / 60
-            log.info("skel: %s  (%.1f min)", summaries["skel"], timing["skel"])
-
     if args.serial:
         log.info("serial mode: no dask client")
-        run_all(None)
+        summary = pipeline.run(plan)
     else:
-        # Imported here, not at module scope: it pulls in dask.distributed (~1 s), which
-        # `progress` and `run-report` never need.
+        # Imported here: it pulls in dask.distributed (~1 s), which `progress` and
+        # `run-report` never need.
         from blockrun import start_dask
 
-        # Keep workers x cores within your QOS CPU cap.
         with start_dask(args.workers, _configs(args), label="neu-morpho",
-                        effective_config_path=work) as client:
-            run_all(client)
-
-    # Point the volume info at whichever subresources now exist, so one
-    # neuroglancer layer carries labels + meshes + skeletons. After the stages
-    # because the seg stage rewrites info, which would drop the keys.
-    # Existence is probed via the kvstore, not os.path: vol may be an s3:// URL,
-    # and a subresource is "there" when its own info is, not when a directory is.
-    from neu_vol import exists as _exists
-
-    vol = out.volume_dir()
-    linked: dict[str, str] = {}
-    if _exists(vol, "info"):
-        subs = {k: d for k, d in (("mesh", out.mesh_dir), ("skeletons", out.skeleton_dir))
-                if _exists(vol, d, "info")}
-        if subs:
-            linked = link_subresources(vol, **subs)
-            log.info("volume info -> %s", linked)
-        log.info("neuroglancer source: %s", _ng_source(vol))
-    else:
-        log.warning("no volume at %s — run --stages seg to export the labels, "
-                    "otherwise meshes/skeletons have no volume to attach to", vol)
-
-    # Isolated per-body failures do not stop the run, so say so loudly and exit
-    # non-zero — otherwise a scripted pipeline treats a partial result as clean.
-    failed = {stage: s.get("failed_bodies") or [] for stage, s in summaries.items()}
-    n_failed = sum(len(v) for v in failed.values())
-    for stage, bodies in failed.items():
-        if bodies:
-            log.warning("%s: %d bodies FAILED and were skipped: %s%s", stage, len(bodies),
-                        bodies[:10], " ..." if len(bodies) > 10 else "")
-            log.warning("%s: tracebacks in %s; re-run to retry them",
-                        stage, summaries[stage].get("failures_path"))
-
-    # Written last, so it describes the finished state including the linking.
-    wall = (time.time() - t_start) / 60
-    summary = {
-        "timing_min": {**{k: round(v, 2) for k, v in timing.items()},
-                       "total": round(wall, 2)},
-        "started": datetime.fromtimestamp(t_start).astimezone().isoformat(timespec="seconds"),
-        "finished": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "command": " ".join(sys.argv),
-        "volume": vol,
-        "work_dir": work,
-        "neuroglancer_source": _ng_source(vol),
-        "linked_subresources": linked,
-        "n_failed_bodies": n_failed,
-        "stages": {k: dict(v) for k, v in summaries.items()},
-    }
-    with open(f"{work}/run_summary.json", "w") as f:
-        json.dump(summary, f, indent=2, default=str)
-    log.info("timing (min): %s", summary["timing_min"])
-    log.info("done -> %s", f"{work}/run_summary.json")
-    return 1 if n_failed else 0
+                        effective_config_path=plan.work_dir) as client:
+            summary = pipeline.run(plan, client=client)
+    # Isolated per-body failures do not stop the run; exit non-zero so a scripted
+    # pipeline does not treat a partial result as clean.
+    return 1 if summary["n_failed_bodies"] else 0
 
 
 if __name__ == "__main__":
