@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 #: value — so the volume reads as all zeros with no error anywhere. A full 1.9 M-block
 #: conversion was lost to exactly this before it was detected.
 PRECOMPUTED_GZ = "neuroglancer_precomputed_gz"
-def _first_chunk_key(scale: Mapping[str, Any]) -> str | None:
-    """The key of a precomputed scale's origin chunk, from its metadata alone.
+def _chunk_key(scale: Mapping[str, Any], index_xyz: Sequence[int]) -> str | None:
+    """Key of the chunk at grid position ``index_xyz`` of a precomputed scale.
 
-    ``x0-x1_y0-y1_z0-z1`` in xyz, where the extent is clipped to the scale's size —
-    a scale smaller than one chunk stores `0-88_0-71_0-108`, not `0-128_...`.
+    ``x0-x1_y0-y1_z0-z1`` in xyz, clipped to the scale's extent (a scale smaller than one
+    chunk stores ``0-88_0-71_0-108``, not ``0-128_...``).
     """
     try:
         off = [int(v) for v in scale.get("voxel_offset", [0, 0, 0])]
@@ -34,7 +34,34 @@ def _first_chunk_key(scale: Mapping[str, Any]) -> str | None:
         chunk = [int(v) for v in scale["chunk_sizes"][0]]
     except (KeyError, IndexError, TypeError, ValueError):
         return None
-    return "_".join(f"{off[a]}-{off[a] + min(chunk[a], size[a])}" for a in range(3))
+    lo = [off[a] + int(index_xyz[a]) * chunk[a] for a in range(3)]
+    return "_".join(f"{lo[a]}-{min(lo[a] + chunk[a], off[a] + size[a])}" for a in range(3))
+
+
+def _first_chunk_key(scale: Mapping[str, Any]) -> str | None:
+    """Key of a precomputed scale's origin chunk, from its metadata alone."""
+    return _chunk_key(scale, (0, 0, 0))
+
+
+def _probe_keys(scale: Mapping[str, Any]) -> list[str]:
+    """Chunk keys to probe beyond the origin: the chunk holding the scale's centre, then
+    those holding the centres of its eight octants."""
+    try:
+        size = [int(v) for v in scale["size"]]
+        chunk = [int(v) for v in scale["chunk_sizes"][0]]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return []
+    points = [[n // 2 for n in size]]
+    points += [[(size[a] * (2 * k[a] + 1)) // 4 for a in range(3)]
+               for k in [(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)]]
+    keys = []
+    for p in points:
+        key = _chunk_key(scale, [p[a] // chunk[a] for a in range(3)])
+        if key and key not in keys and key != _first_chunk_key(scale):
+            keys.append(key)
+    return keys
+
+
 def precomputed_chunks_are_gzipped(
         location: str | Mapping[str, Any],
         scales: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> bool:
@@ -148,6 +175,26 @@ def scale_is_empty(location: str | Mapping[str, Any],
         if name and "_" in name and "-" in name:
             return False
     return True
+def scale_holds_data(location: str | Mapping[str, Any],
+                     scale: Mapping[str, Any]) -> bool:
+    """Whether a precomputed scale stores any chunk: conclusive, like :func:`scale_is_empty`.
+
+    Probes the origin chunk, then up to eight more predictable chunk keys (either
+    suffix), and lists the prefix only if all of them miss. A listing enumerates every
+    object on S3 (11 s on a dense segmentation scale), while an unwritten scale's empty
+    prefix lists instantly, so the probes settle the expensive case first.
+    """
+    from .location import exists
+
+    if scale_stores_chunks(location, scale):
+        return True
+    prefix = scale.get("key", "")
+    for key in _probe_keys(scale):
+        if exists(location, prefix, key) or exists(location, prefix, key + ".gz"):
+            return True
+    return not scale_is_empty(location, scale)
+
+
 def finest_populated_scale(location: str | Mapping[str, Any],
                            scales: Sequence[Mapping[str, Any]]) -> int | None:
     """Index into ``scales`` of the finest one that actually holds data.
@@ -190,7 +237,7 @@ def finest_populated_scale(location: str | Mapping[str, Any],
             return i                     # the finest scale holds data: nothing to weigh
         # Finer scales exist on paper but had no origin chunk. Sparse, or never written?
         for j in order[:pos]:
-            if not scale_is_empty(location, scales[j]):
+            if scale_holds_data(location, scales[j]):
                 return j                 # sparse, and genuinely the finest data present
         return i
 
@@ -198,7 +245,7 @@ def finest_populated_scale(location: str | Mapping[str, Any],
     # only a listing can separate "sparse here" from "never written". Finest-first, so
     # the answer is the same one tiers 1-2 would have given.
     for i in order:
-        if not scale_is_empty(location, scales[i]):
+        if scale_holds_data(location, scales[i]):
             return i
     return None
 def require_populated_scale(spec: Mapping[str, Any], *, op: str = "convert") -> None:
@@ -231,12 +278,11 @@ def require_populated_scale(spec: Mapping[str, Any], *, op: str = "convert") -> 
         raise ValueError(
             f"`{op}`: source level {idx} does not exist; its `info` declares "
             f"{len(scales)} scale(s), 0-{len(scales) - 1}")
-    if scale_stores_chunks(kv, scales[idx]) or not scale_is_empty(kv, scales[idx]):
+    if scale_holds_data(kv, scales[idx]):
         return
 
     populated = [i for i in range(len(scales))
-                 if i != idx and (scale_stores_chunks(kv, scales[i])
-                                  or not scale_is_empty(kv, scales[i]))]
+                 if i != idx and scale_holds_data(kv, scales[i])]
     if not populated:
         logger.warning(
             "source scale %s (%s) holds no chunk objects, and neither does any other "

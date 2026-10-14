@@ -105,6 +105,21 @@ def test_a_volume_sparse_at_the_origin_of_every_scale_is_still_resolved(tmp_path
     assert describe(dst)["source_level"] == 1
 
 
+def test_a_scale_with_no_origin_chunk_is_found_without_listing(tmp_path, monkeypatch):
+    """The centre-chunk probe settles it; listing would enumerate the whole scale."""
+    from neu_vol import location
+    from neu_vol.location import read_json
+    from neu_vol.detect import _first_chunk_key
+
+    dst = _precomputed(tmp_path, "no_origin")
+    scales = read_json(dst, "info")["scales"]
+    for sc in scales:
+        os.remove(os.path.join(dst, sc["key"], _first_chunk_key(sc)))
+    monkeypatch.setattr(location, "list_keys",
+                        lambda *a, **k: pytest.fail("listed a scale prefix"))
+    assert finest_populated_scale(dst, scales) == 0
+
+
 def test_a_volume_that_stores_nothing_anywhere_gives_no_answer(tmp_path):
     """None, not 0: an empty volume is legal, and the caller decides."""
     from neu_vol.location import read_json
