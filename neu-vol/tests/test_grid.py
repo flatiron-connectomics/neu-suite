@@ -1,11 +1,7 @@
-"""Resolving WHICH grid a volume implies, and `neu-vol align-bbox` over it.
+"""Resolving which grid a volume implies, and `neu-vol align-bbox` over it.
 
-The arithmetic itself lives in `neu_lib.grid` and is tested there. What this file
-covers is the part that needs a volume to answer: on a **sharded** level the write unit
-is the *shard*, and aligning to the inner read chunk looks like alignment while
-protecting against nothing, because the object a partial write rewrites is the shard.
-The pyramid's cumulative factor and the source/destination LCM likewise come from real
-per-level metadata, never from `2 ** level`.
+The arithmetic is `neu_lib.grid`'s, tested there. Here: a sharded level's write unit is the
+shard, and the pyramid factor comes from real per-level voxel sizes, never `2 ** level`.
 """
 
 import numpy as np
@@ -132,12 +128,7 @@ def test_without_a_volume_or_a_block_it_says_what_is_missing():
 
 
 def test_the_box_is_clamped_to_the_volume_and_that_edge_is_fine(aniso, capsys):
-    """Growing to align can leave the volume; the trim is reported, not the misalignment.
-
-    A 64-voxel grid over a (32, 64, 64) volume is the case: aligning outward runs past
-    the z extent, and the clamped edge then sits mid-block *because the volume's own
-    final block is partial there*. Reporting that as misaligned would be wrong.
-    """
+    """An edge clamped to the volume end is aligned by definition, not reported as off-grid."""
     assert cli.main(["align-bbox", "--volume", aniso, "--block", "64,64,64",
                      "--bbox", "0,0,0,20,20,20"]) == 0
     err = capsys.readouterr().err
@@ -167,7 +158,6 @@ def test_an_inner_box_that_collapses_exits_cleanly(aniso):
 
 
 def test_the_aligned_box_silences_the_crop_warning(aniso, caplog, capsys):
-    """The point of the command: it answers the complaint `copy --crop-bbox` makes."""
     assert cli.main(["align-bbox", "--volume", aniso, "-q", "--to", "both",
                      "--bbox", "3,3,3,20,20,20"]) == 0
     box = capsys.readouterr().out.strip()

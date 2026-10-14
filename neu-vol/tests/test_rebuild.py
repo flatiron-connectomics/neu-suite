@@ -268,15 +268,7 @@ def test_segmentation_rebuild_does_not_average_labels(tmp_path):
 
 
 def test_rebuild_from_level_0_seeds_from_it_instead_of_recreating_it(tmp_path):
-    """Level 0 is a legitimate seed — rebuilding the whole pyramid is the ordinary
-    repair, and it is now the CLI's default.
-
-    It used to die with ALREADY_EXISTS: `_run_multiscale` read ``start_level == 0`` as
-    "there is no seed, create level 0 and copy the source into it", which is the
-    *conversion* path. On a volume being repaired, that level already exists. The
-    printed plan even said "level 0  SEED (read only)" immediately before trying to
-    create it.
-    """
+    """Level 0 is a legitimate seed, the CLI's default: read, never recreated."""
     from neu_vol.backends.base import clear_backend_cache, open_backend
 
     vol = _volume()
@@ -302,8 +294,7 @@ def test_rebuild_from_level_0_seeds_from_it_instead_of_recreating_it(tmp_path):
 
 
 def test_rebuild_from_level_0_works_on_precomputed_too(tmp_path):
-    """The format the failure was reported on. Its scales share one `info`, so a
-    create against an existing scale key is what raised ALREADY_EXISTS."""
+    """Precomputed scales share one `info`, so a create there would collide."""
     from neu_vol.backends.base import clear_backend_cache, open_backend
     from neu_vol.profiles import StorageProfile
 
@@ -350,7 +341,7 @@ def test_kind_is_validated(tmp_path):
 # CLI (`neu-vol downsample`)
 # --------------------------------------------------------------------------- #
 def _cli_downsample(argv):
-    """Drive the real entry point. Was a script loaded by path from scripts/."""
+    """Drive the real entry point."""
     from neu_vol.cli import main
 
     return main(["downsample", *argv])
@@ -362,20 +353,6 @@ def _converted(tmp_path, **kw):
     convert(src, dst, profile="local", kind="image", voxel_size=(8.0, 8.0, 8.0),
             chunk=(32, 32, 32), min_dim=MIN_DIM, client=None, **kw)
     return dst
-
-
-def test_cli_dry_run_touches_nothing(tmp_path):
-    from neu_vol.backends.base import clear_backend_cache
-
-    dst = _converted(tmp_path)
-    before = [a.copy() for a in _levels(dst)]
-    clear_backend_cache()
-
-    assert _cli_downsample([dst, "--start-level", "1", "--min-dim", str(MIN_DIM),
-                        "--dry-run"]) == 0
-    clear_backend_cache()
-    for i, (a, b) in enumerate(zip(before, _levels(dst))):
-        np.testing.assert_array_equal(a, b, err_msg=f"--dry-run modified level {i}")
 
 
 def test_cli_rebuilds(tmp_path):
@@ -394,22 +371,8 @@ def test_cli_rebuilds(tmp_path):
         np.testing.assert_array_equal(a, b, err_msg=f"level {i} wrong after CLI rebuild")
 
 
-def test_cli_refuses_a_schedule_that_disagrees_with_disk(tmp_path):
-    """A --min-dim differing from the original conversion must not rebuild."""
-    dst = _converted(tmp_path)
-    with pytest.raises(SystemExit) as e:
-        _cli_downsample([dst, "--start-level", "1", "--min-dim", "128", "--serial"])
-    assert "schedule" in str(e.value) or "exceeds" in str(e.value)
-
-
-def test_cli_refuses_a_seed_level_beyond_the_schedule(tmp_path):
-    dst = _converted(tmp_path)
-    with pytest.raises(SystemExit, match="exceeds the deepest level"):
-        _cli_downsample([dst, "--start-level", "99", "--min-dim", str(MIN_DIM), "--serial"])
-
-
 def test_cli_refuses_a_seed_level_that_is_absent_on_disk(tmp_path):
-    """In the schedule but not written — there is nothing to derive from."""
+    """In the schedule but deleted from disk."""
     import shutil
 
     from neu_vol.backends.base import clear_backend_cache

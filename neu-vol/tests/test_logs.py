@@ -3,6 +3,8 @@
 import os
 import sys
 
+import pytest
+
 from neu_vol.logs import is_benign, quiet_store_logs
 
 NOISE = [
@@ -26,26 +28,17 @@ MUST_SURVIVE = [
 ]
 
 
-def test_known_noise_is_dropped():
-    for line in NOISE:
-        assert is_benign(line), line
-
-
-def test_errors_and_unknown_messages_survive():
-    for line in MUST_SURVIVE:
-        assert not is_benign(line), line
-
-
-def test_a_noise_pattern_carrying_an_error_survives():
-    """NEVER_DROP wins: a line is kept if it mentions a real failure at all."""
-    line = (b"E0730 1 x] static: Profile credentials provider could not load a "
-            b"profile at . PERMISSION_DENIED\n")
-    assert not is_benign(line)
-
-
-def test_non_absl_lines_are_never_examined():
-    """Ordinary output must pass through even if it contains a noise phrase."""
-    assert not is_benign(b"my script says: timed out, shutting down.\n")
+@pytest.mark.parametrize("line, benign", [
+    *[(line, True) for line in NOISE],
+    *[(line, False) for line in MUST_SURVIVE],
+    # NEVER_DROP wins over a noise pattern
+    (b"E0730 1 x] static: Profile credentials provider could not load a "
+     b"profile at . PERMISSION_DENIED\n", False),
+    # ordinary output is never examined, even carrying a noise phrase
+    (b"my script says: timed out, shutting down.\n", False),
+])
+def test_only_known_noise_is_benign(line, benign):
+    assert is_benign(line) is benign
 
 
 def test_filter_passes_real_stderr_and_drops_noise(capfd):

@@ -81,12 +81,7 @@ def test_read_source_metadata_none_for_a_bare_array(tmp_path):
 
 
 def test_an_hdf5_with_no_frame_attributes_records_nothing(tmp_path):
-    """`voxel_size` is the gate: without it there is no frame to return.
-
-    An offset in voxels is not physical on its own and `units` would describe numbers
-    that are not there, so the dict is withheld rather than half-filled — which is what
-    keeps `convert`'s "voxel_size is required" the honest answer for a plain HDF5 file.
-    """
+    """Without `voxel_size` there is no frame, so nothing is returned, not half a dict."""
     h5py = pytest.importorskip("h5py")
     path = str(tmp_path / "plain.h5")
     with h5py.File(path, "w") as f:
@@ -96,11 +91,7 @@ def test_an_hdf5_with_no_frame_attributes_records_nothing(tmp_path):
 
 
 def test_a_missing_hdf5_file_raises_rather_than_reporting_no_metadata(tmp_path):
-    """"This file records no frame" and "this file is not there" are different answers.
-
-    They used to be the same one: the HDF5 branch did not exist, so every HDF5 spec
-    returned None — including one naming a path that does not exist.
-    """
+    """"Records no frame" and "is not there" are different answers."""
     pytest.importorskip("h5py")
     with pytest.raises(FileNotFoundError):
         read_source_metadata({"backend": "hdf5", "path": str(tmp_path / "nope.h5"),

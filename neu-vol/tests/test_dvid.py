@@ -1,9 +1,6 @@
-"""The DVID source path, exercised without a DVID server.
+"""The DVID source path without a DVID server: address resolution, detection and metadata.
 
-Everything here is address resolution, detection and metadata shape — the plumbing that
-had to be carved out because DVID is *not* a kvstore, and the part most likely to break
-silently. The parts that genuinely need a server (reading voxels) are verified by hand
-against a real instance; see NOTES-TODO for the measurements and the end-to-end check.
+Reading voxels needs a real server and is checked by hand.
 """
 
 import numpy as np
@@ -32,29 +29,19 @@ INFO = {
 # --------------------------------------------------------------------------- #
 # URL form
 # --------------------------------------------------------------------------- #
-def test_url_splits_into_server_uuid_instance():
-    assert canonical_dvid.parse_url(URL) == {
-        "server": "dvid.example.org",
-        "uuid": "93fdbc:main",
-        "instance": "labels",
-    }
-
-
-def test_a_port_and_a_branch_do_not_add_segments():
-    """Both carry a ':', which is why the URL splits on '/' alone."""
-    assert canonical_dvid.parse_url("dvid://emdata3:8900/abc9:main/segmentation") == {
-        "server": "emdata3:8900", "uuid": "abc9:main", "instance": "segmentation"}
-
-
-def test_https_scheme_is_carried_to_the_server_string():
-    """neuclease prepends http:// to a bare host, so TLS needs its own scheme."""
-    spec = canonical_dvid.parse_url("dvid+https://example.org/abc9/labels")
-    assert spec["server"] == "https://example.org"
-    assert canonical_dvid.spec_url(spec) == "dvid+https://example.org/abc9/labels"
-
-
-def test_spec_url_round_trips():
-    assert canonical_dvid.spec_url(canonical_dvid.parse_url(URL)) == URL
+@pytest.mark.parametrize("url, parsed", [
+    (URL, {"server": "dvid.example.org", "uuid": "93fdbc:main", "instance": "labels"}),
+    # a port and a branch both carry ':', so the URL splits on '/' alone
+    ("dvid://emdata3:8900/abc9:main/segmentation",
+     {"server": "emdata3:8900", "uuid": "abc9:main", "instance": "segmentation"}),
+    # neuclease prepends http:// to a bare host, so TLS keeps its scheme
+    ("dvid+https://example.org/abc9/labels",
+     {"server": "https://example.org", "uuid": "abc9", "instance": "labels"}),
+])
+def test_url_parses_and_round_trips(url, parsed):
+    spec = canonical_dvid.parse_url(url)
+    assert {k: spec[k] for k in parsed} == parsed
+    assert canonical_dvid.spec_url(spec) == url
 
 
 @pytest.mark.parametrize("bad", [
@@ -80,9 +67,8 @@ def test_is_url_recognises_both_schemes_and_nothing_else():
 # detection and spec building
 # --------------------------------------------------------------------------- #
 def test_detect_backend_answers_from_the_scheme_without_touching_a_store(monkeypatch):
-    """The carve-out that matters: `to_kvstore` would read the URL as a local path,
-    probe the filesystem, find nothing and report "could not detect source format"."""
-    def explode(*a, **k):                       # nothing may reach the kvstore layer
+    """`to_kvstore` would read the URL as a local path and find nothing."""
+    def explode(*a, **k):
         raise AssertionError("detect_backend touched a store for a DVID URL")
 
     monkeypatch.setattr(sm, "to_kvstore", explode)
@@ -112,8 +98,7 @@ def test_no_format_can_shadow_a_dvid_instance():
 # --------------------------------------------------------------------------- #
 @pytest.fixture(autouse=True)
 def _no_cached_nodes():
-    """Ref resolutions are memoized per process, so a leaked entry makes one test's
-    answer another test's premise. Cheap to clear; confusing not to."""
+    """Ref resolutions are memoized per process; clear them between tests."""
     canonical_dvid.clear_node_cache()
     yield
     canonical_dvid.clear_node_cache()
@@ -121,17 +106,8 @@ def _no_cached_nodes():
 
 @pytest.fixture()
 def stub_info(monkeypatch):
-    """Stub BOTH the instance info and the ref resolution.
-
-    Stubbing only the former left `_read_dvid` calling the real `resolve_node`, which
-    reached out to a live DVID server — so the suite needed the network, took a network
-    round trip per test, and cached a real uuid that then leaked into tests expecting a
-    fake one. Tests here must not touch a server at all.
-
-    Patched on `neu_vol.dvid`, the module that defines them. Both call sites reach these
-    through that module attribute, so one patch here covers everything; see
-    `test_stubbing_the_canonical_module_covers_...`.
-    """
+    """Stub both the instance info and the ref resolution, on `neu_vol.dvid`, so no test
+    touches a server."""
     monkeypatch.setattr(canonical_dvid, "instance_info", lambda spec: INFO)
     monkeypatch.setattr(canonical_dvid, "resolve_node",
                         lambda spec, prefer_locked=False: {
@@ -142,9 +118,7 @@ def stub_info(monkeypatch):
 
 
 def test_geometry_is_origin_anchored_not_translated_by_minpoint(stub_info):
-    """MinPoint says where data starts; it is not a translation to apply. Anchoring at
-    the origin keeps a voxel index meaning the same thing here and in DVID, and the
-    empty margin costs one ~30 ms round trip per task and nothing on disk."""
+    """MinPoint is recorded, not subtracted: a voxel index means the same as in DVID."""
     geom = dvid.geometry(INFO, canonical_dvid.parse_url(URL))
     assert geom["shape0"] == (8192, 9216, 12800)      # zyx, MaxPoint + 1
     assert geom["min_point"] == (0, 1536, 1024)       # recorded, not subtracted
@@ -153,8 +127,7 @@ def test_geometry_is_origin_anchored_not_translated_by_minpoint(stub_info):
 
 
 def test_read_source_metadata_reports_a_segmentation(stub_info):
-    """Never `image`: averaging label ids invents ids that were never in the data, and
-    the failure is silent."""
+    """Never `image`, which would average label ids."""
     meta = sm.read_source_metadata(sm.location_spec(URL, "dvid"))
     assert meta["kind"] == "segmentation"
     assert meta["voxel_size"] == (8.0, 8.0, 8.0)
@@ -163,8 +136,7 @@ def test_read_source_metadata_reports_a_segmentation(stub_info):
 
 
 def test_data_spec_carries_the_dvid_backend_through(stub_info):
-    """Invariant 9: `data_spec` selects the reader, so it must not contradict what
-    detection decided — the bug that made every block read as zeros for .gz precomputed."""
+    """`data_spec` selects the reader, so it must not contradict detection."""
     meta = sm.read_source_metadata(sm.location_spec(URL, "dvid"))
     assert meta["data_spec"]["backend"] == "dvid"
     assert meta["data_spec"]["instance"] == "labels"
@@ -184,23 +156,15 @@ def test_level_shape_halves_every_axis():
 # --------------------------------------------------------------------------- #
 # refusals
 # --------------------------------------------------------------------------- #
-def test_a_non_labelmap_instance_is_refused():
-    info = {**INFO, "Base": {"TypeName": "uint8blk"}}
-    with pytest.raises(ValueError, match="labelmap"):
-        dvid.geometry(info, canonical_dvid.parse_url(URL))
-
-
-def test_an_unwritten_instance_says_so_rather_than_reading_as_empty():
-    """DVID returns null extents for an instance created but never written. Treated as
-    an error: a zero-shaped volume would convert successfully and produce nothing."""
-    info = {**INFO, "Extended": {**INFO["Extended"], "MinPoint": None, "MaxPoint": None}}
-    with pytest.raises(ValueError, match="never written"):
-        dvid.geometry(info, canonical_dvid.parse_url(URL))
-
-
-def test_a_negative_minpoint_is_refused_rather_than_clipped():
-    info = {**INFO, "Extended": {**INFO["Extended"], "MinPoint": [-64, 0, 0]}}
-    with pytest.raises(ValueError, match="negative MinPoint"):
+@pytest.mark.parametrize("info, match", [
+    ({**INFO, "Base": {"TypeName": "uint8blk"}}, "labelmap"),
+    # null extents: created but never written; a zero-shaped volume would "convert" fine
+    ({**INFO, "Extended": {**INFO["Extended"], "MinPoint": None, "MaxPoint": None}},
+     "never written"),
+    ({**INFO, "Extended": {**INFO["Extended"], "MinPoint": [-64, 0, 0]}}, "negative MinPoint"),
+])
+def test_unusable_geometry_is_refused(info, match):
+    with pytest.raises(ValueError, match=match):
         dvid.geometry(info, canonical_dvid.parse_url(URL))
 
 
@@ -215,20 +179,14 @@ def test_a_scale_above_maxdownreslevel_is_refused(stub_info):
         dvid.DVIDBackend({**canonical_dvid.parse_url(URL), "scale_index": 4})
 
 
-def test_supervoxels_on_a_non_dvid_source_raises_rather_than_being_ignored(tmp_path):
-    """Silently dropping it would copy agglomerated bodies while the caller believed
-    they had asked for supervoxels, and nothing downstream could tell."""
+@pytest.mark.parametrize("option", ["supervoxels", "prefer_locked"])
+def test_a_dvid_option_on_another_source_raises_rather_than_being_ignored(tmp_path, option):
+    """Ignoring `supervoxels` would silently copy agglomerated bodies instead."""
     from neu_vol import convert
 
     with pytest.raises(ValueError, match="DVID sources only"):
         convert({"backend": "zarr3", "path": str(tmp_path / "x")},
-                str(tmp_path / "out"), supervoxels=True, voxel_size=(8, 8, 8))
-
-
-def test_the_backend_is_registered_under_its_tag():
-    from neu_vol.backends.base import _OPENERS
-
-    assert dvid.TAG in _OPENERS
+                str(tmp_path / "out"), voxel_size=(8, 8, 8), **{option: True})
 
 
 # --------------------------------------------------------------------------- #
@@ -236,11 +194,7 @@ def test_the_backend_is_registered_under_its_tag():
 # --------------------------------------------------------------------------- #
 @pytest.fixture()
 def fake_dag(monkeypatch):
-    """A lock-and-spawn repo: HEAD open, every ancestor locked.
-
-    Matches a production instance, where 447 of 448 nodes on `main` are locked and the open
-    node is HEAD.
-    """
+    """A lock-and-spawn repo: HEAD open, every ancestor locked."""
     pytest.importorskip("neuclease")
     import neuclease.dvid as nd
 
@@ -287,21 +241,11 @@ def test_prefer_locked_from_a_bare_uuid_says_why_it_cannot_walk(fake_dag):
 
 
 def test_the_resolved_uuid_reaches_the_workers_not_the_ref(fake_dag, stub_info):
-    """The correctness point: workers reopen from `data_spec`. If it carried the ref, a
-    lock-and-spawn mid-run would move HEAD and later blocks would come from a different
-    node than earlier ones, with nothing in the output to show it."""
+    """Workers reopen from `data_spec`; a ref there could move mid-run."""
     meta = sm.read_source_metadata({**sm.location_spec(URL, "dvid"),
                                     "prefer_locked": True})
     assert meta["data_spec"]["uuid"] == "846e3a"        # not '93fdbc:main'
     assert "prefer_locked" not in meta["data_spec"]     # applied, not carried
-
-
-def test_prefer_locked_on_a_non_dvid_source_raises(tmp_path):
-    from neu_vol import convert
-
-    with pytest.raises(ValueError, match="DVID sources only"):
-        convert({"backend": "zarr3", "path": str(tmp_path / "x")},
-                str(tmp_path / "out"), prefer_locked=True, voxel_size=(8, 8, 8))
 
 
 # --------------------------------------------------------------------------- #
@@ -309,9 +253,7 @@ def test_prefer_locked_on_a_non_dvid_source_raises(tmp_path):
 # --------------------------------------------------------------------------- #
 @pytest.fixture()
 def fake_repo(monkeypatch):
-    # Guarded like `fake_dag`: neuclease is conda-only, and CI installs from PyPI on purpose
-    # (see .github/workflows) — so a fixture that imports it must SKIP, not error. Without
-    # this, every test using it passes locally and errors in CI.
+    # neuclease is conda-only and CI installs from PyPI: skip, not error, without it.
     pytest.importorskip("neuclease")
     import neuclease.dvid as nd
 
@@ -324,8 +266,7 @@ def fake_repo(monkeypatch):
 
 
 def test_provenance_names_the_resolved_node_and_what_was_asked_for(fake_dag, fake_repo):
-    """Both matter: the uuid is what was read, the ref is how it was chosen. 'the newest
-    locked node on main' and 'this node' are different claims even when they agree today."""
+    """The uuid is what was read, the ref is how it was chosen; both are recorded."""
     from neu_vol.ops import provenance as prov
 
     spec = {**sm.location_spec(URL, "dvid"), "uuid": "846e3a",
@@ -377,8 +318,7 @@ def test_copy_refuses_a_dvid_source_and_points_at_convert():
 # what `neu-vol info` reports
 # --------------------------------------------------------------------------- #
 def test_node_summary_gives_both_candidate_versions(fake_dag):
-    """`info` shows both because they are different answers to "which version would I
-    get", and choosing between them is choosing whether the export is reproducible."""
+    """HEAD and the newest locked node: choosing between them decides reproducibility."""
     s = canonical_dvid.node_summary(canonical_dvid.parse_url(URL))
     assert s["head"]["uuid"] == "d38898" and s["head"]["locked"] is False
     assert s["locked"]["uuid"] == "846e3a" and s["locked"]["walked"] == 1
@@ -392,8 +332,7 @@ def test_node_summary_collapses_when_the_ref_is_already_locked(fake_dag):
 
 def test_node_summary_reports_rather_than_raises_when_no_locked_node_is_reachable(
         fake_dag):
-    """A bare uuid cannot be walked back from on a multi-repo server. `info` must still
-    print the rest of what it knows."""
+    """A bare uuid cannot be walked back from; `info` still prints the rest."""
     url = "dvid://dvid.example.org/d38898/labels"
     s = canonical_dvid.node_summary(canonical_dvid.parse_url(url))
     assert s["head"]["uuid"] == "d38898"
@@ -401,8 +340,6 @@ def test_node_summary_reports_rather_than_raises_when_no_locked_node_is_reachabl
 
 
 def test_info_prints_both_uuids_in_full(fake_dag, stub_info, capsys):
-    """Printed in full because building a destination name from one is the usual reason
-    to run this."""
     from neu_vol import cli
 
     cli.cmd_info(cli._parse_args(["info", URL]))
@@ -517,8 +454,7 @@ def test_values_are_sanitised_for_paths_and_object_keys(fake_dag):
 
 
 def test_convert_kind_defaults_to_none_so_the_source_can_decide():
-    """`--kind` used to default to 'image' for `convert`, which downgraded a source that
-    recorded 'segmentation' and averaged its label ids."""
+    """A default of 'image' would override a source that records 'segmentation'."""
     from neu_vol import cli
 
     assert cli._parse_args(["convert", "--src", "a", "--dst", "b"]).kind is None
@@ -528,14 +464,8 @@ def test_convert_kind_defaults_to_none_so_the_source_can_decide():
 # the addressing / labelmap split
 # --------------------------------------------------------------------------- #
 def test_stubbing_the_canonical_module_covers_every_call_site(monkeypatch):
-    """The regression guard for the addressing split.
-
-    `source_metadata` and the backend both reach these through
-    `neu_vol.dvid.<name>`, so one patch governs both. When the backend held its
-    own copies, patching it left `source_metadata` calling the real function — the suite
-    passed only because a live DVID server happened to answer, which is the failure this
-    test exists to make impossible.
-    """
+    """`source_metadata` and the backend both call `neu_vol.dvid.<name>`, so one patch
+    governs both and no test can quietly reach a live server."""
     calls = []
 
     def spy_info(spec):
@@ -581,8 +511,7 @@ def test_check_instance_type_names_what_it_wanted():
 
 
 def test_node_provenance_carries_no_labelmap_fields(fake_repo, fake_dag):
-    """`maxlabel` and `supervoxels` describe a label array; the shared record must not
-    claim them, or a synapse table's provenance would assert things about labels."""
+    """`maxlabel` and `supervoxels` belong to the labelmap backend's record only."""
     spec = canonical_dvid.parse_url(URL)
     node = canonical_dvid.resolve_node(spec)
     rec = canonical_dvid.node_provenance(spec, node)

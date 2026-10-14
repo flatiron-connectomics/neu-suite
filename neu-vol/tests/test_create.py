@@ -1,10 +1,7 @@
-"""`create`: an empty volume, laid out either by hand or from a reference's frame.
+"""`create`: an empty volume, laid out by hand or from a reference's frame.
 
-The property that matters is that ``--like`` produces a volume in the *same
-coordinate frame* as its reference — same level shapes, same per-level scale and
-translation. That is what makes "write this piece at (z, y, x) of level 2" mean the
-same thing in both, and it is why the reference's level shapes are copied rather than
-recomputed from a schedule.
+``--like`` must give the same frame, not a similar one: the reference's level shapes and
+per-level transforms are copied, not recomputed, so an offset means the same in both.
 """
 
 import json
@@ -37,8 +34,7 @@ def _reference(tmp_path, *, shape=(32, 32, 32), voxel=(8, 8, 8), chunk=(8, 8, 8)
 
 def _precomputed_reference(tmp_path, *, shape=(32, 32, 32), voxel=(40, 8, 8),
                            chunk=(8, 8, 8), name="ref"):
-    """A real precomputed volume. Anisotropic by default, because its schedule then
-    coarsens x/y before z and nothing may assume the levels are 2**n apart."""
+    """A real precomputed volume, anisotropic so its levels are not 2**n apart."""
     from neu_vol.profiles import StorageProfile
 
     src = str(tmp_path / f"{name}.pc.src.zarr")
@@ -67,13 +63,7 @@ def _info(volume):
 # --like: the same frame, not a similar one
 # --------------------------------------------------------------------------- #
 def test_like_reproduces_the_references_frame_exactly(tmp_path):
-    """Level shapes and coordinate transforms must be identical, not merely close.
-
-    A schedule recomputed from level 0 can differ from the one the reference actually
-    used — shapes are ceil-divided, so one differing --min-dim gives a pyramid that is
-    a voxel off partway up. Then an offset that is right in one volume is wrong in the
-    other, and nothing reports it.
-    """
+    """Identical, not close: a recomputed schedule can be a voxel off partway up."""
     ref = _reference(tmp_path, shape=(33, 33, 33))          # deliberately indivisible
     out = str(tmp_path / "out.zarr")
     create_volume(out, like=ref)
@@ -88,11 +78,7 @@ def test_like_reproduces_the_references_frame_exactly(tmp_path):
 
 
 def test_created_levels_hold_no_data_at_all(tmp_path):
-    """An empty pyramid is a few JSON documents; that is what makes this cheap.
-
-    A zarr array with no chunks written reads back as the fill value, so there is
-    nothing to allocate up front even for a volume of billions of voxels.
-    """
+    """An empty pyramid is a few JSON documents and reads back as the fill value."""
     out = str(tmp_path / "empty.zarr")
     create_volume(out, like=_reference(tmp_path))
     files = [os.path.join(r, f) for r, _, fs in os.walk(out) for f in fs]
@@ -122,8 +108,6 @@ def test_levels_limits_how_much_of_the_pyramid_is_created(tmp_path):
 
 
 def test_a_sharded_reference_keeps_its_shard_and_chunk_apart(tmp_path):
-    """A sharded level reports the shard as its write chunk and the inner as its read
-    chunk; copying the geometry means splitting them back apart, not collapsing them."""
     ref = _reference(tmp_path, shape=(32, 32, 32), chunk=(8, 8, 8), shard=(16, 16, 16))
     out = str(tmp_path / "sh_out.zarr")
     create_volume(out, like=ref)
@@ -132,8 +116,6 @@ def test_a_sharded_reference_keeps_its_shard_and_chunk_apart(tmp_path):
 
 
 def test_a_precomputed_reference_can_give_a_zarr_volume_in_its_frame(tmp_path):
-    """The reference is usually the precomputed volume already being viewed, and the
-    new volume need not be the same format — but it must be the same frame."""
     ref = _precomputed_reference(tmp_path)
     out = str(tmp_path / "from_pc.zarr")
     create_volume(out, like=ref, dtype="uint64", kind="segmentation", profile="local")
@@ -151,17 +133,9 @@ def test_explicit_chunk_overrides_the_reference(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# precomputed targets
-#
-# The format difference that matters: precomputed keeps every scale in ONE `info`
-# under one prefix, where zarr gives each level its own array and directory.
+# precomputed targets: every scale in one `info` under one prefix
 # --------------------------------------------------------------------------- #
 def test_a_precomputed_reference_gives_a_precomputed_volume_by_default(tmp_path):
-    """"Like this volume" should include *what kind of volume it is*.
-
-    Silently getting zarr from `--like <precomputed>` is the sort of thing you only
-    discover when the viewer cannot open the result.
-    """
     ref = _precomputed_reference(tmp_path)
     out = str(tmp_path / "out.precomputed")
     plan = create_volume(out, like=ref, dtype="uint64", kind="segmentation")
@@ -210,7 +184,6 @@ def test_the_encoding_follows_the_kind_and_can_be_overridden(tmp_path):
 
 
 def test_compressed_segmentation_refuses_a_dtype_it_cannot_encode(tmp_path):
-    """Caught here rather than inside tensorstore, whose error does not name this."""
     with pytest.raises(ValueError, match="compressed_segmentation requires"):
         plan_volume(str(tmp_path / "x.precomputed"), shape=(8, 8, 8), dtype="uint8",
                     voxel_size=(8, 8, 8), profile="local-neuroglancer",
@@ -218,8 +191,7 @@ def test_compressed_segmentation_refuses_a_dtype_it_cannot_encode(tmp_path):
 
 
 def test_precomputed_says_it_cannot_shard_rather_than_ignoring_it(tmp_path):
-    """`precomputed_create_spec` takes no shard, so a shard here would vanish —
-    and the file count it was meant to control is an inode-quota problem on ceph."""
+    """A shard would otherwise vanish silently."""
     with pytest.raises(ValueError, match="sharding is not implemented"):
         plan_volume(str(tmp_path / "x.precomputed"), shape=(64, 64, 64), dtype="uint8",
                     voxel_size=(8, 8, 8), profile="local-neuroglancer",
@@ -227,8 +199,7 @@ def test_precomputed_says_it_cannot_shard_rather_than_ignoring_it(tmp_path):
 
 
 def test_a_physical_origin_becomes_a_per_scale_voxel_offset(tmp_path):
-    """precomputed has no translation transform — the origin lives in each scale's
-    integer `voxel_offset`, which means it is expressed in *that scale's* voxels."""
+    """precomputed's origin is each scale's `voxel_offset`, in that scale's voxels."""
     out = str(tmp_path / "off.precomputed")
     create_volume(out, shape=(64, 64, 64), dtype="uint8", voxel_size=(8, 8, 8),
                   offset=(80, 160, 240), profile="local-neuroglancer",
@@ -240,11 +211,7 @@ def test_a_physical_origin_becomes_a_per_scale_voxel_offset(tmp_path):
 
 
 def test_overwriting_precomputed_does_not_delete_the_scales_it_just_created(tmp_path):
-    """Every scale shares one prefix, so `delete_existing` may only apply to scale 0.
-
-    Applying it per scale would take the volume down to whichever scale was written
-    last — with the `info` still claiming all of them.
-    """
+    """Scales share one prefix, so deleting may happen only once, for scale 0."""
     ref = _precomputed_reference(tmp_path)
     out = str(tmp_path / "twice.precomputed")
     create_volume(out, like=ref)
@@ -256,7 +223,6 @@ def test_overwriting_precomputed_does_not_delete_the_scales_it_just_created(tmp_
 
 
 def test_the_target_profile_follows_format_then_reference_then_destination():
-    """One resolver, shared with the CLI, so `--format` cannot drift between them."""
     from neu_vol.ops.create import profile_for
 
     pc = {"format": "neuroglancer_precomputed"}
@@ -323,7 +289,6 @@ def test_axes_and_voxel_size_must_agree_on_how_many_axes_there_are(tmp_path):
 # not clobbering things
 # --------------------------------------------------------------------------- #
 def test_an_existing_volume_is_not_replaced_by_accident(tmp_path):
-    """Creating over a volume destroys it, so it takes saying so."""
     ref = _reference(tmp_path)
     out = str(tmp_path / "twice.zarr")
     create_volume(out, like=ref)
@@ -333,11 +298,7 @@ def test_an_existing_volume_is_not_replaced_by_accident(tmp_path):
 
 
 def test_overwriting_with_fewer_levels_says_the_extra_ones_remain(tmp_path, caplog):
-    """Deleting a level means deleting a key prefix — not something to do implicitly.
-
-    But `existing_levels` probes upward, so a leftover level IS still found, and it
-    would then disagree with the group metadata. Say so rather than leave it silent.
-    """
+    """Leftover levels are not deleted, but are warned about."""
     ref = _reference(tmp_path)
     out = str(tmp_path / "shrink.zarr")
     create_volume(out, like=ref)
@@ -349,13 +310,7 @@ def test_overwriting_with_fewer_levels_says_the_extra_ones_remain(tmp_path, capl
 
 
 def test_a_volume_of_the_other_format_here_is_refused(tmp_path):
-    """The one case where proceeding is silently destructive.
-
-    Each format writes only its own marker, so creating precomputed over a zarr leaves
-    `info` and `zarr.json` in one directory — and `detect_backend` checks `info` first,
-    so from then on the zarr cannot be opened by anything in this package while its
-    chunks still occupy the store. It used to just do it.
-    """
+    """Two markers in one directory would leave the first volume unopenable."""
     zarr_vol = _reference(tmp_path)
     with pytest.raises(FileExistsError, match="different kind of volume"):
         create_volume(zarr_vol, like=zarr_vol, format="precomputed")
@@ -366,12 +321,7 @@ def test_a_volume_of_the_other_format_here_is_refused(tmp_path):
 
 
 def test_overwrite_does_not_bypass_the_other_format_guard(tmp_path):
-    """--overwrite cannot fix it, so it must not pretend to.
-
-    Neither deletion path cleans up: precomputed's wipes the whole prefix (taking a
-    zarr with it, unannounced), zarr's deletes only its own level arrays and leaves a
-    stale `info` in charge of detection.
-    """
+    """Neither format's deletion cleans up the other's files."""
     zarr_vol = _reference(tmp_path)
     with pytest.raises(FileExistsError, match="--overwrite will not resolve this"):
         create_volume(zarr_vol, like=zarr_vol, format="precomputed", overwrite=True)
@@ -379,7 +329,6 @@ def test_overwrite_does_not_bypass_the_other_format_guard(tmp_path):
 
 
 def test_describe_reports_a_second_volume_shadowed_in_the_same_directory(tmp_path):
-    """So a directory already in this state can be found, not just prevented."""
     vol = _reference(tmp_path)
     assert describe(vol)["other_markers"] == []
     with open(os.path.join(vol, "info"), "w") as f:
@@ -405,12 +354,7 @@ def test_plan_writes_nothing(tmp_path):
 # how many levels: --levels and --max-levels, mirrored and computed
 # --------------------------------------------------------------------------- #
 def test_max_levels_truncates_a_mirrored_pyramid(tmp_path):
-    """It used to be ignored entirely when mirroring, with no message.
-
-    Truncating is the only thing it may do here: the kept levels stay verbatim, because
-    recomputing a schedule that "should" match is how two volumes meant to share a frame
-    end up a voxel apart.
-    """
+    """Truncates only; the kept levels stay verbatim."""
     ref = _reference(tmp_path)                                    # 32^3, 3 levels
     full = plan_volume(str(tmp_path / "a.zarr"), like=ref)
     assert full["num_levels"] == 3
@@ -424,13 +368,7 @@ def test_max_levels_truncates_a_mirrored_pyramid(tmp_path):
 
 
 def test_mirroring_keeps_every_level_when_no_cap_is_asked_for(tmp_path):
-    """The guard on the fix above: max_levels must default to *no cap* when mirroring.
-
-    The reference needs MORE levels than the ordinary default of 8, or a default cap
-    would pass this unnoticed — so it is 2048^3, built empty by `create_volume` rather
-    than converted. An empty volume of that size is a handful of metadata documents;
-    converting one would be 32,768 blocks.
-    """
+    """No default cap when mirroring: the reference has more than the default 8 levels."""
     ref = str(tmp_path / "big.zarr")
     create_volume(ref, shape=(2048, 2048, 2048), voxel_size=(8, 8, 8), dtype="uint8",
                   min_dim=8, max_levels=9)
@@ -439,11 +377,7 @@ def test_mirroring_keeps_every_level_when_no_cap_is_asked_for(tmp_path):
 
 
 def test_min_dim_does_not_prune_a_mirrored_pyramid(tmp_path):
-    """Its default of 128 would otherwise discard every small level a reference has.
-
-    The reference here is 32^3, so *every* level is below the default min_dim; mirroring
-    must still reproduce all of them.
-    """
+    """Every level of this 32^3 reference is below the default min_dim of 128."""
     ref = _reference(tmp_path)
     plan = plan_volume(str(tmp_path / "s.zarr"), like=ref)      # min_dim defaults to 128
     assert plan["num_levels"] == len(describe(ref)["levels"]) == 3

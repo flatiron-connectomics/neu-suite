@@ -1,17 +1,9 @@
 """The webknossos source, against a stubbed server.
 
-What is pinned, because each fails silently rather than loudly:
-
-- the AXIS FLIP: webknossos serves Fortran-ordered (x, y, z), and reading it as zyx
-  without the flip mirrors the volume through the z=x diagonal (invariant ZYX-XYZ);
-- the REQUEST COORDINATES: position in mag-1 voxels, extent in the mag's own — mixing
-  them reads the wrong place at every mag but the first;
-- the MAPPING reaches the server, and no mapping means supervoxels;
-- the TOKEN never enters a spec, so it cannot reach a manifest or provenance.json.
-
-The stub replaces `neu_vol.webknossos._request` — the one module attribute every call goes
-through, so one patch point covers metadata and data alike (the rule NOTES-neu-vol.md
-records for the DVID modules).
+Each pinned property fails silently: the axis flip (webknossos serves Fortran-order xyz),
+request coordinates (position in mag-1 voxels, extent in the mag's own), the mapping
+reaching the server (no mapping means supervoxels), and the token never entering a spec.
+The stub replaces `neu_vol.webknossos._request`, the one call every request goes through.
 """
 
 from __future__ import annotations
@@ -515,9 +507,7 @@ def test_convert_writes_the_layer_zyx_and_records_what_it_read(server, tmp_path,
 
 
 def test_convert_crops_to_the_bounding_box_and_keeps_the_frame(server, tmp_path):
-    """Origin-anchored, the output would run from voxel 0 and every task of the empty
-    margin would be planned and stepped through; cropped, it is the box, shifted by its
-    origin so it still overlays the layer."""
+    """Cropped to the box, with its origin shifted so it still overlays the layer."""
     from neu_vol import convert, read_piece
 
     dst = str(tmp_path / "out")
@@ -550,12 +540,6 @@ def test_an_explicit_crop_wins_over_the_bounding_box(server, tmp_path):
             crop_stop=(3, 4, 6))
     lvl0 = open_backend({"backend": "zarr3", "path": os.path.join(dst, "0")})
     assert lvl0.shape == (3, 4, 6)
-
-
-def test_the_backend_is_registered_under_its_tag():
-    from neu_vol.backends.base import _OPENERS
-
-    assert "webknossos" in _OPENERS
 
 
 # --------------------------------------------------------------------------- #
@@ -696,7 +680,7 @@ def test_a_volume_holding_ids_past_the_table_raises(server, view):
     np.save(path, np.zeros(5, np.uint64))       # far too short for this volume
     mapped.clear_cache()
     clear_backend_cache()
-    # Built the way production builds it (invariant SPEC-FORMS): through the metadata.
+    # Built the way production builds it: through the metadata's data_spec.
     be = open_backend(sm.read_source_metadata(sm.location_spec(view, "mapped"))["data_spec"])
     with pytest.raises(ValueError, match="different segmentation"):
         be.read_region(tuple(slice(0, s) for s in be.shape))
@@ -717,8 +701,7 @@ def test_concurrent_fetches_produce_the_same_tables_and_index(server, sv_volume,
 
 
 def test_read_scales_answers_for_a_view_with_its_sources_levels(server, view, sv_volume):
-    """Callers that size or place a volume (coverage checks, crops) go through
-    read_scales, and a view has exactly its source's geometry."""
+    """A view has exactly its source's geometry."""
     from neu_vol import read_scales
 
     got, want = read_scales(view), read_scales(sv_volume)

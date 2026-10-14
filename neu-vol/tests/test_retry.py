@@ -24,26 +24,19 @@ REAL_PERMANENT = (
 )
 
 
-def test_classifies_the_real_errors_we_have_seen():
-    assert is_transient(ValueError(REAL_TRANSIENT))
-    assert is_transient(ValueError(REAL_DNS))
-    assert not is_transient(ValueError(REAL_PERMANENT))
-
-
-def test_permanent_markers_win_over_transient_ones():
-    """Both arrive as ValueError, so text order is the only safeguard.
-
-    A 403 that also mentions a transient-looking phrase must still be permanent —
-    otherwise a misconfigured run burns the full backoff budget on every task.
-    """
-    mixed = "PERMISSION_DENIED: Access Denied; CURL error Connection reset by peer"
-    assert not is_transient(ValueError(mixed))
-
-
-def test_unrecognized_errors_are_permanent():
-    """A new failure mode should surface promptly, not be retried into a timeout."""
-    assert not is_transient(ValueError("something entirely new"))
-    assert not is_transient(KeyError("shape"))
+@pytest.mark.parametrize("error, transient", [
+    (ValueError(REAL_TRANSIENT), True),
+    (ValueError(REAL_DNS), True),
+    (ValueError(REAL_PERMANENT), False),
+    # a permanent marker wins even beside a transient-looking phrase
+    (ValueError("PERMISSION_DENIED: Access Denied; CURL error Connection reset by peer"),
+     False),
+    # unrecognised errors are permanent, so a new failure surfaces promptly
+    (ValueError("something entirely new"), False),
+    (KeyError("shape"), False),
+])
+def test_errors_are_classified(error, transient):
+    assert is_transient(error) is transient
 
 
 def test_retries_transient_then_succeeds():
@@ -96,10 +89,7 @@ def test_backoff_grows_and_is_bounded(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Backend cache — an uncached open costs a TLS handshake per block
-# --------------------------------------------------------------------------- #
-# --------------------------------------------------------------------------- #
-# the block workers, which are where this actually has to be wired in
+# the block workers, where retry is wired in
 # --------------------------------------------------------------------------- #
 def _flaky_open(monkeypatch, error, fail_times):
     """Make the next ``fail_times`` open_backend calls raise ``error``."""
@@ -143,12 +133,7 @@ def _one_block_volume(tmp_path, name):
 
 @pytest.mark.parametrize("worker", ["copy", "downsample"])
 def test_a_block_survives_a_transient_failure(tmp_path, monkeypatch, worker):
-    """The gap this closes: `with_retry` existed but the block workers never used it.
-
-    A run is tens of thousands of tasks; at that scale one bad connection is close to
-    certain, and fail-fast turned it into a lost run twice — a TLS reset 11 TB into a
-    copy, and a DNS lookup two seconds into a downsample.
-    """
+    """At tens of thousands of tasks, one bad connection is near-certain; it must not kill the run."""
     import numpy as np
     from neu_vol.backends.base import open_backend
     from neu_vol.ops._multiscale import _copy_block, _downsample_block
@@ -169,8 +154,7 @@ def test_a_block_survives_a_transient_failure(tmp_path, monkeypatch, worker):
 
 
 def test_a_block_does_not_retry_a_permanent_failure(tmp_path, monkeypatch):
-    """A 403 must fail on the first attempt — retrying it burns the backoff budget on
-    every task of a misconfigured run before failing anyway."""
+    """A 403 fails on the first attempt."""
     from neu_vol.ops._multiscale import _copy_block
 
     monkeypatch.setattr("time.sleep", lambda *_: None)
@@ -182,6 +166,9 @@ def test_a_block_does_not_retry_a_permanent_failure(tmp_path, monkeypatch):
     assert state["calls"] == 1, f"retried a permanent error {state['calls']} times"
 
 
+# --------------------------------------------------------------------------- #
+# backend cache: an uncached open costs a TLS handshake per block
+# --------------------------------------------------------------------------- #
 def test_backends_are_cached_per_spec(tmp_path):
     import numpy as np
 

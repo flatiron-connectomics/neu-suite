@@ -1,18 +1,9 @@
 """`neu_vol.write_piece`: an in-memory :class:`neu_lib.Piece` back out to HDF5.
 
-The test that matters is the **round trip**, in two forms, because that is the whole claim:
-
-* ``read_piece`` -> transform -> ``write_piece`` -> ``read_piece`` returns the same voxels
-  in the same frame, under the same dataset name, still knowing what it is. Everything a
-  cleaning pass over a bag of ground-truth crops needs, with no coordinate retyped.
-* the file it writes is the file ``pack_hdf5`` writes, so ``neu-vol write`` places it with
-  no ``--offset`` and no ``--offset-order``.
-
-The second is what the shared layout helpers in ``ops/pack.py`` are for, and the reason
-there is a test asserting the two writers agree attribute for attribute: a divergence there
-would not fail anything at write time. It would put two datasets of one file in
-disagreeing coordinate systems, and the piece that read back mirrored through the z=x
-diagonal would look entirely plausible.
+Two round trips carry the weight: read -> transform -> write -> read returns the same voxels
+in the same frame under the same name and kind; and the file is the one `pack_hdf5` writes,
+so `neu-vol write` places it with no `--offset` (the two writers are compared attribute for
+attribute, since a divergence would fail nothing until a piece read back mirrored).
 """
 
 import numpy as np
@@ -58,11 +49,7 @@ def test_a_piece_survives_the_round_trip_whole(tmp_path):
 
 
 def test_a_kind_this_package_did_not_write_is_ignored(tmp_path):
-    """`kind` is a plain word; only the vocabulary is evidence.
-
-    Trusting a foreign value is the one that authorises averaging label ids into ids that
-    were never in the data, so an unrecognised one reads as unrecorded rather than raising.
-    """
+    """An unrecognised `kind` reads as unrecorded: only the package's vocabulary is evidence."""
     import h5py
 
     out = str(tmp_path / "foreign.h5")
@@ -76,7 +63,6 @@ def test_a_kind_this_package_did_not_write_is_ignored(tmp_path):
 
 
 def test_the_transform_in_the_middle_is_the_point(tmp_path):
-    """The workflow this exists for: read a crop, change it, write it back."""
     src, out = str(tmp_path / "gt.h5"), str(tmp_path / "gt_cleaned.h5")
     write_piece(_piece(name="gt/z07901"), src)
 
@@ -107,7 +93,6 @@ def test_a_bag_of_crops_accumulates_into_one_file(tmp_path):
 # it writes the same file `pack_hdf5` writes
 # --------------------------------------------------------------------------- #
 def test_the_two_writers_agree_attribute_for_attribute(tmp_path):
-    """One layout, two doors — a divergence here fails nothing and mirrors data later."""
     piece = _piece(kind=None)
     mine = str(tmp_path / "mine.h5")
     write_piece(piece, mine, dataset=DEFAULT_DATASET)
@@ -164,20 +149,14 @@ def test_neu_vol_write_places_it_with_no_arguments(tmp_path):
 # --------------------------------------------------------------------------- #
 # where the dataset name comes from
 # --------------------------------------------------------------------------- #
-def test_a_piece_named_after_a_volume_gets_the_default_dataset(tmp_path):
-    """No array name to reuse, so the default the reader also assumes."""
-    out = str(tmp_path / "crop.h5")
-    plan = write_piece(_piece(name="seg_neuprint_export_ts"), out)
-
-    assert plan["dataset"] == DEFAULT_DATASET
+@pytest.mark.parametrize("name", ["seg_neuprint_export_ts", None])
+def test_a_piece_with_no_array_name_gets_the_default_dataset(tmp_path, name):
+    """Named after a volume, or not named: the default the reader also assumes."""
     from neu_vol.backends.hdf5 import sole_dataset
 
-    assert sole_dataset(out) == DEFAULT_DATASET, "readable with no arguments"
-
-
-def test_an_unnamed_piece_gets_the_default_dataset(tmp_path):
-    out = str(tmp_path / "anon.h5")
-    assert write_piece(_piece(name=None), out)["dataset"] == DEFAULT_DATASET
+    out = str(tmp_path / "crop.h5")
+    assert write_piece(_piece(name=name), out)["dataset"] == DEFAULT_DATASET
+    assert sole_dataset(out) == DEFAULT_DATASET
 
 
 def test_the_dataset_argument_wins_and_may_nest(tmp_path):
@@ -187,7 +166,7 @@ def test_the_dataset_argument_wins_and_may_nest(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# what it refuses, and why each refusal is not pedantry
+# what it refuses
 # --------------------------------------------------------------------------- #
 def test_a_disagreeing_frame_is_refused(tmp_path):
     out = str(tmp_path / "set.h5")
@@ -207,25 +186,18 @@ def test_a_name_already_in_use_needs_overwrite(tmp_path):
     assert (read_piece(out, dataset="/z07901").array == 7).all()
 
 
-def test_a_fractional_origin_raises_rather_than_rounding(tmp_path):
-    """Half a voxel of drift against whatever the piece must line up with, silently."""
-    piece = _piece(origin=(330.0, 640.0, 960.0))          # 330 / 32 is not whole
-    with pytest.raises(ValueError, match="whole number"):
-        write_piece(piece, str(tmp_path / "p.h5"))
-
-
-def test_a_destination_that_is_not_an_hdf5_name_is_refused(tmp_path):
-    with pytest.raises(ValueError, match="recognise a container BY NAME"):
-        write_piece(_piece(), str(tmp_path / "piece.dat"))
-
-
-def test_a_remote_destination_is_refused_with_guidance(tmp_path):
-    with pytest.raises(ValueError, match="no object-store driver"):
-        write_piece(_piece(), "s3://my-bucket/piece.h5")
+@pytest.mark.parametrize("origin, dest, match", [
+    ((330.0, 640.0, 960.0), "p.h5", "whole number"),        # rounding would drift silently
+    ((320.0, 640.0, 960.0), "piece.dat", "BY NAME"),         # not an HDF5 name
+    ((320.0, 640.0, 960.0), "s3://my-bucket/piece.h5", "object-store"),
+])
+def test_an_unwritable_piece_or_destination_is_refused(tmp_path, origin, dest, match):
+    out = dest if "://" in dest else str(tmp_path / dest)
+    with pytest.raises(ValueError, match=match):
+        write_piece(_piece(origin=origin), out)
 
 
 def test_the_backend_says_where_hdf5_writing_actually_happens(tmp_path):
-    """`write_region` is not a stub waiting for someone; it is a signpost."""
     from neu_vol.backends.base import open_backend
 
     out = str(tmp_path / "p.h5")
@@ -236,13 +208,8 @@ def test_the_backend_says_where_hdf5_writing_actually_happens(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# reading a file and then writing to it, in one process
-#
-# The cleaning pass IS this: read every crop, transform, write. And a re-run of a notebook
-# cell is this. An `HDF5Backend` holds an open `h5py.File` for the life of the backend
-# cache, and HDF5 refuses to open a file for writing while any handle has it open
-# read-only — so both of those failed on the write, with an error naming the file rather
-# than the reader still holding it.
+# reading a file and then writing to it, in one process: HDF5 refuses to open a file for
+# writing while a cached read handle holds it, so the handle must be released first
 # --------------------------------------------------------------------------- #
 def test_a_file_can_be_rewritten_after_being_read(tmp_path):
     out = str(tmp_path / "loop.h5")
@@ -267,7 +234,6 @@ def test_reading_a_source_does_not_block_packing_a_different_file(tmp_path):
 
 
 def test_packing_a_file_into_itself_is_refused_plainly(tmp_path):
-    """It never worked; the error used to be about the file being open read-only."""
     path = str(tmp_path / "self.h5")
     write_piece(_piece(), path)
     with pytest.raises(ValueError, match="same file"):
@@ -291,7 +257,6 @@ def test_release_backends_reports_and_closes_what_it_dropped(tmp_path):
 
 
 def test_a_view_over_the_file_is_released_too(tmp_path):
-    """A crop or remap backend holds the same handle one level down."""
     from neu_vol import release_backends
     from neu_vol.backends.base import open_backend
 

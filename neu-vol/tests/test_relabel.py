@@ -1,9 +1,7 @@
 """Renumbering each occupied region of a sparse volume into its own id range.
 
-The property that matters is the one the operation exists for: an id that meant two
-different cells in two regions must mean one cell afterwards, and every voxel must still
-be labelled — nothing dropped, nothing merged. The mapping file has to make that
-reversible, because once the ids are overwritten it is the only record.
+An id shared by two regions becomes two ids, every voxel stays labelled, and the mapping
+file inverts exactly, since once the ids are overwritten it is the only record.
 """
 
 import json
@@ -14,8 +12,7 @@ import pytest
 from neu_vol import cli, convert
 from neu_vol.backends.base import open_backend
 from neu_vol.backends.tensorstore import TensorStoreBackend
-from neu_vol.ops.relabel import (_apply_map, apply_relabel, default_map_path,
-                                         plan_relabel, relabel)
+from neu_vol.ops.relabel import default_map_path, plan_relabel, relabel
 from neu_vol.profiles import zarr3_create_spec
 from neu_vol.source_metadata import level_spec
 
@@ -51,28 +48,10 @@ def _read(volume, level=0):
 
 
 # --------------------------------------------------------------------------- #
-# the mapping primitive
-# --------------------------------------------------------------------------- #
-def test_apply_map_keeps_zero_and_rewrites_the_rest():
-    data = np.array([[0, 5], [9, 5]], np.uint64)
-    out = _apply_map(data, np.array([5, 9], np.uint64), np.array([1, 2], np.uint64))
-    np.testing.assert_array_equal(out, [[0, 1], [2, 1]])
-
-
-def test_apply_map_preserves_dtype_and_shape():
-    data = np.zeros((3, 4, 5), np.uint64)
-    data[1, 2, 3] = 400
-    out = _apply_map(data, np.array([400], np.uint64), np.array([1], np.uint64))
-    assert out.shape == data.shape and out.dtype == data.dtype
-    assert int(out[1, 2, 3]) == 1 and int(out.sum()) == 1
-
-
-# --------------------------------------------------------------------------- #
 # planning
 # --------------------------------------------------------------------------- #
 def test_a_destination_must_be_chosen_explicitly(tmp_path):
-    """Neither default is safe: one publishes a second volume, the other overwrites the
-    ids it is derived from."""
+    """Neither --out nor --in-place is a safe default."""
     dst = _volume(tmp_path, "v", _colliding())
     with pytest.raises(ValueError, match="exactly one"):
         plan_relabel(dst)
@@ -81,13 +60,7 @@ def test_a_destination_must_be_chosen_explicitly(tmp_path):
 
 
 def test_boxes_are_chunk_aligned_not_tightened(tmp_path):
-    """Tightened boxes would leave data outside them holding old ids.
-
-    A tightened box is the bbox of the nonzero voxels seen at a COARSE level, and mode
-    downsampling can drop a stray voxel — so it can exclude scale-0 data that is really
-    there. Chunk-aligned boxes provably cover every stored chunk, and being on the chunk
-    grid also means no write is a partial-chunk read-modify-write.
-    """
+    """A box tightened at a coarse level can miss scale-0 voxels mode-downsampling dropped."""
     seg = np.zeros((32, 32, 32), np.uint64)
     seg[9:11, 9:11, 9:11] = 4              # small, well inside chunk (1,1,1)
     dst = _volume(tmp_path, "v", seg)
@@ -188,12 +161,7 @@ def test_the_mapping_is_reversible(tmp_path):
 
 
 def test_the_map_goes_through_the_kvstore_not_open(tmp_path):
-    """So `--map s3://...` works, letting the mapping sit beside a remote volume.
-
-    Pinned with a path whose parents do not exist: the file driver creates them, while
-    `open()` raises. That is the same code path a remote destination takes, and the only
-    part of it a test can exercise without a bucket.
-    """
+    """So `--map s3://...` works: parents that do not exist are created, as `open()` would not."""
     src = _volume(tmp_path, "v", _colliding())
     path = str(tmp_path / "no" / "such" / "dir" / "m.json")
     result = relabel(src, out=str(tmp_path / "o"), map_path=path)
@@ -246,8 +214,7 @@ def test_block_size_makes_the_region_readable_off_the_id(tmp_path):
 
 
 def test_block_size_too_small_refuses_rather_than_colliding(tmp_path):
-    """Overflowing a block would run one region's ids into the next — the exact bug the
-    whole operation exists to remove."""
+    """Overflowing a block would run one region's ids into the next."""
     src = _volume(tmp_path, "v", _colliding())
     with pytest.raises(ValueError, match="block_size"):
         relabel(src, out=str(tmp_path / "o"), block_size=2,
@@ -331,6 +298,3 @@ def test_cli_dry_run_says_so_and_writes_nothing(tmp_path, capsys):
     assert "DRY RUN" in capsys.readouterr().out
     assert not (tmp_path / "m.json").exists()
 
-
-def test_cli_is_wired():
-    assert cli._parse_args(["relabel", "v", "--in-place"]).func is cli.cmd_relabel

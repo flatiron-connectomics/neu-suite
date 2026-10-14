@@ -1,12 +1,7 @@
 """Copying a volume, or a box out of it: ``convert``'s crop and the ``copy`` subcommand.
 
-Two failure modes are worth pinning here, because both are silent and both survive a
-green suite otherwise:
-
-* a cropped copy that lands at the origin instead of over the source, which looks fine
-  on its own and mismatches the moment it is loaded beside the original;
-* ``copy`` losing the source's ``segmentation`` type, which turns the pyramid's reducer
-  from a mode into a mean and invents label ids that were never in the data.
+Two silent failures: a cropped copy landing at the origin instead of over its source, and
+``copy`` losing the source's ``segmentation`` type, so its pyramid averages label ids.
 """
 
 import json
@@ -58,11 +53,7 @@ def labels():
 # convert's crop
 # --------------------------------------------------------------------------- #
 def test_crop_copies_the_box_and_keeps_the_source_frame(tmp_path, labels):
-    """The copied voxels are the box, and the output sits over it, not at the origin.
-
-    `voxel_offset` is what puts it there. Without the offset shift the crop renders
-    16 voxels away from the data it was cut from, which no single-volume check catches.
-    """
+    """The copied voxels are the box, and `voxel_offset` places it over the source."""
     src = _precomputed_source(str(tmp_path / "src"), labels)
     dst = str(tmp_path / "crop")
     convert(src, dst, crop_start=(2, 4, 6), crop_stop=(10, 12, 14), kind="segmentation",
@@ -71,9 +62,7 @@ def test_crop_copies_the_box_and_keeps_the_source_frame(tmp_path, labels):
 
     np.testing.assert_array_equal(_read(dst), labels[2:10, 4:12, 6:14])
     scale = json.loads((tmp_path / "crop" / "info").read_text())["scales"][0]
-    assert scale["voxel_offset"] == [6, 4, 2], \
-        "voxel_offset is xyz and must carry the crop origin, or the copy renders " \
-        "somewhere the source is not"
+    assert scale["voxel_offset"] == [6, 4, 2], "xyz, carrying the crop origin"
     assert scale["size"] == [8, 8, 8]
 
 
@@ -86,11 +75,7 @@ def test_either_crop_bound_may_be_left_open(tmp_path, labels):
 
 
 def test_a_crop_past_the_edge_is_clipped_not_padded(tmp_path, labels):
-    """`convert` trims; only `extract_roi` pads.
-
-    Padding a copy would publish fabricated voxels at the margin, indistinguishable
-    from real data once written.
-    """
+    """`convert` trims; only `extract_roi` pads (padding would fabricate voxels)."""
     src = _zarr_source(str(tmp_path / "src.zarr"), labels)
     dst = str(tmp_path / "clip.zarr")
     summary = convert(src, dst, voxel_size=(8, 8, 8), crop_start=(-4, 12, 12),
@@ -109,11 +94,7 @@ def test_a_crop_outside_the_volume_raises(tmp_path, labels):
 
 
 def test_extract_roi_still_pads_and_now_reads_the_sources_metadata(tmp_path, labels):
-    """The op delegates to `convert`, so it must keep its own contract: it pads.
-
-    It also picks up what it never used to read — a source's voxel size — since it no
-    longer resolves the source itself.
-    """
+    """`extract_roi` delegates to `convert` but still pads, and takes the source's voxel size."""
     from neu_vol import extract_roi
 
     src = _precomputed_source(str(tmp_path / "src"), labels, voxel=(40, 8, 8))
@@ -145,12 +126,7 @@ def test_convert_crop_bbox_reaches_the_op(tmp_path, labels):
 # the copy subcommand: the source's parameters are the defaults
 # --------------------------------------------------------------------------- #
 def test_copy_takes_the_segmentation_type_from_the_source(tmp_path, labels):
-    """The reason `copy` exists rather than being a documented use of `convert`.
-
-    `convert`'s --kind defaults to image, so the same command line through it averages
-    label ids into ids that were never in the data — while the source's own `info` said
-    `"type": "segmentation"` the whole time.
-    """
+    """`copy` takes the type from the source, so its pyramid never averages label ids."""
     src = _precomputed_source(str(tmp_path / "src"), labels)
     dst = str(tmp_path / "copy")
     assert cli.main(["copy", "--src", src, "--dst", dst, "--serial",
@@ -177,7 +153,6 @@ def test_copy_keeps_the_sources_format_and_chunking(tmp_path, labels):
 
 
 def test_copy_refuses_to_guess_the_kind(tmp_path, labels):
-    """A bare zarr array records no type. Guessing it is the destructive option."""
     src = _zarr_source(str(tmp_path / "src.zarr"), labels)
     with pytest.raises(SystemExit, match="records no image/segmentation type"):
         cli.main(["copy", "--src", src, "--dst", str(tmp_path / "x"), "--serial",
@@ -214,11 +189,7 @@ def test_copy_needs_a_volume_that_describes_itself(tmp_path):
 # --bbox-scale: real per-level voxel sizes, never 2**N
 # --------------------------------------------------------------------------- #
 def test_crop_scale_uses_the_real_per_level_voxel_sizes(tmp_path):
-    """An anisotropic pyramid is where 2**N is wrong, and it is the common case.
-
-    With factors (1,2,2) a scale-1 voxel is 1 level-0 voxel in z and 2 in y/x, so the
-    same six numbers name a box of a different *shape*, not just a different size.
-    """
+    """With factors (1,2,2), a scale-1 box maps to level 0 by (1,2,2), not by 2**N."""
     data = np.arange(16 * 16 * 16, dtype=np.uint16).reshape(16, 16, 16)
     src = str(tmp_path / "aniso")
     _precomputed_source(src + ".s", data, voxel=(40, 8, 8), kind="image")
@@ -245,14 +216,12 @@ def test_bbox_scale_beyond_the_pyramid_is_an_error(tmp_path, labels):
 
 
 def test_a_bbox_convention_with_no_box_is_rejected():
-    """Half a command line: the run would copy everything and look fine."""
     for extra in (["--bbox-scale", "2"], ["--bbox-order", "xyz"]):
         with pytest.raises(SystemExit):
             cli._parse_args(["copy", "--src", "a", "--dst", "b", *extra])
 
 
 def test_an_unaligned_crop_origin_warns_about_the_coarse_levels(tmp_path, caplog):
-    """Level 0 is exact; the levels above it are not, and nothing else says so."""
     args = cli._parse_args(["copy", "--src", "a", "--dst", "b",
                             "--crop-bbox", "3,0,0,131,128,128", "--min-dim", "8"])
     with caplog.at_level("WARNING"):

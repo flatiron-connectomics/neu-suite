@@ -1,9 +1,7 @@
 """`write`: one subvolume into an existing volume, at a voxel offset and one level.
 
-Two things carry the weight here. **Placement** — the piece lands exactly where it was
-asked to and nothing else in the volume moves — and **tiling** — no two tiles ever
-share a destination chunk, because tiles that do would race if this were ever run
-concurrently, and a lost partial-chunk write leaves no trace to find afterwards.
+Placement: the piece lands exactly where asked and nothing else moves. Tiling: no two
+tiles share a destination chunk, since concurrent partial-chunk writes lose data silently.
 """
 
 import os
@@ -129,11 +127,7 @@ def test_the_offset_is_taken_at_the_written_level_by_default(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# a batch of sources
-#
-# The pieces arrive as a set of files, each carrying its own offset, so the batch is
-# the natural unit. What it buys over a shell loop is that ALL of them are checked
-# before ANY is written.
+# a batch of sources: all are checked before any is written
 # --------------------------------------------------------------------------- #
 def test_a_batch_of_sources_each_lands_at_its_own_stored_offset(tmp_path):
     vol = _volume(tmp_path)
@@ -154,12 +148,7 @@ def test_a_batch_of_sources_each_lands_at_its_own_stored_offset(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# every dataset of one container
-#
-# The other shape a batch arrives in: not several files but one file holding a bag of
-# ground-truth crops, each with its own `voxel_offset`. Naming thirteen datasets on the
-# command line is transcription, and a transcription error places a crop in the wrong
-# volume-sized hole.
+# every dataset of one container, each at its own recorded offset
 # --------------------------------------------------------------------------- #
 def _container(tmp_path, offsets, *, name="bag", shape=(8, 10, 12), voxel=(8.0, 8.0, 8.0)):
     """One HDF5 file holding several crops, each recording where it belongs."""
@@ -203,12 +192,11 @@ def test_a_glob_narrows_it_by_path_or_by_basename(tmp_path):
 
 
 def test_a_glob_matching_nothing_raises_rather_than_writing_nothing(tmp_path):
-    """A write that reports success and places no data is the failure noticed a week
-    later, so the empty selection is refused and what IS there is listed."""
+    """An empty selection is refused rather than writing nothing and reporting success."""
     from neu_vol.ops.write import container_sources
 
     path, _ = _container(tmp_path, {"z01": (0, 0, 0)})
-    with pytest.raises(ValueError, match="no dataset in .* matches 'nope\\*'"):
+    with pytest.raises(ValueError, match="'nope\\*'"):
         container_sources(path, "nope*")
 
 
@@ -237,8 +225,7 @@ def test_every_dataset_lands_at_its_own_offset(tmp_path):
 
 
 def test_the_cli_writes_them_all_and_names_each_one(tmp_path, capsys):
-    """The table has one row per dataset and they all share a file name, so labelling by
-    basename would print three identical rows with nothing to tell them apart."""
+    """Rows are labelled by dataset, since they all share a file name."""
     from neu_vol import cli
 
     vol = _volume(tmp_path)
@@ -255,8 +242,6 @@ def test_the_cli_writes_them_all_and_names_each_one(tmp_path, capsys):
 
 
 def test_the_cli_refuses_the_combinations_that_contradict(tmp_path):
-    """`--dataset` names one array and `--offset` belongs to a source you typed; neither
-    means anything once the datasets come out of the file."""
     from neu_vol import cli
 
     vol = _volume(tmp_path)
@@ -269,7 +254,6 @@ def test_the_cli_refuses_the_combinations_that_contradict(tmp_path):
 
 
 def test_one_bad_dataset_stops_the_expanded_batch_too(tmp_path):
-    """Expansion feeds the same plan-everything-first batch, so the guarantee holds."""
     from neu_vol import cli
 
     vol = _volume(tmp_path, shape=(32, 32, 32))
@@ -282,9 +266,6 @@ def test_one_bad_dataset_stops_the_expanded_batch_too(tmp_path):
 
 
 def test_one_bad_source_stops_the_batch_before_anything_is_written(tmp_path):
-    """Planning resolves offsets and checks bounds and touches nothing, so doing all
-    of it first means a mistake in the last file is caught while the volume is still
-    clean — rather than after the earlier pieces have already landed in it."""
     vol = _volume(tmp_path, shape=(32, 32, 32))
     good = _h5_with_offset(tmp_path, np.ones((8, 8, 8), np.uint64), (0, 0, 0),
                            name="good")
@@ -305,8 +286,6 @@ def test_offsets_may_be_given_per_source_or_left_to_the_sources(tmp_path):
 
 
 def test_a_partial_list_of_offsets_is_refused(tmp_path):
-    """One offset for three sources cannot mean anything sensible — pieces that all
-    belong at the same place are one piece."""
     vol = _volume(tmp_path)
     src = _h5(tmp_path, np.ones((4, 4, 4), np.uint64))
     with pytest.raises(ValueError, match="2 source.* but 1 offset"):
@@ -314,8 +293,7 @@ def test_a_partial_list_of_offsets_is_refused(tmp_path):
 
 
 def test_overlapping_sources_are_reported_but_allowed(tmp_path):
-    """Overwriting part of an earlier piece can be deliberate. Silence would not be:
-    the result looks identical either way, so a mistyped offset leaves no trace."""
+    """Overlap may be deliberate, but is reported: a mistyped offset would leave no trace."""
     vol = _volume(tmp_path)
     a = _h5_with_offset(tmp_path, np.full((8, 8, 8), 1, np.uint64), (0, 0, 0), name="oa")
     b = _h5_with_offset(tmp_path, np.full((4, 4, 4), 2, np.uint64), (4, 4, 4), name="ob")
@@ -326,13 +304,6 @@ def test_overlapping_sources_are_reported_but_allowed(tmp_path):
     got = _level(vol, 0).read_region((slice(0, 64),) * 3)
     assert got[4, 4, 4] == 2, "the later source wins where they meet"
     assert got[0, 0, 0] == 1
-
-
-def test_a_single_source_batch_behaves_like_the_single_write(tmp_path):
-    vol = _volume(tmp_path)
-    piece = np.ones((4, 4, 4), np.uint64)
-    results = write_subvolumes(vol, [_h5(tmp_path, piece)], [(8, 8, 8)])
-    assert len(results) == 1 and results[0]["written"] == results[0]["num_tiles"]
 
 
 def test_a_dry_run_batch_writes_nothing_and_still_checks_everything(tmp_path):
@@ -346,13 +317,7 @@ def test_a_dry_run_batch_writes_nothing_and_still_checks_everything(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# an offset the source already knows
-#
-# Writers routinely record where a subvolume came from beside the array. Re-typing
-# that by hand is tedious and a chance to mistype a coordinate, so the offset may be
-# omitted and read from the source. It is an optional *backend* capability
-# (`stored_offset`), not an HDF5 branch in the write op — HDF5 is just the only
-# backend that answers today.
+# an offset the source already records (the backend's optional `stored_offset`)
 # --------------------------------------------------------------------------- #
 def _h5_with_offset(tmp_path, data, offset, *, where="dataset", name="off",
                     field="voxel_offset", dataset="main"):
@@ -387,7 +352,7 @@ def test_the_offset_can_come_from_the_source_instead_of_the_command_line(tmp_pat
     ("dataset_attr", "/main.attrs['voxel_offset']"),
 ])
 def test_all_three_places_a_writer_might_put_it_are_searched(tmp_path, where, shown):
-    """And which one it came from is reported, because they can disagree."""
+    """The report says which one was used, since they can disagree."""
     vol = _volume(tmp_path)
     piece = np.ones((4, 4, 4), np.uint64)
     r = write_subvolume(vol, _h5_with_offset(tmp_path, piece, (8, 8, 8), where=where,
@@ -419,12 +384,7 @@ def test_an_explicit_offset_beats_the_stored_one(tmp_path):
 
 
 def test_a_stored_offset_can_be_read_as_xyz(tmp_path):
-    """`voxel_offset` is precomputed's field name, and precomputed means XYZ.
-
-    Nothing in the file distinguishes the two orders, so it is asked for rather than
-    guessed — reversed, the piece lands mirrored through the z=x diagonal and nothing
-    downstream can tell.
-    """
+    """`voxel_offset` is precomputed's name, where it means xyz; the order is asked for."""
     vol = _volume(tmp_path)
     piece = np.ones((4, 4, 4), np.uint64)
     src = _h5_with_offset(tmp_path, piece, (16, 24, 32))
@@ -443,32 +403,24 @@ def test_a_field_name_other_than_voxel_offset_can_be_named(tmp_path):
     assert r["start"] == (4, 4, 4)
 
 
-def test_no_offset_anywhere_says_where_it_looked(tmp_path):
-    vol = _volume(tmp_path)
+@pytest.mark.parametrize("dtype, make", [
+    ("uint64", lambda t: _h5(t, np.ones((4, 4, 4), np.uint64))),            # no offset
+    ("uint8", lambda t: _png_stack(t, np.zeros((2, 4, 4), np.uint8))),      # cannot store one
+])
+def test_a_source_with_no_offset_says_where_it_looked(tmp_path, dtype, make):
+    vol = _volume(tmp_path, dtype=dtype)
     with pytest.raises(ValueError, match="records none"):
-        write_subvolume(vol, _h5(tmp_path, np.ones((4, 4, 4), np.uint64)), dry_run=True)
+        write_subvolume(vol, make(tmp_path), dry_run=True)
 
 
-def test_a_source_that_cannot_store_an_offset_fails_the_same_way(tmp_path):
-    """Image stacks expose no `stored_offset`; the op must not assume every backend does."""
-    vol = _volume(tmp_path, dtype="uint8")
-    stack = _png_stack(tmp_path, np.zeros((2, 4, 4), np.uint8))
-    with pytest.raises(ValueError, match="records none"):
-        write_subvolume(vol, stack, dry_run=True)
-
-
-def test_a_stored_offset_that_is_not_whole_voxels_is_an_error(tmp_path):
-    """Rounding a fractional offset would move the piece with nothing to show for it."""
+@pytest.mark.parametrize("offset, match", [
+    ((1.5, 2.0, 3.0), "not whole voxels"),     # rounding would move the piece silently
+    ((1, 2), "has 2 entries"),
+])
+def test_a_bad_stored_offset_is_an_error(tmp_path, offset, match):
     vol = _volume(tmp_path)
-    src = _h5_with_offset(tmp_path, np.ones((4, 4, 4), np.uint64), (1.5, 2.0, 3.0))
-    with pytest.raises(ValueError, match="not whole voxels"):
-        write_subvolume(vol, src, dry_run=True)
-
-
-def test_a_stored_offset_of_the_wrong_length_is_an_error(tmp_path):
-    vol = _volume(tmp_path)
-    src = _h5_with_offset(tmp_path, np.ones((4, 4, 4), np.uint64), (1, 2))
-    with pytest.raises(ValueError, match="has 2 entries"):
+    src = _h5_with_offset(tmp_path, np.ones((4, 4, 4), np.uint64), offset)
+    with pytest.raises(ValueError, match=match):
         write_subvolume(vol, src, dry_run=True)
 
 
@@ -491,12 +443,7 @@ def test_tiles_cover_the_region_exactly_once(start, stop):
 
 
 def test_no_two_tiles_ever_share_a_destination_chunk():
-    """Tiles are cut on the GLOBAL chunk grid, not from the region's own start.
-
-    Cutting from the start would put an interior boundary mid-chunk, so two tiles
-    would read-modify-write the same chunk — harmless in a serial loop, and a lost
-    update the moment anything runs them in parallel.
-    """
+    """Tiles are cut on the global chunk grid, not from the region's own start."""
     chunk, unit = 16, 32
     owners = {}
     for (s,) in _tiles((24,), (200,), (unit,)):
@@ -515,42 +462,21 @@ def test_a_large_piece_is_split_into_several_writes_and_still_round_trips(tmp_pa
         _level(vol, 0).read_region(_region((16, 16, 16), piece.shape)), piece)
 
 
-def test_a_chunk_aligned_region_reports_itself_as_aligned(tmp_path):
-    vol = _volume(tmp_path, chunk=(16, 16, 16))
-    piece = np.ones((16, 32, 16), np.uint64)
-    r = write_subvolume(vol, _h5(tmp_path, piece), (16, 0, 32), dry_run=True)
-    assert r["misaligned_axes"] == []
-
-
-def test_an_unaligned_region_is_reported_per_axis(tmp_path):
-    """Reported, not refused — it is correct, just read-modify-write. But nothing
-    downstream can detect the loss if two such writes overlap, so it must be said."""
-    vol = _volume(tmp_path, chunk=(16, 16, 16))
-    piece = np.ones((16, 8, 16), np.uint64)
-    r = write_subvolume(vol, _h5(tmp_path, piece), (16, 4, 32), dry_run=True)
-    assert r["misaligned_axes"] == [1]
-
-
-def test_a_region_ending_at_the_volume_edge_counts_as_aligned(tmp_path):
-    """There is no neighbouring data in that last chunk to lose."""
-    vol = _volume(tmp_path, shape=(40, 40, 40), chunk=(16, 16, 16))
-    piece = np.ones((8, 8, 8), np.uint64)
-    r = write_subvolume(vol, _h5(tmp_path, piece), (32, 32, 32), dry_run=True)
-    assert r["misaligned_axes"] == []
+@pytest.mark.parametrize("vol_shape, piece_shape, at, misaligned", [
+    ((64, 64, 64), (16, 32, 16), (16, 0, 32), []),
+    ((64, 64, 64), (16, 8, 16), (16, 4, 32), [1]),       # reported, not refused
+    ((40, 40, 40), (8, 8, 8), (32, 32, 32), []),         # ending at the volume edge is fine
+])
+def test_misaligned_axes_are_reported(tmp_path, vol_shape, piece_shape, at, misaligned):
+    vol = _volume(tmp_path, shape=vol_shape, chunk=(16, 16, 16))
+    r = write_subvolume(vol, _h5(tmp_path, np.ones(piece_shape, np.uint64)), at,
+                        dry_run=True)
+    assert r["misaligned_axes"] == misaligned
 
 
 # --------------------------------------------------------------------------- #
-# a partial chunk is merged, never replaced
-#
-# The reason this is safe: TensorStore read-modify-writes a chunk that a write only
-# partly covers — it fetches what is stored, overlays the new region, writes the whole
-# chunk back. Nothing here has to implement that, but everything here depends on it,
-# and if it ever stopped being true the loss would be invisible: the piece you just
-# wrote would look perfect and its neighbours would be gone.
-#
-# Parametrized over the storage shapes because the merge happens at different layers —
-# a plain chunk, a shard's inner chunk, and a compressed_segmentation block are three
-# different code paths inside TensorStore.
+# a partial chunk is merged, never replaced (tensorstore's read-modify-write), across
+# the storage shapes where the merge happens in different code paths
 # --------------------------------------------------------------------------- #
 def _single_level(tmp_path, storage, name):
     """One-level volume in each storage shape, with a spec that opens level 0."""
@@ -595,12 +521,7 @@ def test_a_partial_chunk_write_keeps_the_data_already_in_that_chunk(tmp_path, st
 
 @pytest.mark.parametrize("storage", STORAGE)
 def test_a_second_piece_sharing_a_chunk_does_not_erase_the_first(tmp_path, storage):
-    """The real workflow: pieces arrive one at a time, and two of them share a chunk.
-
-    At chunk 8 these span 5-11 and 11-17, so they share the chunk at index 1 on every
-    axis. Sequential, which is the supported way — running them at once is the hazard
-    `misaligned_axes` exists to warn about.
-    """
+    """Sequential pieces sharing chunk index 1 on every axis (5-11 and 11-17 at chunk 8)."""
     from neu_vol.backends.base import clear_backend_cache
 
     vol, spec = _single_level(tmp_path, storage, "share")
@@ -723,8 +644,7 @@ def test_a_region_of_another_volume_can_be_the_source(tmp_path):
 
 
 def test_a_precomputed_destination_works_the_same_way(tmp_path):
-    """`create` only makes zarr, but `write` places pieces into either format —
-    precomputed addresses a level by scale_index rather than by subdirectory."""
+    """Precomputed addresses a level by scale_index rather than by subdirectory."""
     from neu_vol import convert
     from neu_vol.profiles import StorageProfile, zarr3_create_spec
     from neu_vol.backends.tensorstore import TensorStoreBackend

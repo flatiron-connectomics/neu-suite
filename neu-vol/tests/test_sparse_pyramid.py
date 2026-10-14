@@ -1,10 +1,7 @@
 """`--sparse`: skip pyramid tasks whose input has no stored chunk.
 
-The claim being tested is that this is **exact, not a heuristic** — the output must be
-byte-identical to a full run, not merely close. That is what separates it from the
-occupancy prefilters elsewhere (which need dilating because they ask a different
-question): here an absent chunk object *is* all fill, so a task with no stored input
-writes nothing whether it runs or not.
+This is exact, not a heuristic: an absent chunk object is all fill, so a task with no stored
+input writes nothing either way, and the output is byte-identical to a full run.
 """
 
 import numpy as np
@@ -18,11 +15,8 @@ from neu_vol.profiles import StorageProfile, zarr3_create_spec
 
 
 def _sparse_volume(tmp_path, name="v", *, chunk=(8, 8, 8), shape=(64, 64, 64)):
-    """A volume whose data occupies one corner, so most chunks are never stored.
-
-    Built by `create` + a direct write rather than `convert`, because that is how a
-    ground-truth volume gets made: an empty frame with a few pieces written into it.
-    """
+    """Data in one corner, so most chunks are never stored; made by `create` + a write,
+    as a ground-truth volume is."""
     from neu_vol import create_volume
 
     dst = str(tmp_path / f"{name}.zarr")
@@ -81,11 +75,7 @@ def test_sparse_skips_nearly_every_task(tmp_path):
 
 
 def test_the_manifest_denominator_is_the_filtered_total(tmp_path):
-    """Invariant 11: a reader can only trust `total`, so it must be what was dispatched.
-
-    Recording the whole grid here would make `neu-vol progress` sit at a few percent
-    forever on a run that had in fact finished.
-    """
+    """`total` is what was dispatched, or progress would stall at a few percent."""
     import json
 
     vol = _sparse_volume(tmp_path)
@@ -104,8 +94,7 @@ def test_the_manifest_denominator_is_the_filtered_total(tmp_path):
     for level, m in meta.items():
         assert m["total"] == statuses.get(level, 0), \
             f"level {level}: total {m['total']} but {statuses.get(level, 0)} tasks ran"
-        # Recorded for every filtered level, including the coarsest, whose whole grid is
-        # one task that cannot be skipped — hence >=, not >.
+        # >= because the coarsest level's whole grid is one task that cannot be skipped
         assert m["grid_total"] >= m["total"], "and it says what the full grid would be"
         assert m["skipped_empty"] == m["grid_total"] - m["total"]
     assert any(m["skipped_empty"] for m in meta.values()), "something was skipped"
@@ -115,11 +104,7 @@ def test_the_manifest_denominator_is_the_filtered_total(tmp_path):
 # the ways it must refuse rather than silently write nothing
 # --------------------------------------------------------------------------- #
 def test_a_seed_level_with_no_stored_chunks_is_refused(tmp_path):
-    """Otherwise every task is skipped and the run reports success having done nothing.
-
-    That is invariant 4's failure mode — a successful run that writes nothing — and it is
-    exactly what a wrong --start-level or a not-yet-filled volume would produce.
-    """
+    """Otherwise every task is skipped and the run reports success having written nothing."""
     from neu_vol import create_volume
 
     empty = str(tmp_path / "empty.zarr")
@@ -131,18 +116,7 @@ def test_a_seed_level_with_no_stored_chunks_is_refused(tmp_path):
 
 
 def test_a_sharded_level_filters_at_SHARD_granularity_and_stays_exact(tmp_path):
-    """Sharding does not break the filter, because the cell shape is the WRITE chunk.
-
-    On a sharded zarr level the stored object is the shard and its key is the shard's cell
-    (verified: `chunks` reports (32,32,32) while `read_chunks` reports (8,8,8), and the
-    only data key is `c/0/0/0`). Since the filter takes its cell shape from `chunks`, the
-    occupancy grid it builds is the shard grid — coarser, so less is skipped, but still
-    exact: a shard with no object means every chunk inside it is absent.
-
-    Precomputed sharding is the case that cannot be answered this way, and
-    `occupied_cells` raises there rather than guessing; it is unreachable from here
-    because this package writes no sharded precomputed.
-    """
+    """The cell shape is the write chunk (the shard), so the filter stays exact, if coarser."""
     src = str(tmp_path / "s.src.zarr")
     data = np.zeros((64, 64, 64), dtype=np.uint32)
     data[:8, :8, :8] = 5
@@ -191,12 +165,7 @@ def test_convert_filters_the_pyramid_but_not_level_zero(tmp_path):
 
 
 def test_rebuild_takes_its_level_count_from_the_volume(tmp_path, caplog):
-    """How many levels a pyramid has is recorded in the volume, not a preference.
-
-    Inheriting `convert`'s default of 8 made a rebuild plan one level fewer than the
-    9-level volume it was repairing — leaving the top level serving whatever it held
-    before, with every shape matching so the mismatch check saw nothing.
-    """
+    """The volume's recorded level count, not `convert`'s default, sizes a rebuild."""
     from neu_vol import create_volume, describe
 
     vol = str(tmp_path / "deep.zarr")
@@ -218,11 +187,7 @@ def test_rebuild_takes_its_level_count_from_the_volume(tmp_path, caplog):
 
 
 def test_a_single_scale_volume_still_gets_a_pyramid_built(tmp_path, caplog):
-    """`write` and `relabel` both end by saying "run downsample" — that must still work.
-
-    Deriving the cap from a volume that records ONE level would make the documented next
-    step a silent no-op, so there the conversion default applies instead.
-    """
+    """A one-level volume gets the conversion default, so "run downsample" is not a no-op."""
     vol = _sparse_volume(tmp_path, "single")            # created with levels=1
     with caplog.at_level("INFO"):
         summary = rebuild_pyramid(vol, start_level=0, kind="segmentation", min_dim=8,

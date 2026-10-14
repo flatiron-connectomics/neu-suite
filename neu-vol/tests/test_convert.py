@@ -93,9 +93,7 @@ def test_plan_task_shape_covers_whole_source_and_destination_chunks():
 
 
 def test_plan_task_shape_respects_a_memory_ceiling():
-    """A PNG slice cannot be partially decoded, so the LCM is the whole plane —
-    28.8 GB for a 128-slab, which no worker can hold. It must be tiled down while
-    staying a destination-chunk multiple."""
+    """A PNG slice decodes whole, so the LCM is a 28.8 GB slab; it is tiled down."""
     from neu_vol.ops._multiscale import plan_task_shape
 
     t = plan_task_shape((1, 13544, 16648), (128, 128, 128), (15401, 13544, 16648),
@@ -106,24 +104,18 @@ def test_plan_task_shape_respects_a_memory_ceiling():
     assert t[0] == 128, "z must stay a whole destination chunk"
 
 
-def test_plan_task_shape_is_a_no_op_when_chunkings_agree():
+@pytest.mark.parametrize("src_chunk, dst_chunk, shape", [
+    ((64, 64, 64), (64, 64, 64), (512, 512, 512)),       # chunkings agree
+    (None, (32, 32, 32), (256, 256, 256)),               # source has no chunking
+])
+def test_plan_task_shape_defaults_to_the_destination_chunk(src_chunk, dst_chunk, shape):
     from neu_vol.ops._multiscale import plan_task_shape
 
-    assert plan_task_shape((64, 64, 64), (64, 64, 64), (512, 512, 512)) == (64, 64, 64)
-
-
-def test_plan_task_shape_falls_back_when_the_source_has_no_chunking():
-    from neu_vol.ops._multiscale import plan_task_shape
-
-    assert plan_task_shape(None, (32, 32, 32), (256, 256, 256)) == (32, 32, 32)
+    assert plan_task_shape(src_chunk, dst_chunk, shape) == dst_chunk
 
 
 def test_larger_tasks_produce_identical_output_and_fewer_of_them(tmp_path):
-    """The whole point: fewer source reads, byte-identical result.
-
-    A source chunked coarser than the destination previously produced one task per
-    destination chunk, each re-fetching the same source chunk.
-    """
+    """Fewer source reads, byte-identical result."""
     import json
 
     vol = np.random.default_rng(7).integers(0, 200, (8, 64, 64), dtype=np.uint8)

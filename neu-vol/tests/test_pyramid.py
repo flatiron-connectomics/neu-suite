@@ -66,12 +66,7 @@ def test_downsample_schedule_explicit_factors_passthrough():
 
 
 def test_max_levels_counts_level_zero():
-    """``max_levels=N`` permits N levels, so at most N-1 downsample steps.
-
-    It used to bound the schedule itself, which made the flag named "max levels" allow
-    one more level than it said — `--max-levels 8` produced 9 — so at the default it read
-    as a no-op. The volume here is large enough that only max_levels can stop it.
-    """
+    """``max_levels=N`` permits N levels, so N-1 steps, on a volume only max_levels stops."""
     for n in (1, 2, 5, 8):
         sched = downsample_schedule((4096, 4096, 4096), (8, 8, 8), min_dim=1,
                                     max_levels=n)
@@ -79,7 +74,6 @@ def test_max_levels_counts_level_zero():
 
 
 def test_max_levels_below_one_is_refused():
-    """Zero levels is not a volume, and negative silently produced an empty pyramid."""
     with pytest.raises(ValueError, match="at least 1"):
         downsample_schedule((64, 64, 64), (8, 8, 8), max_levels=0)
 

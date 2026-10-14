@@ -1,10 +1,8 @@
 """`neu-vol to-hdf5`: pack a small volume into an HDF5 file `neu-vol write` can place.
 
-The test that matters is the **round trip** — pack a stack, then write it into a volume
-with no `--offset` and no `--offset-order` — because that is the whole claim: the frame and
-the position travel with the data. Everything else here guards a way of getting that
-silently wrong, chiefly the axis order, which reversed puts the piece mirrored through the
-z=x diagonal with nothing downstream able to tell.
+The round trip is the claim: packed, then written with no `--offset` and no
+`--offset-order`, the piece lands where it came from. Most other tests guard the axis
+order, which reversed mirrors the piece through z=x with nothing to show for it.
 """
 
 import numpy as np
@@ -150,22 +148,22 @@ def test_reusing_a_name_needs_overwrite(tmp_path):
     np.testing.assert_array_equal(_h5(out)[0], data2)
 
 
-def test_a_mismatched_axes_count_is_refused(tmp_path):
+@pytest.mark.parametrize("kwargs, match", [
+    ({"voxel_size": (8, 8), "src_format": "image_stack"}, "same number of axes"),
+    ({"voxel_size": (8, 8, 8), "level": 2}, "needs a multiscale volume"),
+    ({}, "voxel_size is required"),                 # a stack records no scale
+])
+def test_a_stack_refuses_what_it_cannot_supply(tmp_path, kwargs, match):
     src, _ = _stack(tmp_path)
-    with pytest.raises(ValueError, match="same number of axes"):
-        pack_hdf5(src, str(tmp_path / "x.h5"), voxel_size=(8, 8),
-                  src_format="image_stack")
+    with pytest.raises(ValueError, match=match):
+        pack_hdf5(src, str(tmp_path / "x.h5"), **kwargs)
 
 
 # --------------------------------------------------------------------------- #
 # the round trip, which is the point
 # --------------------------------------------------------------------------- #
 def test_the_packed_piece_writes_back_with_no_offset_and_no_order(tmp_path):
-    """Pack, then place — the frame and position travel with the data.
-
-    No --offset, and no --offset-order either: the recorded `axes` answers the question
-    that previously had to be asked.
-    """
+    """Pack, then place with no --offset and no --offset-order."""
     from neu_vol import write_subvolume
 
     src, data = _stack(tmp_path)
@@ -188,12 +186,7 @@ def test_the_packed_piece_writes_back_with_no_offset_and_no_order(tmp_path):
 
 
 def test_an_xyz_file_is_read_as_xyz_without_being_told(tmp_path):
-    """The mirroring bug, prevented by the file saying which order it used.
-
-    Packing with axes="xyz" records that, so `write` reverses the offset itself — where
-    before, the numbers were indistinguishable from zyx and a wrong guess put the piece
-    somewhere else entirely.
-    """
+    """A file recording axes="xyz" has its offset reversed by `write` itself."""
     from neu_vol import write_subvolume
 
     src, data = _stack(tmp_path, shape=(4, 4, 4))
@@ -249,11 +242,7 @@ def pyramid(tmp_path):
 
 
 def test_a_zarr_group_can_be_packed_at_all(tmp_path, pyramid):
-    """It could not: the spec was built straight from the path, and a group is not an array.
-
-    tensorstore's error was a wall of driver text about `node_type`, which says nothing
-    about what the caller did wrong.
-    """
+    """A zarr group is opened at a level, not as an array."""
     vol, data = pyramid
     out = str(tmp_path / "grp.h5")
     pack_hdf5(vol, out, voxel_size=(40, 8, 8))
@@ -261,7 +250,7 @@ def test_a_zarr_group_can_be_packed_at_all(tmp_path, pyramid):
 
 
 def test_the_level_supplies_the_voxel_size_it_records(tmp_path, pyramid):
-    """No retyping a scale the volume already knows — and never 2**level for it."""
+    """The level's recorded voxel size, never 2**level."""
     vol, _ = pyramid
     out = str(tmp_path / "lvl.h5")
     plan = pack_hdf5(vol, out, level=1)
@@ -273,7 +262,6 @@ def test_the_level_supplies_the_voxel_size_it_records(tmp_path, pyramid):
 
 
 def test_a_box_is_packed_and_its_origin_becomes_the_offset(tmp_path, pyramid):
-    """The one number nobody should type twice: where the piece came from."""
     vol, data = pyramid
     out = str(tmp_path / "box.h5")
     plan = pack_hdf5(vol, out, crop_start=(4, 8, 12), crop_stop=(12, 16, 20))
@@ -285,7 +273,6 @@ def test_a_box_is_packed_and_its_origin_becomes_the_offset(tmp_path, pyramid):
 
 
 def test_an_explicit_offset_overrides_the_crop_origin(tmp_path, pyramid):
-    """Extracting from one volume to place into another somewhere else is legitimate."""
     vol, _ = pyramid
     plan = pack_hdf5(vol, str(tmp_path / "o.h5"), crop_start=(4, 4, 4),
                      crop_stop=(8, 8, 8), voxel_offset=(0, 0, 0))
@@ -309,33 +296,17 @@ def test_a_box_at_a_level_round_trips_into_that_level(tmp_path, pyramid):
     np.testing.assert_array_equal(after, before)
 
 
-def test_a_level_on_a_source_that_has_none_is_refused(tmp_path):
-    src, _ = _stack(tmp_path)
-    with pytest.raises(ValueError, match="needs a multiscale volume"):
-        pack_hdf5(src, str(tmp_path / "x.h5"), voxel_size=(8, 8, 8), level=2)
-
-
 def test_a_level_the_volume_does_not_have_is_refused(tmp_path, pyramid):
     vol, _ = pyramid
     with pytest.raises(ValueError, match="has no level 9"):
         pack_hdf5(vol, str(tmp_path / "x.h5"), level=9)
 
 
-def test_a_source_recording_no_scale_still_demands_one(tmp_path):
-    src, _ = _stack(tmp_path)
-    with pytest.raises(ValueError, match="voxel_size is required"):
-        pack_hdf5(src, str(tmp_path / "x.h5"))
-
-
 # --------------------------------------------------------------------------- #
 # what the fields are called
 # --------------------------------------------------------------------------- #
 def test_the_voxel_size_field_can_be_renamed_for_both_directions(tmp_path):
-    """Other tools have their own word for it, and a file should stay readable by them.
-
-    The same name is used to write and to read, so a repacked file keeps whatever spelling
-    its siblings use.
-    """
+    """The same field name is used to write and to read."""
     src, _ = _stack(tmp_path)
     out = str(tmp_path / "named_field.h5")
     pack_hdf5(src, out, voxel_size=(40, 8, 8), voxel_size_field="resolution")
@@ -362,11 +333,8 @@ def test_an_hdf5_source_supplies_its_own_scale(tmp_path):
 
 
 def _legacy_file(tmp_path, name="legacy.h5", *, as_datasets=True):
-    """A file written elsewhere: data in `main`, offset and size beside it.
-
-    `as_datasets` puts them where `stored_offset`'s third search location looks — top-level
-    datasets rather than attributes — which is how the files in hand are written.
-    """
+    """A file written elsewhere: data in `main`, offset and size as top-level datasets
+    (``as_datasets``) or as attributes."""
     import h5py
 
     path = str(tmp_path / name)
@@ -384,12 +352,7 @@ def _legacy_file(tmp_path, name="legacy.h5", *, as_datasets=True):
 
 @pytest.mark.parametrize("as_datasets", [True, False], ids=["datasets", "attrs"])
 def test_a_file_that_describes_itself_is_repacked_without_losing_it(tmp_path, as_datasets):
-    """The offset used to be dropped: repacked, the piece claimed it belonged at 0,0,0.
-
-    Silent, and unrecoverable from the output — which is why this is the case worth pinning.
-    Also note `main` needs no --src-dataset: it is the only 3D dataset, and voxel_offset /
-    voxel_size are 1D, so `sole_dataset` finds it.
-    """
+    """Dropping the offset would silently place the repacked piece at 0,0,0."""
     src, data = _legacy_file(tmp_path, as_datasets=as_datasets)
     out = str(tmp_path / "repacked.h5")
     plan = pack_hdf5(src, out)                       # no --voxel-size, no --offset
@@ -402,7 +365,6 @@ def test_a_file_that_describes_itself_is_repacked_without_losing_it(tmp_path, as
 
 
 def test_a_box_out_of_a_self_describing_file_lands_at_the_sum(tmp_path):
-    """The piece knows where it sits; the crop knows where it started inside it."""
     src, data = _legacy_file(tmp_path)
     out = str(tmp_path / "box.h5")
     plan = pack_hdf5(src, out, crop_start=(2, 3, 4), crop_stop=(6, 7, 8))
@@ -418,7 +380,6 @@ def test_an_explicit_offset_still_overrides_what_the_file_says(tmp_path):
 
 
 def test_a_repacked_file_round_trips_into_a_volume(tmp_path):
-    """The point of repacking: the canonical file places itself, order recorded and all."""
     from neu_vol import write_subvolume
 
     src, data = _legacy_file(tmp_path)
@@ -473,10 +434,7 @@ def test_a_renamed_frame_is_still_compared_on_append(tmp_path):
 
 
 def test_write_warns_when_the_pieces_scale_is_not_the_levels(tmp_path, pyramid, caplog):
-    """A piece from another level fits, places cleanly, and is at the wrong resolution.
-
-    Nothing else in `write` can see it: the shapes, dtype and bounds are all fine.
-    """
+    """A piece from another level fits and places cleanly at the wrong resolution."""
     from neu_vol import write_subvolume
 
     vol, _ = pyramid
@@ -521,11 +479,7 @@ def test_the_cli_dry_run_writes_nothing(tmp_path, capsys):
 
 
 def test_a_remote_path_is_refused_with_a_useful_error(tmp_path):
-    """h5py has no object-store driver, and its own error does not say so.
-
-    Left to it, it tries to *create a local file called* `s3://bucket/piece.h5` and reports
-    `errno = 2, No such file or directory`.
-    """
+    """h5py has no object-store driver, and its own error does not say so."""
     src, _ = _stack(tmp_path)
     with pytest.raises(ValueError, match="ordinary filesystem path"):
         pack_hdf5(src, "s3://bucket/piece.h5", voxel_size=(8, 8, 8))

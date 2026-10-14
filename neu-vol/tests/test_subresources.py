@@ -1,9 +1,7 @@
 """Linking a precomputed segmentation volume to its mesh / skeleton / property sidecars.
 
-Moved here from neu-morpho, which still re-exports it: it edits a *volume's* ``info``,
-and more than one consumer needs it. neu-morpho's own tests exercise it against a real
-generated volume; these cover the parts that are pure ``info`` bookkeeping, including the
-``segment_properties`` ``@type`` check that had no coverage before.
+neu-morpho's tests exercise this against a real generated volume; these cover the pure
+``info`` bookkeeping, including the ``segment_properties`` ``@type`` check.
 """
 
 import pytest
@@ -30,9 +28,7 @@ def test_segment_properties_is_linked_like_mesh_and_skeletons(tmp_path):
 
 
 def test_a_wrong_segment_properties_type_is_caught_not_written(tmp_path):
-    """The gap this move closed: the key was accepted but its @type was never checked,
-    so pointing a volume at, say, a mesh directory produced a layer that silently shows
-    no properties."""
+    """Pointing at, say, a mesh directory would give a layer that silently shows no properties."""
     out = _volume(tmp_path, sp="neuroglancer_multilod_draco")
     with pytest.raises(ValueError,
                        match="expected 'neuroglancer_segment_properties'"):

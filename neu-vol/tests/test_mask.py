@@ -1,10 +1,8 @@
 """Excluding a region from a copy: `--mask-bbox`, and the bbox conventions it shares.
 
-A mask holds a region *out* of a copy, so every failure here is a leak: the region ends
-up in the output and the run reports success. The three ways that can happen are pinned
-below — a box in the wrong axis order, a box at the wrong scale, and a coarse level that
-did not inherit the hole — plus the one case the code cannot fix and has to shout about,
-a destination that already holds the region.
+Every failure here is a leak that reports success: a box in the wrong axis order or at the
+wrong scale, a coarse level that did not inherit the hole, and (the one case only a warning
+can address) a destination that already holds the region.
 """
 
 import json
@@ -91,11 +89,7 @@ def test_the_mask_value_may_be_something_other_than_zero(tmp_path, filled):
 
 
 def test_every_pyramid_level_inherits_the_hole(tmp_path):
-    """The level above is derived from the OUTPUT's level 0, so the hole propagates.
-
-    This is the leak that a post-pass over level 0 alone would produce, and it would only
-    be visible by zooming out.
-    """
+    """Levels are derived from the output's level 0, so the hole propagates."""
     data = np.full((16, 16, 16), 7, dtype=np.uint16)
     src = _source(str(tmp_path / "p.zarr"), data)
     dst = str(tmp_path / "pyr.zarr")
@@ -110,11 +104,7 @@ def test_every_pyramid_level_inherits_the_hole(tmp_path):
 
 
 def test_masking_composes_with_cropping_in_source_coordinates(tmp_path, filled):
-    """A mask means the same box whether or not a crop is also given.
-
-    If the mask were resolved against the crop's frame instead, adding --crop-bbox would
-    silently move the hole — and the excluded region would come back.
-    """
+    """A mask is in source coordinates whether or not a crop is also given."""
     src, _ = filled
     dst = str(tmp_path / "both.zarr")
     convert(src, dst, voxel_size=(8, 8, 8), profile="local", chunk=(4, 4, 4),
@@ -126,25 +116,16 @@ def test_masking_composes_with_cropping_in_source_coordinates(tmp_path, filled):
     assert out[4:, 8:, 8:].all()
 
 
-def test_a_mask_outside_the_volume_raises_rather_than_doing_nothing(tmp_path, filled):
-    """The caller asked for a region to be excluded; copying everything is not an answer.
-
-    A box in the wrong axis order or the wrong scale looks exactly like this, and the
-    output of a silent no-op is indistinguishable from a correct copy.
-    """
+@pytest.mark.parametrize("box, match", [
+    # outside the volume, as a wrong axis order or scale would be: not a silent no-op
+    ([(100, 100, 100), (104, 104, 104)], "does not intersect the volume"),
+    ([(4, 4, 4), (4, 8, 8)], "empty mask box"),
+])
+def test_an_unusable_mask_box_raises(tmp_path, filled, box, match):
     src, _ = filled
-    with pytest.raises(ValueError, match="does not intersect the volume"):
+    with pytest.raises(ValueError, match=match):
         convert(src, str(tmp_path / "no.zarr"), voxel_size=(8, 8, 8), profile="local",
-                multiscale=False, mask_boxes=[[(100, 100, 100), (104, 104, 104)]],
-                delete_existing=True)
-
-
-def test_an_empty_mask_box_raises(tmp_path, filled):
-    src, _ = filled
-    with pytest.raises(ValueError, match="empty mask box"):
-        convert(src, str(tmp_path / "no.zarr"), voxel_size=(8, 8, 8), profile="local",
-                multiscale=False, mask_boxes=[[(4, 4, 4), (4, 8, 8)]],
-                delete_existing=True)
+                multiscale=False, mask_boxes=[box], delete_existing=True)
 
 
 def test_the_mask_view_is_read_only():
@@ -179,11 +160,7 @@ def test_bbox_order_xyz_reverses_each_corner(tmp_path, filled):
 
 
 def test_one_scale_flag_covers_every_box_argument(tmp_path):
-    """Two scale flags would let you set one and forget the other.
-
-    The mask would then land 2x away in y/x on this pyramid, excluding the wrong region
-    while the crop was right — which is why there is one --bbox-scale, not one per box.
-    """
+    """One --bbox-scale for both, so a mask cannot land 2x away while the crop is right."""
     data = np.full((16, 32, 32), 7, dtype=np.uint16)
     src = _source(str(tmp_path / "a.zarr"), data)
     vol = str(tmp_path / "aniso.zarr")
@@ -209,11 +186,7 @@ def test_copy_reports_what_it_will_exclude(tmp_path, filled, capsys):
 
 def test_masking_a_destination_that_exists_warns_about_the_elision(tmp_path, filled,
                                                                    caplog):
-    """The one leak the code cannot prevent, so it has to be said loudly.
-
-    An all-fill block is elided rather than written, so a mask cannot erase what an
-    earlier unmasked run already stored at that key.
-    """
+    """An all-fill block is elided, so a mask cannot erase what an earlier run stored."""
     src, _ = filled
     dst = str(tmp_path / "twice.zarr")
     assert cli.main(["convert", "--src", src, "--dst", dst, "--serial", "--format",

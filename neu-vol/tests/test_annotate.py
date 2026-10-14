@@ -1,9 +1,7 @@
 """Which chunks a sparse volume stores, and the boxes that cover them.
 
-The box cover carries the weight: a wrong box is a claim that there is data somewhere there
-isn't, or — worse — hides a region by merging it into a neighbour.
-
-Turning these boxes into a viewer layer is `neu-glance bboxes` and is tested there.
+A wrong box claims data where there is none, or hides a region by merging it into a
+neighbour. Turning boxes into a viewer layer is `neu-glance bboxes`, tested there.
 """
 
 import numpy as np
@@ -15,9 +13,8 @@ from neu_vol.ops.annotate import (NoOccupancy, _precomputed_cell, _zarr_cell,
                                           labeled_regions, maximal_boxes)
 from neu_vol.profiles import zarr3_create_spec
 
-# The real geometry from sample3's gt_v1: two 3x3x3-chunk blocks whose footprints meet
-# at one z boundary but are offset in y, so their union is not a box. Connected
-# components reported these as ONE region spanning both plus the empty corner between.
+# Two 3x3x3-chunk blocks meeting at one z boundary but offset in y, so their union is not
+# a box (connected components would report one region including the empty corner).
 BLOCK_A = {(x, y, z) for x in range(1, 4) for y in range(0, 3) for z in range(0, 3)}
 BLOCK_B = {(x, y, z) for x in range(0, 3) for y in range(1, 4) for z in range(3, 6)}
 
@@ -38,11 +35,7 @@ def test_a_solid_block_is_one_box():
 
 
 def test_genuinely_contiguous_regions_are_one_box():
-    """Two blocks written face to face *in line* are one region, by design.
-
-    Nothing in the stored chunks distinguishes that from a single write of twice the
-    size, and a box over both is a true statement about where the data is.
-    """
+    """Two blocks face to face in line are one region: nothing in storage distinguishes them."""
     left = {(0, y, z) for y in range(2) for z in range(2)}
     right = {(1, y, z) for y in range(2) for z in range(2)}
     assert maximal_boxes(left | right) == [((0, 0, 0), (2, 2, 2))]
@@ -67,36 +60,27 @@ def test_a_box_never_claims_an_absent_cell(seed):
 # --------------------------------------------------------------------------- #
 # chunk keys
 # --------------------------------------------------------------------------- #
-def test_precomputed_key_is_xyz_and_becomes_a_zyx_cell():
-    cell = _precomputed_cell("128-256_0-128_384-512", (128, 128, 128))
-    assert cell == (3, 0, 1), "key is xyz, cells are zyx"
+@pytest.mark.parametrize("key, cell", [
+    ("128-256_0-128_384-512", (3, 0, 1)),      # the key is xyz, cells are zyx
+    ("0-128_0-128_0-128.gz", (0, 0, 0)),       # CloudVolume's gzipped keys
+    ("info", None),
+])
+def test_precomputed_chunk_key_to_cell(key, cell):
+    assert _precomputed_cell(key, (128, 128, 128)) == cell
 
 
-def test_cloudvolume_gz_suffixed_keys_still_parse():
-    """A gzipped-chunk volume is exactly the kind most likely to be sparse."""
-    assert _precomputed_cell("0-128_0-128_0-128.gz", (128,) * 3) == (0, 0, 0)
-
-
-@pytest.mark.parametrize("key", ["c/1/2/3", "c.1.2.3"])
-def test_zarr_keys_parse_with_either_separator(key):
-    assert _zarr_cell(key, 3) == (1, 2, 3)
-
-
-def test_zarr_channel_axis_is_dropped():
-    assert _zarr_cell("c/0/1/2/3", 3) == (1, 2, 3)
-
-
-def test_non_chunk_keys_are_ignored():
-    assert _zarr_cell("zarr.json", 3) is None
-    assert _precomputed_cell("info", (128,) * 3) is None
+@pytest.mark.parametrize("key, cell", [
+    ("c/1/2/3", (1, 2, 3)),
+    ("c.1.2.3", (1, 2, 3)),
+    ("c/0/1/2/3", (1, 2, 3)),                  # a channel axis is dropped
+    ("zarr.json", None),
+])
+def test_zarr_chunk_key_to_cell(key, cell):
+    assert _zarr_cell(key, 3) == cell
 
 
 def test_a_sharded_level_says_so_rather_than_reporting_nothing(monkeypatch, tmp_path):
-    """Shards hide which of their chunks exist, so occupancy is unanswerable.
-
-    Silently returning zero regions would read as "this volume is empty", which is the
-    one wrong answer worth guarding against.
-    """
+    """Shards hide which chunks exist; zero regions would wrongly read as "empty"."""
     from neu_vol.ops import annotate
 
     monkeypatch.setattr(annotate, "list_keys", lambda *a, **k: ["0.shard", "1.shard"])
@@ -108,12 +92,8 @@ def test_a_sharded_level_says_so_rather_than_reporting_nothing(monkeypatch, tmp_
 # against real volumes
 # --------------------------------------------------------------------------- #
 def _sparse(tmp_path, name, *, profile, chunk=(8, 8, 8)):
-    """A real two-level volume, 32^3, holding two separated 8^3 labeled blocks.
-
-    Built through `convert` so the levels, `info`/`zarr.json` and the elision of
-    all-fill chunks are the production ones — occupancy here means what it means in a
-    real run.
-    """
+    """A real two-level 32^3 volume holding two separated 8^3 labelled blocks, built by
+    `convert` so chunk elision is the production one."""
     seg = np.zeros((32, 32, 32), np.uint64)
     seg[0:8, 0:8, 0:8] = 3                       # cell (0,0,0)
     seg[16:24, 24:32, 8:16] = 4                  # cell (2,3,1)
@@ -157,7 +137,6 @@ def test_no_tighten_skips_the_reads_and_reports_no_label_counts(tmp_path):
 
 
 def test_tightening_shrinks_a_box_to_its_data(tmp_path):
-    """A chunk holding one labeled voxel should not annotate the whole chunk."""
     seg = np.zeros((32, 32, 32), np.uint64)
     seg[8:24, 8:24, 8:24] = 9          # spans chunks, but leaves margins inside them
     src = str(tmp_path / "s.zarr")
@@ -178,19 +157,13 @@ def test_tightening_shrinks_a_box_to_its_data(tmp_path):
 
 
 def test_an_absent_occupancy_level_is_an_error(tmp_path):
-    """Occupancy at another level answers a different question, so it is not guessed."""
     dst = _sparse(tmp_path, "vol", profile="local-neuroglancer")
     with pytest.raises(ValueError, match="no level 5"):
         labeled_regions(dst, level=5, tighten_level=None)
 
 
 def test_tightening_falls_back_to_the_deepest_level_there_is(tmp_path):
-    """A single-level volume is the normal state of one `create` made and `write` filled.
-
-    Erroring because the default tighten level is absent would refuse to annotate
-    exactly those volumes. Clamping goes finer, so the boxes get more exact, not less —
-    but it has to be reported, or a slow run looks unexplained.
-    """
+    """Clamping to a finer level is reported; the boxes only get more exact."""
     dst = _sparse(tmp_path, "vol", profile="local-neuroglancer")
     regions, ctx = labeled_regions(dst, tighten_level=7)
     assert ctx["tighten_level"] == max(ctx["levels"])

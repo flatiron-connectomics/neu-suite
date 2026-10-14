@@ -1,8 +1,7 @@
 """DVID ROIs as a positioned label volume, without a DVID server.
 
-The fetch is stubbed; the UNPACK is neuclease's real one, fed real ``ranges`` rows, because
-the thing most likely to be silently wrong is the box convention — which block the array's
-voxel ``(0, 0, 0)`` is — and a stubbed unpack would only restate the assumption.
+The fetch is stubbed, but the unpack is neuclease's real one, since the box convention
+(which block is the array's voxel ``(0, 0, 0)``) is what is most likely to be wrong.
 """
 
 import numpy as np
@@ -51,19 +50,14 @@ def test_available_rois_lists_only_the_roi_instances(fake_rois):
     assert dvid.available_rois(SPEC) == ["A", "B", "EMPTY", "ME(L)"]
 
 
-def test_a_typo_is_caught_up_front_with_close_matches(fake_rois):
-    with pytest.raises(ValueError, match=r"named ME\(Q\).*ME\(L\)"):
-        dvid.resolve_roi_set(SPEC, ["A", "ME(Q)"])
-
-
-def test_an_empty_roi_set_explains_why_there_is_no_default(fake_rois):
-    with pytest.raises(ValueError, match="deliberately no default"):
-        dvid.resolve_roi_set(SPEC, [])
-
-
-def test_a_repeated_roi_is_refused(fake_rois):
-    with pytest.raises(ValueError, match="repeats A"):
-        dvid.resolve_roi_set(SPEC, ["A", "A"])
+@pytest.mark.parametrize("names, match", [
+    (["A", "ME(Q)"], r"ME\(Q\).*ME\(L\)"),     # a typo, with close matches
+    ([], "no default"),
+    (["A", "A"], "repeats A"),
+])
+def test_a_bad_roi_set_is_refused_up_front(fake_rois, names, match):
+    with pytest.raises(ValueError, match=match):
+        dvid.resolve_roi_set(SPEC, names)
 
 
 def test_the_order_given_is_preserved(fake_rois):
@@ -74,16 +68,14 @@ def test_the_order_given_is_preserved(fake_rois):
 # --------------------------------------------------------------------------- #
 # the positioned volume
 # --------------------------------------------------------------------------- #
-def test_roi_frame_is_one_block_per_voxel_starting_at_the_box():
-    frame = dvid.roi_frame((2, 3, 4), (8.0, 8.0, 8.0), origin_nm=(0.0, 0.0, 100.0))
-    assert frame.voxel_size_nm == (256.0, 256.0, 256.0)
-    assert frame.origin_nm == (512.0, 768.0, 1124.0)
-
-
-def test_roi_frame_keeps_anisotropy():
-    frame = dvid.roi_frame((1, 1, 1), (40.0, 8.0, 8.0))
-    assert frame.voxel_size_nm == (1280.0, 256.0, 256.0)
-    assert frame.origin_nm == (1280.0, 256.0, 256.0)
+@pytest.mark.parametrize("box_lo, voxel, kw, size, origin", [
+    ((2, 3, 4), (8.0, 8.0, 8.0), {"origin_nm": (0.0, 0.0, 100.0)},
+     (256.0, 256.0, 256.0), (512.0, 768.0, 1124.0)),
+    ((1, 1, 1), (40.0, 8.0, 8.0), {}, (1280.0, 256.0, 256.0), (1280.0, 256.0, 256.0)),
+])
+def test_roi_frame_is_one_block_per_voxel_starting_at_the_box(box_lo, voxel, kw, size, origin):
+    frame = dvid.roi_frame(box_lo, voxel, **kw)
+    assert frame.voxel_size_nm == size and frame.origin_nm == origin
 
 
 def test_roi_volume_places_blocks_where_dvid_says_they_are(fake_rois):

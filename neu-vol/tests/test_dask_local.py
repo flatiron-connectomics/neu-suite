@@ -1,9 +1,7 @@
 """Exercise the real distributed path (LocalCluster).
 
-This runs the block-map workers through dask.distributed rather than serially,
-verifying that the per-block partials, Block objects, and backend specs pickle
-and execute on separate worker processes — the same machinery the SLURM path
-uses. It is the closest we can get to a SLURM smoke test without submitting jobs.
+The block-map workers run through dask.distributed rather than serially, so partials,
+Block objects and backend specs must pickle and execute in separate worker processes.
 """
 
 import os

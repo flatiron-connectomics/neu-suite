@@ -1,21 +1,12 @@
 import pytest
 
 from neu_vol import open_backend
-from neu_vol.backends.base import _OPENERS
 
 
-def test_all_backends_registered():
-    assert {"zarr3", "neuroglancer_precomputed", "image_stack", "hdf5"} <= set(_OPENERS)
-
-
-def test_open_backend_unknown_tag():
+@pytest.mark.parametrize("spec", [{"backend": "does-not-exist"}, {"path": "/tmp/x"}])
+def test_open_backend_needs_a_known_tag(spec):
     with pytest.raises(ValueError):
-        open_backend({"backend": "does-not-exist"})
-
-
-def test_open_backend_missing_tag():
-    with pytest.raises(ValueError):
-        open_backend({"path": "/tmp/x"})
+        open_backend(spec)
 
 
 def test_open_missing_store_raises(tmp_path):

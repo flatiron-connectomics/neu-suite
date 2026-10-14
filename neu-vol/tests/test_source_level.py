@@ -1,14 +1,8 @@
 """Which scale of a multiscale source becomes level 0.
 
-An `info` is a CLAIM about a volume's layout; the chunk objects are the volume. A
-sample3 neuropil mask declares seven scales (8 nm through 512 nm) and stores exactly
-one — `64_64_64`, 18 chunk objects. Reading "level 0" there meant reading a scale that
-was never written: it opened, reported the full 11260x9000x13750 extent its metadata
-claims, and returned the fill value at every block. A 10.1 TiB copy of zeros, with
-nothing raised anywhere.
-
-So level 0 is the finest scale that actually STORES data, `--src-level` names one
-explicitly, and a scale that stores nothing while another does is refused outright.
+An `info` may declare scales that were never written; such a scale opens and reads as the
+fill value everywhere. So level 0 is the finest scale that stores data, `--src-level` names
+one explicitly, and a scale storing nothing while another does is refused.
 """
 
 import json
@@ -43,11 +37,7 @@ def _precomputed(tmp_path, name="vol", shape=(32, 32, 32)):
 
 
 def _strip_finest(dst):
-    """Delete the finest scale's chunks, keeping its `info` entry. Returns (fine, coarse).
-
-    This is the shape of the mask exactly: metadata declaring a scale that the store
-    does not have.
-    """
+    """Delete the finest scale's chunks, keeping its `info` entry. Returns (fine, coarse)."""
     with open(os.path.join(dst, "info")) as fh:
         scales = json.load(fh)["scales"]
     fine = min(scales, key=lambda s: tuple(s["resolution"]))
@@ -83,8 +73,7 @@ def test_the_finest_populated_scale_is_found(tmp_path):
 
 
 def test_an_unwritten_scale_is_distinguished_from_a_sparse_one(tmp_path):
-    """The pair that makes the heuristic sound. Both scales lack an origin chunk; only
-    one of them is actually empty."""
+    """Both lack an origin chunk; only one is actually empty."""
     from neu_vol.location import read_json
     from neu_vol.source_metadata import _first_chunk_key, scale_is_empty
 
@@ -99,13 +88,7 @@ def test_an_unwritten_scale_is_distinguished_from_a_sparse_one(tmp_path):
 
 
 def test_a_volume_sparse_at_the_origin_of_every_scale_is_still_resolved(tmp_path):
-    """The registered neuropil mask: 26 chunks at 64 nm, none of them the origin one,
-    and no origin chunk at any other scale either.
-
-    Tier 1 sees nothing anywhere. Giving up there fell back to the finest DECLARED
-    scale — precisely the failure this is meant to prevent — so `copy` refused a
-    perfectly good volume rather than reading it.
-    """
+    """No origin chunk at any scale: the listing tier must still find the written one."""
     from neu_vol.location import read_json
     from neu_vol.source_metadata import _first_chunk_key
 
@@ -123,8 +106,7 @@ def test_a_volume_sparse_at_the_origin_of_every_scale_is_still_resolved(tmp_path
 
 
 def test_a_volume_that_stores_nothing_anywhere_gives_no_answer(tmp_path):
-    """None, not 0. The caller has to decide what to do about it; `require_populated_
-    scale` warns rather than raising, since an empty volume is legal."""
+    """None, not 0: an empty volume is legal, and the caller decides."""
     from neu_vol.location import read_json
 
     dst = _precomputed(tmp_path, "nothing")
@@ -138,21 +120,17 @@ def test_a_volume_that_stores_nothing_anywhere_gives_no_answer(tmp_path):
 # what level 0 resolves to
 # --------------------------------------------------------------------------- #
 def test_level_0_is_the_finest_scale_that_stores_data(tmp_path):
-    """The bug: the finest DECLARED scale opened and read as the fill value."""
     dst = _precomputed(tmp_path, "resolve")
     _strip_finest(dst)
 
     meta = read_source_metadata({"backend": "neuroglancer_precomputed", "path": dst})
     assert meta["data_spec"]["scale_index"] == 1
-    # and its voxel size is that scale's OWN, not 2**level of the finest (invariant
-    # NM-SPACE) — the two agree on this pyramid, but the value must come from the scale.
+    # the scale's own voxel size, not one derived from 2**level
     assert tuple(meta["voxel_size"]) == (16.0, 16.0, 16.0)
 
 
 def test_an_explicit_scale_index_wins_over_the_probe(tmp_path):
-    """`--src-level` must be able to name a scale the probe would not have chosen —
-    including an empty one, which `neu-vol write` legitimately does when filling a
-    level that does not exist yet."""
+    """Even an empty scale, which `neu-vol write` fills legitimately."""
     dst = _precomputed(tmp_path, "explicit")
     _strip_finest(dst)
 
@@ -170,7 +148,6 @@ def test_an_out_of_range_level_is_an_error_not_a_wrap(tmp_path):
 
 
 def test_an_ordinary_volume_is_unaffected(tmp_path):
-    """Every scale written -> level 0 is still scale 0, and the probe costs one check."""
     dst = _precomputed(tmp_path, "ordinary")
     meta = read_source_metadata({"backend": "neuroglancer_precomputed", "path": dst})
     assert meta["data_spec"]["scale_index"] == 0
@@ -178,8 +155,6 @@ def test_an_ordinary_volume_is_unaffected(tmp_path):
 
 
 def test_describe_reports_which_source_level_it_described(tmp_path):
-    """`copy` derives voxel size, chunking and extent from this, so it has to say
-    which scale they came from."""
     dst = _precomputed(tmp_path, "described")
     assert describe(dst)["source_level"] == 0
 
@@ -203,7 +178,7 @@ def test_reading_a_declared_but_unwritten_scale_is_refused(tmp_path):
     with pytest.raises(ValueError, match="stores no data"):
         require_populated_scale({"backend": "neuroglancer_precomputed", "path": dst,
                                  "scale_index": 0})
-    # the message has to name a level that WOULD work, or it just says "no"
+    # the message names a level that would work
     with pytest.raises(ValueError, match=r"levels that DO store data: 1"):
         require_populated_scale({"backend": "neuroglancer_precomputed", "path": dst,
                                  "scale_index": 0})
@@ -220,12 +195,7 @@ def test_convert_refuses_before_it_writes_anything(tmp_path):
 
 
 def test_a_sparse_scale_with_no_origin_chunk_is_allowed(tmp_path):
-    """An absent ORIGIN chunk is not an unwritten scale.
-
-    A sparse volume elides all-background chunks, so a ground-truth crop away from the
-    origin stores nothing there while being perfectly written. Refusing one of those
-    would be a worse failure than the one this guard prevents.
-    """
+    """A sparse volume elides background chunks, so a missing origin chunk proves nothing."""
     from neu_vol.source_metadata import _first_chunk_key
 
     dst = _precomputed(tmp_path, "sparse")
@@ -239,13 +209,8 @@ def test_a_sparse_scale_with_no_origin_chunk_is_allowed(tmp_path):
 
 
 def test_a_sparse_volume_is_not_read_at_the_wrong_scale(tmp_path):
-    """The regression this heuristic nearly shipped.
-
-    A sparse volume's finest scale can have no origin chunk while a coarser one does —
-    the coarse level covers more ground per chunk, so the reduction of a nearby crop
-    lands in its origin chunk. Choosing by origin alone silently promoted level 1 to
-    level 0, halving the resolution of every rebuilt pyramid.
-    """
+    """No origin chunk at scale 0 but one at scale 1: choosing by origin alone would read
+    the pyramid at half resolution."""
     from neu_vol.location import read_json
 
     labels = np.zeros((64, 64, 64), "uint64")
@@ -278,7 +243,6 @@ def test_a_non_precomputed_source_is_not_probed(tmp_path):
 # end to end
 # --------------------------------------------------------------------------- #
 def test_a_copy_of_a_mostly_unwritten_volume_carries_the_real_data(tmp_path):
-    """The whole point: the output holds the labels, not a plausible field of zeros."""
     dst = _precomputed(tmp_path, "e2e")
     _strip_finest(dst)
     out = str(tmp_path / "e2e_copy")

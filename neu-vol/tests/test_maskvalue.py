@@ -1,11 +1,8 @@
 """Background that is not 0: `--background` at ingest, and `mask-by-value` afterwards.
 
-The assertion that matters is not that the values change — that part is easy — it is that
-**the storage** does. A tool numbering labels from 0 makes background 1, and an
-all-background block of 1s is not all-fill, so it gets *stored*: the volume then has a chunk
-object everywhere data was written and "which chunks exist" stops answering "where is the
-data". That question is what `bboxes-json`, `relabel`, `downsample --sparse` and
-neu-morpho's occupancy all ask, so the tests below check stored keys, not just voxels.
+The tests check stored chunk keys, not just voxels: an all-background block of 1s is not
+all-fill, so it is stored, and "which chunks exist" stops meaning "where is the data", which
+is what occupancy, `relabel` and `downsample --sparse` rely on.
 """
 
 import numpy as np
@@ -49,7 +46,7 @@ def background_one():
 # at ingest, which is where it belongs
 # --------------------------------------------------------------------------- #
 def test_without_background_every_block_is_stored(tmp_path, background_one):
-    """The problem, stated as a test so the fix has something to be measured against."""
+    """The problem: all 8 blocks stored, though 7 hold only background."""
     src = _source(str(tmp_path / "s.zarr"), background_one)
     dst = str(tmp_path / "dense.zarr")
     convert(src, dst, voxel_size=(8, 8, 8), kind="segmentation", chunk=(8, 8, 8),
@@ -83,7 +80,6 @@ def test_several_background_values_can_be_given(tmp_path):
 
 
 def test_write_applies_it_to_the_piece_being_placed(tmp_path, background_one):
-    """The path the user's data actually takes: a segmented piece into a GT volume."""
     from neu_vol import write_subvolume
 
     piece = str(tmp_path / "piece.h5")
@@ -99,7 +95,6 @@ def test_write_applies_it_to_the_piece_being_placed(tmp_path, background_one):
 
 
 def test_to_hdf5_can_correct_it_while_packing(tmp_path, background_one):
-    """Then the packed file is already right and nothing downstream needs to know."""
     import h5py
 
     src = _source(str(tmp_path / "h.zarr"), background_one)
@@ -110,11 +105,7 @@ def test_to_hdf5_can_correct_it_while_packing(tmp_path, background_one):
 
 
 def test_the_remap_view_keeps_the_sources_recorded_metadata(tmp_path, background_one):
-    """A remap changes values, not geometry, so `stored_offset` must survive the wrapper.
-
-    Swallowing it would silently turn "the offset came from the file" back into "no offset
-    given" — and `write` would then demand one.
-    """
+    """A remap changes values, not geometry, so `stored_offset` survives the wrapper."""
     from neu_vol import write_subvolume
 
     piece = str(tmp_path / "keeps.h5")
@@ -154,19 +145,13 @@ def test_out_gives_a_corrected_and_sparse_copy(tmp_path, landed):
 
 
 def test_in_place_restores_the_storage_too(tmp_path, landed):
-    """Writing zeros over a stored chunk REMOVES the object, so in place fixes both.
-
-    Worth pinning, because assuming the opposite is easy: `convert --mask-bbox` genuinely
-    cannot clear what is already at a key, but only because its block worker returns
-    "empty" and never issues the write. Here the zeros are written, and the chunk goes.
-    """
+    """Writing zeros over a stored chunk removes the object, so in place fixes both."""
     mask_values(landed, [1], in_place=True)
     assert set(np.unique(_read(landed))) == {0, 2, 3}, "values corrected"
     assert len(_chunk_keys(landed)) == 1, "and the all-background chunks are gone"
 
 
 def test_a_value_that_is_not_present_is_reported(tmp_path, landed, caplog):
-    """Almost always a wrong guess at the background value, and otherwise a no-op."""
     with caplog.at_level("WARNING"):
         result = mask_values(landed, [7], out=str(tmp_path / "none.zarr"))
     assert result["voxels_replaced"] == 0
@@ -174,7 +159,6 @@ def test_a_value_that_is_not_present_is_reported(tmp_path, landed, caplog):
 
 
 def test_merging_onto_an_existing_value_is_reported(tmp_path, background_one, caplog):
-    """If 0 was a real label, mapping 1 onto it has just made two labels one."""
     data = background_one.copy()
     data[8:12, 8:12, 8:12] = 0                       # 0 already means something here
     src = _source(str(tmp_path / "z.zarr"), data)

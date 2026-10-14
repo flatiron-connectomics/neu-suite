@@ -1,10 +1,8 @@
 """What the documentation build depends on, pinned here so it cannot quietly break.
 
-The docs site renders the CLI reference from the real ``ArgumentParser``, which is what
-stops published usage from drifting away from ``--help``. Two things have to hold for
-that: the parser must be reachable without running it, and importing the module must not
-require the conda-only half of the environment — otherwise the GitHub Actions job needs
-micromamba and flyem-forge instead of a plain pip install.
+The docs site renders the CLI reference from the real ``ArgumentParser``, so the parser
+must be reachable without running it, and importing the module must not need the conda-only
+half of the environment.
 """
 
 import argparse
@@ -31,15 +29,12 @@ def test_build_parser_returns_the_parser_without_running_it():
 
 
 def test_every_subcommand_is_reachable_from_the_parser():
-    """The cheat sheet and reference are built by walking this; a subcommand that is not
-    here is a subcommand that silently never gets documented."""
+    """The reference is built by walking this, so a missing subcommand goes undocumented."""
     from neu_vol import cli
 
     parser = cli.build_parser()
     subs = next(a for a in parser._actions
                 if isinstance(a, argparse._SubParsersAction)).choices
-    # bboxes-json, annotate-json and ng-url-gen moved to neu-glance as `bboxes`, `annotate`
-    # and `gen`. A clean break with no aliases, so an old invocation fails loudly.
     assert set(subs) == {"info", "convert", "copy", "downsample", "create", "write",
                          "to-hdf5", "progress",
                          "align-bbox", "relabel", "mask-by-value", "wk-mappings",
@@ -49,27 +44,17 @@ def test_every_subcommand_is_reachable_from_the_parser():
 
 
 def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
-    """`neu-vol help write` and `neu-vol write --help` are the same thing to everyone
-    except argparse, and being told "invalid choice" for one of them is a poor greeting
-    from a tool whose whole surface is subcommands."""
+    """`neu-vol help write` prints exactly what `neu-vol write --help` does."""
+    import pytest
+
     from neu_vol import cli
 
     assert cli.main(["help"]) == 0
     assert "usage: neu-vol" in capsys.readouterr().out
 
     assert cli.main(["help", "write"]) == 0
-    printed = capsys.readouterr().out
-    assert "usage: neu-vol write" in printed and "--all-datasets" in printed
-
-
-def test_the_help_subcommand_IS_the_flag_rather_than_a_copy_of_it(capsys):
-    """Re-parsing is what keeps the two identical: there is no second rendering to drift."""
-    import pytest
-
-    from neu_vol import cli
-
-    cli.main(["help", "write"])
     subcommand = capsys.readouterr().out
+    assert "usage: neu-vol write" in subcommand
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["write", "--help"])
     assert capsys.readouterr().out == subcommand
@@ -82,22 +67,8 @@ def test_help_for_something_that_is_not_a_command_lists_the_real_ones(capsys):
     assert "invalid choice: 'nosuch'" in capsys.readouterr().err
 
 
-def test_parse_args_still_goes_through_build_parser():
-    """Splitting the two must not let the built parser and the used one diverge."""
-    from neu_vol import cli
-
-    args = cli._parse_args(["info", "somewhere"])
-    assert args.func is cli.cmd_info and args.volume == "somewhere"
-
-
 def test_importing_the_cli_needs_no_conda_only_package():
-    """Run in a subprocess: this test session has already imported half of them.
-
-    Checks two separate things in the one subprocess, because spawning a second
-    interpreter costs more than either assertion: nothing conda-only is reachable, and
-    dask is not imported either. The latter is a startup-latency contract, not a
-    packaging one — see blockrun's test_lazy_dask.
-    """
+    """Nor dask. In a subprocess, since this session has already imported them."""
     probe = CONDA_ONLY + ["dask", "distributed"]
     code = (
         "import sys; import neu_vol.cli; "

@@ -1,20 +1,8 @@
-"""Detecting and describing the two CONTAINER formats: HDF5 and image stacks.
+"""Detecting and describing the two container formats, HDF5 and image stacks.
 
-Everything else here is detected from a marker object — ``info``, ``zarr.json`` — and
-these two have none: HDF5's signature is inside the file, and a stack of PNGs is a
-directory with nothing in it that says so. So they were the only backends
-``detect_backend`` could not reach, which made ``describe`` (and with it ``neu-vol
-info``, ``create --like`` and a ``convert`` that needs no ``--voxel-size``) refuse a file
-this package's own ``to-hdf5`` had just written.
-
-Three properties are what these tests are for, and each one has a silent failure behind
-it:
-
-* detection is **evidence-based** — a directory is a stack because it holds slices, not
-  because it is a directory;
-* a marker **always wins**, so adding a file cannot change what an existing volume is;
-* an axis order is **read, never assumed**, because the recorded field name
-  (``voxel_offset``) is precomputed's, where it means xyz, while everything here is zyx.
+Neither has a marker object, so: detection is evidence-based (a directory is a stack
+because it holds slices), a marker always wins, and an axis order is read, never assumed
+(``voxel_offset`` is precomputed's name, where it means xyz).
 """
 
 import os
@@ -84,8 +72,7 @@ def test_a_directory_of_slices_is_a_stack(tmp_path):
 
 
 def test_a_glob_is_a_stack_without_touching_the_filesystem(tmp_path):
-    """No other format is ever addressed with a glob, so the name alone settles it —
-    which also means a glob matching nothing yet is still a stack, and fails at open."""
+    """A glob is only ever a stack, even before anything matches it."""
     assert detect_file_backend(str(tmp_path / "nothing-here" / "*.tif")) == "image_stack"
 
 
@@ -98,30 +85,33 @@ def test_a_single_multipage_tiff_is_a_stack(tmp_path):
     assert describe(path)["shape"] == (4, 5, 6)
 
 
-def test_a_directory_is_not_a_stack_just_for_being_a_directory(tmp_path):
-    """The listing is the evidence. `ops/write.source_spec` used to answer image_stack
-    for ANY directory, which turns every typo into a stack whose reader then reports
-    "no image files matched" — a message about the wrong thing entirely."""
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    assert detect_backend(str(empty)) is None
-
-    unrelated = tmp_path / "notes"
-    unrelated.mkdir()
-    (unrelated / "README.md").write_text("hello")
-    (unrelated / "run.log").write_text("hello")
-    assert detect_backend(str(unrelated)) is None
+def _empty_dir(tmp_path):
+    (tmp_path / "empty").mkdir()
+    return tmp_path / "empty"
 
 
-def test_an_unknown_extension_is_not_guessed_at(tmp_path):
+def _unrelated_dir(tmp_path):
+    d = tmp_path / "notes"
+    d.mkdir()
+    (d / "README.md").write_text("hello")
+    (d / "run.log").write_text("hello")
+    return d
+
+
+def _unknown_file(tmp_path):
     path = tmp_path / "volume.dat"
     path.write_bytes(b"\x00" * 16)
-    assert detect_backend(str(path)) is None
+    return path
+
+
+@pytest.mark.parametrize("make", [_empty_dir, _unrelated_dir, _unknown_file])
+def test_nothing_is_detected_without_evidence(tmp_path, make):
+    """A directory is not a stack just for being a directory, and no extension is guessed."""
+    assert detect_backend(str(make(tmp_path))) is None
 
 
 def test_a_marker_always_wins_over_a_stray_slice(tmp_path):
-    """Adding a file must not change what an existing volume is. The container formats
-    are checked LAST, after every marker probe, so the order cannot be reversed."""
+    """Adding a file must not change what an existing volume is."""
     root = tmp_path / "vol"
     root.mkdir()
     (root / "zarr.json").write_text('{"node_type": "group", "attributes": {}}')
@@ -130,16 +120,13 @@ def test_a_marker_always_wins_over_a_stray_slice(tmp_path):
 
 
 def test_a_remote_location_is_never_a_container(tmp_path):
-    """h5py has no object-store driver and the stack reader globs the filesystem, so
-    detecting either on s3 would name a backend that cannot open it — and the probes are
-    `os.stat` calls, which say nothing useful about a bucket."""
+    """Neither container backend can open an object-store location."""
     assert detect_file_backend("s3://my-bucket/pieces/a.h5") is None
     assert detect_file_backend("s3://my-bucket/slices") is None
 
 
 def test_mixed_slice_types_are_read_as_one_stack_and_warned_about(tmp_path, caplog):
-    """The reader sorts every extension it knows together, so a mixed directory
-    interleaves two stacks into one volume. Legal, almost never meant, invisible after."""
+    """A mixed directory interleaves two stacks into one volume: legal, but warned."""
     d = _slices(tmp_path / "mixed", n=2, ext=".tif")
     _slices(d, n=2, ext=".png")
     with caplog.at_level("WARNING"):
@@ -160,15 +147,12 @@ def test_a_packed_file_reports_its_own_frame(tmp_path):
     assert meta["units"] == "nm"
     assert meta["spatial_axes"] == ("z", "y", "x")
     assert meta["has_channels"] is False
-    # An HDF5 file has nowhere agreed-on to say image or segmentation, and guessing is
-    # the one that averages label ids into ids that were never in the data.
+    # never guessed: a wrong "image" would average label ids
     assert meta["kind"] is None
 
 
 def test_an_xyz_frame_is_reversed_into_zyx(tmp_path):
-    """The whole reason `axes` is written. `voxel_offset` is precomputed's field name and
-    means xyz there, so the numbers alone cannot say — and read the wrong way round an
-    anisotropic volume comes back mirrored through the z=x diagonal, silently."""
+    """Read the wrong way round, an anisotropic volume would be mirrored through z=x."""
     path = _framed(tmp_path / "xyz.h5", voxel_size=(8.0, 8.0, 40.0),
                    voxel_offset=(4, 3, 2), axes="xyz")
     meta = read_source_metadata({"backend": "hdf5", "path": path, "dataset": "/data"})
@@ -178,16 +162,13 @@ def test_an_xyz_frame_is_reversed_into_zyx(tmp_path):
 
 
 def test_an_uninterpretable_axis_order_raises_rather_than_falling_back(tmp_path):
-    """A *stated* fact this cannot honour. Substituting zyx for it would mirror the data
-    with nothing downstream able to tell, which is worse than refusing to read it."""
     path = _framed(tmp_path / "weird.h5", axes="yxz")
-    with pytest.raises(ValueError, match="neither 'zyx' nor 'xyz'"):
+    with pytest.raises(ValueError, match="'yxz'"):
         read_source_metadata({"backend": "hdf5", "path": path, "dataset": "/data"})
 
 
 def test_no_recorded_axes_falls_back_to_zyx_and_says_so(tmp_path, caplog):
-    """Warned only when it could matter: reversing an isotropic vector changes nothing,
-    so an 8x8x8 file is silent and a 40x8x8 one is not."""
+    """Warned only when anisotropic, since reversing an isotropic vector changes nothing."""
     aniso = _framed(tmp_path / "aniso.h5", voxel_size=(40.0, 8.0, 8.0), axes=None)
     with caplog.at_level("WARNING"):
         meta = read_source_metadata({"backend": "hdf5", "path": aniso,
@@ -203,8 +184,7 @@ def test_no_recorded_axes_falls_back_to_zyx_and_says_so(tmp_path, caplog):
 
 
 def test_voxel_size_is_the_gate_for_the_whole_frame(tmp_path):
-    """An offset in voxels is not physical on its own, so a half-filled dict would let
-    `convert` proceed with an origin and no scale. Withheld instead."""
+    """An offset without a voxel size is withheld, not half-reported."""
     path = _h5(tmp_path / "off-only.h5",
                {"data": (np.zeros((2, 2, 2), "uint8"),
                          {"voxel_offset": np.asarray([1, 1, 1], "int64")})})
@@ -213,8 +193,7 @@ def test_voxel_size_is_the_gate_for_the_whole_frame(tmp_path):
 
 
 def test_a_frame_on_the_root_group_covers_the_dataset(tmp_path):
-    """Writers put these in three places and `neu-vol to-hdf5` uses two; a file-wide
-    voxel size on the root is the usual shape for a container of crops."""
+    """A file-wide voxel size on the root, the usual shape for a container of crops."""
     path = _h5(tmp_path / "root.h5", {"data": (np.zeros((2, 2, 2), "uint8"), {})},
                root_attrs={"voxel_size": np.asarray([8.0, 8.0, 8.0]), "axes": "zyx"})
     meta = read_source_metadata({"backend": "hdf5", "path": path, "dataset": "/data"})
@@ -232,10 +211,7 @@ def test_channels_come_from_the_ndim(tmp_path):
 # one level, and exactly one
 # --------------------------------------------------------------------------- #
 def test_a_container_has_exactly_one_level(tmp_path):
-    """The bug this prevents: `HDF5Backend` ignores a spec key it does not know, so a
-    spec carrying `scale_index=7` opened level 0 and reported it AS level 7 — and
-    `existing_levels` probed twelve of them, opening the same array twelve times and
-    reporting a one-level file as a twelve-level pyramid of identical shapes."""
+    """Not a pyramid of identical levels (the backend ignores `scale_index`)."""
     path = _framed(tmp_path / "piece.h5")
     levels = existing_levels(path, "hdf5")
     assert sorted(levels) == [0]
@@ -252,8 +228,7 @@ def test_any_level_but_zero_is_an_error_not_an_absence(tmp_path, fmt):
 
 
 def test_the_one_level_carries_the_recorded_voxel_size(tmp_path):
-    """Returned as a list of one, so a caller asking "what does level N measure" gets the
-    same shape of answer for every format."""
+    """A list of one, the same shape of answer as for a pyramid."""
     path = _framed(tmp_path / "piece.h5")
     assert read_level_voxel_sizes(location_spec(path, "hdf5")) == [(40.0, 8.0, 8.0)]
     assert read_level_voxel_sizes({"backend": "image_stack", "source": "x"}) is None
@@ -263,8 +238,10 @@ def test_the_one_level_carries_the_recorded_voxel_size(tmp_path):
 # describe
 # --------------------------------------------------------------------------- #
 def test_describe_works_on_a_packed_hdf5_file(tmp_path):
-    """The request this whole change exists for."""
-    d = describe(_framed(tmp_path / "piece.h5"))
+    path = _framed(tmp_path / "piece.h5")
+    d = describe(path)
+    assert d["location"] == path
+    assert d["dataset"] == "/data" and sorted(d["datasets"]) == ["/data"]
     assert d["format"] == "hdf5"
     assert d["shape"] == (2, 3, 4)
     assert d["dtype"] == "uint16"
@@ -272,13 +249,11 @@ def test_describe_works_on_a_packed_hdf5_file(tmp_path):
     assert d["level_voxel_sizes"] == [(40.0, 8.0, 8.0)]
     assert sorted(d["levels"]) == [0]
     assert d["spec"]["dataset"] == "/data"
-    # A file is a file: there is no keyspace under it for a second volume to hide in.
     assert d["other_markers"] == []
 
 
 def test_describe_works_on_a_file_that_records_nothing(tmp_path):
-    """`meta` is None and that is the honest answer; shape and dtype always come from
-    opening the array, so they are always there."""
+    """`meta` is None; shape and dtype come from the array itself."""
     path = _h5(tmp_path / "plain.h5", {"data": (np.zeros((4, 5, 6), "uint8"), {})})
     d = describe(path)
     assert d["meta"] is None
@@ -321,10 +296,7 @@ def test_the_container_listing_names_every_dataset_with_its_own_offset(tmp_path)
 
 
 def test_describe_describes_a_container_rather_than_refusing(tmp_path):
-    """The file you run `describe` on to *find out* the dataset names must not be the one
-    it refuses to look at. So a multi-array container is described by listing its arrays
-    and resolving none — `shape`/`dtype`/`meta` are None, which is the honest answer for
-    thirteen differently-shaped crops."""
+    """A multi-array container is listed, with no single shape, dtype or meta."""
     path = _bag(tmp_path)
     d = describe(path)
     assert d["format"] == "hdf5"
@@ -341,14 +313,7 @@ def test_naming_a_dataset_resolves_it_fully(tmp_path):
     assert d["dataset"] == "/z0200"
     assert d["shape"] == (6, 6, 6)
     assert d["meta"]["voxel_offset"] == (200, 30, 40)
-    # the listing comes along regardless, so one call answers both questions
     assert sorted(d["datasets"]) == ["/z0100", "/z0200"]
-
-
-def test_a_one_dataset_file_still_resolves_on_its_own(tmp_path):
-    d = describe(_framed(tmp_path / "piece.h5"))
-    assert d["dataset"] == "/data"
-    assert sorted(d["datasets"]) == ["/data"]
 
 
 def test_an_hdf5_with_no_volumetric_dataset_is_not_a_volume(tmp_path):
@@ -358,9 +323,7 @@ def test_an_hdf5_with_no_volumetric_dataset_is_not_a_volume(tmp_path):
 
 
 def test_the_consumers_that_need_one_array_say_so(tmp_path):
-    """`describe` returning None for `shape` is legitimate, so anything that goes on to
-    read the array has to check — or it hits a TypeError in its own arithmetic, which
-    says nothing about the container or how to pick from it."""
+    """Consumers needing one array refuse a container, naming its datasets."""
     from neu_vol.ops.create import plan_volume
     from neu_vol.source_metadata import require_one_array
 
@@ -370,19 +333,15 @@ def test_the_consumers_that_need_one_array_say_so(tmp_path):
     assert "container of 2" in str(e.value)
     assert "/z0100" in str(e.value) and "neu-vol info" in str(e.value)
 
-    # `create --like` has no dataset argument, so a container is ambiguous however much
-    # else is passed explicitly — levels and chunking come from the reference too.
+    # `create --like` has no dataset argument, so a container is ambiguous
     with pytest.raises(ValueError, match="needs one array"):
         plan_volume(str(tmp_path / "like"), like=path, shape=(6, 6, 6),
                     voxel_size=(8, 8, 8), dtype="uint64")
-    # ...while a single-array file is a perfectly good reference
     plan = plan_volume(str(tmp_path / "like2"), like=_framed(tmp_path / "one.h5"))
     assert plan["voxel_size"] == (40.0, 8.0, 8.0)
 
 
 def test_info_lists_a_container_instead_of_refusing(tmp_path, capsys):
-    """Refusing is the least useful thing to do when the reason you ran `info` is that
-    you do not know the dataset names."""
     from neu_vol import cli
 
     assert cli.cmd_info(cli._parse_args(["info", _bag(tmp_path)])) == 0
@@ -395,9 +354,7 @@ def test_info_lists_a_container_instead_of_refusing(tmp_path, capsys):
 
 def test_info_on_a_container_with_no_frame_says_which_names_it_looked_for(tmp_path,
                                                                          capsys):
-    """"This file records no scale" and "this file spells it differently" look identical
-    otherwise, and the field names are parameters everywhere else precisely because
-    another writer's choice is not this package's to assume."""
+    """Lists the attribute names it looked for, and the flag to name others."""
     from neu_vol import cli
 
     path = _h5(tmp_path / "plain.h5", {"a": (np.zeros((2, 2, 2), "uint8"), {}),
@@ -409,8 +366,6 @@ def test_info_on_a_container_with_no_frame_says_which_names_it_looked_for(tmp_pa
 
 
 def test_info_reports_which_dataset_it_described(tmp_path, capsys):
-    """A path names the container, so without this a file holding one dataset and a file
-    where --dataset picked one of five read identically."""
     from neu_vol import cli
 
     cli.cmd_info(cli._parse_args(["info", _bag(tmp_path), "--dataset", "/z0100"]))
@@ -450,8 +405,6 @@ def test_require_chunked_volume_names_the_op_and_the_way_out(tmp_path):
 
 
 def test_relabel_refuses_a_container_before_reading_anything(tmp_path):
-    """Without the guard this failed deep inside the occupancy listing, which finds no
-    chunk keys and reports "has no scale 0" — i.e. as a broken volume."""
     from neu_vol.ops.relabel import plan_relabel
 
     with pytest.raises(ValueError, match="needs a chunked multiscale volume"):
@@ -459,9 +412,6 @@ def test_relabel_refuses_a_container_before_reading_anything(tmp_path):
 
 
 def test_write_refuses_a_container_as_the_DESTINATION(tmp_path):
-    """`HDF5Backend.write_region` raises NotImplementedError, so without this the piece
-    is read and the geometry checked before a failure that says nothing about which of
-    the two arguments was wrong."""
     from neu_vol.ops.write import plan_subvolume_write
 
     piece = _framed(tmp_path / "piece.h5")
@@ -470,9 +420,7 @@ def test_write_refuses_a_container_as_the_DESTINATION(tmp_path):
 
 
 def test_downsample_refuses_a_container(tmp_path):
-    """Both entry points: the op, and the CLI — which plans in `_downsample_plan` and
-    only then calls the op, so leaving the check to `rebuild_pyramid` meant an HDF5 file
-    first got a full eight-level plan and then a complaint about --kind."""
+    """Both the op and the CLI, which plans before calling the op."""
     from neu_vol import cli
     from neu_vol.ops.rebuild import rebuild_pyramid
 
@@ -485,19 +433,15 @@ def test_downsample_refuses_a_container(tmp_path):
 
 
 def test_the_read_only_ops_do_not_refuse(tmp_path):
-    """Inspecting and reading these is the point of detecting them, so `info`,
-    `create --like` and `convert` must all stay open to them."""
+    """`create --like` and `convert` accept a container (convert without --voxel-size)."""
     from neu_vol import convert
     from neu_vol.backends.base import open_backend
     from neu_vol.ops.create import plan_volume
 
     piece = _framed(tmp_path / "piece.h5")
-    # `create --like` mirrors the frame; there is no HDF5 volume format to write, so the
-    # format falls back to zarr rather than erroring on the reference's own.
     plan = plan_volume(str(tmp_path / "like"), like=piece)
     assert plan["voxel_size"] == (40.0, 8.0, 8.0)
 
-    # ...and convert needs no --voxel-size, which is the payoff.
     dst = str(tmp_path / "out")
     convert(piece, dst, chunk=(2, 2, 2), multiscale=False, delete_existing=True)
     out = open_backend({"backend": "zarr3", "path": os.path.join(dst, "0")})
@@ -512,9 +456,7 @@ def test_the_read_only_ops_do_not_refuse(tmp_path):
 # `write`'s own resolver now delegates, so the two cannot disagree
 # --------------------------------------------------------------------------- #
 def test_source_spec_builds_the_form_each_backend_wants(tmp_path):
-    """It used to carry a second copy of the name-based guessing, which is how a
-    detected format ended up in a `path` spec that the image-stack backend — which reads
-    `source` — could not open."""
+    """The image-stack backend reads `source`, not `path`."""
     from neu_vol.ops.write import source_spec
 
     piece = _framed(tmp_path / "piece.h5")
@@ -540,8 +482,6 @@ def test_a_named_dataset_survives_the_round_trip(tmp_path):
 # a `describe` result shows itself: the same table `neu-vol info` prints
 # --------------------------------------------------------------------------- #
 def test_a_description_is_still_a_dict(tmp_path):
-    """Every caller in the package subscripts this, so the notebook nicety must not cost
-    them anything — which is why it subclasses dict rather than wrapping one."""
     d = describe(_framed(tmp_path / "piece.h5"))
     assert isinstance(d, dict)
     assert d["shape"] == (2, 3, 4)
@@ -549,10 +489,7 @@ def test_a_description_is_still_a_dict(tmp_path):
 
 
 def test_printing_a_description_gives_the_table_not_the_mapping(tmp_path):
-    """The request: `describe` in a notebook showed a screenful of nested tuples, so
-    people ran `neu-vol info` in a subprocess to read the same thing."""
-    # One file, described once: `open_backend` caches the open handle, so rewriting the
-    # same path while it is held fails on HDF5's own truncate.
+    # One file, described once: rewriting a path whose handle is cached fails in HDF5.
     d = describe(_framed(tmp_path / "piece.h5"))
     text = str(d)
     assert "format      hdf5" in text
@@ -562,8 +499,6 @@ def test_printing_a_description_gives_the_table_not_the_mapping(tmp_path):
 
 
 def test_the_cli_and_the_repr_render_from_ONE_implementation(tmp_path, capsys):
-    """The whole reason the rendering moved out of `cmd_info`. Two copies of a table
-    built from the same dict drift, and the CLI's was the only one that existed."""
     from neu_vol import cli
 
     path = _framed(tmp_path / "piece.h5")
@@ -574,8 +509,7 @@ def test_the_cli_and_the_repr_render_from_ONE_implementation(tmp_path, capsys):
 
 
 def test_the_repr_makes_no_store_reads(tmp_path, capsys):
-    """`provenance.json` and the DVID node summary stay in the CLI: a `__repr__` that
-    makes network calls is a trap in a notebook, where anything can echo an object."""
+    """Provenance is read by the CLI only: a `__repr__` must not make network calls."""
     dst = _pyramid(tmp_path)
     assert "provenance" not in str(describe(dst))
     from neu_vol import cli
@@ -585,8 +519,7 @@ def test_the_repr_makes_no_store_reads(tmp_path, capsys):
 
 
 def test_a_container_frame_is_one_row_per_dataset(tmp_path):
-    """The listing is what you sort and filter when choosing a crop, so it holds the
-    NUMBERS rather than the formatted strings the text table shows."""
+    """Numbers, not the formatted strings of the text table."""
     pytest.importorskip("pandas")
     frame = describe(_bag(tmp_path)).frame()
     assert list(frame.index) == ["/z0100", "/z0200"]
@@ -606,8 +539,7 @@ def test_a_volume_frame_is_one_row_per_level(tmp_path):
 
 
 def test_the_html_repr_needs_no_pandas(tmp_path, monkeypatch):
-    """pandas is not a dependency of this package and must not become one, so a notebook
-    without it still gets the table — as preformatted text."""
+    """pandas is optional: without it the HTML repr is preformatted text."""
     import builtins
 
     real = builtins.__import__
@@ -625,13 +557,6 @@ def test_the_html_repr_needs_no_pandas(tmp_path, monkeypatch):
         d.frame()
 
 
-def test_the_location_travels_with_the_result(tmp_path):
-    """So the result can render its own first line, and a caller holding one no longer
-    has to remember what it asked about."""
-    path = _framed(tmp_path / "piece.h5")
-    assert describe(path)["location"] == path
-
-
 # --------------------------------------------------------------------------- #
 # open_hdf5: the front door for a file you are pointing at by hand
 # --------------------------------------------------------------------------- #
@@ -646,8 +571,6 @@ def test_open_hdf5_finds_the_sole_dataset(tmp_path):
 
 
 def test_open_hdf5_requires_a_dataset_for_a_container(tmp_path):
-    """Picking one of thirteen crops on the caller's behalf would be picking the wrong
-    one twelve times out of thirteen, so it is required and the error lists them."""
     from neu_vol import open_hdf5
 
     path = _bag(tmp_path)
@@ -657,9 +580,7 @@ def test_open_hdf5_requires_a_dataset_for_a_container(tmp_path):
 
 
 def test_open_hdf5_shares_the_process_handle_cache(tmp_path):
-    """An HDF5Backend holds an open h5py.File, so two calls for one array must not mean
-    two file handles — which is why it goes through `open_backend` rather than
-    constructing the backend itself."""
+    """One open h5py.File per array, not one per call."""
     from neu_vol import open_hdf5
 
     path = _framed(tmp_path / "piece.h5")
@@ -667,8 +588,6 @@ def test_open_hdf5_shares_the_process_handle_cache(tmp_path):
 
 
 def test_open_hdf5_refuses_a_remote_path_with_guidance(tmp_path):
-    """h5py has no object-store driver at all; without this the failure is h5py trying to
-    CREATE a local file called `s3://...` and reporting errno 2."""
     from neu_vol import open_hdf5
 
     with pytest.raises(ValueError, match="ordinary filesystem path"):
@@ -676,8 +595,6 @@ def test_open_hdf5_refuses_a_remote_path_with_guidance(tmp_path):
 
 
 def test_open_hdf5_needs_no_detection(tmp_path, monkeypatch):
-    """The format is in the name, so there is nothing to probe for — no marker reads, no
-    listing. `open_backend` stays the spec-only dask primitive for the same reason."""
     from neu_vol import open_hdf5, source_metadata
 
     def refuse(*a, **k):
@@ -688,25 +605,17 @@ def test_open_hdf5_needs_no_detection(tmp_path, monkeypatch):
 
 
 def test_read_piece_refuses_a_read_that_would_hang(tmp_path):
-    """The failure this prevents is a HANG, not an error. A production level 0 is terabytes
-    (measured on one: 11260x9000x13750 uint8 = 1.27 TiB), and a read that size does not
-    stop — in a notebook it is indistinguishable from a wedged kernel, with every later cell
-    pending behind it. Nothing about `read_piece(volume)` says how big that is, so it says.
-    """
+    """A whole production level is terabytes; a read that size looks like a hung kernel."""
     from neu_vol import read_piece
 
     vol = _pyramid(tmp_path)               # 8^3 uint16 = 4 KiB, two levels
     with pytest.raises(ValueError) as e:
         read_piece(vol, max_bytes=512)
     msg = str(e.value)
-    assert "over the" in msg and "HANG" in msg
-    assert "crop=" in msg, "say what to do"
-    assert "max_bytes" in msg, "...and how to mean it anyway"
+    assert "crop=" in msg and "max_bytes" in msg, "the error says what to do"
 
-    # under the cap, and with the cap lifted, it reads
     assert read_piece(vol, max_bytes=None).shape == (8, 8, 8)
     assert read_piece(vol).shape == (8, 8, 8)
-    # a crop brings it under
     assert read_piece(vol, crop=((0, 0, 0), (4, 4, 4)),
                       max_bytes=512).shape == (4, 4, 4)
 
@@ -721,28 +630,22 @@ def test_the_refusal_names_a_level_that_would_fit(tmp_path):
 
 
 def test_a_piece_is_named_after_its_source(tmp_path):
-    """`stem/dataset`, or just the stem. Both halves, because either alone collides: `/data`
-    is what `to-hdf5` writes by default, so two files' crops share it, and one file's nine
-    crops share a stem."""
+    """`stem/dataset`, or just the stem; either half alone collides across files."""
     from neu_vol import piece_name, read_piece
 
     assert piece_name("data/gt_v1_eval.h5", "/vol_03700") == "gt_v1_eval/vol_03700"
     assert piece_name("piece.h5") == "piece"
     assert piece_name("s3://my-bucket/dataset/image_v3.zarr") == "image_v3"
     assert piece_name("/p/seg_v1") == "seg_v1"
-    # a nested dataset keeps only its leaf, since the path to it is not the name
     assert piece_name("/p/x.h5", "/g/nested/vol") == "x/vol"
 
     path = _framed(tmp_path / "gt.h5")
     assert read_piece(path).name == "gt/data"
-    # name= overrides the derived one, for when it is longer than it needs to be
     assert read_piece(path, name="mine").name == "mine"
     assert read_piece(path).with_name("later").name == "later"
 
 
 def test_a_piece_can_be_read_in_the_dtype_it_will_be_used_in(tmp_path):
-    """Crops exported by different tools arrive as uint8/16/32/64; a consumer that has to
-    handle all four is what `dtype=` avoids. Everything else about the piece is unchanged."""
     from neu_vol import read_piece
 
     path = _framed(tmp_path / "gt.h5")
@@ -756,9 +659,7 @@ def test_a_piece_can_be_read_in_the_dtype_it_will_be_used_in(tmp_path):
 
 def test_a_narrowing_read_warns_because_a_wrapped_label_id_is_another_label_id(tmp_path,
                                                                               caplog):
-    """Not refused — reading deliberately narrower is legitimate and only the caller knows
-    the range their labels use. Not silent either: a segmentation has no invalid values, so
-    nothing downstream can notice that 65538 came back as 2."""
+    """Allowed but warned: a wrapped label id is just another valid id."""
     import logging
 
     from neu_vol import read_piece

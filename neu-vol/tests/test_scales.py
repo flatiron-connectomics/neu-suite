@@ -1,10 +1,7 @@
 """Per-level shape, voxel size and origin, read from a source's own metadata.
 
-Two things here are silent when wrong. A voxel size taken as ``2 ** index`` is correct
-for an isotropic pyramid and wrong for the common one that halves x/y and leaves z
-alone. And a level's **origin** was dropped entirely for a long time — every level came
-back claiming to start at nm zero, which is true of a volume written from the origin and
-false for anything cropped, with nothing to say so either way.
+Both are silent when wrong: a ``2 ** index`` voxel size fails on a pyramid that halves only
+x/y, and a dropped origin puts every cropped level at nm zero.
 """
 
 import json
@@ -26,11 +23,7 @@ def _precomputed(root, scales):
 
 
 def test_read_scales_from_precomputed_info(tmp_path):
-    """Voxel size must come from each scale's own metadata, not 2**index.
-
-    The pyramid here downsamples 2x in x/y but never in z — the exact shape that a
-    2**scale assumption gets wrong.
-    """
+    """Each scale's own voxel size, on a pyramid that never downsamples z."""
     src = _precomputed(tmp_path / "seg.precomputed", [
         {"key": "8_8_40", "resolution": [8, 8, 40], "size": [1024, 1024, 100],
          "chunk_sizes": [[64, 64, 64]], "encoding": "raw"},
@@ -62,11 +55,7 @@ def test_read_scales_rejects_sources_without_metadata(tmp_path):
 # the origin, which used to be dropped
 # --------------------------------------------------------------------------- #
 def test_voxel_offset_becomes_the_levels_nm_origin(tmp_path):
-    """`voxel_offset` is in THIS level's voxels, so the nm origin is the product.
-
-    A volume written from the origin has no offset and passes whether this is read or
-    not, which is why dropping it survived: every fixture started at zero.
-    """
+    """`voxel_offset` is in this level's voxels, so the nm origin is the product."""
     src = _precomputed(tmp_path / "crop.precomputed", [
         {"key": "8_8_40", "resolution": [8, 8, 40], "size": [64, 64, 16],
          "voxel_offset": [100, 200, 3],                      # xyz voxels
@@ -136,9 +125,7 @@ def _ome(root, datasets):
 
 
 def test_ome_translation_is_already_physical(tmp_path):
-    """The zarr spelling of an offset is `translation`, and unlike precomputed's
-    `voxel_offset` it is in PHYSICAL units — multiplying it by the voxel size would
-    scale the origin by the resolution and put the data somewhere plausible."""
+    """OME's `translation`, unlike `voxel_offset`, is already in physical units."""
     src = _ome(tmp_path / "v.zarr", [
         {"path": "0", "coordinateTransformations": [
             {"type": "scale", "scale": [40, 8, 8]},

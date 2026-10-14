@@ -1,14 +1,8 @@
-"""The sharded uint64 index, which tensorstore implements and this package mostly wraps.
+"""The sharded uint64 index: tensorstore writes it; `ShardReader` reimplements reading so a
+caller can learn an entry's byte offset, which the sharded mesh format needs.
 
-For writing there is therefore no format to test, only the wrapper's contract: the key byte
-order, that the metadata handed to the kvstore is the same object that goes into an `info`,
-and that a whole batch lands in one transaction rather than rewriting a shard per key.
-
-`ShardReader` is the exception — it reimplements the addressing so a caller can learn the
-byte OFFSET of an entry, which the driver will not tell you and the sharded mesh format needs.
-That does have a format to test, and it is tested two ways: the hash and shard placement
-against known answers taken from an independent implementation (cloud-volume), and the values
-against `read_one`, i.e. against tensorstore reading the same files.
+The reader is checked against an independent implementation's placements (cloud-volume)
+and against `read_one`, i.e. tensorstore reading the same files.
 """
 
 import struct
@@ -25,17 +19,7 @@ def _spec(**kw):
 # --------------------------------------------------------------------------- #
 # the spec block
 # --------------------------------------------------------------------------- #
-def test_the_spec_is_what_goes_into_info_verbatim():
-    """The file and the metadata describing it must come from one dict, or they can drift and
-    a reader trusts the metadata."""
-    spec = _spec()
-    assert spec["@type"] == "neuroglancer_uint64_sharded_v1"
-    assert set(spec) == {"@type", "hash", "preshift_bits", "shard_bits", "minishard_bits",
-                         "data_encoding", "minishard_index_encoding"}
-
-
-def test_it_matches_the_shape_the_reference_dataset_uses():
-    """Taken from gs://flyem-male-cns/.../by_id, which neuroglancer demonstrably reads."""
+def test_the_spec_matches_a_published_dataset_neuroglancer_reads():
     spec = sharded.sharding_spec(shard_bits=10, minishard_bits=9, preshift_bits=10)
     assert spec == {"@type": "neuroglancer_uint64_sharded_v1",
                     "hash": "murmurhash3_x86_128", "preshift_bits": 10,
@@ -43,20 +27,15 @@ def test_it_matches_the_shape_the_reference_dataset_uses():
                     "data_encoding": "gzip", "minishard_index_encoding": "gzip"}
 
 
-@pytest.mark.parametrize("kw", [
-    {"shard_bits": -1, "minishard_bits": 0},
-    {"shard_bits": 0, "minishard_bits": -3},
+@pytest.mark.parametrize("kw, match", [
+    ({"shard_bits": -1, "minishard_bits": 0}, "non-negative"),
+    ({"shard_bits": 0, "minishard_bits": -3}, "non-negative"),
+    ({"shard_bits": 0, "minishard_bits": 0, "hash": "sha256"}, "hash must be"),
+    ({"shard_bits": 0, "minishard_bits": 0, "data_encoding": "zstd"}, "data_encoding must be"),
 ])
-def test_negative_bit_counts_are_refused(kw):
-    with pytest.raises(ValueError, match="non-negative"):
+def test_an_invalid_spec_is_refused(kw, match):
+    with pytest.raises(ValueError, match=match):
         sharded.sharding_spec(**kw)
-
-
-def test_an_unknown_hash_or_encoding_is_refused():
-    with pytest.raises(ValueError, match="hash must be"):
-        sharded.sharding_spec(shard_bits=0, minishard_bits=0, hash="sha256")
-    with pytest.raises(ValueError, match="data_encoding must be"):
-        sharded.sharding_spec(shard_bits=0, minishard_bits=0, data_encoding="zstd")
 
 
 # --------------------------------------------------------------------------- #
@@ -72,11 +51,16 @@ def test_keys_are_big_endian_which_is_the_one_place_the_order_flips():
 # --------------------------------------------------------------------------- #
 # writing and reading back
 # --------------------------------------------------------------------------- #
-def test_a_batch_round_trips(tmp_path):
-    spec = _spec()
-    entries = [(i * 7 + 1, f"payload-{i}".encode()) for i in range(200)]
-    n = sharded.write_all(str(tmp_path / "idx"), spec, entries)
-    assert n == 200
+@pytest.mark.parametrize("spec, entries", [
+    (_spec(), [(i * 7 + 1, f"payload-{i}".encode()) for i in range(200)]),
+    (sharded.sharding_spec(shard_bits=1, minishard_bits=1, data_encoding="raw",
+                           minishard_index_encoding="raw"), [(5, b"uncompressed")]),
+    # large, hashed-looking ids, as published annotation ids are
+    (_spec(), [(i, str(i).encode())
+               for i in (48545692435670922, 582569736127172416, 2**64 - 1)]),
+])
+def test_a_batch_round_trips(tmp_path, spec, entries):
+    assert sharded.write_all(str(tmp_path / "idx"), spec, entries) == len(entries)
     for chunk_id, payload in entries[:20]:
         assert sharded.read_one(str(tmp_path / "idx"), spec, chunk_id) == payload
 
@@ -95,29 +79,11 @@ def test_the_file_count_is_two_to_the_shard_bits(tmp_path):
 
 
 def test_all_zero_bits_writes_a_single_shard(tmp_path):
-    """Legal and useful: the reference does exactly this for its coarsest spatial level, so
-    every level can be sharded and the bit counts collapse where a level is small."""
+    """Legal, and what a small (coarse) spatial level uses."""
     spec = sharded.sharding_spec(shard_bits=0, minishard_bits=0)
     sharded.write_all(str(tmp_path / "idx"), spec, [(0, b"only")])
     assert [p.name for p in (tmp_path / "idx").iterdir()] == ["0.shard"]
     assert sharded.read_one(str(tmp_path / "idx"), spec, 0) == b"only"
-
-
-def test_raw_encoding_also_round_trips(tmp_path):
-    spec = sharded.sharding_spec(shard_bits=1, minishard_bits=1,
-                                 data_encoding="raw", minishard_index_encoding="raw")
-    sharded.write_all(str(tmp_path / "idx"), spec, [(5, b"uncompressed")])
-    assert sharded.read_one(str(tmp_path / "idx"), spec, 5) == b"uncompressed"
-
-
-def test_large_ids_survive(tmp_path):
-    """Annotation ids in the reference run to 5.8e17 and look hashed, not sequential."""
-    spec = _spec()
-    ids = [48545692435670922, 582569736127172416, 2**64 - 1]
-    sharded.write_all(str(tmp_path / "idx"), spec,
-                      [(i, str(i).encode()) for i in ids])
-    for i in ids:
-        assert sharded.read_one(str(tmp_path / "idx"), spec, i) == str(i).encode()
 
 
 def test_writing_nothing_is_not_an_error(tmp_path):
@@ -154,41 +120,29 @@ def test_a_non_positive_key_count_is_refused():
 # compressed morton code — how a sharded index keys a GRID CELL
 # --------------------------------------------------------------------------- #
 def test_bits_are_spent_only_where_the_grid_subdivides():
-    """`2**i < size`, so ceil(log2(size)) — and ZERO for a flat axis. That is the compression."""
+    """ceil(log2(size)) per axis, and zero for a flat axis."""
     assert sharded.morton_bits([1, 1, 1]) == [0, 0, 0]
     assert sharded.morton_bits([2, 1, 1]) == [1, 0, 0]
     assert sharded.morton_bits([16, 8, 16]) == [4, 3, 4]
     assert sharded.morton_bits([3, 5, 9]) == [2, 3, 4]
 
 
-def test_x_varies_fastest():
-    """Bit 0 of x is output bit 0, then bit 0 of y, then z — so on a 2x2x2 grid the code is
-    x + 2y + 4z. A row-major flattening gives 4x + 2y + z, i.e. x and z swapped."""
-    grid = [2, 2, 2]
-    assert sharded.compressed_morton_code([1, 0, 0], grid) == 1
-    assert sharded.compressed_morton_code([0, 1, 0], grid) == 2
-    assert sharded.compressed_morton_code([0, 0, 1], grid) == 4
-    assert sharded.compressed_morton_code([1, 1, 1], grid) == 7
-
-
-def test_bits_interleave_rather_than_concatenate():
-    """The whole point of a Morton code: neighbouring cells get nearby keys, so one shard holds
-    a spatially compact set. Concatenating the coordinates would not."""
-    grid = [4, 4, 1]
-    # x=2 (binary 10), y=1 (binary 01): bits go x0,y0,x1,y1 -> 0,1,1,0 -> 0b0110 = 6
-    assert sharded.compressed_morton_code([2, 1, 0], grid) == 6
-
-
-def test_a_flat_axis_contributes_nothing():
-    """grid [4,1,4] spends bits x0, z0, x1, z1 and none on y."""
-    grid = [4, 1, 4]
-    assert sharded.compressed_morton_code([3, 0, 3], grid) == 0b1111
-    # x=1 -> bits (1,0); z=2 -> bits (0,1); interleaved x0,z0,x1,z1 = 1,0,0,1
-    assert sharded.compressed_morton_code([1, 0, 2], grid) == 0b1001
+@pytest.mark.parametrize("pos, grid, code", [
+    # x varies fastest: on 2x2x2 the code is x + 2y + 4z (row-major would swap x and z)
+    ([1, 0, 0], [2, 2, 2], 1),
+    ([0, 1, 0], [2, 2, 2], 2),
+    ([0, 0, 1], [2, 2, 2], 4),
+    ([1, 1, 1], [2, 2, 2], 7),
+    ([2, 1, 0], [4, 4, 1], 6),           # bits interleave x0,y0,x1,y1 = 0,1,1,0
+    ([3, 0, 3], [4, 1, 4], 0b1111),      # a flat axis (y) spends no bits
+    ([1, 0, 2], [4, 1, 4], 0b1001),
+])
+def test_compressed_morton_code(pos, grid, code):
+    assert sharded.compressed_morton_code(pos, grid) == code
 
 
 def test_the_code_is_a_bijection_over_the_grid():
-    """Every cell must get its own key, or two cells share an object and one is lost."""
+    """Every cell gets its own key."""
     import itertools
 
     import numpy as np
@@ -201,8 +155,7 @@ def test_the_code_is_a_bijection_over_the_grid():
 
 
 def test_it_agrees_with_a_row_major_index_exactly_where_that_is_misleading():
-    """Degenerate grids give identical keys, which is why substituting one for the other passes
-    every small test and then loses almost everything on a real multi-axis grid."""
+    """Degenerate grids agree with row-major order; real multi-axis grids must not."""
     import itertools
 
     import numpy as np
@@ -227,9 +180,7 @@ def test_a_position_of_the_wrong_rank_is_refused():
 
 
 def test_rewriting_an_index_replaces_it_rather_than_merging(tmp_path):
-    """A sharded index is a key-value store, so writing keys 1..N leaves any other key already
-    present. Rewriting an index whose KEY SPACE changed would then serve both generations, and
-    a reader asking for an old-only key gets a stale answer while every filename looks right."""
+    """A merge would keep serving stale keys from the previous key space."""
     dst = str(tmp_path / "idx")
     spec = sharded.plan_sharding(10)
     sharded.write_all(dst, spec, [(i, b"old") for i in range(10)])
@@ -259,8 +210,7 @@ def test_clear_removes_the_shard_objects(tmp_path):
 
 
 def test_a_cell_written_at_its_morton_key_reads_back_by_position(tmp_path):
-    """The round trip that matters: write keyed by code, read keyed by code recomputed from the
-    grid position, which is what a viewer does."""
+    """Read back by a code recomputed from the grid position, as a viewer does."""
     grid = [4, 2, 4]
     spec = sharded.plan_sharding(32)
     entries = [(sharded.compressed_morton_code([x, y, z], grid), f"{x}-{y}-{z}".encode())
@@ -276,11 +226,9 @@ def test_a_cell_written_at_its_morton_key_reads_back_by_position(tmp_path):
 # ShardReader: addressing
 # --------------------------------------------------------------------------- #
 
-#: (sharding params, [(key, shard filename stem, minishard number)]).
-#: Taken from cloud-volume's ShardingSpecification.compute_shard_location, which is an
-#: independent implementation of the same spec. Pinning against it rather than against
-#: ourselves is the point: a wrong hash still produces a self-consistent reader that
-#: simply never finds anything, and "not found" is indistinguishable from "absent".
+#: (sharding params, [(key, shard filename stem, minishard number)]), from cloud-volume's
+#: compute_shard_location. An independent implementation, because a wrong hash still gives a
+#: self-consistent reader that finds nothing, which looks like absent data.
 SHARD_VECTORS = [
     (dict(preshift_bits=6, minishard_bits=8, shard_bits=10),
      [(0, "0ae", 65), (1, "0ae", 65), (24740, "30e", 43), (255, "3e4", 209),
@@ -306,8 +254,7 @@ def test_shard_placement_matches_an_independent_implementation(params, cases):
 
 
 def test_preshift_bits_send_neighbouring_keys_to_one_shard():
-    """That is what preshift is FOR — consecutive ids share a shard so a range of them
-    costs one file. With 6 bits, 0..63 must land together and 64 must not be forced to."""
+    """With 6 preshift bits, ids 0..63 share a shard."""
     spec = sharded.sharding_spec(shard_bits=10, minishard_bits=8, preshift_bits=6)
     first = {sharded.shard_location(i, spec) for i in range(64)}
     assert len(first) == 1
@@ -315,8 +262,7 @@ def test_preshift_bits_send_neighbouring_keys_to_one_shard():
 
 
 def test_the_identity_hash_is_not_the_murmur_one():
-    """Both are legal and they place keys differently, so a spec's `hash` must be read
-    rather than assumed."""
+    """The spec's `hash` is read, not assumed."""
     ident = sharded.sharding_spec(shard_bits=5, minishard_bits=3, hash="identity")
     murmur = sharded.sharding_spec(shard_bits=5, minishard_bits=3)
     # 24740 = 0b110000010100100: low 3 bits are the minishard, next 5 the shard.
@@ -332,8 +278,7 @@ def test_an_unknown_hash_is_refused_rather_than_silently_treated_as_identity():
 
 
 def test_the_murmur_digest_is_the_x86_variant():
-    """x86_128 and x64_128 are different functions. Known answers for the empty input and
-    for a short string, from the reference implementation."""
+    """x86_128, not x64_128: known answer for the empty input."""
     assert sharded.murmurhash3_x86_128_low64(b"") == 0
     assert sharded.murmurhash3_x86_128_low64(b"", seed=1) != 0
     # Stable across calls and sensitive to every input byte.
@@ -348,12 +293,7 @@ def test_the_murmur_digest_is_the_x86_variant():
 
 @pytest.mark.parametrize("encoding", ["gzip", "raw"])
 def test_shard_reader_agrees_with_tensorstore(tmp_path, encoding):
-    """The whole reason two implementations are allowed to coexist here.
-
-    `read_one` goes through tensorstore's driver, `ShardReader` through our own hash and
-    index parsing. They must return the same bytes for the same key or one of them is
-    wrong, and a reader that is wrong reads back as missing data rather than as an error.
-    """
+    """`read_one` (tensorstore) and `ShardReader` (our own parsing) return the same bytes."""
     spec = sharded.sharding_spec(shard_bits=3, minishard_bits=2, preshift_bits=0,
                                  data_encoding=encoding, minishard_index_encoding=encoding)
     entries = [(i * 37 + 5, f"payload-{i}-{'x' * i}".encode()) for i in range(150)]
@@ -374,7 +314,6 @@ def test_shard_reader_reports_a_missing_key_as_none(tmp_path):
 
 
 def test_shard_reader_on_an_index_that_does_not_exist_is_none_not_an_error(tmp_path):
-    """A volume may simply hold no sharded subresource. That is a normal answer."""
     spec = sharded.sharding_spec(shard_bits=2, minishard_bits=1)
     reader = sharded.ShardReader(str(tmp_path / "nothing-here"), spec)
     assert reader.locate(1) is None
@@ -382,8 +321,7 @@ def test_shard_reader_on_an_index_that_does_not_exist_is_none_not_an_error(tmp_p
 
 
 def test_locate_gives_the_byte_range_the_value_actually_occupies(tmp_path):
-    """`locate` is the only thing tensorstore cannot do, so its offsets are what the mesh
-    reader trusts to find fragment data sitting outside the index entirely."""
+    """The mesh reader trusts these offsets to find fragment data outside the index."""
     spec = sharded.sharding_spec(shard_bits=1, minishard_bits=1, data_encoding="raw",
                                  minishard_index_encoding="raw")
     entries = [(i, bytes([i]) * (10 + i)) for i in range(1, 20)]
@@ -397,8 +335,7 @@ def test_locate_gives_the_byte_range_the_value_actually_occupies(tmp_path):
 
 
 def test_the_indexes_are_read_once_per_shard_not_once_per_key(tmp_path, monkeypatch):
-    """A batch of bodies out of one shard must not re-fetch its index per body — that is
-    the difference between two requests and two thousand against an object store."""
+    """A batch from one shard reads its two indexes once, not once per key."""
     from neu_vol import location
 
     spec = sharded.sharding_spec(shard_bits=0, minishard_bits=0)
@@ -418,10 +355,7 @@ def test_the_indexes_are_read_once_per_shard_not_once_per_key(tmp_path, monkeypa
 
 
 def test_clear_leaves_a_sibling_info_alone(tmp_path):
-    """An index does not always own its directory. A sharded mesh or skeleton sits beside
-    the `info` that declares it, and `clear` deleting that produced the nastiest possible
-    result: every shard present and correct, nothing pointing at them, every body reading
-    back as absent. Only `.shard` objects are ours to remove."""
+    """A sharded mesh or skeleton sits beside its `info`; only `.shard` objects are removed."""
     from neu_vol import location
 
     spec = sharded.sharding_spec(shard_bits=1, minishard_bits=1)
