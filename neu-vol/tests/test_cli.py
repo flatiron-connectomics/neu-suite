@@ -11,7 +11,8 @@ import pytest
 
 from neu_vol import cli, convert
 from neu_vol.backends.tensorstore import TensorStoreBackend
-from neu_vol.source_metadata import read_level_voxel_sizes
+from neu_vol.ops.progress import manifest_counts, task_total
+from neu_vol.source_metadata import describe, existing_levels, read_level_voxel_sizes
 from neu_vol.profiles import zarr3_create_spec
 
 
@@ -54,7 +55,7 @@ def test_a_local_precomputed_target_has_a_profile_to_use(tmp_path):
     assert cli.cmd_convert(cli._parse_args(
         ["convert", "--src", src, "--dst", dst, "--format", "precomputed",
          "--serial", "--chunk", "8,8,8", "--min-dim", "8"])) == 0
-    assert cli.describe(dst)["format"] == "neuroglancer_precomputed"
+    assert describe(dst)["format"] == "neuroglancer_precomputed"
 
 
 def test_a_subcommand_is_required():
@@ -102,7 +103,7 @@ def test_level_voxel_sizes_are_read_not_derived(tmp_path):
     assert sizes[1] == (16.0, 16.0, 16.0), f"derived rather than read: {sizes[1]}"
 
     # ...and the shape ratio really is inexact here, which is what makes this a trap
-    levels = cli.existing_levels(dst, "zarr3")
+    levels = existing_levels(dst, "zarr3")
     ratio = levels[0]["shape"][2] / levels[1]["shape"][2]
     assert ratio != 2.0, "fixture no longer exercises the ceil-division case"
 
@@ -124,7 +125,7 @@ def test_level_voxel_sizes_none_when_unrecorded(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_describe_reports_format_kind_and_levels(tmp_path):
     dst = _pyramid(tmp_path, kind="segmentation")
-    d = cli.describe(dst)
+    d = describe(dst)
     assert d["format"] == "zarr3"
     assert d["meta"]["kind"] == "segmentation"
     assert d["shape"] == (16, 16, 16)
@@ -134,14 +135,14 @@ def test_describe_reports_format_kind_and_levels(tmp_path):
 def test_existing_levels_stops_at_the_first_gap(tmp_path):
     """Probing upward works mid-conversion, before the group metadata is written."""
     dst = _pyramid(tmp_path)
-    assert sorted(cli.existing_levels(dst, "zarr3")) == [0, 1]
-    assert cli.existing_levels(str(tmp_path / "nope.zarr"), "zarr3") == {}
+    assert sorted(existing_levels(dst, "zarr3")) == [0, 1]
+    assert existing_levels(str(tmp_path / "nope.zarr"), "zarr3") == {}
 
 
 def test_describe_rejects_a_path_with_no_volume(tmp_path):
     """The library raises FileNotFoundError; the CLI turns it into an exit."""
     with pytest.raises(FileNotFoundError, match="no volume found"):
-        cli.describe(str(tmp_path / "empty"))
+        describe(str(tmp_path / "empty"))
     with pytest.raises(SystemExit, match="no volume found"):
         cli.cmd_info(cli._parse_args(["info", str(tmp_path / "empty")]))
 
@@ -149,7 +150,7 @@ def test_describe_rejects_a_path_with_no_volume(tmp_path):
 def test_levels_report_their_own_chunking(tmp_path):
     """Chunking is read per level, not assumed from level 0."""
     dst = _pyramid(tmp_path)
-    levels = cli.existing_levels(dst, "zarr3")
+    levels = existing_levels(dst, "zarr3")
     for i, lv in levels.items():
         assert lv["chunks"] == (8, 8, 8), f"level {i}: {lv['chunks']}"
         # unsharded, so the read unit is the write unit
@@ -173,7 +174,7 @@ def _sharded_pyramid(path):
 
 def test_sharded_levels_distinguish_shard_from_chunk(tmp_path):
     """With sharding the write unit is the shard and the read unit the inner chunk."""
-    lv = cli.existing_levels(_sharded_pyramid(tmp_path / "sh.zarr"), "zarr3")[0]
+    lv = existing_levels(_sharded_pyramid(tmp_path / "sh.zarr"), "zarr3")[0]
     assert lv["chunks"] == (16, 16, 16), "write chunk should be the shard"
     assert lv["read_chunks"] == (8, 8, 8), "read chunk should be the inner chunk"
 
@@ -262,7 +263,7 @@ def test_manifest_counts_separates_meta_from_tasks(tmp_path):
         {"group": 0, "key": [0, 1, 1], "status": "empty"},
         {"group": 1, "key": [0, 0, 0], "status": "written"},
     ])
-    m = cli._manifest_counts(p)
+    m = manifest_counts(p)
     assert m[0]["counts"] == {"written": 1, "empty": 1}
     assert m[0]["total"] == 4 and m[0]["task_shape"] == (8, 32, 32)
     assert m[0]["grid"] == (1, 2, 2)          # max index + 1, per axis
@@ -281,7 +282,7 @@ def test_manifest_counts_separates_meta_from_tasks(tmp_path):
     ({"total": None, "task_shape": None, "grid": (2, 2, 2)}, 8, (8, 8, 8), 0, 8, []),
 ])
 def test_task_total(lv, chunks, chunk, level, total, note_has):
-    got, note = cli._task_total(lv, chunks, chunk, level)
+    got, note = task_total(lv, chunks, chunk, level)
     assert got == total
     assert all(s in note for s in note_has) and (note_has or note == "")
 

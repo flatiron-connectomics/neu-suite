@@ -9,6 +9,7 @@ import json
 import pytest
 
 from neu_vol import read_scales, scale_spec
+from neu_vol.scales import level_factor
 
 # --------------------------------------------------------------------------- #
 # precomputed
@@ -143,3 +144,19 @@ def test_ome_without_a_translation_starts_at_zero(tmp_path):
             {"type": "scale", "scale": [40, 8, 8]}]},
     ])
     assert read_scales(src)[0].origin_nm == (0.0, 0.0, 0.0)
+
+
+def test_level_factor_comes_from_recorded_voxel_sizes():
+    sizes = [(40.0, 8.0, 8.0), (40.0, 16.0, 16.0), (80.0, 32.0, 32.0)]
+    assert level_factor(sizes, 0) == (1, 1, 1)
+    assert level_factor(sizes, 2) == (2, 4, 4)
+
+
+@pytest.mark.parametrize("sizes, level, match", [
+    ([], 1, "records no per-level voxel sizes"),
+    ([(8.0, 8.0, 8.0)], 1, "records only 1 level"),
+    ([(8.0, 8.0, 8.0), (12.0, 16.0, 16.0)], 1, "not an integer multiple"),
+])
+def test_level_factor_refuses_what_does_not_land_on_level_0(sizes, level, match):
+    with pytest.raises(ValueError, match=match):
+        level_factor(sizes, level)

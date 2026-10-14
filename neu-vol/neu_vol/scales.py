@@ -150,6 +150,27 @@ def _zarr_scales(kv: Mapping[str, Any]) -> list[ScaleInfo]:
     return out
 
 
+def level_factor(voxel_sizes: Sequence[Sequence[float]], level: int) -> tuple[int, ...]:
+    """How many level-0 voxels one voxel of ``level`` spans, per axis.
+
+    ``voxel_sizes`` is each level's own voxel size, finest first (as
+    :func:`neu_vol.source_metadata.read_level_voxel_sizes` returns them). Raises
+    ``ValueError`` if ``level`` is absent or not an integer multiple of level 0; the
+    message reads after the volume's name.
+    """
+    if not voxel_sizes:
+        raise ValueError("records no per-level voxel sizes")
+    if not 0 <= level < len(voxel_sizes):
+        raise ValueError(f"records only {len(voxel_sizes)} level(s) "
+                         f"(0-{len(voxel_sizes) - 1}), so there is no level {level}")
+    factor = tuple(s / b for s, b in zip(voxel_sizes[level], voxel_sizes[0]))
+    if any(abs(f - round(f)) > 1e-6 for f in factor):
+        raise ValueError(f"has voxel size {tuple(voxel_sizes[level])} at level {level}, "
+                         f"not an integer multiple of level 0's "
+                         f"{tuple(voxel_sizes[0])}, so it does not land on level-0 voxels")
+    return tuple(int(round(f)) for f in factor)
+
+
 def scale_spec(spec: str | Mapping[str, Any], scale_index: int) -> dict:
     """A read spec pinned to one pyramid level.
 

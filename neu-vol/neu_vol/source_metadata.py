@@ -640,6 +640,37 @@ def require_one_array(described: Mapping[str, Any], location: str, op: str) -> d
         f"takes one, or point at a file holding a single array.")
 
 
+def level0_chunking(described: Mapping[str, Any], location: str):
+    """``(read chunk, write chunk)`` of a described source's level 0, either possibly ``None``.
+
+    :func:`describe` reports chunking only for levels it finds; a bare array has none,
+    so its chunking is read from the array itself. The two differ when the level is
+    sharded: the write chunk is the shard.
+    """
+    from .backends.base import open_backend
+
+    lvl0 = described["levels"].get(described.get("source_level") or 0) or {}
+    if lvl0.get("read_chunks") or lvl0.get("chunks"):
+        return lvl0.get("read_chunks"), lvl0.get("chunks")
+    meta = described["meta"] or {}
+    try:
+        be = open_backend(meta.get("data_spec")
+                          or {"backend": described["format"], "path": location})
+    except Exception as e:
+        # The cloudvolume backend needs a package only its own environment carries, and
+        # workers there can still read the source.
+        logger.info("could not read the source's chunking (%s); using the profile default", e)
+        return None, None
+
+    def _maybe(attr):
+        try:
+            return tuple(int(c) for c in getattr(be, attr))
+        except Exception:
+            return None
+
+    return _maybe("read_chunks"), _maybe("chunks")
+
+
 def existing_levels(volume: str, fmt: str, probe: int = 12,
                     *, dataset: str | None = None) -> dict[int, dict]:
     """``{level: {"shape", "chunks", "read_chunks"}}`` for the levels that open.

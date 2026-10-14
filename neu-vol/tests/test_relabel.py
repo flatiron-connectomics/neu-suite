@@ -199,9 +199,9 @@ def test_untouched_regions_of_the_new_volume_stay_empty(tmp_path):
     src = _volume(tmp_path, "v", _colliding())
     out = str(tmp_path / "out")
     relabel(src, out=out, map_path=str(tmp_path / "m.json"))
-    from neu_vol.cli import _stored_chunks
-    assert _stored_chunks(out, "neuroglancer_precomputed", 0, "8_8_8") == \
-        _stored_chunks(src, "neuroglancer_precomputed", 0, "8_8_8")
+    from neu_vol.ops.progress import stored_chunks
+    assert stored_chunks(out, "neuroglancer_precomputed", 0, "8_8_8") == \
+        stored_chunks(src, "neuroglancer_precomputed", 0, "8_8_8")
 
 
 def test_block_size_makes_the_region_readable_off_the_id(tmp_path):

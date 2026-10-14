@@ -259,11 +259,7 @@ def _configs(args):
     return args.config or ["dask-local"]
 
 
-# Volume inspection lives in source_metadata (it composes that module's readers, and
-# the ops need it too — `create --like` and `write` both do). Re-exported here because
-# `cli.describe` is where callers and tests already look for it.
-from neu_vol.source_metadata import (describe, existing_levels,  # noqa: E402
-                                             level_spec)
+from neu_vol.source_metadata import describe, level0_chunking  # noqa: E402
 
 
 def _describe(volume: str, dataset: str | None = None) -> dict:
@@ -461,15 +457,12 @@ def _src_spec(args, src: str | None = None):
 def _level0_factor(src: str, scale: int, per_level=None, args=None) -> tuple[int, ...]:
     """How many level-0 voxels one scale-``scale`` voxel spans, per axis.
 
-    Read from each level's OWN recorded voxel size, never ``2**scale``: real pyramids
-    are anisotropic and ``(1, 2, 2)`` — halve x/y, leave z — is common (CLAUDE.md
-    invariant 1). Shape ratios are not used either; ceil-division makes them inexact.
-
     ``args`` is optional so the volume-argument commands (``align-bbox``, ``relabel``)
-    can keep calling with a bare path; where it is given the source options travel with
-    it, so a DVID peek resolves the same node the run will use.
+    can call with a bare path; where it is given the source options travel with it, so a
+    DVID peek resolves the same node the run will use.
     """
     from neu_vol.detect import detect_backend
+    from neu_vol.scales import level_factor
     from neu_vol.source_metadata import location_spec, read_level_voxel_sizes
 
     if per_level is None:
@@ -482,20 +475,11 @@ def _level0_factor(src: str, scale: int, per_level=None, args=None) -> tuple[int
             raise SystemExit(f"--bbox-scale {scale} needs the source's per-level voxel "
                              f"sizes and nothing at {src} looks like a volume")
         per_level = read_level_voxel_sizes(spec)
-    if not per_level:
-        raise SystemExit(f"--bbox-scale {scale} needs the source's per-level voxel "
-                         f"sizes, and {src} records none. Give --crop-bbox in level-0 "
-                         f"voxels instead (--bbox-scale 0).")
-    if scale >= len(per_level):
-        raise SystemExit(f"--bbox-scale {scale}: the source records only "
-                         f"{len(per_level)} level(s) (0-{len(per_level) - 1})")
-    factor = tuple(s / b for s, b in zip(per_level[scale], per_level[0]))
-    if any(abs(f - round(f)) > 1e-6 for f in factor):
-        raise SystemExit(f"--bbox-scale {scale}: its voxel size {per_level[scale]} is "
-                         f"not an integer multiple of level 0's {per_level[0]}, so a "
-                         f"box there does not land on level-0 voxels. Use "
-                         f"--bbox-scale 0.")
-    return tuple(int(round(f)) for f in factor)
+    try:
+        return level_factor(per_level, scale)
+    except ValueError as e:
+        raise SystemExit(f"--bbox-scale {scale}: {src} {e}. Give the box in level-0 "
+                         f"voxels instead (--bbox-scale 0).") from None
 
 
 def _src_voxel_size(args):
@@ -582,38 +566,6 @@ def _warn_if_crop_unaligned(start, shape, voxel, args) -> None:
                     "coarse levels sit on a different grid than the source's and their "
                     "voxel_offset rounds. Level 0 is exact either way. Use origin %s "
                     "to keep both grids in step.", tuple(start), coarsest, aligned)
-
-
-def _level0_chunking(d, src):
-    """``(read chunk, write chunk)`` of a source's level 0, either possibly ``None``.
-
-    ``describe`` reports chunking per level, but only for levels it can *find*: a bare
-    zarr array has no level subdirectories, so it reports none and its chunking lives
-    on the array itself. They differ when the level is sharded — the write chunk is the
-    shard — and a copy wants to carry both across.
-    """
-    from neu_vol.backends.base import open_backend
-
-    lvl0 = d["levels"].get(d.get("source_level") or 0) or {}
-    if lvl0.get("read_chunks") or lvl0.get("chunks"):
-        return lvl0.get("read_chunks"), lvl0.get("chunks")
-    meta = d["meta"] or {}
-    try:
-        be = open_backend(meta.get("data_spec") or {"backend": d["format"], "path": src})
-    except Exception as e:
-        # A backend that cannot be opened here can still be read by the workers — the
-        # cloudvolume one needs a package only the neu-vol-cv environment carries. Fall
-        # back to the profile's default chunking rather than fail before starting.
-        log.info("could not read the source's chunking (%s); using the profile default", e)
-        return None, None
-
-    def _maybe(attr):
-        try:
-            return tuple(int(c) for c in getattr(be, attr))
-        except Exception:
-            return None
-
-    return _maybe("read_chunks"), _maybe("chunks")
 
 
 def _convert_targets(fmt, dst, profile_arg, chunk, shard):
@@ -828,7 +780,7 @@ def cmd_copy(args) -> int:
     if not voxel:
         raise SystemExit(f"{args.src} records no voxel size; pass --voxel-size")
     # Sharded levels report the inner read chunk and the shard separately; carry both.
-    read_chunk, write_chunk = _level0_chunking(d, args.src)
+    read_chunk, write_chunk = level0_chunking(d, args.src)
     chunk = _triple(args.chunk, "chunk") or read_chunk or write_chunk
     shard = _triple(args.shard, "shard")
     if shard is None and read_chunk and write_chunk and read_chunk != write_chunk:
@@ -1200,284 +1152,74 @@ def cmd_write(args) -> int:
 # --------------------------------------------------------------------------- #
 # progress
 # --------------------------------------------------------------------------- #
-def _manifest_counts(path: str) -> dict[int, dict] | None:
-    """Per-level progress from a run's manifest, or None if absent.
-
-    ``{level: {"counts": {status: n}, "total": int|None, "task_shape": [...]|None,
-    "grid": (max index + 1 per axis)}}``.
-
-    **The unit is the task, which is not always the chunk.** ``plan_task_shape``
-    sizes a task to cover whole source *and* destination chunks, so one manifest
-    record can stand for 256 destination chunks; the driver records the level's task
-    ``total`` for exactly this reason. ``grid`` is the fallback for manifests written
-    before it did — the largest block index seen per axis, which pins the task grid
-    once a level is complete and lower-bounds it before that.
-
-    **Statuses are kept apart, not summed into a "done" number.** ``empty`` means the
-    block was read and found to be entirely the fill value, so tensorstore wrote no
-    object — a legitimate outcome for sparse data, and an alarm when it is *every*
-    block: that is what a source the reader cannot actually read looks like. Reporting
-    only a total let a conversion of 1.9 M blocks read as all-zeros and still print
-    100%, which is how a whole run was lost.
-
-    **Much cheaper than listing the store.** A LIST over an object store enumerates
-    every chunk — 674k keys for one level of a full-resolution volume, paginated a
-    thousand at a time — while the manifest is a local append-only JSONL the run
-    already wrote. Measured on that volume: 1.5 s for 772k records, against tens of
-    seconds of S3 listing.
-
-    It answers a subtly different question, though, and that is why ``--storage``
-    exists: the manifest is what the *run recorded*, storage is what is *there*. They
-    diverge if objects were deleted underneath, or if a different run wrote the
-    volume. For "how far along is my conversion" the manifest is both faster and more
-    directly the thing you asked.
-
-    A torn final line is normal — the writer may be appending as this reads — so a
-    line that does not parse is skipped rather than fatal.
-    """
-    if not path or not os.path.exists(path):
-        return None
-    out: dict[int, dict] = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            group = rec.get("group", rec.get("level"))
-            if not isinstance(group, int):
-                continue
-            lv = out.setdefault(group, {"counts": {}, "total": None,
-                                        "task_shape": None, "grid": None})
-            if "status" not in rec:                      # a meta line: the denominator
-                meta = rec.get("meta") or {}
-                if isinstance(meta.get("total"), int):
-                    lv["total"] = meta["total"]
-                if meta.get("task_shape"):
-                    lv["task_shape"] = tuple(meta["task_shape"])
-                continue
-            status = str(rec["status"])
-            lv["counts"][status] = lv["counts"].get(status, 0) + 1
-            key = rec.get("key", rec.get("index"))
-            if isinstance(key, list) and all(isinstance(i, int) for i in key):
-                lv["grid"] = (tuple(key) if lv["grid"] is None else
-                              tuple(max(a, b) for a, b in zip(lv["grid"], key)))
-    for lv in out.values():
-        if lv["grid"] is not None:
-            lv["grid"] = tuple(i + 1 for i in lv["grid"])
-    return out
-
-
-def _task_total(lv: dict, chunk_total: int, chunk: tuple, level: int) -> tuple[int, str]:
-    """The denominator for a level's manifest count, and a note if it isn't the chunk grid.
-
-    The manifest counts **tasks**; ``chunk_total`` is the destination *chunk* grid.
-    They are equal for every level a pyramid derives from the level below, and
-    differ at level 0 whenever the source's natural read unit is coarser than the
-    destination chunk — specimen5's is 128x2048x2048 against 128^3, so 7,623 tasks
-    against 1,680,206 chunks, and dividing one by the other reported 0.17% for a
-    run that was 36% done.
-
-    Order of preference:
-      1. the ``total`` the driver recorded — exact, and known before dispatch;
-      2. the grid implied by the largest recorded block index, for manifests from
-         before that was recorded. It is exact for a level that finished and a
-         lower bound for one still running, so the percentage is an upper bound;
-      3. the chunk grid, which is right whenever a task *is* a chunk.
-    """
-    if lv.get("total"):
-        total = lv["total"]
-        task = lv.get("task_shape")
-        if total != chunk_total and task:
-            per = math.prod(max(1, t // c) for t, c in zip(task, chunk))
-            return total, (f"level {level} is counted in tasks of "
-                           f"{tuple(task)}, {per} destination chunks each "
-                           f"({chunk_total:,} chunks in {total:,} tasks)")
-        return total, ""
-    grid = lv.get("grid")
-    if grid and math.prod(grid) < chunk_total:
-        implied = math.prod(grid)
-        return implied, (
-            f"level {level}: this manifest predates the recorded task total, so "
-            f"{implied:,} is inferred from the recorded block indices (grid {grid}, "
-            f"against {chunk_total:,} chunks). Exact if the level finished, a lower "
-            f"bound if it is still running — so the % is an upper bound")
-    return chunk_total, ""
-
-
-# Statuses meaning the block will not be retried. "failed" is excluded on purpose:
-# blockrun's is_done tests key presence, so a resumed run retries failures, and
-# counting them as done would overstate progress.
-_DONE_STATUSES = ("written", "empty", "skipped")
-
-
-def _other_manifests(manifest_path: str) -> list[str]:
-    """Manifests sitting beside the one we looked for, for the message when it is absent.
-
-    A rebuild names its manifest ``<name>.regen-from-<n>.progress.jsonl`` — deliberately,
-    so it cannot be mistaken for a conversion's and mark the levels being rebuilt as
-    already done. The cost is that the default `progress` looks for is then the wrong
-    file, and "no run manifest" alone gives no hint that the right one is right there.
-    """
-    import glob as _glob
-
-    suffix = ".progress.jsonl"
-    stem = manifest_path[: -len(suffix)] if manifest_path.endswith(suffix) else manifest_path
-    return sorted(p for p in _glob.glob(f"{stem}*{suffix}") if p != manifest_path)
-
-
-def _stored_chunks(volume: str, fmt: str, level: int, scale_key: str | None) -> int:
-    """Count the chunk objects actually stored for one level.
-
-    The two formats put them in different places, which is the whole reason this used
-    to report "no levels found" for precomputed: zarr v3 gives each level its own
-    subdirectory with data under ``c/`` (one object per chunk, or per *shard* when
-    sharded), while precomputed keys every scale's chunks under its own scale key
-    (``8_8_8/…``) beside one shared ``info``.
-    """
-    from neu_vol.location import list_keys
-
-    if fmt == "zarr3":
-        keys = list_keys(volume, str(level))
-        return sum(1 for k in keys if k.startswith("c/"))
-    keys = list_keys(volume, scale_key or "")
-    # A precomputed chunk key looks like `0-128_0-128_0-128`; anything else under the
-    # prefix (a stray file) is not a chunk.
-    return sum(1 for k in keys if "_" in k.rsplit("/", 1)[-1] and "-" in k.rsplit("/", 1)[-1])
-
-
-def _precomputed_scale_keys(volume: str) -> dict[int, str]:
-    """``{level: scale key}`` finest-first, matching how levels are numbered elsewhere."""
-    from neu_vol.scales import finest_first, precomputed_info
-
-    scales = (precomputed_info(volume) or {}).get("scales", [])
-    return {i: scales[j]["key"] for i, j in enumerate(finest_first(scales))}
-
-
 def cmd_progress(args) -> int:
     """Blocks done per level, against the number the level has.
 
-    The unit differs by source: from the manifest it is the **task** the run
-    dispatched (see ``_task_total``), from ``--storage`` it is the stored chunk
-    object. They coincide except at level 0 of a conversion whose source reads in
-    units coarser than the destination chunk.
-
-    Counted through the kvstore rather than a filesystem walk, so it is one listing
-    per level and works against an object store — the previous version hardcoded the
-    ``file`` driver and could not inspect the s3 volumes ``convert`` writes.
-
-    **Levels come from the shared inspection, so every format `info` understands works
-    here too.** They used to come from opening ``<volume>/<level>`` with the zarr v3
-    driver in a loop, which meant precomputed — whose scales live under one ``info`` —
-    broke out at level 0 and reported "no levels found yet", and said so for the
-    manifest path as well, since the loop was shared.
-
-    **Every store opened here still goes through ``ensure_credentials``**, now by
-    construction rather than by remembering: reads go via ``location`` and
-    ``open_backend``, which both bootstrap. tensorstore's S3 *profile* provider cannot
-    read ``~/.aws/credentials``, so that call copies the profile into the ``AWS_*`` env
-    vars its *environment* provider does read. Skipping it does not fail outright — the
-    credential chain simply falls through to the EC2 instance-metadata service, which
-    does not exist off EC2, and each probe waits out a socket timeout while logging
-    ``AWS_AUTH_CREDENTIALS_PROVIDER_IMDS_SOURCE_FAILURE``. That is slow and noisy
-    rather than broken, which is exactly why it survives review; see the S3 bootstrap
-    note in CLAUDE.md.
+    From the manifest the unit is the **task** the run dispatched; from ``--storage`` it
+    is the stored chunk object. They coincide except at level 0 of a conversion whose
+    source reads in units coarser than the destination chunk.
     """
-    from neu_vol.location import default_progress_path
-    from neu_vol.detect import PRECOMPUTED_GZ, detect_backend, require_chunked_volume
+    from neu_vol.ops.progress import level_progress, other_manifests
 
     volume = args.volume.rstrip("/")
-    manifest_path = args.progress_path or default_progress_path(volume)
-    manifest = None if args.storage else _manifest_counts(manifest_path)
-
-    fmt = detect_backend(volume)
-    if fmt is not None:
-        # Progress is chunk objects against the number a level has. A single array has
-        # neither, so `_stored_chunks` would list a prefix that holds no chunk keys and
-        # report 0% for a file that is entirely present.
-        try:
-            require_chunked_volume(fmt, volume, "neu-vol progress")
-        except ValueError as e:
-            raise SystemExit(str(e)) from None
-    if fmt == PRECOMPUTED_GZ:
-        # Only the chunk KEYS differ, and nothing here reads a chunk — shapes and
-        # scale keys come from `info`, which is the same document either way.
-        fmt = "neuroglancer_precomputed"
-    if fmt is None:
-        print(f"no volume found at {volume}")
+    try:
+        p = level_progress(volume, progress_path=args.progress_path, storage=args.storage)
+    except FileNotFoundError as e:
+        print(e)
         return 1
-    levels = existing_levels(volume, fmt)
-    scale_keys = (_precomputed_scale_keys(volume)
-                  if fmt == "neuroglancer_precomputed" else {})
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
+    from_manifest = p["source"] == "manifest"
 
-    # Timestamped because this is a point-in-time count, and the way you get a rate
-    # out of it is to diff two runs — which needs to know how far apart they were.
+    # Timestamped because a rate comes from diffing two runs.
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    source = "run manifest" if manifest is not None else "storage listing"
+    source = "run manifest" if from_manifest else "storage listing"
     header = (f"{'level':>5} {'shape':>24} {'chunk':>18} {'done/total':>20} {'%':>7}")
-    if manifest is not None:
+    if from_manifest:
         header += f" {'written':>10} {'empty':>10}"
     print(f"{volume}\n{stamp}  (counted from the {source})")
-    # Falling back to storage because no manifest was found used to be indistinguishable
-    # from --storage: same header, no other tell. Say it, and say where it looked.
-    if manifest is None and not args.storage:
-        print(f"  no run manifest at {manifest_path}")
-        nearby = _other_manifests(manifest_path)
+    # Say when storage is a fallback rather than --storage, and where it looked.
+    if not from_manifest and not args.storage:
+        print(f"  no run manifest at {p['manifest_path']}")
+        nearby = other_manifests(p["manifest_path"])
         if nearby:
             print(f"  but these are beside it — a rebuild names its own:\n"
-                  + "".join(f"      --progress-path {p}\n" for p in nearby), end="")
+                  + "".join(f"      --progress-path {m}\n" for m in nearby), end="")
         else:
             print(f"  (pass --progress-path if the run wrote it elsewhere; a remote "
                   f"--dst defaults it to the launching directory)")
     print(header)
 
     done_total = expected_total = written_total = empty_total = 0
-    notes: list[str] = []
-    for level, lv_info in sorted(levels.items()):
-        shape = lv_info["shape"]
-        chunk = lv_info["chunks"]
-        if not chunk:
+    for row in p["levels"]:
+        level, shape, chunk = row["level"], row["shape"], row["chunk"]
+        if chunk is None:
             print(f"{level:>5} {str(shape):>24} {'(chunking unknown)':>18}")
             continue
-        expected = math.prod(math.ceil(s / c) for s, c in zip(shape, chunk))
+        done, expected = row["done"], row["total"]
         extra = ""
-        if manifest is not None:
-            lv = manifest.get(level, {})
-            by_status = lv.get("counts", {})
-            done = sum(n for s, n in by_status.items() if s in _DONE_STATUSES)
-            written, empty = by_status.get("written", 0), by_status.get("empty", 0)
-            written_total += written
-            empty_total += empty
-            extra = f" {written:>10,} {empty:>10,}"
-            expected, note = _task_total(lv, expected, chunk, level)
-            if note:
-                notes.append(note)
-        else:
-            done = _stored_chunks(volume, fmt, level, scale_keys.get(level))
+        if from_manifest:
+            written_total += row["written"]
+            empty_total += row["empty"]
+            extra = f" {row['written']:>10,} {row['empty']:>10,}"
         done_total += done
         expected_total += expected
         pct = 100.0 * done / expected if expected else 100.0
         print(f"{level:>5} {str(shape):>24} {str(chunk):>18} "
               f"{f'{done}/{expected}':>20} {pct:>6.1f}%{extra}")
 
-    if not levels:
+    if not p["levels"]:
         print("no levels found yet — level 0 has not been created")
         return 1
     pct = 100.0 * done_total / expected_total if expected_total else 100.0
-    total_extra = (f" {written_total:>10,} {empty_total:>10,}"
-                   if manifest is not None else "")
+    total_extra = f" {written_total:>10,} {empty_total:>10,}" if from_manifest else ""
     print(f"{'TOTAL':>5} {'':>24} {'':>18} "
           f"{f'{done_total}/{expected_total}':>20} {pct:>6.1f}%{total_extra}")
-    for note in notes:
+    for note in p["notes"]:
         print(f"\n  {note}")
 
-    # An all-empty run is the signature of a source the reader cannot actually read:
-    # every block came back as fill value, so tensorstore wrote no object and the
-    # totals still say 100%. Loud, because it costs a whole conversion to discover.
-    if manifest is not None and done_total and not written_total:
+    # Every block read as fill value is what an unreadable source looks like.
+    if from_manifest and done_total and not written_total:
         print(f"\nWARNING: {empty_total:,} blocks processed, NONE written.\n"
               f"  Every block read as entirely the fill value, so no chunk objects\n"
               f"  exist — the destination holds only metadata. Usually this means the\n"
@@ -1608,83 +1350,16 @@ def cmd_to_hdf5(args) -> int:
 # --------------------------------------------------------------------------- #
 # align-bbox
 # --------------------------------------------------------------------------- #
-def _cumulative_factor(per_level, level: int, volume: str) -> tuple[int, ...]:
-    """How many level-0 voxels one voxel of ``level`` spans, per axis.
-
-    From the recorded per-level voxel sizes, never ``2**level`` (invariant 1). Shared by
-    both grid choices below, because both are questions about the same ratio: a chunk at
-    level N covers ``chunk * factor(N)`` level-0 voxels, and the pyramid's own grid *is*
-    the factor of its deepest level.
-    """
-    if not per_level:
-        raise SystemExit(f"{volume} records no per-level voxel sizes, so a level-{level} "
-                         f"grid cannot be expressed in level-0 voxels. Give the grid "
-                         f"directly with --block.")
-    if level >= len(per_level):
-        raise SystemExit(f"{volume} records {len(per_level)} level(s) "
-                         f"(0-{len(per_level) - 1}), so there is no level {level}")
-    factor = tuple(s / b for s, b in zip(per_level[level], per_level[0]))
-    if any(abs(f - round(f)) > 1e-6 for f in factor):
-        raise SystemExit(f"level {level} of {volume} has voxel size {per_level[level]}, "
-                         f"not an integer multiple of level 0's {per_level[0]}: its grid "
-                         f"does not land on level-0 voxels")
-    return tuple(int(round(f)) for f in factor)
-
-
 def _align_grid(args, d):
     """``(block in level-0 voxels, where it came from)`` for ``--to`` / ``--block``."""
-    from neu_lib.grid import lcm_grid
+    from neu_vol.ops.align import align_grid
 
     if args.block:
         return _triple(args.block, "block"), "--block"
-    per_level, levels = d["level_voxel_sizes"], d["levels"]
-
-    if args.level == 0 and not levels:
-        # A bare array reports no levels at all; its chunking is on the array itself.
-        read_chunk, write_unit = _level0_chunking(d, args.volume)
-        at = (1, 1, 1)
-    else:
-        if args.level not in levels:
-            raise SystemExit(f"{args.volume} has no level {args.level} "
-                             f"(present: {sorted(levels) or 'none'}). Give the grid "
-                             f"directly with --block.")
-        lvl = levels[args.level]
-        write_unit, read_chunk = lvl.get("chunks"), lvl.get("read_chunks")
-        # A level's own chunk is in ITS voxels; the box is in level-0 ones.
-        at = ((1, 1, 1) if args.level == 0
-              else _cumulative_factor(per_level, args.level, args.volume))
-
-    # The write unit is the SHARD where a level is sharded — that is the object a partial
-    # write rewrites. `read_chunks` is the inner chunk, which governs read amplification
-    # and offers no protection at all against a partial-shard update.
-    sharded = bool(read_chunk and write_unit and read_chunk != write_unit)
-
-    def scaled(block, what):
-        if not block:
-            raise SystemExit(f"level {args.level} of {args.volume} reports no {what}; "
-                             f"give the grid directly with --block")
-        return tuple(int(c) * f for c, f in zip(block, at)), (
-            f"level-{args.level} {what}"
-            + (f", x{at} to level-0 voxels" if any(f != 1 for f in at) else ""))
-
-    def pyramid_grid():
-        """The deepest level's cumulative factor — the grid every level shares."""
-        if not per_level or len(per_level) == 1:
-            return (1, 1, 1), "no pyramid: a single level constrains nothing"
-        deepest = len(per_level) - 1
-        return (_cumulative_factor(per_level, deepest, args.volume),
-                f"cumulative factor of level {deepest}, the deepest")
-
-    if args.to == "write-unit":
-        return scaled(write_unit, "shard" if sharded else "chunk")
-    if args.to == "read-chunk":
-        return scaled(read_chunk or write_unit, "read chunk")
-    if args.to == "pyramid":
-        return pyramid_grid()
-    unit, unit_from = scaled(write_unit, "shard" if sharded else "chunk")
-    deepest, _ = pyramid_grid()
-    return lcm_grid(unit, deepest), (f"LCM of the {unit_from} and the pyramid factor "
-                                     f"{deepest}")
+    try:
+        return align_grid(d, args.volume, level=args.level, to=args.to)
+    except ValueError as e:
+        raise SystemExit(f"{e}. Give the grid directly with --block.") from None
 
 
 def _box_line(label: str, lo, hi) -> str:

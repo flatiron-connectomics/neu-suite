@@ -142,25 +142,18 @@ def _level0_factor(volume: str, scale: int) -> tuple[int, ...]:
     From each level's recorded voxel size, never ``2**scale``: pyramids may be anisotropic.
     """
     from neu_vol.detect import detect_backend
+    from neu_vol.scales import level_factor
     from neu_vol.source_metadata import location_spec, read_level_voxel_sizes
 
     fmt = detect_backend(volume.rstrip("/"))
     if fmt is None:
         raise SystemExit(f"--scale {scale} needs the volume's per-level voxel sizes and "
                          f"nothing at {volume} looks like a volume")
-    per_level = read_level_voxel_sizes(location_spec(volume.rstrip("/"), fmt))
-    if not per_level:
-        raise SystemExit(f"--scale {scale} needs the volume's per-level voxel sizes, and "
-                         f"{volume} records none.")
-    if scale >= len(per_level):
-        raise SystemExit(f"--scale {scale}: the volume records only {len(per_level)} "
-                         f"level(s) (0-{len(per_level) - 1})")
-    factor = tuple(s / b for s, b in zip(per_level[scale], per_level[0]))
-    if any(abs(f - round(f)) > 1e-6 for f in factor):
-        raise SystemExit(f"--scale {scale}: its voxel size {per_level[scale]} is not an "
-                         f"integer multiple of level 0's {per_level[0]}, so a coordinate "
-                         f"there does not land on level-0 voxels.")
-    return tuple(int(round(f)) for f in factor)
+    try:
+        return level_factor(read_level_voxel_sizes(location_spec(volume.rstrip("/"), fmt)),
+                            scale)
+    except ValueError as e:
+        raise SystemExit(f"--scale {scale}: {volume} {e}") from None
 
 
 # --------------------------------------------------------------------------- #
