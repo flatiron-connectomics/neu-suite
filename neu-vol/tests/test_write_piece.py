@@ -333,3 +333,16 @@ def test_the_dtype_may_be_widened_on_the_way_out(tmp_path):
     out = str(tmp_path / "wide.h5")
     write_piece(_piece(dtype="uint16"), out, dtype="uint64")
     assert read_piece(out, dataset="/z07901").dtype == np.dtype("uint64")
+
+
+def test_a_crop_takes_either_shape():
+    """`read_piece`'s ``crop=``: ``((lo), (hi))`` or the CLI's flat ``(z0, y0, x0, z1, y1, x1)``."""
+    from neu_vol.piece import _crop_request
+
+    assert _crop_request(((1, 2, 3), (4, 5, 6))) == (((1, 2, 3), (4, 5, 6)), None)
+    assert _crop_request((1, 2, 3, 4, 5, 6)) == (((1, 2, 3), (4, 5, 6)), None)
+    assert _crop_request(None) == (None, None)
+    with pytest.raises(ValueError, match="VOXELS"):
+        _crop_request((1, 2, 3, 4))
+    with pytest.raises(ValueError, match="3 values each"):
+        _crop_request(((1, 2), (3, 4)))
