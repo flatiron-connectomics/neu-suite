@@ -1,21 +1,13 @@
 """Manifest status policy shared by the ops.
 
-Two things live here because both two-stage ops need them and getting either
-wrong is silent:
+- :func:`is_complete`: resume skips *successful* tasks. blockrun's ``Manifest.is_done``
+  tests key presence, so a recorded ``failed`` would read as done and never be retried.
+- :func:`guarded`: per-task fault isolation, for **stage-2 workers only**.
 
-1. :func:`is_complete` — resume must skip *successful* tasks, not merely recorded
-   ones. blockrun's ``Manifest.is_done`` tests key **presence**, so a recorded
-   ``failed`` reads as done and the task that most needs retrying would never run
-   again.
-2. :func:`guarded` — per-task fault isolation, applied to **stage-2 workers only**.
-
-Why only stage 2. Stage-2 tasks are one *body* each and bodies are independent,
-so skipping a bad one costs exactly that body and is recorded. Stage-1 tasks are
-one *block* each, and stage 2 **aggregates across blocks** — a silently skipped
-block does not leave a hole in one block, it truncates every body passing through
-it and erases outright any body lying wholly inside it, with the output still
-looking complete. That failure reaches the science; a crash does not. So stage 1
-stays fail-fast, where resume already makes relaunch cheap.
+Stage-2 tasks are one body each and independent, so a bad one costs that body and is
+recorded. Stage-1 tasks are blocks, and stage 2 aggregates across them: a skipped block
+would truncate every body passing through it while the output looks complete. So stage
+1 fails fast, and resume makes the relaunch cheap.
 """
 
 from __future__ import annotations
@@ -48,16 +40,11 @@ def check_manifest_matches_output(manifest: Any, out_dir: str, *, stage: str,
                                   progress_path: str, resume: bool) -> None:
     """Refuse to resume a manifest that has outlived the data it describes.
 
-    Bookkeeping lives in the POSIX work dir while the data may sit in an object
-    store, so the two no longer share a fate. Clear the destination and the
-    manifest still says every task is done: the run would skip all of them, write
-    nothing, and exit reporting success. Nothing raises, and the loss only shows
-    up as an empty layer in the viewer.
-
-    The probe is the stage's *own* ``info`` — the file this op writes on every
-    run — not the segmentation ``info``, so meshing into a volume whose labels
-    were never exported (a legitimate ``--stages mesh`` run) is not mistaken for
-    a cleared destination.
+    The manifest lives in the work dir and the data possibly in an object store, so
+    clearing the destination would leave a manifest saying every task is done: the run
+    would write nothing and report success. The probe is the stage's own ``info``, not
+    the segmentation's, so meshing into a volume whose labels were never exported is
+    not mistaken for a cleared destination.
 
     Only checked when resuming; ``resume=False`` is an explicit fresh start.
     """
@@ -81,11 +68,8 @@ def check_manifest_matches_output(manifest: Any, out_dir: str, *, stage: str,
 def is_systemic(exc: BaseException) -> bool:
     """Would this error recur for every remaining task?
 
-    ``MemoryError`` is the ambiguous one: at stage 2 a single enormous body can
-    genuinely exhaust memory while its neighbours are fine. It is treated as
-    systemic anyway, because a process that has just hit OOM is not in a state
-    worth trusting for the next 40,000 tasks — and if it really was one body,
-    the run resumes past it once you exclude or re-scale it.
+    ``MemoryError`` counts as systemic even though one enormous body can cause it: a
+    process that has hit OOM is not worth trusting for the remaining tasks.
     """
     if isinstance(exc, _SYSTEMIC_TYPES):
         return True
@@ -100,9 +84,7 @@ def is_complete(manifest: Any, group: str, key: Any) -> bool:
 def group_counts(manifest: Any, group: str) -> dict[str, int]:
     """Per-group status tallies.
 
-    ``Manifest.counts()`` aggregates every group in the file, so a two-stage op
-    reporting it conflates "blocks chunked" with "bodies assembled" and the
-    totals exceed the block count.
+    ``Manifest.counts()`` aggregates every group, conflating blocks with bodies.
     """
     out: dict[str, int] = {}
     for key in manifest.done_keys(group):
@@ -114,12 +96,9 @@ def group_counts(manifest: Any, group: str) -> dict[str, int]:
 def guarded(worker: Callable[[Any], tuple], key: Any) -> tuple:
     """Run a stage-2 worker, converting an exception into a ``failed`` result.
 
-    Workers return ``(key, status, metrics, info)``; on failure ``info`` carries
-    the traceback (so it is not lost on a worker) and a ``systemic`` flag the
-    driver's breaker uses to stop immediately.
-
-    ``KeyboardInterrupt`` and ``SystemExit`` derive from ``BaseException``, so
-    they are deliberately **not** caught here and still abort the run at once.
+    Workers return ``(key, status, metrics, info)``; on failure ``info`` carries the
+    traceback and a ``systemic`` flag for the breaker. ``KeyboardInterrupt`` and
+    ``SystemExit`` are not caught.
     """
     try:
         return worker(key)
@@ -132,16 +111,10 @@ def guarded(worker: Callable[[Any], tuple], key: Any) -> tuple:
 class FailureBreaker:
     """Stops a stage when failures stop looking like isolated bad bodies.
 
-    Two triggers: a *systemic* exception (see :func:`is_systemic`), which aborts
-    at once, and ``max_consecutive`` failures in a row, which catches the slower
-    version of the same thing — a misconfiguration or a dying filesystem that
-    makes everything fail. A single success resets the streak.
-
-    It records a reason rather than raising inline, so the caller can finish
-    applying a batch's successful results before :meth:`check` aborts. Under dask,
-    batches complete out of order, so "consecutive" means consecutive in
-    *completion* order — a good enough proxy, not a precise statement about the
-    task list.
+    Triggers: a systemic exception (:func:`is_systemic`), at once, or
+    ``max_consecutive`` failures in a row (in completion order); a success resets the
+    streak. It records a reason and :meth:`check` raises, so a batch's successes are
+    applied first.
     """
 
     def __init__(self, max_consecutive: int = 10):

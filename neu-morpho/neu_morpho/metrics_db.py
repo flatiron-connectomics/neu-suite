@@ -1,14 +1,11 @@
 """Per-body metrics database (SQLite).
 
-One row per body, progressively enriched: the index scan fills bbox / voxel_count
-/ volume; meshing and skeletonization update their columns. Bbox is stored in
-**full-resolution voxel coords** (canonical, matching the mesh space); consumers
-convert to whatever scale they read at.
+One row per body, progressively enriched: the index scan fills bbox / voxel_count /
+volume; meshing and skeletonization update their columns. Bbox is in **full-resolution
+voxels**; consumers convert to their own scale.
 
-Correctness on resume: the index applies each block's contribution AND marks that
-block done in a **single SQLite transaction**, so a crash can't double-count a
-summed metric (voxel_count) — either both land or neither. The driver is the sole
-writer (block-map workers only compute per-block partials).
+Each block's contribution and its "done" mark land in **one transaction**, so a crash
+cannot double-count a summed metric on resume. The driver is the sole writer.
 """
 
 from __future__ import annotations
@@ -26,19 +23,12 @@ class MetricsDB:
     def __init__(self, path: str, *, read_only: bool = False, busy_timeout_ms: int = 30_000):
         """Open the metrics DB. ``read_only`` opens it WITHOUT writing to it.
 
-        Both keywords exist because of one incident, and both are load-bearing:
+        **A reader must not take a write lock**: the default open runs DDL, which locks
+        the DB and can kill a running sweep with ``database is locked``. Read-only tools
+        pass ``read_only=True``, which skips the DDL and opens with ``mode=ro``.
 
-        **A reader must not take a write lock.** This constructor's ``PRAGMA
-        journal_mode`` and ``CREATE TABLE IF NOT EXISTS`` statements are writes, so
-        merely *opening* a DB to look at progress locked it — and killed a 25-minute
-        sweep mid-run with ``database is locked``. Any read-only tool must pass
-        ``read_only=True``; it skips the DDL and opens with ``mode=ro``.
-
-        **A writer must wait rather than fail.** With no ``busy_timeout`` SQLite raises
-        immediately on contention, so a single concurrent reader is fatal to a long run.
-        Thirty seconds turns that into a pause. This matters more than the first fix,
-        because it protects against readers that predate the convention — and the DB
-        often lives on a network filesystem, where locking is less crisp than local.
+        **A writer waits rather than fails**: ``busy_timeout`` turns contention with a
+        concurrent reader into a pause.
         """
         self.read_only = bool(read_only)
         if self.read_only:
@@ -54,16 +44,12 @@ class MetricsDB:
             f"CREATE TABLE IF NOT EXISTS bodies (body_id INTEGER PRIMARY KEY, {cols}, "
             f"voxel_count INTEGER DEFAULT 0, volume_nm3 REAL DEFAULT 0, {extra})")
         self.con.execute("CREATE TABLE IF NOT EXISTS index_progress (block TEXT PRIMARY KEY)")
-        # The counts-only sweep keeps its OWN progress table. Both fill voxel_count on the
-        # same grid with the same block keys, so sharing one table would let a second pass
-        # silently skip every block; sharing the *column* means running both would double
-        # every count. Separate tables make that collision detectable — see
-        # `neu_morpho.measure.driver`, which refuses to mix them.
+        # The counts-only sweep keeps its own progress table: it fills voxel_count with
+        # the same block keys, so a shared table would make a second pass skip every block.
+        # Separate tables let `neu_morpho.measure.driver` refuse to mix the two.
         self.con.execute("CREATE TABLE IF NOT EXISTS sweep_progress (block TEXT PRIMARY KEY)")
-        # A progress table counts TASKS DONE and nothing knows the DENOMINATOR but the
-        # driver, which is invariant 11 restated for a DB rather than a JSONL manifest.
-        # Without this, `measure progress` can only report a count, and a count with no
-        # total is what makes a run look stalled or nearly-finished at random.
+        # A progress table counts tasks done; only the driver knows the total, so it
+        # records it here, and `measure progress` can report a fraction.
         self.con.execute(
             "CREATE TABLE IF NOT EXISTS stage_meta ("
             "stage TEXT PRIMARY KEY, total INTEGER, block_shape TEXT, level INTEGER, "
@@ -83,16 +69,9 @@ class MetricsDB:
                           partials: Mapping[int, tuple], voxel_volume_nm3: float) -> None:
         """Merge one block's {body_id: (z0,y0,x0,z1,y1,x1,count)} and mark it done, atomically.
 
-        bbox merges by min/max; voxel_count and volume accumulate. No-op if the
-        block was already applied (idempotent).
-
-        **The bbox merge must survive a pre-existing row with a NULL bbox**, because
-        SQLite's scalar ``min(NULL, 5)`` is ``NULL``, not 5. The skel stage creates rows
-        via :meth:`update_body` with no bbox, so running the stages in that order — a
-        legitimate order, since the stages are independent and chunked skeletonization
-        needs no bbox — used to leave every such body's bbox NULL forever while its
-        ``voxel_count`` accumulated correctly. Half-populated and silent. Hence the
-        explicit NULL check rather than a bare ``min``/``max``.
+        bbox merges by min/max; voxel_count and volume accumulate. No-op if the block was
+        already applied. A pre-existing row may have a NULL bbox (another stage created
+        it), and SQLite's ``min(NULL, 5)`` is ``NULL``, hence the explicit NULL check.
         """
         cur = self.con.cursor()
         cur.execute("BEGIN")
@@ -155,11 +134,8 @@ class MetricsDB:
                 for r in self.con.execute(
                     f"SELECT stage, {','.join(cols)} FROM stage_meta")}
 
-    #: stage name -> its progress table. The single place a block-mapped stage is
-    #: registered: `stage_counts` and `neu-morpho measure progress` both derive from
-    #: this, so adding a stage cannot leave it invisible to the reporter. It did once —
-    #: the compartment pass recorded its total and its blocks and displayed neither,
-    #: which is indistinguishable from a hung run.
+    #: stage name -> its progress table. The one place a block-mapped stage is registered:
+    #: `stage_counts` and `neu-morpho measure progress` both derive from it.
     BLOCK_STAGES = {"index": "index_progress",
                     "sweep": "sweep_progress",
                     "compartments": "compartment_progress"}
@@ -231,10 +207,8 @@ class MetricsDB:
     def done_skel_bodies(self, *, include_failed: bool = False) -> set[int]:
         """Bodies not worth attempting again.
 
-        **Status is filtered, never merely tested for presence.** A recorded ``failed``
-        would otherwise read as done and never be retried — invariant 3's trap, which
-        `blockrun.Manifest.is_done` still has. ``absent`` IS terminal: a body with no
-        published skeleton will not grow one.
+        Status is filtered, not tested for presence, so a recorded ``failed`` is retried.
+        ``absent`` is terminal: a body with no published skeleton will not grow one.
         """
         if not self._has_table("skel_status"):
             return set()
@@ -290,14 +264,9 @@ class MetricsDB:
                            voxel_volume_nm3: float) -> None:
         """Merge one block's ``{body_id: voxel_count}`` and mark it done, atomically.
 
-        The bbox-free counterpart of :meth:`apply_index_block`, for the morphometry
-        sweep. Bbox costs an ``argwhere`` plus an ``argsort`` over every labelled voxel
-        in the block — ~30 s against ~3 s for the counts alone on a dense block — and a
-        dataset whose bodies all have published skeletons does not need it, because the
-        skeletons already say where each body is.
-
-        Rows created here carry a NULL bbox and NULL skeleton columns, which is the
-        honest representation: this pass did not measure them.
+        The bbox-free counterpart of :meth:`apply_index_block`, for the morphometry sweep,
+        about 10x cheaper per dense block. Rows created here have NULL bbox and skeleton
+        columns: this pass did not measure them.
         """
         cur = self.con.cursor()
         cur.execute("BEGIN")
@@ -328,9 +297,7 @@ class MetricsDB:
                       margin_vox: int = 0, clip_shape: Sequence[int] | None = None) -> tuple | None:
         """A body's bbox at a read scale, as (z0,y0,x0,z1,y1,x1) voxels (+ margin).
 
-        ``factor_zyx`` = full-res voxels per read-scale voxel (e.g. 2**read_scale).
-        This is the crop skeletonization/meshing reads for one body — from the DB,
-        so no pre-known bbox is needed.
+        ``factor_zyx`` = full-res voxels per read-scale voxel.
         """
         bb = self.get_bbox(body_id)
         if bb is None:
@@ -361,9 +328,8 @@ class MetricsDB:
     def update_body(self, body_id: int, **cols) -> None:
         """Set enrichment columns for a body, inserting the row if it is new.
 
-        The values go in the INSERT as well as the DO UPDATE: with them only in
-        the conflict branch, a body the index scan never saw would be inserted
-        with all-NULL metrics and the update silently skipped.
+        The values go in the INSERT as well as the DO UPDATE, so a body the index scan
+        never saw is inserted with them.
         """
         if not cols:
             return
@@ -382,11 +348,8 @@ class MetricsDB:
     def update_bodies(self, rows: Iterable[tuple[int, Mapping]]) -> int:
         """Upsert many bodies in **one transaction with one commit**.
 
-        ``update_body`` commits per call, which is fine interactively and ruinous
-        in a pipeline: the driver is the sole DB writer and runs single-threaded,
-        so one fsync per body turns into a serial section that grows with the body
-        count while every worker sits idle. Batching a result set into one commit
-        removes essentially all of that.
+        ``update_body`` commits per call; in a pipeline that is one fsync per body in the
+        driver, the sole writer, while workers sit idle.
         """
         n = 0
         for body_id, cols in rows:

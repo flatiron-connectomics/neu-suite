@@ -1,15 +1,12 @@
 """Restrict a run to a portion of the volume, without moving the block grid.
 
-The grid is always tiled over the **whole** volume and then filtered: a block's
-index and its region are the same numbers in an ROI run as in a later full run.
-That is the point — fragments, manifest keys and nm coordinates all carry over,
-so a test run over one cube is a *prefix* of the full run rather than a separate
-universe you have to redo.
+The grid is tiled over the **whole** volume and then filtered, so a block's index and
+region are the same in an ROI run as in a later full run: a test run over one cube is a
+prefix of the full run, and its fragments and manifest keys carry over.
 
-ROIs are half-open ``(z0, y0, x0, z1, y1, x1)`` in the voxels of the scale being
-read. Blocks are kept whole when they intersect, never clipped: clipping would
-make a block's content depend on the ROI, so the same block index would hold
-different data in two runs and resume would silently reuse the wrong fragment.
+ROIs are half-open ``(z0, y0, x0, z1, y1, x1)`` in the voxels of the scale being read.
+Intersecting blocks are kept whole, never clipped, so a block index always holds the
+same data.
 """
 
 from __future__ import annotations

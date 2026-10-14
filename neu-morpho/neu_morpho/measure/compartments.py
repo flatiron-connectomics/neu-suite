@@ -1,24 +1,16 @@
 """Per-body volume split by semantic compartment, from two aligned volumes.
 
-The pass that turns a population average ("cell bodies are ~22% of neuronal tissue")
-into each body's own somatic fraction, which is what the ``variant`` column carries.
+Gives each body its own somatic fraction, for the ``variant`` column. Reads the
+segmentation and semantic blocks over the same voxel indices and counts
+``(body_id, semantic_label)`` pairs:
 
-Reads the segmentation block and the semantic block covering the SAME voxel indices and
-counts ``(body_id, semantic_label)`` pairs. Two things make that legitimate rather than
-approximate:
+- **The grids must coincide** (same voxel size and origin at the chosen level, differing
+  only in far-edge padding); checked at open time.
+- **Label 0 is counted too**, so ``sum over labels == the body's total`` is exact, and
+  :func:`verify_compartments` checks it against a volume sweep's totals, which shows
+  whether a block filter lost anything.
 
-- **The grids coincide.** Both volumes are origin-anchored with the same voxel size at the
-  chosen level, differing only in padding at the far edge, so no resampling and no offset
-  correction is involved. Checked at open time rather than assumed — nothing guarantees the
-  next pair of volumes agrees.
-- **Label 0 is counted too.** Tissue that carries no semantic label is a real category, and
-  including it is what makes ``sum over labels == the body's total voxel count`` an exact
-  identity. :func:`verify_compartments` checks that against the totals a previous volume
-  sweep recorded, which converts the block filter's completeness from an argument into a
-  measurement — the thing invariant 6 otherwise leaves you guessing about.
-
-``non_somatic = total - (nucleus + soma)``, so the expensive part is confined to blocks
-where the semantic volume actually has somatic labels; everything else is already known.
+``non_somatic = total - (nucleus + soma)``.
 """
 
 from __future__ import annotations
@@ -34,15 +26,12 @@ from ..metrics_db import MetricsDB
 from .. import roi as _roi
 from .sweep import DEFAULT_BLOCK
 
-#: The semantic label ids that together make a cell body. Read from the source's own
-#: segment_properties by :func:`somatic_labels` rather than hardcoded — a different
-#: dataset numbers them differently, and silently using the wrong integers would produce
-#: a plausible non-somatic volume that excludes the wrong thing.
+#: The semantic labels that make a cell body, by name; :func:`somatic_labels` reads their
+#: ids from the source, since datasets number them differently.
 SOMATIC_NAMES = ("nucleus", "soma")
 
-#: Semantic labels are small integers, so a body id and a label pack into one uint64 key
-#: and the whole joint histogram is ONE `np.unique`. Eight passes (one per label) would
-#: cost eight times as much on a dense block.
+#: A body id and a small semantic label pack into one uint64 key, so the joint histogram
+#: is one `np.unique`.
 _LABEL_BITS = 4
 _LABEL_MAX = (1 << _LABEL_BITS) - 1
 
@@ -111,8 +100,7 @@ def _compartment_block(block, *, seg_spec: dict, sem_spec: dict, sem_shape,
 
     def read_and_count():
         seg = open_backend(seg_spec).read_region(block.region)
-        # The semantic volume is padded slightly LARGER on some axes, so the
-        # segmentation's own region always fits. Clip anyway rather than trust it.
+        # Clip to the semantic volume, then pad, in case its extent differs.
         reg = tuple(slice(s.start, min(s.stop, int(d)))
                     for s, d in zip(block.region, sem_shape))
         sem = open_backend(sem_spec).read_region(reg)
@@ -145,10 +133,9 @@ def sweep_compartments(
 ) -> dict:
     """Count ``(body, semantic_label)`` pairs into ``db_path``'s compartment table.
 
-    ``blocks`` optionally restricts the work to a set of block *indices* — e.g. an
-    occupancy grid built from the segmentation's own coarse level. Unlike an anatomical
-    ROI this cannot omit a soma (a soma is segmentation, so it is non-zero at any level),
-    and :func:`verify_compartments` proves afterwards that nothing was missed.
+    ``blocks`` optionally restricts the work to a set of block indices, such as an occupancy
+    grid from the segmentation's own coarse level (which, unlike an anatomical ROI, cannot
+    omit a soma). :func:`verify_compartments` shows afterwards whether anything was missed.
     """
     keep = None if keep is None else frozenset(int(b) for b in keep)
     block_shape = (int(block),) * 3
@@ -191,11 +178,8 @@ def sweep_compartments(
 def verify_compartments(db_path: str, *, tolerance: int = 0) -> dict:
     """Check each body's per-label sum against the total a volume sweep recorded.
 
-    This is the whole justification for filtering blocks. A coarse occupancy grid *can*
-    drop a block that holds data (invariant 6), and normally you would never learn which
-    — but the volume sweep read every block, so its per-body totals are ground truth. If
-    the sums agree, the filter lost nothing; if they do not, this names the bodies and the
-    shortfall instead of leaving a silent deficit in the result.
+    A coarse occupancy grid can drop a block holding data; the volume sweep read every
+    block, so its totals are ground truth, and this names any body that falls short.
     """
     db = MetricsDB(db_path, read_only=True)
     try:

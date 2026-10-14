@@ -1,20 +1,13 @@
-"""Coordinate contract — the single thing that keeps meshes and skeletons aligned.
+"""The coordinate contract that keeps meshes and skeletons aligned.
 
-mesh-n-bone hit *mesh↔skeleton offset* bugs (e.g. segment 231668). The root cause
-is meshes and skeletons ending up in different coordinate spaces. We avoid it by
-putting **both** in one model space and using **identity** neuroglancer transforms:
+Both live in one model space, physical nanometres (full-resolution world coords, zyx),
+with **identity** neuroglancer transforms. Every scale is expressed through its own voxel
+size (nm), never an assumed ``2**scale``, so anisotropic pyramids stay aligned.
 
-    model space = physical nanometers (full-resolution world coords), zyx.
-
-Everything is expressed via each scale's **voxel size (nm)** — never an assumed
-``2**scale`` pyramid factor — so non-standard/anisotropic pyramids stay aligned.
-
-- Mesh: ``Mesh.from_label_volume(block, physical_box(region, voxel_size_mesh))``
-  yields vertices directly in nm (verified: a block region maps into the box).
-- Skeleton: kimimaro (run with ``anisotropy = voxel_size_skel``) returns vertices
-  in nm *local to the crop*; ``skeleton_to_physical(v, crop_origin_nm)`` shifts to
-  global nm. The crop origin is the piece that, if dropped, causes the offset.
-- neuroglancer mesh/skeleton ``info`` transforms stay identity (vertices are nm).
+- Mesh: ``Mesh.from_label_volume(block, physical_box(region, voxel_size))`` yields nm.
+- Skeleton: a tracer run with ``anisotropy = voxel_size`` returns nm local to the crop;
+  :func:`skeleton_to_physical` adds the crop origin, the step whose omission offsets
+  skeletons from their meshes.
 """
 
 from __future__ import annotations
@@ -41,12 +34,8 @@ def crop_origin_nm(origin_vox_zyx: Sequence[int], voxel_size_zyx: Sequence[float
 
 
 def skeleton_to_physical(vertices_nm_zyx: np.ndarray, origin_nm_zyx: Sequence[float]) -> np.ndarray:
-    """Shift crop-local kimimaro vertices (nm) to global physical nm (zyx).
-
-    kimimaro must be run with ``anisotropy = voxel_size`` so its vertices are
-    already physical; this only adds the crop origin — the step whose omission is
-    the classic mesh↔skeleton offset.
-    """
+    """Shift crop-local skeleton vertices (nm) to global physical nm (zyx), by adding the
+    crop origin; the tracer must already have returned nm."""
     return np.asarray(vertices_nm_zyx, float) + np.asarray(origin_nm_zyx, float)
 
 

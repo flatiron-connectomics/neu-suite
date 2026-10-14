@@ -1,22 +1,14 @@
 """Per-body morphology measurement, over PUBLISHED output.
 
-An analysis layer, not a pipeline stage: it reads meshes and skeletons that have already
-been written and turns them into tables. Deliberately not a `--stages` entry, because it
-measures published volumes rather than producing them, and the thing being measured is
-often not the thing this pipeline produced.
+An analysis layer, not a pipeline stage: it reads volumes, meshes and skeletons that are
+already published (often not made by this pipeline) and turns them into tables.
 
-The driving comparison is Megaphragma against the Drosophila male-CNS — non-somatic
-volume, neurite diameter and cable length, controlling for denucleation — and one property
-of it shapes the whole interface: **the two cohorts are not measured the same way.**
-Male-CNS has `soma` and `nucleus` semantic labels, so its control is a *mask*. Megaphragma
-has none, but its nucleated bodies are annotated, so its control is a *cohort selection*
-(anucleate cells only). Both are legitimate; the risk is that the difference goes
-unrecorded and the two columns get compared as though they were the same measurement.
-Hence every row carries an explicit ``variant``, and the table is keyed
+Cohorts may control for a compartment differently (a semantic mask on one, a cohort
+selection on another), so every row carries an explicit ``variant`` and tables are keyed
 ``(dataset, body_id, variant)``.
 
-Nothing here imports a store. Reading is `neu_vol` (`neu_vol.readback` for meshes and skeletons); the region
-predicates that turn a compartment into an ``inside()`` are `neu_lib`.
+Reading is `neu_vol` (`neu_vol.readback` for meshes and skeletons); the region predicates
+that turn a compartment into an ``inside()`` are `neu_lib`.
 """
 
 from .compartments import (joint_counts, semantic_label_names,

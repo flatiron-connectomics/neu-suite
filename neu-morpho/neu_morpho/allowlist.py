@@ -1,7 +1,6 @@
 """Body allowlist handling.
 
-Mesh only the given body IDs (mesh-n-bone used e.g. ``largest_20k_bodies.csv``),
-falling back to **all labels** when no allowlist is provided.
+Process only the given body IDs, or **all labels** when no allowlist is given.
 """
 
 from __future__ import annotations

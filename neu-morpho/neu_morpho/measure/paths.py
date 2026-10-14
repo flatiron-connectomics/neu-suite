@@ -1,33 +1,17 @@
-"""Distances ALONG a skeleton from a reference region, for points attached to it.
+"""Distances ALONG a skeleton from a reference compartment, for points attached to it.
 
-The question: for each synapse on a neuron, how much cable lies between it and a reference
-compartment — a neuropil ROI the neuron passes through, standing in for a compartment the
-dataset does not label per cell. The answer is a signed path length: positive outside the
-region, **negative inside it** (depth from the nearest boundary crossing), in nm.
+For each synapse, a signed path length in nm: positive outside the region, **negative
+inside it** (depth from the nearest boundary crossing). Four pure steps:
 
-Four steps, each a pure function, so every one is testable without a store:
+1. :func:`bridge_gaps` reconnects pieces across breaks below ``max_gap_nm``. Bridges are
+   cable nobody traced, so they are **flagged** and every result says how much it crossed.
+2. :meth:`neu_lib.Skeleton.split_at` adds a vertex where each edge crosses the boundary.
+3. :func:`attach_points` snaps each synapse to the nearest point on an **edge** (vertices
+   can be hundreds of nm apart) and reports the snap distance.
+4. :func:`path_distances`: one multi-source shortest-path pass from every boundary vertex.
 
-1. :func:`bridge_gaps` — reconnect pieces separated by small breaks. Bodies here are
-   genuinely fragmented, and a synapse on a piece not connected to the compartment has no
-   path length at all. Bridges are straight edges between the nearest vertices of two
-   pieces, added only below ``max_gap_nm``, and **flagged**: a bridge is cable nobody
-   traced (a 400 nm join once doubled a body's cable length), so every result says how
-   much of its path crossed one.
-2. :meth:`neu_lib.Skeleton.split_at` — a vertex where each edge crosses the region
-   boundary, so distances start at the surface rather than at the last vertex inside.
-3. :func:`attach_points` — each synapse to the nearest point on an **edge**, not the
-   nearest vertex: vertices can sit hundreds of nm apart. The snap distance is reported,
-   since a synapse sits on the membrane, up to a radius off the centreline, and a large
-   snap can mean it landed on the wrong nearby branch.
-4. :func:`path_distances` — one multi-source shortest-path pass from every boundary
-   vertex at once, which also handles a neuron entering the region more than once.
-
-**Nothing is dropped.** A synapse whose piece cannot reach the boundary even after bridging
-is ``unreachable``; a body whose skeleton never crosses the region is ``no_compartment``.
-Dropping either would bias the distribution toward whatever is easy to reach.
-
-Normalisation (subtracting a per-cell minimum, scaling by a maximum) is deliberately NOT
-done here — it is an aggregation choice, and the table keeps absolute distances.
+**Nothing is dropped**: an unreachable synapse is ``unreachable``, a body that never enters
+the region ``no_compartment``. Normalisation is left to aggregation; distances are absolute.
 """
 
 from __future__ import annotations
@@ -104,16 +88,10 @@ def bridge_gaps(skeleton: Skeleton, max_gap_nm: float) -> tuple[Skeleton, np.nda
     Returns ``(skeleton, is_bridge)``: the original vertices and edges, unchanged and in
     order, with bridge edges appended, and one bool per edge marking the bridges.
 
-    Each piece is joined to the others by the shortest links that connect them (a minimum
-    spanning tree over pieces, using the nearest vertex pair between each two), keeping
-    only links no longer than ``max_gap_nm``. That is the same result as
-    ``kimimaro.join_close_components``' greedy closest-pair merge, without its vertex
-    reordering — the vertex indices here must stay stable — and with the bridges marked
-    rather than indistinguishable from traced cable. Never adds a cycle.
-
-    ``max_gap_nm = 0`` bridges nothing. Candidate pairs come from a KD-tree query within
-    ``max_gap_nm``, so cost grows with vertex density times the gap; fine at the gaps
-    this is for (up to ~a micron), wasteful for an "join everything" gap.
+    A minimum spanning tree over pieces, using the nearest vertex pair between each two and
+    keeping links no longer than ``max_gap_nm``: the result of a greedy closest-pair merge,
+    with vertex indices stable and bridges marked. Never adds a cycle; ``max_gap_nm = 0``
+    bridges nothing. Cost grows with vertex density times the gap (fine up to ~a micron).
     """
     if max_gap_nm < 0:
         raise ValueError(f"max_gap_nm must be >= 0, got {max_gap_nm}")
@@ -181,9 +159,8 @@ def attach_points(skeleton: Skeleton, points_zyx_nm: Any) -> dict[str, np.ndarra
 
     Returns ``{"edge", "t", "position", "snap_nm"}``: the edge index, the fraction along it
     from ``edges[:, 0]`` to ``edges[:, 1]``, the attached position (zyx nm) and the distance
-    to it. Exact (every edge is tested, in bounded chunks) rather than a nearest-vertex
-    prefilter, which can pick the wrong edge when edges are long. Vertices with no edge
-    cannot carry a path length and are not attachment targets.
+    to it. Exact: every edge is tested, in bounded chunks. Isolated vertices are not
+    targets.
     """
     pts = np.asarray(points_zyx_nm, dtype=np.float64).reshape(-1, 3)
     v = skeleton.vertices_zyx_nm.astype(np.float64)
@@ -326,36 +303,25 @@ def synapse_distances(skeleton: Skeleton, points_zyx_nm: Any, inside: InsideFn, 
     """Signed path length from the reference compartment, for each point on one body.
 
     **The compartment is a connected piece of in-region cable, not the region itself.**
-    Inside the region the skeleton falls into pieces (connected runs of cable between
-    boundary crossings). ``region_pieces="largest"`` — the default — takes only the piece
-    with the most cable; ``"all"`` takes every piece. The default exists because of a
-    measured failure: a coarse ROI brushes neighbouring arbor, and on 14 of 70 Megaphragma
-    T4s the DENDRITE dipped into the lobula ROI for 0.1-4 µm of cable, right at the medulla
-    border. With ``"all"``, most of those cells' synapses were measured from the dips rather
-    than from the ~20 µm axon terminal — short distances, nothing raised. The cost of
-    ``"largest"``: a terminal that weaves across the boundary splits into several pieces and
-    only the biggest counts, so a weave before it adds its length to every distance — up to
-    18 µm on the same T4s, where up to 13 pieces made one terminal.
+    ``region_pieces="largest"`` (default) takes the piece with the most cable; ``"all"``
+    takes every piece. ``"all"`` lets a coarse ROI's brush with neighbouring arbor (a
+    dendrite dipping briefly into the region) become the reference, giving short distances
+    with nothing raised. ``"largest"`` instead under-counts a terminal that weaves across
+    the boundary, adding the weave's length to every distance.
 
-    ``merge_nm`` (with ``"largest"``) grows the compartment from the largest piece by
-    absorbing, repeatedly, every other piece within that much cable of it — so a weaving
-    terminal is one compartment again while a dip at the far end of the neurite is not.
-    The T4 data do not separate cleanly by this distance (pieces sit at 0-22 µm from the
-    largest), so it is a parameter to sweep, not a constant.
+    ``merge_nm`` (with ``"largest"``) repeatedly absorbs every piece within that much cable
+    of the compartment, so a weaving terminal is one piece again while a far dip is not.
+    It is a parameter to sweep, not a constant.
 
     Returns ``(per_point, summary)``. ``per_point`` holds arrays, one entry per point:
     ``distance_nm`` (negative inside the compartment; NaN unless ``status == "ok"``),
-    ``inside`` (in the compartment), ``in_roi`` (in the region at all), ``snap_nm``, ``n_bridges``, ``bridge_nm``, ``on_bridge`` (the point
-    attached to a bridge edge itself), ``status``, ``position`` (the attached point, zyx
-    nm), ``radius_nm`` (the skeleton's radius there, interpolated; NaN without radii — so
-    ``snap_nm`` can be read against the neurite's own calibre) and ``entry`` (the boundary
-    crossing the distance was measured from, zyx nm). ``summary`` describes the body's
-    graph: pieces before and after bridging, bridges added and their length, total,
-    in-region and compartment cable, how many in-region pieces there are, boundary
-    crossings (all, and into the compartment), and how many crossings any point was
-    measured from
-    (``n_entries_used`` — more than one means the region is entered at several places, which
-    is worth looking at before pooling).
+    ``inside`` (in the compartment), ``in_roi`` (in the region at all), ``snap_nm``,
+    ``n_bridges``, ``bridge_nm``, ``on_bridge`` (attached to a bridge edge itself),
+    ``status``, ``position`` (attached point, zyx nm), ``radius_nm`` (interpolated; NaN
+    without radii) and ``entry`` (the boundary crossing measured from, zyx nm). ``summary``
+    describes the body's graph: pieces before and after bridging, bridges and their length,
+    total, in-region and compartment cable, piece and crossing counts, and
+    ``n_entries_used`` (more than one: the region is entered at several places).
     """
     if region_pieces not in REGION_PIECES:
         raise ValueError(f"region_pieces is one of {REGION_PIECES}, not {region_pieces!r}")
@@ -579,13 +545,10 @@ def dvid_roi_region(source: Any, rois: Sequence[str] | str, *,
 def near_points_region(points_zyx_nm: Any, radius_nm: float) -> InsideFn:
     """``inside()`` for "within ``radius_nm`` of any of these points".
 
-    For a compartment the cell itself marks, where no ROI separates it: T5 dendrites AND
-    axon terminals both lie in the Megaphragma lobula (90% of each cell's cable is inside
-    ``LO(L)``), so a lobula ROI cannot tell them apart, but the cell's OWN presynaptic sites
-    sit on its terminal. A T-bar is on the membrane, a radius or so off the centreline, so
-    ``radius_nm`` must reach the skeleton from there; gaps between T-bars along the terminal
-    then become separate pieces, which ``merge_nm`` rejoins. A few outputs elsewhere (on a
-    dendrite) make small pieces that ``region_pieces="largest"`` leaves out.
+    For a compartment the cell itself marks where no ROI separates it, such as an axon
+    terminal marked by the cell's own presynaptic sites when dendrite and terminal share a
+    neuropil. ``radius_nm`` must reach the skeleton from the membrane; gaps between sites
+    become separate pieces, which ``merge_nm`` rejoins.
     """
     from scipy.spatial import cKDTree
 

@@ -1,27 +1,19 @@
 """Turn a measure DB into tidy tables, for cohort selection and comparison.
 
-The notebook-facing half of `measure`: DataFrame in, DataFrame out, no printing and no
-plotting, so the interesting logic is testable without a kernel. A notebook should be a
-thin driver over this, not the place the derivations live.
+The notebook-facing half of `measure`: DataFrame in, DataFrame out, no printing or
+plotting. pandas and pyarrow (``neu-morpho[measure]``) are imported inside functions.
 
-pandas and pyarrow arrive with ``neu-morpho[measure]`` and are imported INSIDE functions,
-so ``import neu_morpho.measure`` still costs nothing — the same rule the CLI follows.
-
-The variant vocabulary is the load-bearing part. ``all`` is the whole body;
-``minus_nucleus`` removes the nucleus only; ``minus_soma_nucleus`` removes the whole cell
-body. **Which one matches depends on the other cohort**, and getting it wrong is a silent
-bias rather than an error: comparing against a denucleated-but-not-asomatic cohort calls
-for ``minus_nucleus``, and using ``minus_soma_nucleus`` there strips a compartment from one
-side that is still present on the other.
+Variants: ``all`` is the whole body, ``minus_nucleus`` removes the nucleus,
+``minus_soma_nucleus`` the whole cell body. **Which matches depends on the other cohort**:
+removing a compartment from one side that is present on the other is a silent bias.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-#: Compartment names as published by the semantic source this was built against. Passed
-#: in rather than assumed — a different dataset numbers its labels differently, and
-#: `compartments.semantic_label_names` reads the real mapping from the source.
+#: Compartment names of one semantic source. Pass a dataset's own mapping
+#: (`compartments.semantic_label_names` reads it) rather than assuming this one.
 DEFAULT_COMPARTMENTS = {0: "unlabelled", 1: "neuropil", 2: "fiber_bundle", 3: "nucleus",
                         4: "glia", 5: "soma", 6: "trachea", 7: "muscle",
                         8: "do_not_merge"}
@@ -37,9 +29,8 @@ def load_bodies(db_path: str, *, voxel_nm: float = 32.0,
                 compartments: Optional[Mapping[int, str]] = None):
     """One row per body, with volume, cable, per-compartment volume and the variants.
 
-    Reads only — opens the DB read-only, so this is safe against a run in flight.
-    Bodies with no voxel count are dropped: they were never measured, which the
-    ``voxel_count DEFAULT 0`` column cannot distinguish from "measured as empty".
+    Opens the DB read-only, so it is safe against a run in flight. Bodies with no voxel
+    count were never measured and are dropped.
     """
     import pandas as pd
 
@@ -88,9 +79,8 @@ def load_bodies(db_path: str, *, voxel_nm: float = 32.0,
 def _diameter_nm(volume_um3, cable_um):
     """Area-equivalent diameter from V/L. NaN where there is no cable, never inf.
 
-    NOTE the minus-variants divide a REDUCED volume by the FULL cable length, including
-    the cable running through the soma, so they under-read neurite calibre. Splitting
-    cable by compartment is the fix and is not implemented.
+    The minus-variants divide a reduced volume by the full cable length, soma included,
+    so they under-read neurite calibre.
     """
     import numpy as np
     import pandas as pd
@@ -111,11 +101,9 @@ def _slug(tag: str) -> str:
 def load_segment_properties(base: str, *sources: str):
     """Wide table of every inline property across one or more properties sources.
 
-    ``tags`` become two kinds of column: a boolean per bare tag, and, for the
-    ``namespace:value`` convention that published sources use, one categorical column
-    per namespace. A namespace carrying several values for one body keeps the first and
-    the whole list lands in ``<namespace>_all``, because a multi-valued facet silently
-    reduced to one value is how a column starts lying.
+    ``tags`` become a boolean column per bare tag and, for ``namespace:value`` tags, one
+    column per namespace. A namespace with several values for one body keeps the first,
+    and the whole tuple goes in ``<namespace>_all``.
     """
     import pandas as pd
 
@@ -124,27 +112,21 @@ def load_segment_properties(base: str, *sources: str):
 
     frames = []
     for sub in sources:
-        # Reading a properties source opens a store, and on a public bucket the
-        # credential chain logs at ERROR severity before succeeding anonymously. From a
-        # notebook's point of view THIS is the entry point, so it filters itself rather
-        # than expecting the caller to remember; `neu_vol.logs.reads_quiet = False`
-        # opts out.
+        # A notebook entry point, so it filters the store's benign credential logging
+        # itself; `neu_vol.logs.reads_quiet = False` opts out.
         with quiet_reads():
             inline = location.read_json(base, sub, "info")["inline"]
         ids = [int(i) for i in inline["ids"]]
-        # Columns are accumulated and the frame built ONCE. Assigning them one at a time
-        # fragments the block manager and pandas warns per assignment — which at 482 tags
-        # is hundreds of warnings and a genuinely slow frame, not just noise.
+        # Columns are accumulated and the frame built once; per-column assignment
+        # fragments the frame and warns per tag.
         cols: dict[str, Any] = {"body_id": ids}
         for prop in inline["properties"]:
             kind, pid = prop.get("type"), prop.get("id", "value")
             if kind == "tags":
                 vocab = prop["tags"]
                 rows = [[vocab[j] for j in row] for row in prop["values"]]
-                # TWO passes. Collecting namespaces while building the columns leaves a
-                # namespace first seen on a later row short by however many rows preceded
-                # it, and pandas then rejects the frame — which is the good outcome; a
-                # silently misaligned column would attribute tags to the wrong bodies.
+                # Two passes, so a namespace first seen on a later row still gets a value
+                # for every row.
                 parsed, bare = [], []
                 for row in rows:
                     seen: dict[str, list[str]] = {}
@@ -161,16 +143,10 @@ def load_segment_properties(base: str, *sources: str):
                     col = [tuple(s.get(ns, ())) for s in parsed]
                     cols[ns] = [v[0] if v else None for v in col]
                     if any(len(v) > 1 for v in col):
-                        # TUPLES, not lists. A list-valued column is unhashable, so
-                        # `nunique`, `groupby` and `value_counts` all raise on it — which
-                        # makes the column unusable for exactly the grouping this table
-                        # exists to support.
+                        # Tuples, not lists, so the column stays hashable for groupby.
                         cols[f"{ns}_all"] = col
                 if any(bare):
-                    # A vocabulary with no namespace convention (`side-r`, `fragment`)
-                    # gets one BOOLEAN column per tag. Keeping only the first, as a
-                    # namespace column does, silently discards the rest — and the tags
-                    # are not mutually exclusive, so there is no first to prefer.
+                    # Bare tags are not mutually exclusive: one boolean column per tag.
                     cols[f"{pid}_all"] = [tuple(b) for b in bare]
                     for tag in sorted({t for b in bare for t in b}):
                         cols[f"{pid}_{_slug(tag)}"] = [tag in b for b in bare]
@@ -189,16 +165,10 @@ def load_segment_properties(base: str, *sources: str):
 def merge_properties(bodies, props, *, how: str = "left"):
     """Join properties onto a bodies table, keeping boolean columns BOOLEAN.
 
-    Use this rather than ``bodies.merge(props, on='body_id')``. A plain merge widens any
-    ``bool`` column to ``object`` wherever a body has no properties row, and then ``~`` on
-    that column is **arithmetic, not logical**: ``~True`` is ``-2``, ``~False`` is ``-1``.
-    A bare ``~`` raises on the NaN, which is survivable — but the *defensive* idiom,
-    ``~col.fillna(False)``, does not raise and yields integers, so the resulting mask does
-    not mean what it reads as. Measured on real data: three stacked exclusions left the
-    row count unchanged at 16,858 where the correct answer was 6,570.
-
-    A body with no properties row gets ``False`` for every flag, which is the right
-    reading — an absent record asserts no tags.
+    Use this rather than ``bodies.merge(props, on='body_id')``. A plain merge widens a
+    ``bool`` column to ``object`` where a body has no properties row, and ``~`` on that
+    column is arithmetic (``~True`` is ``-2``), so ``~col.fillna(False)`` silently masks
+    nothing. A body with no properties row gets ``False`` for every flag.
     """
     import pandas as pd
 
@@ -214,9 +184,7 @@ def summarize(df, columns: Sequence[str], *, by: Optional[str] = None,
               quantiles: Sequence[float] = (0.1, 0.5, 0.9)):
     """Percentile table for ``columns``, optionally grouped by a column.
 
-    Percentiles rather than mean and sd, because every distribution here is heavy-tailed
-    by orders of magnitude and a mean says more about the largest body than about a
-    typical one.
+    Percentiles rather than mean and sd: these distributions are heavy-tailed.
     """
     import pandas as pd
 
@@ -242,8 +210,7 @@ def compare(left, right, columns: Sequence[str], *,
             statistic: str = "median"):
     """One row per column: each cohort's statistic and the ratio between them.
 
-    The ratio is of the statistics, not the statistic of the ratios — the two bodies of
-    data are unpaired, so a per-body ratio does not exist.
+    The ratio is of the statistics: the cohorts are unpaired.
     """
     import pandas as pd
 
@@ -267,8 +234,8 @@ def log_histogram(df, column: str, *, lo: float, hi: float, nbins: int = 48,
                   weight: Optional[str] = None):
     """Log-spaced histogram as a DataFrame, with under/overflow rows.
 
-    The catch-alls make the weight total exact, so the table is a decomposition rather
-    than a lossy view — and a fat overflow row is the signal that the range is wrong.
+    The catch-alls keep the weight total exact; a fat overflow row means the range is
+    wrong.
     """
     import numpy as np
     import pandas as pd

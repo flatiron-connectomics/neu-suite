@@ -1,26 +1,18 @@
 """Intermediate per-(body, block) fragments (stage 1 -> stage 2 handoff).
 
 Stage 1 writes one fragment per body per block under
-``<chunked_dir>/h<bucket>/<body_id>/<iz>_<iy>_<ix>.<fmt>``, where ``bucket`` is
-``body_id % FANOUT`` in three hex digits. Stage 2 discovers bodies by listing the
-buckets (so no separate bounding-box index is needed) and gathers each body's
-fragments to assemble. Filesystem-backed for now (ceph); an object-store layout can
-come later.
+``<chunked_dir>/h<bucket>/<body_id>/<iz>_<iy>_<ix>.<fmt>``, ``bucket`` being
+``body_id % FANOUT`` in three hex digits. Stage 2 finds bodies by listing the buckets.
+Filesystem-backed.
 
-**The buckets exist because ceph handles wide directories badly.** One directory per
-body directly under ``chunked_dir`` put 568,165 entries in one directory on a run that
-meshed every segment of an agglomeration (2026-10-12): listing it hung for minutes and
-the run left 658k files of ~800 bytes. Bucketing caps a directory at ``bodies / 4096``
-entries; it does NOT reduce the file count, which only packing fragments per block
-would. The ``h`` prefix keeps a bucket name from ever parsing as a body id, which is
-how :func:`list_bodies` tells the old flat layout from this one.
+**Buckets keep directories narrow**: one directory per body directly under
+``chunked_dir`` made listing a large run hang. They do not reduce the file count. The
+``h`` prefix keeps a bucket from parsing as a body id, which is how the old flat layout
+is recognized and refused.
 
-Meshes (``.drc``) and skeletons (``.skel``) share the layout, each under its own
-chunked dir. Skeleton fragments are stored in the precomputed encoding purely
-because it is a compact binary that osteoid can already read and write — but
-unlike the *output* blobs they hold **zyx** vertices in global nm, since that is
-the model space stage 2 fuses in. The zyx->xyz flip happens once, at output
-(precomputed.encode_skeleton).
+Meshes (``.drc``) and skeletons (``.skel``) share the layout, each in its own store.
+Skeleton fragments use the precomputed encoding but hold **zyx** global-nm vertices, the
+space stage 2 fuses in; the zyx->xyz flip happens once, at output.
 """
 
 from __future__ import annotations
@@ -30,8 +22,7 @@ import os
 from typing import Sequence
 
 
-#: Buckets per fragment store. 4096 keeps a million-body run to ~250 entries per directory
-#: and costs a small run nothing, since a bucket is only created when written to.
+#: Buckets per fragment store (~250 entries per directory for a million bodies).
 FANOUT = 4096
 
 
@@ -48,11 +39,8 @@ def body_dir(chunked_dir: str, body_id: int) -> str:
 
 
 def _buckets(chunked_dir: str) -> list[str]:
-    """The bucket directories, refusing a store written in the old flat layout.
-
-    Refusing rather than reading both: an old store's bodies would otherwise be
-    invisible to stage 2, so a resumed run would assemble nothing and report success.
-    """
+    """The bucket directories, refusing a store in the old flat layout, whose bodies
+    stage 2 would not see."""
     names = os.listdir(chunked_dir)
     old = next((n for n in names if n.isdigit()), None)
     if old is not None:
@@ -65,9 +53,8 @@ def _buckets(chunked_dir: str) -> list[str]:
 
 
 def count_bodies(chunked_dir: str) -> int | None:
-    """How many bodies have fragments, from one listing per bucket -- never by walking
-    into the body directories, which would be a millions-of-inodes traversal. ``None``
-    if the store does not exist."""
+    """How many bodies have fragments, from one listing per bucket (never a walk into the
+    body directories). ``None`` if the store does not exist."""
     if not os.path.isdir(chunked_dir):
         return None
     return sum(sum(1 for n in os.listdir(b) if n.isdigit()) for b in _buckets(chunked_dir))

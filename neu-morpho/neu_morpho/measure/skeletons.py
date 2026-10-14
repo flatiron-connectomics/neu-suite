@@ -1,24 +1,14 @@
 """Cable length and topology for many bodies, from published skeletons.
 
-The per-BODY counterpart of `driver.sweep_volumes`, and it differs from it in every way
-that matters:
+The per-body counterpart of `driver.sweep_volumes`:
 
-- **The task unit is a batch of bodies, not a block.** Each read is one small object, so
-  per-task dispatch overhead (~1.5 s, measured on the volume sweep) would dominate
-  completely at one body per task. Bodies are batched, and within a batch a thread pool
-  runs the reads concurrently — they are I/O-bound, and `location._kv` caches the opened
-  store per prefix, so every body under `skeleton/` shares one store and threads add no
-  store opens.
-- **Failures are ISOLATED, not fatal** (invariant 5). A per-block task fails fast because
-  a skipped block truncates every body passing through it; a per-body task records the
-  failure and continues, because one unreadable skeleton says nothing about the others.
-- **Absence is not failure.** A body with no published skeleton is recorded `absent` and
-  never retried; a body that raised is recorded `failed` and retried next run. Testing
-  for mere presence of a status would make a failure look done, which is invariant 3's
-  trap restated for this table.
+- **Tasks are batches of bodies**: one small read per body would be dominated by dispatch
+  overhead. Within a batch, reads run on threads and share one opened store.
+- **Failures are isolated**: one unreadable skeleton says nothing about the others.
+- **Absence is not failure**: a body with no published skeleton is recorded ``absent`` and
+  never retried; one that raised is ``failed`` and retried next run.
 
-Radii are optional: a source publishing centrelines only yields NaN diameters rather
-than raising, so cable length and topology still land.
+Without radii, ``max_radius_nm`` is NaN while cable length and topology still land.
 """
 
 from __future__ import annotations
@@ -39,10 +29,8 @@ DEFAULT_BATCH = 200
 #: Concurrent reads within a batch. I/O-bound, so well above the core count.
 DEFAULT_THREADS = 8
 
-#: Columns written per body — deliberately the SAME four the pipeline's skel stage
-#: writes, so a dataset measured here and one measured by a production run are
-#: schema-identical and directly comparable. Richer per-body rows (diameter percentiles,
-#: frustum volume, component counts) belong in the export table, not in this DB.
+#: Columns written per body: the same four a skeleton stage writes into a run, so the two
+#: are directly comparable. Richer rows belong in an export table, not this DB.
 _COLUMNS = ("cable_length_nm", "n_branches", "n_tips", "max_radius_nm")
 
 
@@ -71,11 +59,7 @@ def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
         if got is None:
             return (body_id, "absent", None)
         verts_xyz, edges, radii = got
-        # The reader returns the order the FORMAT stores, which is xyz; everything here
-        # is zyx. Invariant 2, and getting it wrong mirrors the body through the z=x
-        # diagonal — which for a cable length is invisible, since a mirrored skeleton has
-        # the same edge lengths. So this flip is load-bearing only for the coordinates,
-        # and silent if omitted. It cost a debugging round earlier today.
+        # The reader returns stored xyz; everything here is zyx.
         skel = Skeleton(vertices_zyx_nm=np.asarray(verts_xyz, dtype=float)[:, ::-1],
                         edges=edges, radii_nm=radii, name=str(body_id))
         return (body_id, "written", skeleton_columns(skel))
@@ -112,8 +96,7 @@ def sweep_skeletons(
     """Measure each body's published skeleton into ``db_path``.
 
     ``resume`` skips bodies already recorded ``written`` or ``absent``; ``retry_failed``
-    controls whether ``failed`` ones are attempted again (they are, by default — that is
-    the point of recording them separately).
+    (default) attempts ``failed`` ones again.
     """
     bodies = [int(b) for b in bodies]
     db = MetricsDB(db_path)

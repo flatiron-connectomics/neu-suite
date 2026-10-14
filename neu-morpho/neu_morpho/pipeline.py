@@ -46,9 +46,9 @@ STAGE_DOC = {
            "skeletons can be viewed against the segmentation they came from. Optional, "
            "and off by default — it is pure I/O and usually the most expensive stage.",
     "index": "scan the volume once and record every body's bounding box and voxel count "
-             "in a SQLite metrics DB. REQUIRED FIRST unless the DB already exists: mesh "
-             "and skel crop each body by its bbox and cannot ask the volume for one, and "
-             "the size filter that builds the allowlist reads the counts.",
+             "in a SQLite metrics DB. Needed before --min-voxels or --limit-bodies, whose "
+             "size filter builds the allowlist from these counts; mesh and skel are "
+             "block-based and read no bounding box.",
     "mesh": "multi-resolution Draco meshes, per body. Two phases — fragments per "
             "(body, block), then one mesh assembled per body — so a re-run with only "
             "this stage reuses the fragments already on disk.",

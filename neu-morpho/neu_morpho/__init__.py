@@ -4,7 +4,9 @@ Generate multi-resolution Draco-encoded **meshes** (via ``vol2mesh``) per segmen
 written in neuroglancer-precomputed format, orchestrated across segments with
 ``blockrun`` and reading segmentation arrays with ``neu-vol``; read, measure and compare
 meshes and **skeletons**. Skeletons themselves are made by ``neu-skel``, a separate
-GPL-licensed package that runs as an extra stage of this pipeline. The pipeline runs from the ``neu-morpho`` command; from Python::
+GPL-licensed package that runs as an extra stage of this pipeline.
+
+The pipeline runs from the ``neu-morpho`` command; from Python::
 
     import neu_morpho
     summary = neu_morpho.pipeline.run(neu_morpho.pipeline.plan(src, dst))  # serial

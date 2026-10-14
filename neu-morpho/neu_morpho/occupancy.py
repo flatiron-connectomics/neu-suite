@@ -1,10 +1,7 @@
 """Coarse-scale occupancy prefilter — skip empty blocks up front.
 
-mesh-n-bone read a coarse scale (e.g. 256 nm) once and skipped the ~85% of blocks
-containing no data, so empty space is never read or meshed. We do the same:
-reduce a small coarse-scale occupancy array to a boolean over the *meshing* block
-grid. When a body allowlist is given, "occupied" means ``isin(coarse, allowlist)``
-so only blocks containing a target body are processed.
+A small coarse-scale level is reduced to a boolean over the meshing block grid, so empty
+blocks are never read. With an allowlist, "occupied" means ``isin(coarse, allowlist)``.
 """
 
 from __future__ import annotations
@@ -30,19 +27,14 @@ def occupied_blocks(
     voxel sizes map the coarse grid onto the meshing block grid; ``grid_shape`` is
     the number of blocks per axis at the meshing scale.
 
-    ``dilate`` grows the occupied set by N blocks in every direction. **Use it.**
-    A coarse scale does not see everything the meshing scale does — downsampling
-    drops sparse tissue, and the miss does not converge: on real data, blocks
-    found were 354 (scale 6) / 360 (scale 5) / 368 (scale 4), strictly nested. So
-    any un-dilated coarse filter silently skips blocks that hold data, and you
-    would never learn which. One block of dilation made scale 5 a superset of
-    scale 4 (618 blocks instead of 360) — and the trade is cheap, because a
-    false-positive block costs one read that finds no labels, while a false
-    negative costs a body.
+    ``dilate`` grows the occupied set by N blocks in every direction. **Use it**: a
+    coarse scale drops sparse tissue, and the miss does not shrink with finer scales, so
+    an un-dilated filter silently skips blocks holding data. An extra block costs one
+    read; a missed one costs a body. On a sparse volume of small objects, turn occupancy
+    off altogether.
 
-    ``allowlist`` is supported but discouraged here: at a coarse scale many small
-    allowlisted bodies have been downsampled away, so their blocks look empty.
-    Prefer the default ``!= 0`` test and let the allowlist filter inside the block.
+    ``allowlist`` is discouraged here: small allowlisted bodies vanish at coarse scales.
+    Prefer the default ``!= 0`` test and filter by allowlist inside the block.
     """
     if allowlist is None:
         occ_mask = occ_array_zyx != 0

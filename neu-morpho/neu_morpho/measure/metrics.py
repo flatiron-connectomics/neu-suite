@@ -1,29 +1,17 @@
 """Per-body measurements from a skeleton. Pure: arrays in, numbers out.
 
-Everything here takes a :class:`neu_lib.Skeleton` — the type ``readback`` +
-``Skeleton.from_precomputed`` produce — so a measurement can be made of a *published*
-volume without rerunning anything, and of an excluded skeleton
-(``skel.exclude(inside)``) without this module knowing what a compartment is.
+Everything takes a :class:`neu_lib.Skeleton`, so a *published* skeleton can be measured
+without rerunning anything, and so can an excluded one (``skel.exclude(inside)``).
 
-Three things about the numbers, all of which have bitten this project before:
+**Diameter statistics are weighted by edge length, never per vertex**: node density is a
+property of the skeletonizer, and a densely sampled region would dominate a vertex mean.
 
-**Diameter statistics are weighted by edge length, never per vertex.** An unweighted
-vertex mean answers "what is the average radius of a node", and node density is a property
-of the *skeletonizer* — a region that happened to be sampled densely dominates the answer.
-Weighting by the cable each measurement represents answers the question actually being
-asked.
+**The radii are INSCRIBED radii**: exact at the node, but systematically small wherever a
+cross-section is not round. Volume goes as r^2, so :func:`frustum_volume_nm3` is a lower
+bound whose tightness depends on how round the neurites are.
 
-**The radii are INSCRIBED radii**, the largest sphere that fits. They are exact at the
-node (measured median error 0.00 voxels against the mask's own EDT) and **systematically
-small wherever a cross-section is not round**, since the inscribed sphere fits the minor
-axis. Voxel quantization is random and averages away over thousands of vertices; that
-eccentricity bias does not. Volume goes as r^2, which doubles it. So
-:func:`frustum_volume_nm3` is a lower bound whose tightness depends on how round the
-neurites are, and it must never be presented as *the* volume without that said.
-
-**Missing radii give NaN, not zero.** A skeleton with no ``radius`` attribute has an
-*unknown* calibre, and zero would read as "infinitely thin" — quietly, in an average. NaN
-fails every comparison instead, so it cannot be mistaken for a small number.
+**Missing radii give NaN, not zero**: an unknown calibre must not read as "infinitely thin"
+in an average.
 """
 
 from __future__ import annotations
@@ -36,12 +24,8 @@ from neu_lib import Skeleton
 
 
 def _edges(skeleton: Skeleton) -> tuple[np.ndarray, np.ndarray]:
-    """``(edge_lengths_nm, edge_index)`` with zero-length edges kept.
-
-    Zero-length edges contribute nothing to a weighted statistic and are not dropped,
-    because dropping them would change the topology counts, which are a different
-    question asked of the same array.
-    """
+    """``(edge_lengths_nm, edge_index)``. Zero-length edges are kept: they weigh nothing,
+    and dropping them would change the topology counts."""
     v = np.asarray(skeleton.vertices_zyx_nm, dtype=float)
     e = np.asarray(skeleton.edges, dtype=np.int64).reshape(-1, 2)
     if not len(e):
@@ -50,12 +34,10 @@ def _edges(skeleton: Skeleton) -> tuple[np.ndarray, np.ndarray]:
 
 
 def cable_length_nm(skeleton: Skeleton) -> float:
-    """Total edge length. The most robust metric here — a length, not a radius.
+    """Total edge length, in nm.
 
-    Its real sensitivity is *postprocessing*, not measurement: a 400 nm join doubled this
-    number (416 -> 858 nm) on one body, and a 500 nm tick threshold removed 17.4% of cable
-    on one body set. So it is only comparable across datasets skeletonized with the **same
-    settings**, which is a fact about the pipeline rather than about this function.
+    Sensitive to skeleton postprocessing (joins add cable, tick removal drops it), so it is
+    only comparable across datasets skeletonized with the same settings.
     """
     lengths, _ = _edges(skeleton)
     return float(lengths.sum())
@@ -76,19 +58,10 @@ def max_radius_nm(skeleton: Skeleton) -> float:
 def weighted_quantile(values: Any, weights: Any, q: Any) -> np.ndarray:
     """Quantiles of ``values`` weighted by ``weights``. **Step, not interpolated.**
 
-    numpy has no weighted percentile, and the unweighted one is the wrong question here
-    (see the module docstring). The step definition is the right one for *this* question:
-    each edge is a length of cable that has a diameter, so the weighted median means "the
-    diameter at which half the cable is thinner and half thicker" — an empirical
-    distribution over cable, not point samples of a continuum.
-
-    Interpolating instead lets a few sparse samples drag the answer a long way. Measured
-    on the fixture in the tests: a thin arm finely noded (90 nm of cable at diameter 2)
-    against a thick arm coarsely noded (900 nm at diameter 200) gives a median of **200**
-    by this definition and **180** by linear interpolation — 91% of the cable is at 200,
-    so 180 is simply wrong for what the number claims to say.
-
-    Weights of zero are allowed and do not count.
+    Each edge is a length of cable with one diameter, so the weighted median is "the
+    diameter at which half the cable is thinner": an empirical distribution over cable.
+    Interpolating would let a few sparse samples drag the answer away from where the cable
+    is. Weights of zero are allowed and do not count.
     """
     v = np.asarray(values, dtype=float)
     w = np.asarray(weights, dtype=float)
@@ -111,20 +84,13 @@ def weighted_quantile(values: Any, weights: Any, q: Any) -> np.ndarray:
 def diameter_stats(skeleton: Skeleton) -> dict:
     """Edge-length-weighted diameter statistics, in nm.
 
-    Each edge contributes the mean of its two endpoint radii, weighted by its length.
-    Returns NaN throughout when the skeleton carries no radii — see the module docstring
-    on why that is not zero.
+    Each edge contributes the mean of its two endpoint radii, weighted by its length; NaN
+    throughout without radii.
 
-    **p10-p90 describes the twigs, not the trunk**, and that is a property of neurons
-    rather than of this function: the thick part of a cell is always a small *length*
-    fraction, so it sits above p90. Measured on a synthetic neuron whose trunk is 600 nm
-    across but only 5.6% of the cable: p10/p50/p90 came out 118/145/177 — entirely inside
-    the twig population — and the trunk did not appear until **p99** (680). So read p10-p90
-    as the spread of the neurite, `p99`/`max` as the thick end, and do not expect p90 to
-    move when a soma is excluded.
-
-    Percentiles are **steps** (see :func:`weighted_quantile`), so on a body where one
-    edge dominates the length they legitimately collapse onto that edge's diameter.
+    **p10-p90 describes the twigs, not the trunk**: the thick part of a cell is a small
+    length fraction and sits above p90, so read ``p99`` / ``max`` for the thick end.
+    Percentiles are steps (:func:`weighted_quantile`), so where one edge dominates the
+    length they collapse onto its diameter.
     """
     lengths, e = _edges(skeleton)
     keys = ("diameter_nm_mean", "diameter_nm_p10", "diameter_nm_median",
@@ -153,10 +119,9 @@ def diameter_stats(skeleton: Skeleton) -> dict:
 def frustum_volume_nm3(skeleton: Skeleton) -> float:
     """Volume of the tube the radii imply: one truncated cone per edge.
 
-    ``V = (pi/3) * L * (r0^2 + r0*r1 + r1^2)`` per edge, summed. Overlapping cones at a
-    junction are **double-counted**, which inflates the number where branches are dense
-    and is the opposite sign to the inscribed-radius bias — so do not read the two as
-    cancelling. NaN when there are no radii.
+    ``V = (pi/3) * L * (r0^2 + r0*r1 + r1^2)`` per edge, summed. Cones overlapping at a
+    junction are double-counted: the opposite sign to the inscribed-radius bias, but not a
+    cancellation of it. NaN without radii.
     """
     lengths, e = _edges(skeleton)
     if skeleton.radii_nm is None or not len(e):
@@ -169,8 +134,7 @@ def frustum_volume_nm3(skeleton: Skeleton) -> float:
 def frustum_area_nm2(skeleton: Skeleton) -> float:
     """Lateral surface area of that same tube: ``pi * (r0 + r1) * slant`` per edge.
 
-    End caps are excluded — a neurite's ends are cuts through a continuing process, not
-    real surface. NaN when there are no radii.
+    End caps are excluded (a neurite's ends are cuts, not surface). NaN without radii.
     """
     lengths, e = _edges(skeleton)
     if skeleton.radii_nm is None or not len(e):
@@ -184,9 +148,8 @@ def frustum_area_nm2(skeleton: Skeleton) -> float:
 def topology(skeleton: Skeleton) -> dict:
     """Tip, branch-point and connected-component counts from the edge list.
 
-    Components are counted because **bodies in these datasets are genuinely fragmented**
-    (verified against the raw array, not a pipeline artefact), so a count above one is
-    correct reporting rather than a defect — and a *finer* scale finds more, not fewer.
+    Segmented bodies are often genuinely fragmented, so more than one component is correct
+    reporting, not a defect.
     """
     _, e = _edges(skeleton)
     n = len(np.asarray(skeleton.vertices_zyx_nm, dtype=float))
@@ -215,12 +178,9 @@ def measure_skeleton(skeleton: Skeleton, *, variant: str = "all",
                      dataset: Optional[str] = None) -> dict:
     """Every skeleton-derived measurement for one body, as one flat row.
 
-    ``variant`` labels *what was measured* — ``"all"``, ``"minus_nucleus"``,
-    ``"minus_soma_nucleus"``, ``"neurite_positive"`` — and is carried through to the
-    output table rather than implied by the file it lands in. The two cohorts in the
-    driving comparison are **not measured the same way** (one excludes compartments by
-    mask, the other selects anucleate cells), so a row that does not say which is a row
-    that cannot be compared safely.
+    ``variant`` labels what was measured (``"all"``, ``"minus_nucleus"``,
+    ``"minus_soma_nucleus"``, ``"neurite_positive"``) and is carried into the row, since
+    rows measured differently cannot be compared safely.
     """
     row: dict[str, Any] = {
         "dataset": dataset,

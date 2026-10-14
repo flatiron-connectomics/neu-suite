@@ -36,8 +36,7 @@ synchronous round trip. A local disk or your home directory is fine.
 
 **--config takes a bundled template name or a path, and is repeatable**, deep-merged
 left to right — so a site config carries only the keys that differ. The templates ship
-with **blockrun**, next to ``start_dask``, so every consumer shares one set;
-site-specific configs do not belong in this repo.
+with **blockrun**, next to ``start_dask``.
 
 **--dst is the published volume; --work-dir is everything else.** --dst holds the
 segmentation scales with meshes and skeletons inside it, and may be an ``s3://``
@@ -86,12 +85,8 @@ from neu_morpho.pipeline import STAGE_DOC, STAGES  # noqa: E402  (re-exported fo
 def stages_help(indent: str = "  ", width: int = 79, stage_doc=None) -> str:
     """The stage list as ``--help`` prints it: one wrapped paragraph per stage.
 
-    This goes in the ``run`` subparser's *description*, not in ``--stages``' own help
-    string, because argparse's default formatter re-wraps argument help and would
-    collapse the whole thing into an unreadable wall of text. The subparser is
-    ``RawDescriptionHelpFormatter``, so a preformatted block here survives intact — and
-    the documentation site renders it the same way it renders the usage examples above
-    it, which means the terminal and the published reference show the identical text.
+    For the ``run`` subparser's description (``RawDescriptionHelpFormatter`` keeps the
+    layout); argparse would re-wrap it inside ``--stages``' own help.
     """
     import textwrap
 
@@ -107,12 +102,8 @@ def stages_help(indent: str = "  ", width: int = 79, stage_doc=None) -> str:
 
 
 def _configs(args) -> list[str]:
-    """``--config`` values, defaulting to blockrun's bundled local template.
-
-    Resolution, layering and key validation all live in ``blockrun.dask_config``,
-    next to ``start_dask``. This package used to carry its own copy of that, and
-    neu-vol a third — the kind of duplication that drifts silently.
-    """
+    """``--config`` values, defaulting to blockrun's bundled local template; resolution
+    and validation are ``blockrun.dask_config``'s."""
     return args.config or ["dask-local"]
 
 
@@ -120,14 +111,12 @@ def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
     """Every ``run`` argument, on parser ``p``. ``neu-skel run`` adds its own to these."""
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
-                                 "meshes/skeletons inside it. Local path or s3://... "
-                                 "NOTE this used to mean the run root; bookkeeping "
-                                 "now goes to --work-dir")
+                                 "meshes/skeletons inside it. Local path or s3://...; "
+                                 "bookkeeping goes to --work-dir")
     p.add_argument("--work-dir", help="run directory: stage-1 fragments, manifests, "
                                       "metrics DB, failures, run summary. Must be a "
                                       "filesystem path. Defaults to the PARENT of a "
-                                      "local --dst (reproducing the old layout); "
-                                      "required when --dst is remote")
+                                      "local --dst; required when --dst is remote")
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
@@ -188,12 +177,8 @@ def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The full ``neu-morpho`` parser, built but not run.
-
-    Separate from :func:`_parse_args` so the documentation can render it: the CLI
-    reference is generated from *this* object by ``sphinx-argparse``, which is what
-    stops the published usage from drifting away from ``--help``.
-    """
+    """The full ``neu-morpho`` parser, built but not run; the docs render the CLI reference
+    from it."""
     top = argparse.ArgumentParser(
         prog="neu-morpho", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -325,8 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_help_command(sub)
 
-    # `run`'s own subparser, so the validation below can report errors against it
-    # rather than against the top-level usage, which is what a user sees today.
+    # `run`'s own subparser, so `check_run_args` reports errors against it.
     top._run_parser = p
     return top
 
@@ -334,14 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_help_command(sub) -> None:
     """``neu-morpho help [COMMAND ...]`` — the same text ``--help`` prints.
 
-    Because `help run` and `run --help` are the same thing to everyone except argparse:
-    one of the two is what a person types first, and being told "invalid choice" for it is
-    a poor greeting from a tool whose whole surface is subcommands.
-
-    It **re-parses** rather than reaching into the parser, so what it prints cannot drift
-    from ``--help``: it literally is ``--help``. That is also what makes the nested case
-    work — ``neu-morpho help measure run`` reaches `measure`'s own subcommand — and an
-    unknown name gets argparse's own error listing the real choices.
+    It re-parses with ``--help`` rather than reaching into the parser, so it cannot drift,
+    nested subcommands work, and an unknown name gets argparse's own error.
     """
     q = sub.add_parser(
         "help", help="what `--help` prints, as a subcommand",
@@ -373,12 +351,8 @@ def _parse_args(argv=None):
 
 def check_run_args(p, args) -> None:
     """The ``run`` checks argparse cannot express, reported as errors of parser ``p``."""
-    # --roi-scale used to default to --mesh-scale. That is a silent default on a
-    # number that changes what gets processed: the same six values name a box 4x
-    # smaller per level, so an ROI meant for scale 0 read as scale 2 quietly
-    # processes 1/64th of the intended volume — and the run still succeeds, still
-    # reports blocks, still writes output. Nothing downstream can catch it, because
-    # a smaller ROI is indistinguishable from a deliberately smaller ROI. Be explicit.
+    # No default for --roi-scale: an ROI read at the wrong scale processes the wrong
+    # region, and nothing downstream can tell it from a deliberately smaller ROI.
     if args.roi and args.roi_scale is None:
         p.error("--roi-scale is required with --roi: the same six values name a "
                 "different box at every pyramid level, and the wrong one silently "
@@ -387,17 +361,13 @@ def check_run_args(p, args) -> None:
     if args.roi_scale is not None and not args.roi:
         p.error("--roi-scale has no effect without --roi")
 
-    # Validate here, not at cluster start: a mistyped --config would otherwise
-    # surface only after the source metadata read, which on a remote source costs
-    # seconds of network before telling you about a typo.
+    # Validate here, so a mistyped --config fails before any remote metadata read.
     if not args.serial:
         load_config(_configs(args))
 
 
 def _cmd_progress(args) -> int:
-    """Live per-stage progress. The implementation is a script, kept out of the
-    package because it is a read-only operator tool with a matplotlib-free, stdlib-only
-    dependency set — the subcommand just makes it discoverable."""
+    """Live per-stage progress, from the stdlib-only ``_scripts.run_progress``."""
     from neu_morpho._scripts import run_progress
 
     argv = [args.work_dir] + (["--sample", str(args.sample)] if args.sample else [])
@@ -428,7 +398,7 @@ really is the subject.
 writes are complete. Without it a fragmented segmentation records every single-voxel
 speck, and each one costs a driver-side upsert.
 
---with-bbox switches to the older index scan, which also records bounding boxes. That
+--with-bbox switches to the index scan, which also records bounding boxes. That
 costs an argwhere plus an argsort over every labelled voxel — ~30 s against ~3 s per
 dense block — so it is opt-in. The two paths both accumulate into voxel_count and
 refuse to share a DB, since running both would double every count.
@@ -647,15 +617,13 @@ def _cmd_measure_compartments(args) -> int:
 def _cmd_measure_progress(args) -> int:
     if not os.path.exists(args.db):
         raise SystemExit(f"no such metrics DB: {args.db}")
-    # READ-ONLY, and that is not a nicety: a default open runs DDL, which takes a write
-    # lock and can kill a sweep that is mid-transaction on the same file.
+    # Read-only: a default open runs DDL, whose write lock can kill a running sweep.
     db = MetricsDB(args.db, read_only=True)
     try:
         meta, counts = db.read_stage_meta(), db.stage_counts()
         bodies = db.con.execute(
             "SELECT COUNT(*) FROM bodies WHERE voxel_count>0").fetchone()[0]
-        # Derived from the registry, never a hardcoded list — that is how the compartment
-        # stage came to record its progress and display none of it.
+        # From the registry, so every registered stage is shown.
         rows = [st for st in MetricsDB.BLOCK_STAGES if counts.get(st) or st in meta]
         if not rows:
             print(f"{args.db}: no measure stage has run")

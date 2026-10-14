@@ -1,20 +1,13 @@
 """Block-mapped per-body volume over a published segmentation.
 
-The one module in `measure` that opens a store and touches dask; everything in
-`sweep.py` is pure so it can be tested without either. Fills `voxel_count` /
-`volume_nm3` in a `MetricsDB`, block by block, resumably.
+Fills `voxel_count` / `volume_nm3` in a `MetricsDB`, block by block, resumably; the
+pure per-block work is in `sweep.py`.
 
-Three choices here follow from calibration measurements:
-
-- **No occupancy or ROI prefilter by default.** An ROI built from a compartment mask
-  omits somata that sit outside it, and `V/L` then divides a truncated volume by a
-  complete cable length — wrong, and invisible. An empty block costs ~0.22 s against
-  ~3 s for a dense one, so reading everything is affordable rather than heroic.
-- **Counts, not bboxes.** `MetricsDB.apply_counts_block` says why.
-- **Per-block retry, but fail-fast on a permanent error.** Tens of thousands of tasks
-  against an object store make a transient failure near-certain, and two earlier runs
-  in this suite were lost to exactly one. Retry does not soften the fail-fast policy:
-  an error that persists still kills the run.
+- **No occupancy or ROI prefilter by default**: a compartment-mask ROI omits somata
+  outside it, and ``V/L`` would divide a truncated volume by complete cable. An empty
+  block costs about a tenth of a dense one, so reading everything is affordable.
+- **Counts, not bboxes** (see `MetricsDB.apply_counts_block`).
+- **Per-block retry of transient errors**; a persistent one still stops the run.
 """
 
 from __future__ import annotations
@@ -38,19 +31,11 @@ def _block_key(index) -> str:
 def resolve_keep(sources: Iterable[str] | None) -> set[int] | None:
     """Union the body ids named by each source; ``None`` for "record every label".
 
-    A source is either a path to a file of ids (one per line, or a first CSV column) or
-    a ``neuroglancer_segment_properties`` source — local directory or URL — whose ``ids``
-    list is taken. Several may be given: a published dataset often splits its properties
-    across more than one source, and their id sets are not identical.
-
-    The two are told apart by ``os.path.isfile``: an id list is a file, a properties
-    source is a directory or a URL containing an ``info``. Sniffing for ``"://"``
-    instead would misread a local properties directory as an id file.
-
-    A properties source is usually the better cohort gate than a size threshold, because
-    a body only has properties if somebody named it — so the union already excludes
-    unlabeled fragments, which in a fragmented segmentation outnumber the real bodies by
-    orders of magnitude.
+    A source is a file of ids (one per line, or a first CSV column), or a
+    ``neuroglancer_segment_properties`` source (a directory or URL with an ``info``) whose
+    ``ids`` are taken; ``os.path.isfile`` tells them apart. Several may be given, as a
+    dataset may split its properties across sources. A properties source is usually a
+    better cohort gate than a size threshold: only named bodies have properties.
     """
     if not sources:
         return None
@@ -113,13 +98,10 @@ def sweep_volumes(
 ) -> dict:
     """Count each body's voxels across ``seg_spec`` and accumulate into ``db_path``.
 
-    ``voxel_size`` (nm, zyx) is the read level's own voxel size — read it from
-    ``neu_vol.read_scales``, never as ``2**level`` (see invariant 1). ``keep`` restricts
-    which bodies are recorded, not which blocks are read, so the rows written are
-    complete; without it a fragmented segmentation records every single-voxel speck.
-
-    Refuses to run on a DB that already holds an index scan, because both fill
-    ``voxel_count`` and running both would double it.
+    ``voxel_size`` (nm, zyx) is the read level's own voxel size, from
+    ``neu_vol.read_scales`` (pyramids may be anisotropic, so never ``2**level``). ``keep``
+    restricts which bodies are recorded, not which blocks are read, so its rows are
+    complete. Refuses a DB that already holds an index scan: both fill ``voxel_count``.
     """
     shape = tuple(int(s) for s in np.atleast_1d(block)) if not np.isscalar(block) else None
     block_shape = shape or (int(block),) * 3
@@ -141,7 +123,7 @@ def sweep_volumes(
                 f"every count. Use a separate DB, or read the counts that are already there.")
         done = db.done_sweep_blocks() if resume else db.reset_sweep()
         todo = [b for b in blocks if _block_key(b.index) not in done]
-        # Before dispatch, so a reader has a denominator even mid-run (invariant 11).
+        # Before dispatch, so a reader has a denominator mid-run.
         db.record_stage_meta("sweep", total=len(blocks), block_shape=block_shape,
                              voxel_size=voxel_size,
                              n_keep=None if keep is None else len(keep))

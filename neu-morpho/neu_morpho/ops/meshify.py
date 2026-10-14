@@ -3,13 +3,10 @@
     stage 1 "chunk"    : block_map over non-empty blocks  -> per-(body,block) fragments
     stage 2 "assemble" : block_map over bodies (from fragments) -> multires meshes
 
-One manifest, two groups ("chunk" keyed by block index, "assemble" keyed by body
-id — the generalized blockrun keys). Resume skips done blocks/bodies; running
-only stage 2 reuses fragments on disk (mesh-n-bone's ``reuse_existing_chunked``).
-
-Scale handling is the caller's: pass ``seg_spec`` opened at the meshing scale and
-``occupancy_spec`` at a coarse scale, with their voxel sizes (nm) — so the op
-stays format-agnostic (precomputed scale_index / zarr level).
+One manifest, two groups ("chunk" keyed by block index, "assemble" by body id). Resume
+skips done tasks; running only stage 2 reuses the fragments on disk. The caller passes
+``seg_spec`` at the meshing scale and ``occupancy_spec`` at a coarse one, with their
+voxel sizes (nm).
 """
 
 from __future__ import annotations
@@ -90,20 +87,16 @@ def meshify(
 ) -> dict:
     """Mesh a segmentation body-by-body via block-first chunking + assembly.
 
-    ``roi`` (``"z0,y0,x0,z1,y1,x1"`` or a 6-sequence, in mesh-scale voxels)
-    restricts stage 1 to the blocks intersecting it, on the same global grid, so a
-    trial run is a prefix of the full run (see roi.py). A body straddling the ROI
-    edge is meshed only from the blocks inside it.
+    ``roi`` (``"z0,y0,x0,z1,y1,x1"`` or a 6-sequence, in mesh-scale voxels) restricts
+    stage 1 to the blocks intersecting it on the global grid, so a trial run is a prefix
+    of the full run. A body straddling the ROI edge is meshed only from inside it.
 
-    With ``db_path``, each assembled body's mesh metrics (surface area, vertex
-    count, component count) are written to the metrics DB by the driver, which is
-    its sole writer — the same arrangement skeletonization uses. Note the metrics
-    then describe whatever was meshed: under an ROI, that is the truncated body.
+    With ``db_path``, each body's mesh metrics (surface area, vertex and component counts)
+    go to the metrics DB; under an ROI they describe the truncated body.
 
-    Stage-2 failures are isolated per body (stage 1 is not — see
-    ``ops/manifest.py``). ``max_consecutive_failures`` stops the stage when the
-    failures stop looking incidental; 0 disables it. A systemic error
-    (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
+    Stage-2 failures are isolated per body (stage 1 fails fast; see ``ops/manifest.py``).
+    ``max_consecutive_failures`` stops the stage (0 disables); a systemic error aborts at
+    once.
     """
     from neu_vol.backends.base import open_backend
 
@@ -128,10 +121,8 @@ def meshify(
 
     out.check_work_dir_is_local()
     out_dir = out.mesh_out()                 # inside the volume; may be s3://
-    # Fragments and the manifest live in the POSIX work dir, never in dst: the
-    # fragment store is read back with ordinary file I/O and the manifest is
-    # appended to. Because they no longer share dst's fate, a manifest can
-    # outlive its data — the driver's resume guard is what catches that.
+    # Fragments and the manifest live in the POSIX work dir, never in dst: both use
+    # ordinary file I/O.
     chunked_dir = out.chunked_dir or out.work("chunked")
     progress = out.progress_path or out.work("progress.mesh.jsonl")
     # multires octree base, in nm (model space = physical nm, grid origin at 0)
@@ -143,8 +134,7 @@ def meshify(
 
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
-    # Must precede write_mesh_info, which would recreate the very 'info' the
-    # check probes for and so mask a destination that was cleared.
+    # Before write_mesh_info, which would recreate the 'info' the check probes for.
     check_manifest_matches_output(manifest, out_dir, stage="mesh",
                                   progress_path=progress, resume=resume)
 
@@ -195,8 +185,7 @@ def meshify(
                 # One transaction per batch, not per body (see metrics_db).
                 if db is not None and rows:
                     db.update_bodies(rows)
-                # Manifest last: it marks the body finished, so it must follow the
-                # metrics being durable. Still before the breaker can abort.
+                # Manifest last (it marks the body finished), but before the breaker.
                 manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
                 breaker.check()           # raises StageAborted if a trigger fired
 

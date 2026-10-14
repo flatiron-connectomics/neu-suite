@@ -15,30 +15,21 @@ from dataclasses import dataclass, field
 class MeshConfig:
     """Tunables for block-first meshing."""
 
-    # Segmentation scale to read/mesh at. 0 = full detail (biggest/slowest); a
-    # coarser scale is smaller and cuts per-block mask memory ~8×/level. The
-    # caller passes the meshing scale's voxel size (nm) so coordinates stay in
-    # physical world space — no assumed 2**scale pyramid factor (see coords.py).
+    # Segmentation scale to mesh at (0 = full detail). The caller passes its voxel size
+    # (nm), so coordinates stay physical whatever the pyramid's factors.
     mesh_scale: int = 2
     block_shape: tuple[int, int, int] = (256, 256, 256)   # block size at mesh_scale
 
-    # Per-block simplification during stage 1 (fixed-edge preserves block
-    # boundaries so stage-2 assembly works on already-reduced meshes).
+    # Per-block simplification in stage 1 (block boundaries are kept fixed).
     decimation_fraction: float = 0.1
     smoothing_iterations: int = 0
 
     # Multi-resolution output.
     num_lods: int = 3
     lod_decimation_factor: float = 2.0       # face reduction per coarser LOD
-    # Draco quantizes vertex positions into 2**bits steps ACROSS EACH OCTREE CELL,
-    # and a LOD-l cell is chunk * 2**l wide — so the effective step COARSENS by 2x
-    # per LOD. Once it approaches the voxel size, decimated triangles collapse to
-    # zero area and Draco rejects the fragment ("All triangles are degenerate"),
-    # failing the whole body. Measured on real data at scale 2 (32 nm voxels,
-    # 256-block => 8192 nm cells): 10 bits gives a 32 nm step at LOD 2 — exactly
-    # the voxel size — and 29% of bodies failed to encode. 16 bits gives 0.5 nm.
-    # The neuroglancer spec allows only 10 or 16, so 16 is the answer; see
-    # precomputed.check_quantization, which computes this before a run.
+    # Draco spreads 2**bits steps across each octree cell, which doubles in size per
+    # LOD; near the voxel size, triangles collapse and the body fails to encode. 16 bits
+    # (the spec allows 10 or 16); precomputed.check_quantization checks before a run.
     draco_quantization_bits: int = 16        # must be 10 or 16 (neuroglancer spec)
     sharded: bool = False
 
@@ -51,26 +42,20 @@ class OutputConfig:
     """Where results go — **data** and **bookkeeping** are separate destinations.
 
     ``dst`` is the published precomputed volume and may be an ``s3://`` URL;
-    ``work_dir`` is the run directory and must be an ordinary filesystem path,
-    because it holds a sqlite DB, appended JSONL manifests and the stage-1
-    fragment stores, none of which work over an object store.
+    ``work_dir`` must be a filesystem path: it holds a sqlite DB, appended JSONL
+    manifests and the stage-1 fragment stores.
 
-    **The split costs a safety property, deliberately.** Bookkeeping used to live
-    inside the output, so ``rm -rf`` took the record and the data together and
-    the next run correctly started over. Now a manifest can outlive the data it
-    describes, and a resumed run would skip every task and report success having
-    written nothing. The CLI guards this by refusing to resume when a manifest
-    claims completed work but ``dst`` has no ``info`` — see
-    ``neu_morpho/cli.py``. Anything writing to ``dst`` outside that entry point
-    has to make the same check.
+    A manifest can therefore outlive the data it describes, and a resumed run would
+    skip every task having written nothing. Every stage refuses that
+    (``ops.manifest.check_manifest_matches_output``); anything else writing to ``dst``
+    under a manifest must make the same check.
     """
 
     dst: str = ""            # the precomputed VOLUME root: local path or s3:// URL
     work_dir: str = ""       # run dir: fragments, manifests, DB, logs — POSIX only
 
-    # Meshes and skeletons go INSIDE the volume: the precomputed spec's `mesh` /
-    # `skeletons` info keys name subdirectories of the volume root, so a single
-    # neuroglancer layer carries labels, meshes and skeletons together.
+    # Meshes and skeletons go inside the volume (the `mesh` / `skeletons` info keys name
+    # subdirectories), so one neuroglancer layer carries all three.
     mesh_dir: str = "mesh"                   # subdirectory of the VOLUME
     skeleton_dir: str = "skeleton"           # subdirectory of the VOLUME
 

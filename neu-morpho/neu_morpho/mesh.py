@@ -1,13 +1,9 @@
 """Block-first meshing: stage 1 (mesh a block's labels) + stage 2 (assemble a body).
 
-Stage 1 (`mesh_block`): read a segmentation block once and mesh all present (or
-allowlisted) labels with ``Mesh.from_label_volume`` — one marching-cubes pass per
-label, halo'd for boundary stitching. No whole-object mask is ever built; peak
-memory is one block. Per-block simplification keeps stage-2 assembly light.
-
-Stage 2 (`assemble_body`): concatenate a body's block fragments and
-``stitch_adjacent_faces`` into one watertight mesh — keeping **all** components
-(this is why we can capture full bodies that the old CGAL path split).
+Stage 1 (`mesh_block`): mesh every present (or allowlisted) label of one block with
+``Mesh.from_label_volume``, halo'd for stitching; peak memory is one block, never a
+whole-object mask. Stage 2 (`assemble_body`): concatenate a body's fragments and
+``stitch_adjacent_faces`` into one mesh, keeping **all** components.
 """
 
 from __future__ import annotations
@@ -27,8 +23,7 @@ def mesh_block(seg_block_zyx: np.ndarray, box_nm_zyx: np.ndarray, cfg: MeshConfi
     vertices come out in nm world coords. Background (0) is excluded; meshes are
     per-block simplified so downstream assembly works on already-reduced geometry.
     """
-    # Only mesh labels actually present (intersect with the allowlist). This
-    # skips all-background blocks and avoids vol2mesh choking on empty label lists.
+    # Only labels actually present: vol2mesh rejects an empty label list.
     present = np.unique(seg_block_zyx)
     present = present[present != 0]
     if allowlist is not None:
@@ -71,11 +66,8 @@ def surface_area_nm2(mesh) -> float:
 def count_components(mesh) -> int:
     """Connected components of the mesh, over shared **vertex indices**.
 
-    Worth watching as QC rather than just a descriptor: fragments from adjacent
-    blocks only merge once ``stitch_adjacent_faces`` welds their coincident
-    boundary vertices, so a spanning body that still reports >1 component is
-    telling you the stitch did not take. (A body genuinely split by the
-    segmentation also reports >1 — the count alone cannot separate the two.)
+    Also a QC signal: a spanning body that reports more than one may not have stitched,
+    though a body genuinely split by the segmentation reports more than one too.
     """
     import scipy.sparse as sp
     from scipy.sparse.csgraph import connected_components

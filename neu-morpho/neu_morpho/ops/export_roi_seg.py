@@ -1,27 +1,16 @@
 """Copy the ROI's segmentation into the output as a precomputed volume.
 
-Meshes and skeletons are only inspectable against the labels they came from, so a
-run that produced them should be able to produce the matching segmentation too.
-The copy carries ``voxel_offset`` per scale, so neuroglancer places it at its true
-global position and it lands in the same physical-nm space as the meshes and
-skeletons (coords.py). Without that the labels would sit at the origin while the
-meshes sat tens of microns away.
+So meshes and skeletons can be inspected against the labels they came from. Each scale
+carries its ``voxel_offset``, so the labels land in the same physical-nm space as the
+meshes.
 
-**Every source scale is copied, not regenerated.** ``neu_vol.extract_roi``
-would work, but its materializer downsamples from level 0 upward — so exporting a
-7-level pyramid would re-derive levels the source already has, reading 64x more
-data than needed and risking a different downsampling rule than the source used.
-Instead each source scale is cropped directly into the corresponding destination
-scale, which is exact and cheap for the coarse levels.
+**Every source scale is copied, not regenerated**: each is cropped directly into the
+matching destination scale, where downsampling from level 0 would re-read far more data
+and might not reproduce the source's own rule.
 
-Cost is wildly uneven and worth checking before a big export: for a 25x41x16 um
-ROI, scale 0 is ~22 GB compressed (258 GB read) while scales 1-6 together are
-~2.8 GB. :func:`scale_cost` reports this, and ``scale_indices`` restricts the
-range — a whole-volume run should not export scale 0.
-
-By default the exported region is **expanded to whole blocks**, matching the
-region that was actually meshed: stage 1 keeps intersecting blocks whole (roi.py),
-so the meshes cover more than the literal ROI.
+Cost is uneven: scale 0 usually dominates by an order of magnitude. :func:`scale_cost`
+reports it and ``scale_indices`` restricts the range. By default the region is
+**expanded to whole blocks**, matching what stage 1 meshed (roi.py).
 """
 
 from __future__ import annotations
@@ -70,9 +59,8 @@ def _region_at(nm_lo: np.ndarray, nm_hi: np.ndarray, voxel_size: Sequence[float]
 def source_levels(src, roi_voxel_size) -> list[tuple]:
     """``[(ScaleInfo, read_spec)]`` for the source, finest first.
 
-    Falls back to a single level described by ``roi_voxel_size`` when the source
-    carries no pyramid metadata (a bare zarr array, an HDF5 dataset), so this op
-    still works on sources ``scales.read_scales`` cannot introspect.
+    A source with no pyramid metadata (a bare array, an HDF5 dataset) is one level at
+    ``roi_voxel_size``.
     """
     from neu_vol.backends.base import open_backend
 
@@ -86,8 +74,7 @@ def source_levels(src, roi_voxel_size) -> list[tuple]:
         shape = tuple(int(x) for x in open_backend(spec).shape)
         logger.info("no pyramid metadata at the source; treating it as a single level "
                     "at %s nm", tuple(roi_voxel_size))
-        # Origin zero: a source with no pyramid metadata states no offset either, and
-        # inventing one would be worse than assuming it starts where it says it does.
+        # Origin zero: such a source states no offset either.
         return [(ScaleInfo(index=0, shape=shape,
                            frame=Frame(voxel_size_nm=tuple(
                                float(v) for v in roi_voxel_size))), spec)]
@@ -132,16 +119,9 @@ def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[i
                 attempts: int = 5) -> tuple:
     """Copy one block, retrying transient store failures.
 
-    Stage-1 block tasks are fail-fast on purpose (see ops/manifest.py), which is
-    right for meshing — but a *copy* block feeds no aggregation and rewriting the
-    same voxels to the same region is idempotent, so a transient blip should not
-    end a run that has already copied terabytes. Observed: a single
-    ``Connection reset by peer`` on the destination killed a 10,692-block copy.
-
-    A ``"written"``/``"empty"`` result describes the *data*, not whether an object
-    was created: TensorStore does not persist chunks that are entirely the fill
-    value, so an all-zero block writes nothing and neuroglancer reads the absent
-    chunk as zero.
+    Unlike meshing's stage 1, a copy block feeds no aggregation and is idempotent, so a
+    transient store error is retried rather than ending a long copy. ``"written"`` /
+    ``"empty"`` describe the data: TensorStore writes no object for an all-zero chunk.
     """
     from neu_vol.backends.base import open_backend
     from neu_vol.retry import with_retry
@@ -198,9 +178,8 @@ def export_roi_seg(
                            block_shape, align_to_blocks)
     src_dtype = str(open_backend(levels[scale_indices[0]][1]).dtype)
 
-    # The manifest must be on a filesystem (it is appended to), so it cannot
-    # default to a sibling of out_dir once out_dir may be an object store. The
-    # driver always passes it explicitly, pointed at the work dir.
+    # The manifest is appended to, so it needs a filesystem; the driver passes one in
+    # the work dir.
     if progress_path:
         progress = progress_path
     else:
@@ -212,8 +191,7 @@ def export_roi_seg(
         progress = out_dir.rstrip("/") + "/../progress.seg.jsonl"
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
-    # Same hazard as the mesh/skel stages: the manifest now lives apart from the
-    # data, so a cleared destination would otherwise be resumed as "all done".
+    # The manifest lives apart from the data, so a cleared destination is refused.
     check_manifest_matches_output(manifest, out_dir, stage="seg",
                                   progress_path=progress, resume=resume)
 
