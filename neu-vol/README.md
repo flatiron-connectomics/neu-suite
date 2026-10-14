@@ -346,7 +346,7 @@ neu-vol help    [COMMAND]                     # what --help prints, as a subcomm
 Anything a **viewer** consumes lives in [neu-glance](../neu-glance): `neu-glance gen` for a link or a
 state, `neu-glance bboxes` for a layer of boxes over a sparse volume's data, `neu-glance annotate`
 for a layer of your own coordinates. This package supplies the occupancy analysis those
-build on (`ops.annotate.labeled_regions`) and otherwise knows nothing about neuroglancer.
+build on (`ops.occupancy.labeled_regions`) and otherwise knows nothing about neuroglancer.
 The three used to be `neu-vol bboxes-json`, `annotate-json` and `ng-url-gen`; the rename was
 a clean break with no aliases.
 
@@ -468,7 +468,7 @@ too. `neu-vol write` reports alignment through the same predicate, so the two ag
 ### Finding the data in a sparse volume
 
 A volume holding a few labeled boxes inside a large empty frame is hard to *view* — the
-boxes are needles in the frame. Finding them is `ops.annotate.labeled_regions`, and the
+boxes are needles in the frame. Finding them is `ops.occupancy.labeled_regions`, and the
 boxes come from the volume itself so they cannot drift from the data: an all-fill chunk is
 never stored, so *which chunk objects exist* is the occupancy question exactly — no voxel
 reads. Those cells are then covered with maximal boxes (not connected components: two

@@ -217,7 +217,7 @@ def labeled_regions(volume: str, *, level: int = 0, tighten_level: int | None = 
     # Tightening is an optimisation — a coarse read standing in for an exact one — so a
     # missing level is not an error, it just means the shortcut isn't available. A
     # single-level volume (what `create` makes, and what `write` fills) has only level
-    # 0, and refusing to annotate it because level 2 is absent would be absurd.
+    # 0, and refusing to read it because level 2 is absent would be absurd.
     # Clamping goes FINER, so the result is more exact and only slower, bounded by the
     # occupied footprint. Recorded in the context so the caller can say it happened.
     tighten_asked, deepest = tighten_level, max(levels)

@@ -17,7 +17,7 @@ design — run downsample afterwards if the result needs a pyramid.
 Anything a viewer consumes lives in neu-glance: `neu-glance gen` for a link or a state,
 `bboxes` for a layer of boxes over a sparse volume's data, `annotate` for a layer of
 your own coordinates. This package supplies the occupancy analysis those build on
-(ops.annotate.labeled_regions) and knows nothing about neuroglancer beyond it.
+(ops.occupancy.labeled_regions) and knows nothing about neuroglancer beyond it.
 
 `python -m neu_vol` is equivalent. Run `neu-vol <subcommand> --help` for its arguments.
 """

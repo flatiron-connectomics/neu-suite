@@ -1,7 +1,7 @@
 """Local annotation layers: authored from coordinates, or from a volume's occupancy boxes.
 
 Pure: plain data in, plain data out, no store access. The occupancy analysis itself is
-``neu_vol.ops.annotate.labeled_regions``.
+``neu_vol.ops.occupancy.labeled_regions``.
 
 Local annotations, carried inline in the state, appear in the viewer's Annotations tab,
 where they can be clicked through and stepped with ``[`` / ``]``. A precomputed annotation

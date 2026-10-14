@@ -9,7 +9,7 @@ ground truth. Measured on sample3's gt_v1: 3,637 label-instances over 12 regions
 This walks the occupied regions in order and renumbers each into a range of its own, so
 an id identifies one cell in one region. Two properties make it safe and simple:
 
-- **The regions come from stored-chunk occupancy** (:mod:`neu_vol.ops.annotate`),
+- **The regions come from stored-chunk occupancy** (:mod:`neu_vol.ops.occupancy`),
   so they are pairwise disjoint by construction and every voxel belongs to at most one.
 - **It is serial by construction.** The next region's range starts where the last one
   ended, so there is nothing to coordinate and no way for two workers to race.
@@ -41,7 +41,7 @@ import numpy as np
 from ..backends.base import open_backend
 from ..detect import detect_backend, require_chunked_volume
 from ..source_metadata import existing_levels, level_spec
-from .annotate import labeled_regions
+from .occupancy import labeled_regions
 
 # A whole region is read at once so its ids can be collected in one pass. 8 GiB is far
 # above any ground-truth chunk (a 384^3 uint64 box is 226 MiB) and well below what a

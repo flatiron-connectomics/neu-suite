@@ -19,7 +19,7 @@ authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org"
 # (bodies in these volumes are genuinely fragmented into single-voxel specks, so an
 # unthresholded count measures the specks).
 #
-# `neu-vol` is here for the reading half only — `read_piece`, and `ops.annotate.labeled_regions`
+# `neu-vol` is here for the reading half only — `read_piece`, and `ops.occupancy.labeled_regions`
 # for the un-relabelled-GT guard. Every module that computes anything is importable without
 # it, which `tests/test_imports.py` pins.
 dependencies = [

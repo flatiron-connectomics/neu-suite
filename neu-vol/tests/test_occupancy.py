@@ -9,7 +9,7 @@ import pytest
 
 from neu_vol import convert
 from neu_vol.backends.tensorstore import TensorStoreBackend
-from neu_vol.ops.annotate import (NoOccupancy, _precomputed_cell, _zarr_cell,
+from neu_vol.ops.occupancy import (NoOccupancy, _precomputed_cell, _zarr_cell,
                                           labeled_regions, maximal_boxes)
 from neu_vol.profiles import zarr3_create_spec
 
@@ -81,11 +81,11 @@ def test_zarr_chunk_key_to_cell(key, cell):
 
 def test_a_sharded_level_says_so_rather_than_reporting_nothing(monkeypatch, tmp_path):
     """Shards hide which chunks exist; zero regions would wrongly read as "empty"."""
-    from neu_vol.ops import annotate
+    from neu_vol.ops import occupancy
 
-    monkeypatch.setattr(annotate, "list_keys", lambda *a, **k: ["0.shard", "1.shard"])
+    monkeypatch.setattr(occupancy, "list_keys", lambda *a, **k: ["0.shard", "1.shard"])
     with pytest.raises(NoOccupancy, match="SHARDED"):
-        annotate.occupied_cells(str(tmp_path), "zarr3", 0, (8, 8, 8))
+        occupancy.occupied_cells(str(tmp_path), "zarr3", 0, (8, 8, 8))
 
 
 # --------------------------------------------------------------------------- #

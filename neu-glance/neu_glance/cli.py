@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "chunk objects exist — TensorStore never persists an all-fill chunk, so "
                     "the set of present keys IS the occupied footprint — then tightening "
                     "each box to its nonzero voxels at a coarse level.\n\n"
-                    "The analysis lives in neu-vol (`ops.annotate.labeled_regions`); "
+                    "The analysis lives in neu-vol (`ops.occupancy.labeled_regions`); "
                     "this turns its answer into a layer.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     q.add_argument("volume", help="the volume to inspect (path or s3://…)")
@@ -869,7 +869,7 @@ def cmd_annotate(args) -> int:
 
 def cmd_bboxes(args) -> int:
     """A layer of boxes over a sparse volume's occupied regions."""
-    from neu_vol.ops.annotate import NoOccupancy, labeled_regions
+    from neu_vol.ops.occupancy import NoOccupancy, labeled_regions
 
     from .layers import boxes_layer, output_dimensions
 

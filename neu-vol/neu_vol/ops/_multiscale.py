@@ -172,14 +172,14 @@ class NothingStored(RuntimeError):
 def _stored_cells_fn(dst: str, fmt: str):
     """``(level, cell_shape) -> {stored chunk cells}`` for this destination.
 
-    Deferred to :func:`neu_vol.ops.annotate.occupied_cells`, which already knows
+    Deferred to :func:`neu_vol.ops.occupancy.occupied_cells`, which already knows
     how each format spells a chunk key — precomputed's ``x0-x1_y0-y1_z0-z1`` in xyz under
     a per-scale prefix, zarr v3's ``c/z/y/x``. It raises ``NoOccupancy`` on a **sharded**
     level, which is the right answer rather than a wrong one: a shard hides which of its
     chunks exist, so presence stops being the same question as occupancy.
     """
     def stored_cells(level: int, cell: tuple[int, ...]) -> set:
-        from .annotate import occupied_cells
+        from .occupancy import occupied_cells
 
         return occupied_cells(dst, fmt, level, cell)
 

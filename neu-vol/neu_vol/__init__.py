@@ -25,7 +25,7 @@ from .logs import quiet_store_logs
 from .ops import (convert, create_volume, extract_roi, ingest_image_stack,
                   mask_values, pack_hdf5, plan_subvolume_write, plan_volume,
                   rebuild_pyramid, write_subvolume, write_subvolumes)
-from .ops.annotate import labeled_regions
+from .ops.occupancy import labeled_regions
 from .ops.subresources import link_subresources
 from .piece import read_piece, write_piece
 from .retry import is_transient, with_retry

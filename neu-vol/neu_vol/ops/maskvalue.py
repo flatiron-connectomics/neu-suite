@@ -44,7 +44,7 @@ from blockrun import iter_blocks
 from ..backends.base import open_backend
 from ..detect import detect_backend, require_chunked_volume
 from ..source_metadata import existing_levels, level_spec
-from .annotate import labeled_regions
+from .occupancy import labeled_regions
 
 logger = logging.getLogger(__name__)
 
