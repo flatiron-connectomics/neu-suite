@@ -19,6 +19,6 @@ and it does not let anyone revoke a license already granted for a published vers
 
 - Run the test suite before opening a PR (`pytest -q`). CI runs it on every push and
   pull request, and it must be green to merge.
-- This package is the shared dask/SLURM substrate for the `em-*` libraries. A change
-  here affects every consumer, so please run the downstream suites too if you have
-  them checked out.
+- This package is the dask/SLURM substrate for the other neu-suite packages, so a change
+  here can affect all of them: run every suite with `make test` from the repository
+  root. CI does the same on each pull request.

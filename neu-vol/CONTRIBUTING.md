@@ -19,5 +19,7 @@ and it does not let anyone revoke a license already granted for a published vers
 
 - Run the test suite before opening a PR (`pytest -q`). CI runs it on every push and
   pull request, and it must be green to merge.
-- This package sits between `blockrun` and its consumers (`neu-morpho`), so a
-  change here can affect them; run their suites too if you have them checked out.
+- This package sits between `neu-lib` / `blockrun` and the packages that read volumes
+  (neu-morpho, neu-mark, neu-glance, neu-draw, neu-eval), so a change here can affect
+  them: run every suite with `make test` from the repository root. CI does the same on
+  each pull request.

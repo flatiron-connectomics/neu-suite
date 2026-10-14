@@ -1,28 +1,11 @@
 """Put `tmp_path` on tmpfs when one is available.
 
-These suites are dominated by **fsync latency, not computation** — wall clock ran
-4x the CPU time. Every block a run completes gets one `Manifest.record`, and each
-of those flushes and fsyncs to make progress durable, which is exactly right in
-production and pure overhead against a throwaway volume in a temp directory.
-
-The default temp root decides what that costs, and on a Flatiron workstation the
-default is the slow choice: `/tmp` is RAID-backed xfs at ~8 ms per fsync, against
-~0.004 ms on `/dev/shm`. At the few thousand blocks a full suite writes that is the
-difference between minutes and seconds, and none of it is work anyone is testing.
-
-`PYTEST_DEBUG_TEMPROOT` is the knob rather than `--basetemp` on purpose: pytest
-reads it inside `getbasetemp()`, so numbered per-run directories, the retention
-policy and the sweep of old runs all keep working exactly as before — the tree just
-lands somewhere faster. `--basetemp`, by contrast, `rm -rf`s the path it is given at
-session start and retains nothing, so a failed run's artifacts are gone.
-
-Escape hatches, in the order they win: an explicit `--basetemp` (pytest ignores the
-temproot entirely), an inherited `PYTEST_DEBUG_TEMPROOT`, and `NEU_TESTS_TMPFS=0` to
-force the platform default.
-
-The *code* below is duplicated in all three em-* repos, which are separate git repos and
-must stay independently testable — a shared copy would mean a test-time import across the
-layering. Keep the copies in step.
+The suite is dominated by fsync latency: every recorded block fsyncs, which costs ~8 ms
+on a RAID-backed `/tmp` and ~0.004 ms on `/dev/shm`. `PYTEST_DEBUG_TEMPROOT` moves the
+temp tree without changing pytest's retention. An explicit `--basetemp` or an inherited
+`PYTEST_DEBUG_TEMPROOT` wins; `NEU_TESTS_TMPFS=0` forces the platform default. The same
+code is in each package's conftest, since each package's suite runs on its own; keep the
+copies in step.
 """
 
 import os
