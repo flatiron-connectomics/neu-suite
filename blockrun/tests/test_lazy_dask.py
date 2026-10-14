@@ -1,17 +1,6 @@
-"""Importing blockrun must not import dask.
-
-`dask.distributed` is ~1 s of import, and it is the single largest cost in starting any
-consumer — including `neu-vol info`, which reads one metadata document, and `neu-morpho
-progress`, which reads a JSONL file. Neither goes near a cluster. So `start_dask` is
-resolved through a module ``__getattr__`` (PEP 562) instead of being imported eagerly,
-and this file pins that: the saving evaporates the moment someone reinstates a top-level
-``from .dask_runner import start_dask``, and nothing else would fail.
-
-The facts have to be gathered in a **subprocess**, because this test session has
-certainly already imported dask by way of another test. They are gathered in **one**
-subprocess, shared by every test here through a session fixture: each spawn costs more
-than all these assertions put together, and this suite is otherwise under a second.
-"""
+"""Importing blockrun must not import dask (`dask.distributed` costs ~1 s); `start_dask`
+resolves on first access. Facts are gathered in one subprocess, since this session has
+already imported dask."""
 
 import json
 import subprocess
@@ -53,18 +42,15 @@ def test_importing_the_package_does_not_import_dask(probe):
 
 
 def test_start_dask_is_still_importable_both_ways(probe):
-    """Laziness must not change the public API — both spellings have to keep working."""
     assert probe["via_from_import"], "`from blockrun import start_dask` broke"
     assert probe["via_attr"], "`blockrun.start_dask` broke"
 
 
 def test_touching_start_dask_is_what_pulls_dask_in(probe):
-    """The other half of the contract: dask is deferred, not dropped."""
     assert probe["after_touch"], "start_dask resolved without importing dask at all"
 
 
 def test_a_missing_attribute_still_raises_attribute_error():
-    """A hand-written __getattr__ that forgets to raise turns typos into None."""
     import blockrun
 
     with pytest.raises(AttributeError, match="not_a_real_name"):
@@ -72,8 +58,6 @@ def test_a_missing_attribute_still_raises_attribute_error():
 
 
 def test_dir_still_lists_the_public_api():
-    """`__getattr__` hides names from `dir()` unless `__dir__` reports them, and that is
-    what tab-completion and `help()` read."""
     import blockrun
 
     assert "start_dask" in dir(blockrun)

@@ -1,9 +1,5 @@
-"""Bundled dask configs, layered overrides, and key validation.
-
-The validation tests are the point of this file. An unrecognised key in an overlay
-deep-merges silently and does nothing, so without a check the failure mode is a run
-that uses different settings than you wrote — never an error.
-"""
+"""Bundled dask configs, layered overrides, and key validation (an unknown key would
+otherwise merge silently and do nothing)."""
 
 from __future__ import annotations
 
@@ -19,7 +15,6 @@ from blockrun import dask_config as dc
 # bundled templates
 # --------------------------------------------------------------------------- #
 def test_bundled_configs_ship_and_resolve():
-    """An installed command is useless if its templates are not in the wheel."""
     names = dc.bundled_configs()
     assert "dask-local" in names and "dask-slurm-example" in names
     for name in names:
@@ -28,12 +23,6 @@ def test_bundled_configs_ship_and_resolve():
 
 
 def test_bundled_configs_are_themselves_valid():
-    """Shipping a template that our own validator rejects would be absurd.
-
-    It has happened in spirit before: the rule "reject keys absent from the base
-    config" would reject `job-extra-directives`, which the SLURM template documents
-    as the way to pin a node type.
-    """
     for name in dc.bundled_configs():
         merged, _ = dc.load_config(name)          # validates
         assert "jobqueue" in merged, name
@@ -46,7 +35,6 @@ def test_name_with_and_without_suffix_and_explicit_path_agree():
 
 
 def test_a_real_path_shadows_a_bundled_name(tmp_path):
-    """Order matters: a local file must win, so old invocations keep working."""
     shadow = tmp_path / "dask-local"
     shadow.write_text("jobqueue:\n  local: {}\n")
     assert dc.resolve_config(str(shadow)) == str(shadow)
@@ -70,16 +58,10 @@ def test_deep_merge_recurses_dicts_and_replaces_leaves():
     assert got["list"] == [3]
     # Scalars replace, so `spill: false` can be overridden back to a number.
     assert got["scalar"] == 0.5
-
-
-def test_deep_merge_does_not_mutate_its_inputs():
-    base = {"a": {"b": 1}}
-    dc.deep_merge(base, {"a": {"b": 2}})
-    assert base == {"a": {"b": 1}}
+    assert base["a"] == {"b": 1, "c": 2}, "inputs are not mutated"
 
 
 def test_overlay_keeps_template_values_it_does_not_mention(tmp_path):
-    """The reason layering exists: a site file is the keys that differ, not a fork."""
     site = tmp_path / "site.yaml"
     site.write_text("jobqueue:\n  slurm:\n    account: test-account\n")
     merged, sources = dc.load_config(["dask-slurm-example", str(site)])
@@ -91,7 +73,7 @@ def test_overlay_keeps_template_values_it_does_not_mention(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# validation — the part that earns its keep
+# validation
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("doc,expected", [
     ({"jobqueue": {"slurm": {"acount": "x"}}}, "jobqueue.slurm.acount"),
@@ -104,13 +86,7 @@ def test_typos_are_caught_at_every_depth(doc, expected):
 
 
 def test_keys_dask_knows_but_our_templates_omit_are_accepted():
-    """Validate against DASK's key tree, not against our own templates.
-
-    `job-extra-directives` is commented out in the SLURM template as the documented
-    way to pin a node type — so a template-derived whitelist would reject exactly the
-    customisation we tell people to make. Same for the many valid dask-jobqueue keys
-    the template does not ship.
-    """
+    """Validation uses dask's own key tree, not the templates, which omit valid keys."""
     doc = {"jobqueue": {"slurm": {
         "job-extra-directives": ["--constraint=genoa"],
         "interface": "ib0", "death-timeout": 120,
@@ -119,18 +95,12 @@ def test_keys_dask_knows_but_our_templates_omit_are_accepted():
 
 
 def test_underscore_and_hyphen_spellings_both_accepted():
-    """dask canonicalises them to the same key, so rejecting one is a false positive."""
     assert dc.unknown_keys({"jobqueue": {"slurm": {"log_directory": "/tmp/x"}}}) == []
     assert dc.unknown_keys({"jobqueue": {"slurm": {"log-directory": "/tmp/x"}}}) == []
 
 
 def test_free_form_mappings_accept_arbitrary_keys():
-    """dask ships `{}` for these and arbitrary user keys are the whole point.
-
-    Descending into them would reject valid config: `scheduler-options` takes any
-    Scheduler kwarg, `distributed.worker.resources` takes user-invented resource
-    names. Recursion has to stop at an empty reference node.
-    """
+    """dask's `{}` defaults (`scheduler-options`, `worker.resources`) take any key."""
     assert dc.unknown_keys(
         {"jobqueue": {"slurm": {"scheduler-options": {"dashboard_address": ":0"}}}}) == []
     assert dc.unknown_keys(
@@ -138,7 +108,6 @@ def test_free_form_mappings_accept_arbitrary_keys():
 
 
 def test_load_config_raises_and_names_the_offending_file(tmp_path):
-    """With a merge chain, 'which overlay did this come from' is the real question."""
     bad = tmp_path / "typo-site.yaml"
     bad.write_text("jobqueue:\n  slurm:\n    acount: x\n")
     with pytest.raises(dc.ConfigKeyError) as exc:

@@ -31,17 +31,13 @@ def test_iter_blocks_rank_mismatch_raises():
         list(iter_blocks(shape=(4, 4), chunks=(2, 2, 2)))
 
 
-def test_block_map_serial():
+def test_block_map_serial_returns_results_and_calls_on_result():
     blocks = list(iter_blocks(shape=(4, 4), chunks=(2, 2)))
-    out = block_map(blocks, lambda b: b.index, client=None)
-    assert sorted(out) == [(0, 0), (0, 1), (1, 0), (1, 1)]
-
-
-def test_block_map_serial_on_result_called():
-    blocks = list(iter_blocks(shape=(4,), chunks=(1,)))
     seen = []
-    block_map(blocks, lambda b: b.index, client=None, on_result=lambda res: seen.extend(res))
-    assert sorted(seen) == [(0,), (1,), (2,), (3,)]
+    out = block_map(blocks, lambda b: b.index, client=None,
+                    on_result=lambda res: seen.extend(res))
+    assert sorted(out) == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    assert sorted(seen) == sorted(out)
 
 
 def test_idempotent_skips_done_blocks():

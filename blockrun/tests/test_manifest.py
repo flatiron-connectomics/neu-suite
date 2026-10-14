@@ -53,21 +53,11 @@ def test_tolerates_torn_final_line_and_legacy_fields(tmp_path):
     assert m.is_done(0, (0, 0, 0))
     assert m.is_done(0, (1, 1, 1))        # legacy level/index still read
     assert not m.is_done(0, (0, 0, 1))    # torn line ignored
-
-
-def test_no_path_is_in_memory_only():
-    m = Manifest(None)
-    m.reset()
-    m.record(0, [(42, "written")])
-    assert m.is_done(0, 42)
+    assert m.meta(0) == {}                # written before meta lines existed
 
 
 def test_meta_records_a_groups_total_without_becoming_a_task(tmp_path):
-    """The denominator: only the driver knows how many tasks a group has.
-
-    A task may cover many output chunks, so a reader cannot recover the total by
-    counting the chunk grid — it has to be told.
-    """
+    """Only the driver knows a group's task total; a reader cannot count it."""
     p = str(tmp_path / "prog.jsonl")
     m = Manifest(p)
     m.reset()
@@ -93,19 +83,13 @@ def test_meta_is_updated_not_duplicated_across_runs(tmp_path):
     assert Manifest(p).load().meta(0) == {"total": 100, "note": "resumed"}
 
 
-def test_counts_can_be_scoped_to_one_group(tmp_path):
-    m = Manifest(None)
+def test_counts_can_be_scoped_to_one_group():
+    m = Manifest(None)                   # no path: in memory only
+    m.reset()
     m.record(0, [(1, "written"), (2, "empty")])
     m.record(1, [(1, "written")])
     assert m.counts() == {"written": 2, "empty": 1}
     assert m.counts(0) == {"written": 1, "empty": 1}
     assert m.counts(1) == {"written": 1}
     assert m.counts(9) == {}
-
-
-def test_a_manifest_written_before_meta_existed_still_loads(tmp_path):
-    p = str(tmp_path / "old.jsonl")
-    with open(p, "w") as f:
-        f.write('{"group": 0, "key": [0, 0, 0], "status": "written"}\n')
-    m = Manifest(p).load()
-    assert m.done_keys(0) == {(0, 0, 0)} and m.meta(0) == {}
+    assert m.is_done(0, 1)
