@@ -120,6 +120,32 @@ def _resolve_masks(
     return {"backend": "mask", "source": dict(data_spec), "boxes": full, "value": value}
 
 
+def with_source_options(spec: dict, *, prefer_locked: bool = False,
+                        supervoxels: bool = False, wk_mapping: str | None = None) -> dict:
+    """``spec`` with the server-source read options set, each only when asked for.
+
+    ``prefer_locked`` and ``supervoxels`` apply to DVID, ``wk_mapping`` to webknossos. An
+    option given for another source raises rather than being dropped: dropping it would
+    read a different segmentation than the one asked for, and nothing downstream could
+    tell. Unset options leave the spec's own values alone.
+    """
+    backend = spec.get("backend")
+    for asked, wanted, name in ((prefer_locked, "dvid", "prefer_locked=True"),
+                                (supervoxels, "dvid", "supervoxels=True"),
+                                (wk_mapping, "webknossos", "wk_mapping")):
+        if asked and backend != wanted:
+            raise ValueError(f"{name} applies to {'DVID' if wanted == 'dvid' else wanted} "
+                             f"sources only, but the source is {backend!r}")
+    spec = dict(spec)
+    if prefer_locked:
+        spec["prefer_locked"] = True
+    if supervoxels:
+        spec["supervoxels"] = True
+    if wk_mapping:
+        spec["mapping"] = str(wk_mapping)
+    return spec
+
+
 def convert(
     src: str | dict,
     dst: str,
@@ -229,34 +255,8 @@ def convert(
         # never at an assumed 2**level of the source's finest.
         src_spec["scale_index"] = int(src_level)
 
-    if prefer_locked:
-        if src_spec.get("backend") != "dvid":
-            raise ValueError(
-                f"prefer_locked=True applies to DVID sources only, but the source is "
-                f"{src_spec.get('backend')!r}")
-        src_spec["prefer_locked"] = True
-
-    if supervoxels:
-        # Only set when asked, so a spec dict that already carries it is not clobbered
-        # by the default. Rejected rather than ignored for a non-DVID source: silently
-        # dropping it would copy agglomerated bodies while the caller believed they had
-        # asked for supervoxels, and nothing downstream could tell the difference.
-        if src_spec.get("backend") != "dvid":
-            raise ValueError(
-                f"supervoxels=True applies to DVID sources only, but the source is "
-                f"{src_spec.get('backend')!r}")
-        src_spec["supervoxels"] = True
-
-    if wk_mapping:
-        # The server applies it on every read. Rejected for other sources for the same
-        # reason as `supervoxels`: dropping it would hand back a different segmentation
-        # than the one asked for, and nothing downstream could tell.
-        if src_spec.get("backend") != "webknossos":
-            raise ValueError(
-                f"wk_mapping applies to webknossos sources only, but the source is "
-                f"{src_spec.get('backend')!r}")
-        src_spec["mapping"] = str(wk_mapping)
-
+    src_spec = with_source_options(src_spec, prefer_locked=prefer_locked,
+                                   supervoxels=supervoxels, wk_mapping=wk_mapping)
     meta = read_source_metadata(src_spec)
 
     # The array/scale to actually read (level 0 of an OME group / the finest precomputed

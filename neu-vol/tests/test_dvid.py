@@ -190,6 +190,36 @@ def test_a_dvid_option_on_another_source_raises_rather_than_being_ignored(tmp_pa
                 str(tmp_path / "out"), voxel_size=(8, 8, 8), **{option: True})
 
 
+@pytest.mark.parametrize("option", ["supervoxels", "prefer_locked"])
+def test_to_hdf5_refuses_a_dvid_option_on_another_source(tmp_path, option):
+    from neu_vol.ops.pack import pack_hdf5
+
+    with pytest.raises(ValueError, match="DVID sources only"):
+        pack_hdf5(str(tmp_path / "x.zarr"), str(tmp_path / "out.h5"), **{option: True})
+
+
+# --------------------------------------------------------------------------- #
+# to-hdf5: a box out of DVID
+# --------------------------------------------------------------------------- #
+def test_to_hdf5_reads_a_dvid_level_from_the_resolved_node(stub_info):
+    """The level's own voxel size, the options applied, and one concrete node."""
+    from neu_vol.ops.pack import resolve_source
+
+    spec, frame = resolve_source(URL, level=2,
+                                 options={"prefer_locked": True, "supervoxels": True})
+    assert spec["backend"] == "dvid" and spec["scale_index"] == 2
+    assert spec["uuid"] == "846e3a" and "prefer_locked" not in spec
+    assert spec["supervoxels"] is True
+    assert frame["voxel_size"] == (32.0,) * 3 and frame["kind"] == "segmentation"
+
+
+def test_to_hdf5_refuses_a_dvid_level_the_instance_does_not_have(stub_info):
+    from neu_vol.ops.pack import resolve_source
+
+    with pytest.raises(ValueError, match=r"no level 4 \(present: 0-3\)"):
+        resolve_source(URL, level=4)
+
+
 # --------------------------------------------------------------------------- #
 # ref resolution: a branch ref names a different node tomorrow
 # --------------------------------------------------------------------------- #

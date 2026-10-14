@@ -55,6 +55,29 @@ def _add_cluster_args(p, *, default_workers=4, serial=True):
                         "(suppressed by default; real errors are never suppressed)")
 
 
+def _add_server_source_args(p):
+    """The read options of a DVID or webknossos source, shared by every command taking one."""
+    p.add_argument("--dvid-supervoxels", action="store_true",
+                   help="read SUPERVOXELS rather than agglomerated bodies (DVID sources "
+                        "only). Default is bodies, i.e. the proofread segmentation")
+    p.add_argument("--dvid-locked", action="store_true",
+                   help="pull the newest LOCKED node at or before the given ref, rather "
+                        "than the ref itself (DVID sources only). A branch ref such as "
+                        "93fdbc:main resolves to the branch HEAD, which in a "
+                        "lock-and-spawn repo is the open, still-mutable node — legal to "
+                        "read, but its data can change while the run is going and the "
+                        "pull is not reproducible. Needs the repo:branch form, since "
+                        "walking ancestors uses DVID's ref~N syntax. Either way the "
+                        "resolved node id is reported: convert and copy record it in "
+                        "provenance.json")
+    p.add_argument("--wk-mapping", default=None, metavar="NAME",
+                   help="apply this mapping, e.g. an agglomerate view, on the server as "
+                        "the layer is read (webknossos sources only). Default: none, i.e. "
+                        "SUPERVOXELS — the raw ids — even when the viewer shows the layer "
+                        "through a default mapping. `neu-vol info wk://...` lists the "
+                        "mappings")
+
+
 def _add_convert_args(p, *, source_defaults: bool):
     """The arguments shared by ``convert`` and ``copy``.
 
@@ -80,24 +103,7 @@ def _add_convert_args(p, *, source_defaults: bool):
                         "may declare scales that were never written, and those read as "
                         "the fill value everywhere). The output's voxel size is that "
                         "scale's own, never an assumed 2**N")
-    p.add_argument("--dvid-supervoxels", action="store_true",
-                   help="read SUPERVOXELS rather than agglomerated bodies (DVID sources "
-                        "only). Default is bodies, i.e. the proofread segmentation")
-    p.add_argument("--dvid-locked", action="store_true",
-                   help="pull the newest LOCKED node at or before the given ref, rather "
-                        "than the ref itself (DVID sources only). A branch ref such as "
-                        "93fdbc:main resolves to the branch HEAD, which in a "
-                        "lock-and-spawn repo is the open, still-mutable node — legal to "
-                        "read, but its data can change while the run is going and the "
-                        "pull is not reproducible. Needs the repo:branch form, since "
-                        "walking ancestors uses DVID's ref~N syntax. Either way the "
-                        "resolved node id is recorded in provenance.json")
-    p.add_argument("--wk-mapping", default=None, metavar="NAME",
-                   help="apply this mapping, e.g. an agglomerate view, on the server as "
-                        "the layer is read (webknossos sources only). Default: none, i.e. "
-                        "SUPERVOXELS — the raw ids — even when the viewer shows the layer "
-                        "through a default mapping. `neu-vol info wk://...` lists the "
-                        "mappings")
+    _add_server_source_args(p)
     p.add_argument("--wk-full-extent", action="store_true",
                    help="keep the layer's full origin-anchored extent (webknossos sources "
                         "only). Default: crop to the layer's bounding box, keeping its "
@@ -1032,8 +1038,19 @@ def _source_label(spec: dict) -> str:
     while isinstance(spec.get("source"), dict):
         views.append(spec["backend"])
         spec = spec["source"]
-    where = spec.get("path", spec.get("source", "?"))
-    read_as = spec["backend"] + (f":{spec['dataset']}" if spec.get("dataset") else "")
+    if spec["backend"] in ("dvid", "webknossos"):
+        # The resolved URL, so a DVID branch ref shows the node that was actually read.
+        from neu_vol import dvid, webknossos
+
+        where = (dvid if spec["backend"] == "dvid" else webknossos).spec_url(spec)
+    else:
+        where = spec.get("path", spec.get("source", "?"))
+    read_as = spec["backend"] + (f":{spec['dataset']}" if spec["backend"] == "hdf5"
+                                 and spec.get("dataset") else "")
+    if spec.get("supervoxels"):
+        read_as += " supervoxels"
+    if spec.get("mapping"):
+        read_as += f" mapping {spec['mapping']}"
     return f"{where}  [{', '.join([read_as] + views)}]"
 
 
@@ -1309,6 +1326,8 @@ def cmd_to_hdf5(args) -> int:
             level=args.level, crop_start=crop[0], crop_stop=crop[1],
             dataset=args.dataset, src_dataset=args.src_dataset,
             src_format=args.src_format, dtype=args.dtype,
+            supervoxels=args.dvid_supervoxels, prefer_locked=args.dvid_locked,
+            wk_mapping=args.wk_mapping,
             voxel_size_field=args.voxel_size_field, offset_field=args.offset_field,
             background=(_int_list(args.background, "background")
                         if args.background else None),
@@ -2045,7 +2064,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     q.add_argument("--src", required=True,
                    help="image stack (directory or glob of ordered 2D slices), or any "
-                        "readable volume")
+                        "readable volume, including dvid://SERVER/UUID/INSTANCE and "
+                        "wk://DATASET/LAYER (give those a --crop-bbox)")
+    _add_server_source_args(q)
     q.add_argument("--out", required=True, metavar="FILE.h5",
                    help="the HDF5 file to write. Created, or added to if it already "
                         "records the same frame")

@@ -46,28 +46,10 @@ def source_spec(src: str | Mapping[str, Any], src_format: str | None = None,
                 dataset: str | None = None) -> dict[str, Any]:
     """A backend spec for ``src``, detecting the format when it is not given.
 
-    Thin over ``source_metadata``'s two resolvers — :func:`~neu_vol.source_metadata.
-    detect_backend` for what the source is and :func:`~neu_vol.source_metadata.
-    location_spec` for the form its backend expects. It used to carry its own
-    name-based guessing for HDF5 files and image stacks, because detection knew only
-    the marker formats; detection knows both now, so the duplicate is gone and the two
-    cannot disagree about the same path.
-
-    What survives here is the *reason* the duplicate existed: this is where the
-    ``dataset`` of an HDF5 container and an explicit ``src_format`` are threaded
-    through, and where "I could not tell what this is" is phrased for someone pointing
-    at a single file.
-
-    TODO: this does not resolve ``dvid://`` URLs, so `neu-vol write` and `neu-vol to-hdf5`
-    cannot take a DVID source — only `convert` can. `to-hdf5` is the one worth fixing:
-    it already has ``--level`` and ``--crop-bbox``, so taking a box straight out of DVID
-    into an HDF5 piece would close the extract-annotate-write-back loop without anyone
-    typing coordinates twice, and a DVID source only makes sense *with* a bbox anyway —
-    the whole instance is far too large for one file. Now that ``location_spec`` is the
-    only builder here, the work is to let a ``dvid://`` URL through and to decide where
-    the DVID node options (``--dvid-locked`` / ``--dvid-supervoxels``) live on those
-    commands. Note the name clash: ``source_metadata.location_spec`` is the general
-    resolver; this ``source_spec`` is `write`'s own entry point to it.
+    :func:`~neu_vol.detect.detect_backend` then
+    :func:`~neu_vol.source_metadata.location_spec`, with the ``dataset`` of an HDF5
+    container threaded through. A ``dvid://`` URL resolves here at level 0 with the node
+    as given; :func:`~neu_vol.ops.pack.pack_hdf5` takes its levels and read options.
     """
     if isinstance(src, Mapping):
         return dict(src)

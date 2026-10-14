@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -88,15 +88,24 @@ DEFAULT_BLOCK_BYTES = 1 * 1024 ** 3
 #: / ``axes`` describe the file's coordinate system and several arrays share it.
 KIND_ATTR = "kind"
 
+#: Sources served over HTTP rather than read from a store; their levels come from the
+#: server's metadata.
+SERVER_FORMATS = ("dvid", "webknossos")
+
 
 def resolve_source(src: str | dict, src_format: str | None = None, level: int = 0,
                    dataset: str | None = None,
                    voxel_size_field: str = "voxel_size",
-                   offset_field: str = "voxel_offset") -> tuple[dict, dict]:
+                   offset_field: str = "voxel_offset",
+                   options: Mapping[str, Any] | None = None) -> tuple[dict, dict]:
     """The spec for the level to read, and what the source says about its own frame.
 
-    Two kinds of source, and they need different handling:
+    ``options`` are the server-source read options of
+    :func:`~neu_vol.ops.convert.with_source_options`. Three kinds of source:
 
+    * a **server source** (DVID, webknossos) — its levels, voxel sizes and kind come from
+      the server's metadata, and the spec read is the one that metadata resolves: for a
+      DVID branch ref, the concrete node, so every block comes from the same version.
     * a **multiscale volume** — resolved through
       :func:`~neu_vol.source_metadata.level_spec`, which is the only thing that
       addresses a level correctly for both formats (zarr v3 puts each level in its own
@@ -111,10 +120,26 @@ def resolve_source(src: str | dict, src_format: str | None = None, level: int = 
       anyone retype it.
     """
     from ..detect import detect_backend
-    from ..source_metadata import (existing_levels, level_spec, read_level_voxel_sizes,
-                                   read_source_metadata)
+    from ..source_metadata import (existing_levels, level_spec, location_spec,
+                                   read_level_voxel_sizes, read_source_metadata)
+    from .convert import with_source_options
 
     fmt = None if isinstance(src, dict) else (src_format or detect_backend(str(src)))
+    if options and any(options.values()) and fmt not in SERVER_FORMATS:
+        with_source_options({"backend": fmt}, **options)       # raises, naming the option
+    if fmt in SERVER_FORMATS:
+        loc = with_source_options(location_spec(str(src), fmt), **(options or {}))
+        per_level = read_level_voxel_sizes(loc) or []
+        if per_level and not 0 <= level < len(per_level):
+            raise ValueError(f"{src} has no level {level} "
+                             f"(present: 0-{len(per_level) - 1})")
+        meta = read_source_metadata({**loc, "scale_index": int(level)})
+        frame = {"units": meta.get("units") or "nm"}
+        if per_level:
+            frame["voxel_size"] = tuple(per_level[level])
+        if meta.get("kind"):
+            frame["kind"] = meta["kind"]
+        return meta["data_spec"], frame
     if fmt not in ("zarr3", "neuroglancer_precomputed", PRECOMPUTED_GZ):
         if level:
             raise ValueError(
@@ -380,6 +405,9 @@ def pack_hdf5(
     dataset: str | None = None,
     src_dataset: str | None = None,
     src_format: str | None = None,
+    supervoxels: bool = False,
+    prefer_locked: bool = False,
+    wk_mapping: str | None = None,
     voxel_size_field: str = DEFAULT_VOXEL_SIZE_FIELD,
     offset_field: str = DEFAULT_OFFSET_FIELD,
     background: Sequence[int] | None = None,
@@ -408,6 +436,12 @@ def pack_hdf5(
     stack or a bare array cannot. Pass it explicitly for those, or leave it unrecorded:
     guessing from the dtype is the mistake that later averages label ids.
 
+    A DVID or webknossos source (``dvid://`` / ``wk://``) takes ``level`` like any
+    pyramid, records its voxel size and kind, and takes the same read options as
+    :func:`~neu_vol.convert`: ``supervoxels`` and ``prefer_locked`` for DVID,
+    ``wk_mapping`` for webknossos. Give it a crop; a whole instance is far too large
+    for one file.
+
     To write an array that is **already in memory**, use
     :func:`neu_vol.write_piece` — same file layout, no round trip through a store.
     """
@@ -424,7 +458,10 @@ def pack_hdf5(
     # demanding --src-format — and `level_spec` for a level of a volume, which also reports
     # the frame that volume already records.
     spec, frame = resolve_source(src, src_format, level, src_dataset, voxel_size_field,
-                                 offset_field)
+                                 offset_field,
+                                 options={"supervoxels": supervoxels,
+                                          "prefer_locked": prefer_locked,
+                                          "wk_mapping": wk_mapping})
     from ..backends.base import spec_names_path
 
     if spec_names_path(spec, out):

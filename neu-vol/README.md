@@ -403,6 +403,17 @@ schedule, so the two volumes cannot drift a voxel apart partway up the pyramid.
 unaligned edge means those chunks are read-modify-written, which is correct on its
 own but loses one of two updates if overlapping writes ever run at once.
 
+`to-hdf5` makes such a piece from anything readable, including a box out of a DVID or
+webknossos instance at any level, recording the level's voxel size and the source's kind:
+
+```bash
+neu-vol to-hdf5 --src dvid://dvid.example.org/93fdbc:main/labels --out piece.h5 \
+    --level 2 --crop-bbox 1000,1125,1575,1016,1141,1591 --dvid-locked
+```
+
+A branch ref is resolved once, so every block comes from the same node, and the command
+prints which node that was.
+
 ### Inspecting anything readable, not just a volume
 
 `neu-vol info` works on every format the package can read — a zarr or precomputed
