@@ -30,12 +30,14 @@ dependencies = [
     "h5py",                # HDF5 chunk shards
     "tifffile",            # TIFF (multi-file + multipage) sources
     "imageio",             # PNG / misc 2D image sources
+    "DracoPy>=2",          # readback: Draco mesh fragments
+    "osteoid>=0.7.3",      # readback: precomputed skeletons
     "blockrun",         # shared dask/SLURM chunked-map substrate
 ]
 # NOT declared, and cannot be:
 #   cloud-volume — reads .gz-chunked precomputed (backends/cloudvolume.py). It pins
-#     DracoPy<2 and would downgrade the DracoPy behind neu-morpho's mesh
-#     serialisation, so it lives in the separate `neu-vol-cv` env.
+#     DracoPy<2 and would downgrade the DracoPy behind readback and neu-morpho's
+#     mesh serialisation, so it lives in the separate `neu-vol-cv` env.
 #   neuclease    — reads DVID labelmaps (backends/dvid.py). Its own dependencies
 #     include libdvid-cpp, vigra and dvidutils, all conda-only on flyem-forge, and
 #     libdvid is load-bearing rather than incidental: it is what inflates DVID's

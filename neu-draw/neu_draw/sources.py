@@ -46,7 +46,7 @@ def _structural_errors():
     the reader cannot decode, or a bad keyword (``TypeError``, identical for every body in
     a batch) would otherwise return an empty dict that looks like a clean answer.
     """
-    from neu_morpho.readback import UnsupportedSubresource
+    from neu_vol.readback import UnsupportedSubresource
 
     return (MissingSubresource, UnsupportedSubresource, TypeError)
 
@@ -76,7 +76,7 @@ def subresource_dir(volume: str, kind: str, info: Optional[Mapping] = None) -> s
     if not name:
         raise MissingSubresource(
             f"{volume}/info declares no {kind!r}, so there is nothing to read. "
-            f"(neu-morpho's `link_subresources` is what adds that key.)")
+            f"(`neu_vol.link_subresources` adds that key.)")
     return str(name)
 
 
@@ -126,7 +126,7 @@ def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
     if key in store:
         return _named(store[key], name, body_id)
 
-    from neu_morpho.readback import read_body_skeleton
+    from neu_vol.readback import read_body_skeleton
 
     directory = skeleton_dir or subresource_dir(volume, "skeletons", info)
     raw = read_body_skeleton(volume, int(body_id), skeleton_dir=directory,
@@ -152,7 +152,7 @@ def body_mesh(volume: str, body_id: int, *, lod: Optional[int] = None, cache: An
     if key in store:
         return _named(store[key], name, body_id)
 
-    from neu_morpho.readback import read_body_mesh
+    from neu_vol.readback import read_body_mesh
 
     directory = mesh_dir or subresource_dir(volume, "mesh", info)
     raw = read_body_mesh(volume, int(body_id), lod=lod, mesh_dir=directory)

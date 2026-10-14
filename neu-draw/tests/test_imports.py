@@ -15,8 +15,8 @@ def _import_in_a_fresh_interpreter(code: str) -> str:
 
 
 def test_importing_neu_draw_pulls_in_no_optional_dependency():
-    """The render extra (pygfx), the sources extra (neu_morpho, pandas, neuclease) and the
-    notebook UI (ipywidgets, the toolbar) load only when used."""
+    """The render extra (pygfx), the sources and dvid extras (pandas, neuclease) and the
+    notebook UI (ipywidgets, the toolbar) load only when used; neu_morpho never."""
     out = _import_in_a_fresh_interpreter("""
 import sys
 import neu_draw

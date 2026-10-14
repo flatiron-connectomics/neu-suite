@@ -190,12 +190,6 @@ def test_properties_can_be_passed_in_to_avoid_re_reading(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Bounds come from meshes, read by `neu_morpho.readback` (the optional `framing` extra,
-# absent in CI), so everything below skips without it.
-# --------------------------------------------------------------------------- #
-pytest.importorskip("neu_morpho", reason="the framing extra is not installed")
-
-# --------------------------------------------------------------------------- #
 # boxes
 # --------------------------------------------------------------------------- #
 def test_a_box_is_the_meshs_extent_in_ZYX(tmp_path):
@@ -221,7 +215,7 @@ def test_a_volume_with_no_mesh_subresource_says_so(tmp_path):
 
 def test_a_mesh_format_that_cannot_be_decoded_RAISES_rather_than_returning_nothing(tmp_path):
     """`skip_missing` skips absent bodies, not an undecodable source."""
-    from neu_morpho.readback import UnsupportedSubresource
+    from neu_vol.readback import UnsupportedSubresource
 
     vol = _volume(tmp_path, meshes={5: [[0, 0, 0]]},
                   mesh_type="neuroglancer_mesh_from_the_future")

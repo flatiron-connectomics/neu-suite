@@ -15,7 +15,7 @@ unrecorded and the two columns get compared as though they were the same measure
 Hence every row carries an explicit ``variant``, and the table is keyed
 ``(dataset, body_id, variant)``.
 
-Nothing here imports a store. Reading is `neu_morpho.readback` and `neu_vol`; the region
+Nothing here imports a store. Reading is `neu_vol` (`neu_vol.readback` for meshes and skeletons); the region
 predicates that turn a compartment into an ``inside()`` are `neu_lib`.
 """
 

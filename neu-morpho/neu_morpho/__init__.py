@@ -8,7 +8,6 @@ GPL-licensed package that runs as an extra stage of this pipeline. The pipeline 
 
     import neu_morpho
     summary = neu_morpho.pipeline.run(neu_morpho.pipeline.plan(src, dst))  # serial
-    verts_xyz_nm, faces, lod = neu_morpho.read_body_mesh(volume, body_id)   # or None
     db = neu_morpho.MetricsDB(path)                          # per-body metrics
 
 Large segments (whose binary mask over a big bounding box would OOM) are meshed
@@ -25,11 +24,6 @@ __version__ = "0.1.0"
 #: Attribute name -> the module defining it, relative to this package. Resolved on first
 #: use, so ``import neu_morpho`` (which the CLI does for ``__version__``) stays instant.
 _EXPORTS: dict[str, str] = {
-    "read_body_mesh": "readback",
-    "read_body_skeleton": "readback",
-    "mesh_transform": "readback",
-    "skeleton_transform": "readback",
-    "UnsupportedSubresource": "readback",
     "MetricsDB": "metrics_db",
     "MeshConfig": "config",
 }
@@ -38,17 +32,14 @@ _EXPORTS: dict[str, str] = {
 _SUBMODULES: dict[str, str] = {
     "measure": "measure",
     "pipeline": "pipeline",
-    "readback": "readback",
 }
 
 __all__ = ["__version__", *sorted({*_EXPORTS, *_SUBMODULES})]
 
 if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDE completion only
-    from . import measure, pipeline, readback  # noqa: F401
+    from . import measure, pipeline  # noqa: F401
     from .config import MeshConfig  # noqa: F401
     from .metrics_db import MetricsDB  # noqa: F401
-    from .readback import (UnsupportedSubresource, mesh_transform,  # noqa: F401
-                           read_body_mesh, read_body_skeleton, skeleton_transform)
 
 
 def __getattr__(name: str):

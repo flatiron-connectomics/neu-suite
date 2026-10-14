@@ -28,6 +28,9 @@ from .ops import (convert, create_volume, extract_roi, ingest_image_stack,
 from .ops.occupancy import labeled_regions
 from .ops.subresources import link_subresources
 from .piece import read_piece, write_piece
+from . import readback
+from .readback import (UnsupportedSubresource, mesh_transform, read_body_mesh,
+                       read_body_skeleton, skeleton_transform)
 from .retry import is_transient, with_retry
 from .scales import describe_scales, read_scales, scale_spec
 from .source_metadata import describe
@@ -59,6 +62,13 @@ __all__ = [
     "scale_spec",
     "open_backend",
     "labeled_regions",
+    # a body's published mesh and skeleton
+    "readback",
+    "read_body_mesh",
+    "read_body_skeleton",
+    "mesh_transform",
+    "skeleton_transform",
+    "UnsupportedSubresource",
     # stores, retry and logs
     "location",
     "exists",

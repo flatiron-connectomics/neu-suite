@@ -222,8 +222,7 @@ python -m pytest -q
 by relative `../sibling` path, so they must stay siblings.
 
 Extras: `report` (pandas, pyarrow — imported inside functions, so `import neu_eval` and
-`--help` do not pay for them), `link` (neu-glance), `erl` (neu-morpho, for the skeleton
-metrics when they land).
+`--help` do not pay for them), `link` (neu-glance).
 
 ## Reading
 

@@ -13,7 +13,7 @@ measurement of published meshes and **skeletons**.
 - **Skeletons** are made by [`neu-skel`], a separate package: GPL-licensed, because
   its tracers build on [`kimimaro`] and `dijkstra3d`. `neu-skel run` is this package's
   `run` with a `skel` stage added, writing skeletons into the same volume, metrics DB
-  and run summary. Everything that reads or measures skeletons — `readback`,
+  and run summary. Everything that reads or measures skeletons — `neu_vol.readback`,
   `neu-morpho measure skeletons`, path distances — is here and needs no GPL code.
 
 Large segments — whose binary mask over a big bounding box would OOM (the failure

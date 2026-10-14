@@ -298,6 +298,19 @@ profiles, OME-NGFF 0.5 metadata, per-level scale metadata, and the `ingest` /
 Outputs verified via ngff-zarr's reader (zarr) and TensorStore round-trip
 (precomputed); the distributed path is exercised over a real `LocalCluster`.
 
+### Reading a body's mesh and skeleton
+
+```python
+from neu_vol import read_body_mesh, read_body_skeleton
+
+verts_xyz_nm, faces, lod = read_body_mesh(volume, body_id)        # coarsest LOD by default
+verts_xyz_nm, edges, radii_nm = read_body_skeleton(volume, body_id)
+```
+
+Each returns `None` for a body with none. Multi-LOD Draco and legacy meshes and precomputed
+skeletons are read, sharded or not, and vertices come back in nm through each
+subresource's own `transform`. neu-morpho writes the meshes and neu-skel the skeletons.
+
 ## S3 / object stores
 
 Destinations can be local paths, `s3://bucket/prefix` URLs, or kvstore dicts (for

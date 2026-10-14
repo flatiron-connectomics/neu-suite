@@ -64,7 +64,7 @@ def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
     """``(body_id, status, payload)`` for one body. Never raises."""
     from neu_lib import Skeleton
 
-    from ..readback import read_body_skeleton
+    from neu_vol.readback import read_body_skeleton
     try:
         got = read_body_skeleton(volume, body_id, skeleton_dir,
                                  require_radii=require_radii)

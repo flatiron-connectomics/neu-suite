@@ -40,8 +40,9 @@ dependencies = [
 #     under a second name.
 #   neu-mark — connectivity metrics take synapses as TABLES. neu-mark is the same tier as
 #     the packages below this one, and neu-draw's abstention is the precedent.
-#   neu-morpho, neu-glance — see the `erl` and `link` extras. Both are downward
-#     dependencies and so permitted, but neither is on any required path.
+#   neu-glance — see the `link` extra. A downward dependency and so permitted, but not on
+#     any required path. Reference skeletons, for expected run length when it lands, are read
+#     with `neu_vol.readback`.
 [project.optional-dependencies]
 dev = ["pytest"]
 # Result tables. parquet for metrics (it round-trips a nullable integer column, unlike csv);
@@ -51,11 +52,6 @@ report = ["pandas", "pyarrow"]
 # annotations list and step. Optional because the table is the contract: `neu-glance
 # annotate` reads it from disk and needs no import here.
 link = ["neu-glance"]
-# Skeleton metrics (expected run length), when they land. The reference skeletons are read
-# from a published precomputed source through `neu_morpho.readback` (made with neu-skel if
-# none exists), so this is an extra, resolved inside the function, exactly as
-# `neu-glance[framing]` and `neu-draw[sources]` resolve the same reader.
-erl = ["neu-morpho"]
 
 [project.scripts]
 # `neu-eval`, matching the abbreviated commands its siblings expose (`neu-vol`,

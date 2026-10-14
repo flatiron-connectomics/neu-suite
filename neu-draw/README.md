@@ -401,8 +401,8 @@ pip install --no-deps -e ./neu-draw
 `--no-deps` is load-bearing across this suite: numpy and tensorstore come from
 conda-forge, and letting pip re-resolve them invites an ABI mismatch.
 
-Extras: `render` (pygfx, rendercanvas, jupyter-rfb, cmap), `sources` (neu-morpho,
-pandas), `dvid` (neuclease), `cache` (yes3), `dev` (pytest).
+Extras: `render` (pygfx, rendercanvas, jupyter-rfb, cmap), `sources` (pandas), `dvid`
+(neuclease), `cache` (yes3), `dev` (pytest).
 
 **Importing `neu_draw` does not import a renderer**, so it is safe on a headless
 machine; only `show()` and the pygfx backend need one.

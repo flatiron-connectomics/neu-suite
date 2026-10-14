@@ -100,7 +100,7 @@ def test_importing_the_package_loads_none_of_its_exports():
 
     out = subprocess.run([sys.executable, "-c",
                           "import sys, neu_morpho; print(','.join(m for m in "
-                          "('neu_morpho.readback', 'neu_morpho.measure', 'neu_morpho.metrics_db')"
+                          "('neu_morpho.pipeline', 'neu_morpho.measure', 'neu_morpho.metrics_db')"
                           " if m in sys.modules))"], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == ""

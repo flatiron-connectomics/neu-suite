@@ -41,7 +41,7 @@ class Mesh:
     def from_precomputed(cls, vertices_xyz_nm: Any, faces: Any,
                          name: Optional[str] = None) -> "Mesh":
         """From xyz vertices, as the precomputed format stores them and
-        ``neu_morpho.readback.read_body_mesh`` returns them, flipped to zyx."""
+        ``neu_vol.readback.read_body_mesh`` returns them, flipped to zyx."""
         verts = _as_points(vertices_xyz_nm, "vertices_xyz_nm")
         return cls(np.ascontiguousarray(verts[:, ::-1]), faces, name=name)
 

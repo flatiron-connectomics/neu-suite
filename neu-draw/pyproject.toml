@@ -15,17 +15,14 @@ authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org"
 dependencies = [
     "numpy",
     "neu-lib",     # BBox, Frame, Mesh, Skeleton. numpy-only.
-    "neu-vol",     # volume metadata and store reads
+    "neu-vol",     # volume metadata, store reads, mesh and skeleton readback
 ]
 # Deliberately NOT declared as hard requirements:
 #   pygfx / rendercanvas / jupyter-rfb / cmap — the RENDER extra. `scene` is pure array and
 #     dataclass work; importing the package must not need a GPU, a
 #     canvas backend, or a display. A renderer import on a headless box fails outright
 #     for want of glfw/Qt, and that is the failure this split exists to avoid.
-#   neu-morpho — the SOURCES extra. Reading precomputed meshes and skeletons needs it
-#     (and through it vol2mesh and osteoid, which are conda-only); building a scene from
-#     arrays you already hold does not.
-#   pandas — only the table-shaped source adapters want it.
+#   pandas — the SOURCES extra: only the table-shaped source adapters want it.
 #   neuclease — the DVID extra, for DVID sources only; conda-only (flyem-forge).
 
 [project.optional-dependencies]
@@ -34,7 +31,7 @@ dependencies = [
 # arrives with jupyter-rfb regardless — declared because `neu_draw.toolbar` imports it
 # by name, and a transitive dependency is not a promise.
 render = ["pygfx>=0.15", "rendercanvas", "jupyter-rfb", "cmap", "imageio", "ipywidgets"]
-sources = ["neu-morpho", "pandas"]
+sources = ["pandas"]
 dvid = ["neuclease"]
 cache = ["yes3>=0.1"]
 dev = ["pytest"]

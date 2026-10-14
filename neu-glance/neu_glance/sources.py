@@ -251,20 +251,6 @@ def annotation_source_voxel_size(info: Mapping[str, Any]) -> tuple | None:
     return tuple(reversed(out))                        # xyz read, zyx returned
 
 
-def _readback():
-    """``neu_morpho.readback`` (the ``framing`` extra), imported on first use, or a clear
-    error naming the extra. The reader needs only numpy, none of neu-morpho's conda-only
-    meshing dependencies."""
-    try:
-        from neu_morpho import readback
-    except ImportError as e:
-        raise SourceProblem(
-            f"reading an object's bounds needs neu-morpho's mesh reader, which is not "
-            f"installed: {e}. Install it with `pip install 'neu-glance[framing]'`, or pass "
-            f"boxes to Timeline.frame_on() yourself — it takes any (lo_zyx, hi_zyx).") from None
-    return readback
-
-
 @_quiet
 def segment_boxes(volume: str, segment_ids: Sequence[Any], *, lod: int | None = None,
                   mesh_dir: str | None = None, threads: int = 8,
@@ -279,7 +265,8 @@ def segment_boxes(volume: str, segment_ids: Sequence[Any], *, lod: int | None = 
 
     ``skip_missing`` drops a segment with no mesh; a structurally broken source still raises.
     """
-    readback = _readback()
+    from neu_vol import readback
+
     ids = [str(s).lstrip("!") for s in segment_ids]
     boxes: dict[str, tuple[tuple, tuple]] = {}
     # Resolved from `info`: passing None to read_body_mesh would look for a directory named

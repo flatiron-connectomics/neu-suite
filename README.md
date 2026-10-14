@@ -11,8 +11,8 @@ the cheat sheet if you just need to remember a flag.
 | --- | --- |
 | [neu-lib](neu-lib/) | the shared vocabulary: boxes, grid arithmetic, frames, meshes, skeletons. **numpy only.** Library, no command. |
 | [blockrun](blockrun/) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
-| [neu-vol](neu-vol/) | volume I/O and the `neu-vol` command |
-| [neu-morpho](neu-morpho/) | meshes, skeleton readback and measurement, and the `neu-morpho` command (the skeleton tracers are a separate, GPL-licensed repository, [neu-skel](https://github.com/flatiron-connectomics/neu-skel)) |
+| [neu-vol](neu-vol/) | volume I/O, mesh and skeleton readback, and the `neu-vol` command |
+| [neu-morpho](neu-morpho/) | meshes, measurement of meshes and skeletons, and the `neu-morpho` command (the skeleton tracers are a separate, GPL-licensed repository, [neu-skel](https://github.com/flatiron-connectomics/neu-skel)) |
 | [neu-mark](neu-mark/) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
 | [neu-glance](neu-glance/) | neuroglancer states, layers and links, and the `neu-glance` command |
 | [neu-proc](neu-proc/) | array processing: filters, label tools, distance transforms. Library only, no command. |

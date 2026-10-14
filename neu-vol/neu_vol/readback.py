@@ -1,32 +1,21 @@
-"""Read a published precomputed volume back — the inverse of :mod:`precomputed`.
+"""Read a body's mesh and skeleton out of a published precomputed volume, local or remote.
 
-``precomputed.py`` only *writes*. This module reads a body's mesh and skeleton back
-out of a finished volume, local or ``s3://``, so tooling can inspect what was
-actually shipped rather than an intermediate. That distinction is the point: the
-encode step is otherwise checked by nothing, and both format bugs this project has
-hit were spec-legal files that a writer-only test suite could not see.
+The writers are in neu-morpho (``neu_morpho.precomputed``); reading needs no meshing
+stack, so it is here, where every package that views or measures a volume can use it.
+Formats: ``neuroglancer_multilod_draco`` and ``neuroglancer_legacy_mesh`` meshes,
+``neuroglancer_skeletons``, each sharded or not.
 
-**Why this is not in `precomputed.py`.** That module is forbidden from importing
-``os`` or calling ``open()`` — a test asserts it, because a single stray one passes
-every local test and silently writes nothing to s3. Reading a multires mesh needs
-the filesystem: ``vol2mesh.multires.read_object_mesh`` parses the ``.index``
-manifest and it opens files, so the objects are staged to a temp directory. Keeping
-that here confines the filesystem access to a module that never writes to ``dst``,
-and means this package does not own a copy of the multires manifest parser.
-
-No optional dependencies: everything here is numpy plus what the pipeline already
-requires. For rendering, see neu-draw.
+Coordinates come back in physical nm: each subresource's ``info`` ``transform`` is
+applied. DracoPy (meshes) and osteoid (skeletons) are imported on first use.
 """
 
 from __future__ import annotations
 
-import os
-import tempfile
 from typing import Any
 
 import numpy as np
 
-from neu_vol import location
+from . import location
 
 __all__ = ["read_body_skeleton", "read_body_mesh", "mesh_transform",
            "skeleton_transform", "UnsupportedSubresource"]
@@ -48,8 +37,7 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
 
     Vertices come back in the order the format **stores**, which is xyz — matching
     :func:`read_body_mesh`, so the two overlay without a flip. Everything else in
-    this package holds vertices zyx in memory; see the zyx/xyz invariant in
-    CLAUDE.md, which is what makes this worth stating twice.
+    the suite holds vertices zyx in memory, which is what makes this worth stating.
 
     Raises if the skeleton carries no usable ``radius`` attribute rather than
     returning something drawable-but-wrong. **A length check is not enough**: when
@@ -63,7 +51,7 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
     skeleton ``info`` is bare ``{"@type": "neuroglancer_skeletons"}`` with no
     ``vertex_attributes``, so every body comes back all -1. Cable length and topology
     are still there; calibre is not, and has to come from elsewhere. Keep the default
-    ``True`` — on a volume this package wrote, missing radii mean something went wrong.
+    ``True`` — on a volume neu-skel wrote, missing radii mean something went wrong.
 
     Reads **sharded and unsharded** skeletons alike, on the ``sharding`` key of the
     skeleton directory's own ``info``. Simpler than the mesh case: a skeleton is a single
@@ -77,7 +65,7 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
     """
     from osteoid import Skeleton
 
-    raw_info, info = _subresource_info(volume, skeleton_dir)
+    info = _subresource_info(volume, skeleton_dir)
     _check_supported(info, volume, skeleton_dir, "skeleton")
     sharding = info.get("sharding")
     if sharding is not None:
@@ -168,7 +156,7 @@ def _shard_reader(volume: str, subdir: str, sharding):
     """A cached reader for one sharded subresource — mesh or skeleton alike."""
     import json
 
-    from neu_vol.sharded import ShardReader
+    from .sharded import ShardReader
 
     cache_key = (str(volume), str(subdir), json.dumps(dict(sharding), sort_keys=True))
     reader = _SHARD_READERS.get(cache_key)
@@ -177,12 +165,12 @@ def _shard_reader(volume: str, subdir: str, sharding):
     return reader
 
 
-def _subresource_info(volume: str, subdir: str):
-    """``(raw bytes, parsed dict)`` of a subresource ``info``; ``{}`` when there is none."""
+def _subresource_info(volume: str, subdir: str) -> dict:
+    """A subresource's parsed ``info``; ``{}`` when there is none."""
     import json
 
     raw = location.read_bytes(volume, subdir, "info")
-    return raw, (json.loads(raw) if raw else {})
+    return json.loads(raw) if raw else {}
 
 
 #: The ``@type``\ s each reader here understands. Anything else is a real precomputed format
@@ -274,7 +262,7 @@ def _transform_matrix(info):
     """A subresource ``transform`` as a ``(3, 4)`` matrix, or ``None`` when it is identity.
 
     ``None`` rather than the identity so the caller skips the multiply entirely — this
-    runs per body, and identity is the case for everything this package writes.
+    runs per body, and identity is the case for everything neu-morpho writes.
     """
     values = (info or {}).get("transform")
     if values is None:
@@ -416,14 +404,14 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
 
     Vertices are **always physical nm**, per the one-model-space invariant: the stored
     coordinates are mapped through the mesh ``info``'s ``transform``, unconditionally and
-    with no opt-out. Every mesh this package writes declares an **identity** transform
+    with no opt-out. Every mesh neu-morpho writes declares an **identity** transform
     (its vertices are already nm), so this changes nothing about our own output and
     matters only for a foreign source — FlyEM's male-CNS declares ``diag(16)``, whose
     meshes were coming back 16x too small and 16x out of register with the skeletons from
     the same volume, with nothing to say so. :func:`mesh_transform` reports the matrix for
     anyone who needs the stored-model coordinates back.
     """
-    raw_info, info = _subresource_info(volume, mesh_dir)
+    info = _subresource_info(volume, mesh_dir)
     _check_supported(info, volume, mesh_dir, "mesh")
 
     if info.get("@type") == LEGACY_MESH:
@@ -443,59 +431,74 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
             vertices = vertices @ matrix[:, :3].T + matrix[:, 3]
         return vertices, all_faces, 0
 
-    from vol2mesh import multires
-
     sharding = info.get("sharding")
-
     if sharding is not None:
         staged = _sharded_object(volume, body_id, mesh_dir, sharding, lod)
         if staged is None:
             return None
-        # The re-emitted manifest declares only the LOD fetched, so ask the parser for
-        # that one rather than for the caller's `lod` — which may have been None.
-        data, index, lod = staged
+        # The re-emitted manifest declares only the LOD fetched, so ask for that one
+        # rather than for the caller's `lod`, which may have been None.
+        data, manifest, lod = staged
     else:
         data = location.read_bytes(volume, mesh_dir, str(int(body_id)))
-        index = location.read_bytes(volume, mesh_dir, f"{int(body_id)}.index")
-        if data is None or index is None:
+        manifest = location.read_bytes(volume, mesh_dir, f"{int(body_id)}.index")
+        if data is None or manifest is None:
             return None
 
-    with tempfile.TemporaryDirectory(prefix="readback-") as tmp:
-        with open(os.path.join(tmp, str(int(body_id))), "wb") as f:
-            f.write(data)
-        with open(os.path.join(tmp, f"{int(body_id)}.index"), "wb") as f:
-            f.write(index)
-        if raw_info is not None:
-            # read_object_mesh reads vertex_quantization_bits from here; without
-            # it the parser assumes 16 and would silently misplace vertices if the
-            # volume were written with 10.
-            with open(os.path.join(tmp, "info"), "wb") as f:
-                f.write(raw_info)
-        parsed = multires.read_object_mesh(tmp, int(body_id))
-
-    frags = parsed.get("fragments") or []
-    if not frags:
+    bits = int(info.get("vertex_quantization_bits", 16))
+    decoded = _decode_lod(manifest, data, bits, lod, body_id)
+    if decoded is None:
         return None
-    available = sorted({int(f["lod"]) for f in frags})
-    want = available[-1] if lod is None else int(lod)
-    if want not in available:
-        raise ValueError(f"body {body_id}: LOD {want} not present; have {available}")
-
-    verts, faces, offset = [], [], 0
-    for f in frags:
-        if int(f["lod"]) != want:
-            continue
-        v = np.asarray(f["vertices_xyz"], dtype=float)
-        verts.append(v)
-        faces.append(np.asarray(f["faces"], dtype=np.int64).reshape(-1, 3) + offset)
-        offset += len(v)
-    if not verts:
-        return None
-    vertices = np.concatenate(verts)
+    vertices, faces, want = decoded
     matrix = _transform_matrix(info)
     if matrix is not None:
         vertices = vertices @ matrix[:, :3].T + matrix[:, 3]
-    return vertices, np.concatenate(faces), want
+    return vertices, faces, want
+
+
+def _decode_lod(manifest: bytes, data: bytes, bits: int, lod: int | None, body_id: int):
+    """``(vertices_xyz, faces, lod)`` of one LOD of a multi-LOD Draco object, or ``None``.
+
+    Stored-model coordinates, before the ``transform``. ``lod`` ``None`` is the coarsest
+    LOD holding data. Each fragment is Draco-decoded and dequantized against its octree
+    cell, ``chunk_shape * 2**lod`` wide at ``grid_origin + position * cell + vertex_offset``;
+    fragments of other LODs are skipped rather than decoded.
+    """
+    import DracoPy
+
+    parsed = _parse_manifest(manifest)
+    present = [i for i, sizes in enumerate(parsed["sizes"]) if int(sizes.sum())]
+    if not present:
+        return None
+    want = present[-1] if lod is None else int(lod)
+    if want not in present:
+        raise ValueError(f"body {body_id}: LOD {want} not present; have {present}")
+
+    chunk = np.frombuffer(manifest, "<f4", 3, 0).astype(float)
+    origin = np.frombuffer(manifest, "<f4", 3, 12).astype(float)
+    offset = np.frombuffer(parsed["vertex_offsets"], "<f4").astype(float).reshape(-1, 3)[want]
+    n = int(parsed["counts"][want])
+    positions = np.frombuffer(parsed["blocks"][want], "<u4", n * 3).reshape(3, n).T
+    cell = chunk * 2 ** want
+    max_q = float((1 << bits) - 1)
+
+    pos = sum(int(sizes.sum()) for sizes in parsed["sizes"][:want])
+    verts, faces, base = [], [], 0
+    for position, size in zip(positions.astype(np.int64), parsed["sizes"][want]):
+        blob = data[pos:pos + int(size)]
+        pos += int(size)
+        if not size:
+            continue
+        if len(blob) != size:
+            raise ValueError(
+                f"body {body_id}: LOD {want} fragment data ends {int(size) - len(blob)} "
+                f"bytes short of what its manifest declares")
+        mesh = DracoPy.decode(blob)
+        q = np.asarray(mesh.points, dtype=float)
+        verts.append(origin + position * cell + offset + cell * (q / max_q))
+        faces.append(np.asarray(mesh.faces, dtype=np.int64).reshape(-1, 3) + base)
+        base += len(q)
+    return np.concatenate(verts), np.concatenate(faces), want
 
 
 def mesh_transform(volume: str, mesh_dir: str = "mesh"):

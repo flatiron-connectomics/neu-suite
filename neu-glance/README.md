@@ -279,8 +279,7 @@ against a real render: 0° and 360° come back pixel-identical.
 
 `frame_on` takes `(lo_zyx, hi_zyx)` in nanometres by default (the suite's model space), and
 converts to the viewer's own voxels using the state's `dimensions`. Boxes can come from
-anywhere; `sources.segment_boxes(volume, ids)` reads them from the segments' meshes, which
-needs `neu-glance[framing]`.
+anywhere; `sources.segment_boxes(volume, ids)` reads them from the segments' meshes.
 
 ```python
 boxes = neu_glance.sources.segment_boxes(volume, ["3832372"])

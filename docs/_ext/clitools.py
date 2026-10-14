@@ -65,11 +65,12 @@ PACKAGES = [
     ("neu-vol", "neu_vol",
      "Volume I/O: tensorstore backends, storage profiles, the conversion ops, "
      "source metadata.",
-     "`convert`, `open_backend`, `scale_spec`, `read_scales`, `describe`, `location`"),
+     "`convert`, `open_backend`, `scale_spec`, `read_scales`, `describe`, `location`, "
+     "`readback`"),
     ("neu-morpho", "neu_morpho",
-     "Per-body meshes and skeletons, published into the volume — and read back out "
-     "of it.",
-     "`readback`, `measure`, `precomputed`, `occupancy`"),
+     "Per-body meshes, published into the volume, and measurement of meshes and "
+     "skeletons.",
+     "`pipeline`, `measure`, `precomputed`, `occupancy`"),
     ("neu-mark", "neu_mark",
      "DVID annotations into tables, and on into neuroglancer.",
      "`notebook`, `tables`, `explore`, `rule`, `segprops`, `annsource`"),
@@ -169,8 +170,8 @@ def write_api_index(path: Path) -> None:
          "{doc}`neu_vol.location <../api/neu_vol/location/index>`"),
         ("neu_vol", "convert or copy a source",
          "{doc}`neu_vol.ops.convert <../api/neu_vol/ops/convert/index>`"),
-        ("neu_morpho", "read published meshes and skeletons back",
-         "{doc}`neu_morpho.readback <../api/neu_morpho/readback/index>`"),
+        ("neu_vol", "read published meshes and skeletons back",
+         "{doc}`neu_vol.readback <../api/neu_vol/readback/index>`"),
         ("neu_morpho", "measure morphology of published output",
          "{doc}`neu_morpho.measure <../api/neu_morpho/measure/index>`"),
         ("neu_mark", "pull DVID annotations into DataFrames",

@@ -60,7 +60,7 @@ class Skeleton:
     def from_precomputed(cls, vertices_xyz_nm: Any, edges: Any,
                          radii_nm: Any = None, name: Optional[str] = None) -> "Skeleton":
         """From xyz vertices, as the precomputed format stores them and
-        ``neu_morpho.readback.read_body_skeleton`` returns them, flipped to zyx."""
+        ``neu_vol.readback.read_body_skeleton`` returns them, flipped to zyx."""
         verts = np.asarray(vertices_xyz_nm, dtype=np.float32)
         if verts.size == 0:
             verts = verts.reshape(0, 3)

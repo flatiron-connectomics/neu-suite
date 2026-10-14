@@ -134,7 +134,7 @@ def test_a_second_read_comes_from_the_cache(volume, monkeypatch):
     store = cache_mod.MemoryCache()
     sources.body_skeleton(volume, BODIES[0], cache=store)
 
-    import neu_morpho.readback as readback
+    import neu_vol.readback as readback
 
     def explode(*args, **kwargs):
         raise AssertionError("re-read a body that was already cached")
@@ -289,7 +289,7 @@ def test_a_batch_still_raises_on_a_mesh_format_it_cannot_decode(volume_with_mesh
     import json as _json
     import pathlib
 
-    from neu_morpho.readback import UnsupportedSubresource
+    from neu_vol.readback import UnsupportedSubresource
 
     mesh_info = pathlib.Path(volume_with_mesh) / "mesh" / "info"
     info = _json.loads(mesh_info.read_text())
@@ -306,7 +306,7 @@ def test_a_batch_still_raises_on_a_skeleton_format_it_cannot_decode(volume):
     import json as _json
     import pathlib
 
-    from neu_morpho.readback import UnsupportedSubresource
+    from neu_vol.readback import UnsupportedSubresource
 
     skel_info = pathlib.Path(volume) / "skeleton" / "info"
     info = _json.loads(skel_info.read_text())

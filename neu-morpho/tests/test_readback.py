@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from neu_morpho.config import MeshConfig
-from neu_morpho.readback import read_body_mesh, read_body_skeleton
+from neu_vol.readback import read_body_mesh, read_body_skeleton
 
 
 # --------------------------------------------------------------------------- #
@@ -122,6 +122,33 @@ def test_read_body_mesh_defaults_to_the_coarsest_lod(tmp_path):
         read_body_mesh(vol, 5, lod=99)
 
 
+@pytest.mark.parametrize("bits", [16, 10])
+def test_every_lod_decodes_exactly_as_vol2mesh_reads_it(tmp_path, bits):
+    """The reader is DracoPy-only; vol2mesh's own parser is the reference, LOD by LOD."""
+    from vol2mesh import multires
+
+    from neu_morpho import precomputed
+
+    cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0,
+                     num_lods=3, draco_quantization_bits=bits)
+    vol = str(tmp_path / "segmentation")
+    precomputed.write_mesh_info(vol + "/mesh", cfg)
+    precomputed.write_body_multires(vol + "/mesh", 5, _cube_mesh(cfg), cfg,
+                                    chunk_shape_xyz=[96.0, 64.0, 128.0],
+                                    grid_origin_xyz=[8.0, 16.0, 24.0])
+    reference = multires.read_object_mesh(vol + "/mesh", 5, vertex_quantization_bits=bits)
+    lods = sorted({f["lod"] for f in reference["fragments"]})
+    assert len(lods) > 1
+    for lod in lods:
+        frags = [f for f in reference["fragments"] if f["lod"] == lod]
+        want_v = np.concatenate([f["vertices_xyz"] for f in frags])
+        v, f, got_lod = read_body_mesh(vol, 5, lod=lod)
+        assert got_lod == lod
+        np.testing.assert_array_equal(v, want_v)
+        np.testing.assert_array_equal(v[f], np.concatenate(
+            [fr["vertices_xyz"][fr["faces"].astype(np.int64)] for fr in frags]))
+
+
 def test_read_body_mesh_is_none_when_absent(tmp_path):
     from neu_morpho import precomputed
 
@@ -137,7 +164,7 @@ def test_require_radii_false_returns_a_centreline(tmp_path):
     import numpy as np
     from osteoid import Skeleton as Osteoid
 
-    from neu_morpho import readback
+    from neu_vol import readback
 
     vertices = np.array([[0.0, 0, 0], [100.0, 0, 0]], dtype=np.float32)
     edges = np.array([[0, 1]], dtype=np.uint32)
@@ -282,7 +309,7 @@ def test_a_manifest_pointing_past_its_fragment_data_raises(tmp_path):
 def test_the_info_transform_is_applied_so_vertices_are_nm(tmp_path):
     """A source may store model coordinates and declare the scale to nm in `transform`
     (one published source declares diag(16)); ignoring it silently shrinks the meshes."""
-    from neu_morpho.readback import mesh_transform
+    from neu_vol.readback import mesh_transform
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     plain = read_body_mesh(_write_unsharded_mesh(tmp_path, cfg), 5, lod=0)
@@ -300,7 +327,7 @@ def test_the_info_transform_is_applied_so_vertices_are_nm(tmp_path):
 
 def test_mesh_transform_refuses_a_location_with_no_info(tmp_path):
     """Identity is a plausible answer, so a mistyped path must not come back as one."""
-    from neu_morpho.readback import mesh_transform
+    from neu_vol.readback import mesh_transform
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     vol = _write_unsharded_mesh(tmp_path, cfg)
@@ -337,7 +364,7 @@ def test_a_targeted_lod_read_equals_reading_the_whole_pyramid(tmp_path):
 
 def test_the_shard_indexes_are_parsed_once_per_volume_not_once_per_body(tmp_path):
     """One cached shard reader per volume, so a batch does not re-parse the indexes."""
-    from neu_morpho import readback
+    from neu_vol import readback
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     vol = _write_unsharded_mesh(tmp_path, cfg)
@@ -396,7 +423,7 @@ def test_a_sharded_skeleton_reads_back_as_the_same_geometry(tmp_path):
 
 def test_the_skeleton_info_transform_is_applied_to_vertices_and_radii(tmp_path):
     """Vertices and radii scale together, or the calibre is silently wrong."""
-    from neu_morpho.readback import skeleton_transform
+    from neu_vol.readback import skeleton_transform
 
     plain = read_body_skeleton(_write_skeleton_volume(tmp_path), 7)
     scaled = _write_skeleton_volume(tmp_path / "scaled",
@@ -424,7 +451,7 @@ def test_our_own_output_has_identity_transforms(tmp_path):
     """What this package writes is already nm, so both transforms are exactly identity
     and a body's skeleton and surface stay in one space."""
     from neu_morpho import precomputed
-    from neu_morpho.readback import mesh_transform, skeleton_transform
+    from neu_vol.readback import mesh_transform, skeleton_transform
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     vol = _write_unsharded_mesh(tmp_path, cfg)
@@ -543,7 +570,7 @@ def test_an_UNKNOWN_mesh_type_is_still_refused(tmp_path):
     """Accepting the legacy format did not turn off the unknown-type guard."""
     import json
 
-    from neu_morpho.readback import UnsupportedSubresource
+    from neu_vol.readback import UnsupportedSubresource
 
     vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
     (tmp_path / "segmentation" / "mesh" / "info").write_text(
