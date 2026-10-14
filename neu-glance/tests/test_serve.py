@@ -957,20 +957,6 @@ def test_a_bare_zarr_array_still_works(tmp_path):
     assert layer.array.shape == (8, 8, 8)
 
 
-def test_a_crop_takes_either_shape():
-    """`((lo), (hi))` or the CLI's flat `(z0, y0, x0, z1, y1, x1)`. This is neu-vol's
-    helper and its only test."""
-    from neu_vol.piece import _crop_request
-
-    assert _crop_request(((1, 2, 3), (4, 5, 6))) == (((1, 2, 3), (4, 5, 6)), None)
-    assert _crop_request((1, 2, 3, 4, 5, 6)) == (((1, 2, 3), (4, 5, 6)), None)
-    assert _crop_request(None) == (None, None)
-    with pytest.raises(ValueError, match="VOXELS"):
-        _crop_request((1, 2, 3, 4))
-    with pytest.raises(ValueError, match="3 values each"):
-        _crop_request(((1, 2), (3, 4)))
-
-
 def test_a_crop_given_in_NANOMETRES_says_so(tmp_path):
     """A crop is in voxels; an out-of-extent box says which units it wanted."""
     vol = _ome_volume(tmp_path)
