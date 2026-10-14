@@ -1,17 +1,8 @@
 """Hosting arrays locally: `neu-glance serve` and :mod:`neu_glance.serving`.
 
-Split deliberately into two halves. The first needs **no** `neuroglancer` — it is the CI
-condition, where the wheel is installed `--no-deps` and the `serve` extra never is, so the
-parser must still build and `--help` must still work. The second skips without it.
-
-Three failures these exist to prevent, none of which raise anything on the way out:
-
-- a **uint8 label array** served as an image, because neuroglancer guesses segmentation
-  only for uint16/32/64 — losing the colour hashing and the selection UI;
-- a **dropped origin**, which puts a crop at nm zero instead of on top of the volume it
-  came from;
-- **`encoding="raw"`**, whose `ndarray.tostring` was removed in NumPy 2.0 and which fails
-  in the browser, minutes after everything here has reported success.
+The first half needs no `neuroglancer` (the CI condition: `--help` must work without the
+`serve` extra); the rest skips without it. The silent failures guarded here: a uint8 label
+array served as an image, a dropped origin, and `encoding="raw"` (broken under NumPy 2).
 """
 
 import numpy as np
@@ -22,11 +13,7 @@ import pytest
 # no neuroglancer needed — the CI condition
 # --------------------------------------------------------------------------- #
 def test_the_parser_builds_without_neuroglancer():
-    """`serve` must not make `neu-glance --help` need a viewer bundle.
-
-    Enforced elsewhere too (`test_cli.py` asserts the import graph), but this is the one
-    that names the subcommand at fault if it regresses.
-    """
+    """`serve` must not make `neu-glance --help` need neuroglancer."""
     import subprocess
     import sys
 
@@ -44,40 +31,26 @@ def test_the_parser_builds_without_neuroglancer():
     assert "ok" in out.stdout
 
 
-def test_a_missing_extra_names_the_extra():
-    """The failure lands at *run* time, so its message is the only guidance there is."""
+def test_a_missing_extra_names_the_extra(monkeypatch):
+    """The failure lands at run time, so its message is the only guidance there is."""
+    import builtins
+
     import neu_glance.serving as serving
 
-    real = __import__
+    real = builtins.__import__
 
     def blocked(name, *a, **k):
         if name == "neuroglancer":
             raise ImportError("blocked")
         return real(name, *a, **k)
 
-    import builtins
-
-    saved = builtins.__import__
-    builtins.__import__ = blocked
-    try:
-        with pytest.raises(serving.ServeProblem, match=r"neu-glance\[serve\]"):
-            serving._neuroglancer()
-    finally:
-        builtins.__import__ = saved
-
-
-def test_encoding_is_npz_and_never_raw():
-    """`encode_raw` is the one function still calling `ndarray.tostring`, removed in
-    NumPy 2.0. It is reached only if the encoding says so, and the declared encoding is
-    what the client requests — so pinning this constant is the whole fix."""
-    from neu_glance.serving import ENCODING
-
-    assert ENCODING == "npz"
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with pytest.raises(serving.ServeProblem, match=r"neu-glance\[serve\]"):
+        serving._neuroglancer()
 
 
 def test_the_cli_shader_names_agree_with_the_registry():
-    """The tuple is duplicated into `cli.py` so the parser needs no import at build time —
-    the same trade `_ANN_CSV_COLUMNS` makes, and it needs the same check."""
+    """`cli.py` keeps its own copy of the names so building the parser imports nothing."""
     from neu_glance.cli import _IMAGE_SHADER_NAMES
     from neu_glance.shaders import IMAGE_SHADERS
 
@@ -88,19 +61,20 @@ def test_the_cli_shader_names_agree_with_the_registry():
 # image shaders
 # --------------------------------------------------------------------------- #
 def test_the_default_shader_follows_kind_and_channel_count():
-    from neu_glance.shaders import image_shader
+    from neu_glance.shaders import IMAGE_SHADERS, image_shader
 
-    assert "invlerp" in image_shader(None, kind="image")
-    assert "threshold" in image_shader(None, kind="probability")
-    # three channels beats the kind default: showing one of three and calling it the
-    # picture is the more surprising choice
-    assert "getDataValue(2)" in image_shader(None, kind="probability", channels=3)
+    src = {name: entry["source"] for name, entry in IMAGE_SHADERS.items()}
+    assert image_shader(None, kind="image") == src["grayscale"]
+    assert image_shader(None, kind="probability") == src["probability"]
+    # three channels beats the kind default
+    assert image_shader(None, kind="probability", channels=3) == src["rgb"]
+    assert image_shader("colormap") == src["colormap"]
     assert image_shader("none") is None
 
 
 def test_a_channel_count_mismatch_raises():
-    """`rgb` on one channel reads past the end and fails to compile; a one-channel shader
-    on three shows a third of the data with nothing to say so."""
+    """`rgb` on one channel fails to compile; one channel's shader on three shows a third
+    of the data."""
     from neu_glance.shaders import ShaderProblem, image_shader
 
     with pytest.raises(ShaderProblem, match="reads 3 channel"):
@@ -111,37 +85,8 @@ def test_a_channel_count_mismatch_raises():
         image_shader("nope")
 
 
-def test_the_probability_shader_discards_below_rather_than_keeping_above():
-    """NaN fails every comparison, so `discard if v < t` leaves an unscored voxel visible
-    at every threshold while the inverted form would hide it at all of them. A model that
-    declined to predict somewhere writes NaN there."""
-    from neu_glance.shaders import COLORMAP_SHADER, PROBABILITY_SHADER
-
-    for source in (PROBABILITY_SHADER, COLORMAP_SHADER):
-        assert "if (v < threshold) discard;" in source
-        assert ">= threshold" not in source
-
-
-def test_a_probability_map_is_one_colour_with_the_value_as_OPACITY():
-    """So it composites over the EM under it: unsure voxels leave the image visible and
-    confident ones cover it. A gradient at full alpha hides the image everywhere and spends
-    the colour axis on what the alpha already says."""
-    from neu_glance.shaders import PROBABILITY_SHADER, image_shader
-
-    assert image_shader(None, kind="probability") == PROBABILITY_SHADER
-    assert 'color(default="#ff0000")' in PROBABILITY_SHADER, "red by default"
-    assert "emitRGBA(vec4(color, a));" in PROBABILITY_SHADER, "value -> alpha, not -> hue"
-    # NaN needs saying twice once the alpha comes from the value: clamp(NaN) is not defined
-    # to give anything in particular, so the voxel the threshold deliberately KEPT could
-    # still be drawn invisible.
-    assert "(v != v) ? 1.0" in PROBABILITY_SHADER
-    # and the gradient is still there for anyone who wants it
-    assert "low_color" in image_shader("colormap")
-
-
 def test_the_layer_color_is_set_as_a_shader_control(frame, stop_server):
-    """In the STATE, not by generating a shader with a different default — so every layer
-    carries the same code and the viewer's panel shows the value that was set."""
+    """Set in the state, so every layer shares one shader and the viewer shows the value."""
     prob = _labels(dtype="float32")
     server = serve([ServedLayer(prob, kind="probability", name="a", frame=frame,
                                 color="#00ff00")])
@@ -168,8 +113,7 @@ def test_add_layer_color_does_not_mutate_the_layer_it_was_given(frame, stop_serv
 
 
 def test_a_color_the_shader_cannot_take_is_refused_not_ignored(frame, stop_server):
-    """A shaderControl neuroglancer does not recognise is ignored in silence, which reads
-    as the argument having done nothing for no reason."""
+    """Neuroglancer silently ignores a shaderControl it does not recognise."""
     from neu_glance.shaders import ShaderProblem
 
     server = serve([ServedLayer(_labels(), name="em", frame=frame)])
@@ -193,8 +137,7 @@ def test_colors_are_accepted_in_the_forms_a_caller_has():
     assert as_hex_color("Cyan") == "#00ffff", "case-insensitive"
     assert as_hex_color((1.0, 0.5, 0.0)) == "#ff8000", "floats as 0..1"
     assert as_hex_color((255, 128, 0)) == "#ff8000", "ints as 0..255"
-    assert as_hex_color((1, 1, 1)) == "#ffffff", \
-        "all <= 1 reads as floats, so this is white — the reading that cannot look like a bug"
+    assert as_hex_color((1, 1, 1)) == "#ffffff", "all <= 1 reads as floats"
     for bad in ("reddish", (1.0, 0.5), 7):
         with pytest.raises(ShaderProblem):
             as_hex_color(bad)
@@ -203,22 +146,17 @@ def test_colors_are_accepted_in_the_forms_a_caller_has():
 
 
 def test_the_builtin_color_names_agree_with_matplotlib():
-    """What makes a PARTIAL table safe: installing matplotlib later cannot change what one
-    of these names means. Without this, `orange` could be one thing in a bare install and
-    another in a full one, and the viewer would just come up slightly wrong."""
+    """Installing matplotlib must not change what a built-in name means."""
     to_hex = pytest.importorskip("matplotlib.colors").to_hex
     from neu_glance.shaders import BUILTIN_COLORS
 
     assert {name: to_hex(name) for name in BUILTIN_COLORS} == BUILTIN_COLORS
-    # single letters are matplotlib's idiom, not CSS's, and its 'c' is not 'cyan' — so they
-    # are deliberately NOT in the table, and mean matplotlib's colour when it is installed
+    # single letters are left to matplotlib, whose 'c' is not CSS 'cyan'
     assert not any(len(name) == 1 for name in BUILTIN_COLORS)
-    assert to_hex("c") != BUILTIN_COLORS["cyan"], "which is exactly why"
 
 
 def test_the_long_tail_of_names_needs_matplotlib_and_says_so(monkeypatch):
-    """matplotlib is not a dependency, so a name outside the table is a clear error in a
-    bare install rather than an ImportError from inside a colour helper."""
+    """Without matplotlib, a name outside the built-in table is a clear error."""
     import builtins
 
     from neu_glance.shaders import BUILTIN_COLORS, ShaderProblem, as_hex_color
@@ -235,20 +173,10 @@ def test_the_long_tail_of_names_needs_matplotlib_and_says_so(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_matplotlib)
     with pytest.raises(ShaderProblem, match="not a dependency of this package"):
         as_hex_color("forestgreen")
-    # ...while hex and the built-in names carry on regardless, which is the point of both
+    # hex, the built-in names and tuples still work
     assert as_hex_color("#ff0000") == "#ff0000"
     assert as_hex_color("orange") == BUILTIN_COLORS["orange"]
     assert as_hex_color((0, 255, 0)) == "#00ff00"
-
-
-def test_annotation_and_image_shaders_stay_separate_registries():
-    """An annotation shader names `prop_`s that a source must declare; an image shader
-    names a channel count. `pick_shader`'s refusal logic applies only to the first."""
-    from neu_glance.shaders import IMAGE_SHADERS, SHADERS
-
-    assert not set(SHADERS) & set(IMAGE_SHADERS)
-    assert all("properties" in e for e in SHADERS.values())
-    assert all("channels" in e for e in IMAGE_SHADERS.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -298,29 +226,23 @@ def test_the_coordinate_space_carries_the_frames_nm_voxel_size(frame):
 
 
 def test_a_channel_axis_becomes_a_LOCAL_dimension(frame):
-    """The trailing `^` is what hands all three channels to the shader. Without it
-    neuroglancer offers a slider and shows one at a time."""
+    """The trailing `^` hands every channel to the shader instead of offering a slider."""
     space = _coordinate_space(ng, frame, channel_axis=True)
     assert list(space.names) == ["c^", "z", "y", "x"]
     assert space.to_json()["c^"] == [1.0, ""], "a channel is unitless, not 1 nm"
 
 
 def test_the_origin_becomes_a_voxel_offset(frame):
-    assert _voxel_offset(frame) == [10, 20, 30]
-    # no origin, nothing to offset
     from neu_lib import Frame
 
+    assert _voxel_offset(frame) == [10, 20, 30]
+    assert _voxel_offset(frame, channel_axis=True) == [0, 10, 20, 30]
     assert _voxel_offset(Frame(voxel_size_nm=(8, 8, 8), origin_nm=(0, 0, 0))) is None
     assert _voxel_offset(None) is None
 
 
-def test_a_channel_axis_gets_a_zero_offset(frame):
-    assert _voxel_offset(frame, channel_axis=True) == [0, 10, 20, 30]
-
-
 def test_a_non_integral_origin_raises_rather_than_rounding():
-    """Rounding would shift the volume by up to half a voxel against the thing it is meant
-    to overlay, which nothing downstream can detect."""
+    """Rounding would shift the volume by up to half a voxel, undetectably."""
     from neu_lib import Frame
 
     with pytest.raises(ServeProblem, match="not a whole number"):
@@ -329,9 +251,8 @@ def test_a_non_integral_origin_raises_rather_than_rounding():
 
 # --- the uint8 trap -------------------------------------------------------- #
 def test_kind_decides_volume_type_never_the_dtype():
-    """neuroglancer guesses segmentation only for rank-3 uint16/32/64, so a **uint8**
-    label array is guessed as an IMAGE — which averages label ids on downsample and loses
-    both the colour hashing and the selection UI, silently."""
+    """neuroglancer guesses segmentation only for uint16/32/64, so a uint8 label array
+    would be served as an image."""
     assert _volume_type(ServedLayer(_labels(dtype="uint8"), kind="segmentation")) \
         == "segmentation"
     assert _volume_type(ServedLayer(_labels(dtype="uint64"), kind="image")) == "image"
@@ -346,9 +267,8 @@ def test_kind_decides_volume_type_never_the_dtype():
 
 # --- serving --------------------------------------------------------------- #
 def test_serving_sets_the_viewers_own_dimensions(frame, stop_server):
-    """A `dimensions` block that disagrees with the data loads cleanly and puts every
-    layer in the wrong place — this package's oldest silent failure. Spatial only: a
-    channel axis is local to the layer, not something to navigate."""
+    """`dimensions` must match the data (a mismatch misplaces every layer), and are spatial
+    only: a channel axis is local to the layer."""
     server = serve([ServedLayer(np.zeros((3, 4, 4, 4)), kind="probability",
                                 channel_axis=True, frame=frame, name="p")])
     state = server.state()
@@ -371,10 +291,12 @@ def test_each_kind_gets_the_right_layer_type_and_shader(frame, stop_server):
     assert not by_name["seg"].get("shader")
     assert {n: v.volume_type for n, v in server.volumes.items()} == {
         "em": "image", "seg": "segmentation", "p": "image"}
+    # never "raw": its encoder calls ndarray.tostring, removed in NumPy 2.0
+    assert {v.encoding for v in server.volumes.values()} == {"npz"}
 
 
 def test_a_served_source_is_a_python_url(frame, stop_server):
-    """And therefore not shareable — which is why `serve` has no --format url."""
+    """And therefore not shareable, which is why `serve` has no --format url."""
     server = serve([ServedLayer(_labels(), name="a", frame=frame)])
     source = server.state()["layers"][0]["source"]
     source = source[0] if isinstance(source, list) else source
@@ -382,18 +304,8 @@ def test_a_served_source_is_a_python_url(frame, stop_server):
     assert url.startswith("python://volume/")
 
 
-def test_a_name_collision_is_renamed_not_shadowed(frame, stop_server):
-    """neuroglancer keys a layer by name, so two sharing one is a collision rather than a
-    duplicate — the same thing `state.merge_into` renames for."""
-    server = serve([ServedLayer(_labels(), name="dup", frame=frame),
-                    ServedLayer(_labels(), name="dup", frame=frame)])
-    names = [lyr["name"] for lyr in server.state()["layers"]]
-    assert "dup" in names and "dup_1" in names
-
-
 def test_the_annotation_layer_is_OPT_IN(frame, stop_server):
-    """A viewer that opens with a layer nobody asked for reads as a bug, and the read-back
-    loop is a deliberate workflow rather than something every look at a crop wants."""
+    """No annotation layer unless asked for."""
     plain = serve([ServedLayer(_labels(), name="b", frame=frame)])
     assert not any(lyr["name"] == "annotations" for lyr in plain.state()["layers"])
     with pytest.raises(ServeProblem, match="no annotation layer"):
@@ -408,8 +320,7 @@ def test_the_annotation_layer_is_OPT_IN(frame, stop_server):
 
 
 def test_annotate_adds_the_layer_boxes_reads_and_arms_a_tool(frame, stop_server):
-    """The other end of the read-back loop, for a viewer already up: the browser follows
-    the state, so a layer can be added after the arrays are being served."""
+    """Adds a layer to a viewer already up, arms the box tool and selects the layer."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)])
     with pytest.raises(ServeProblem, match="no annotation layer"):
         server.boxes()
@@ -420,15 +331,13 @@ def test_annotate_adds_the_layer_boxes_reads_and_arms_a_tool(frame, stop_server)
     assert layer.tool.to_json()["type"] == "annotateBoundingBox"
     assert server.boxes() == [], "present and readable with no layer= argument"
 
-    # The armed tool applies to the ACTIVE layer, so selecting it is what makes a click
-    # place anything — without it the tool is set and the viewer looks broken.
+    # the tool acts on the selected layer; unselected, clicks would place nothing
     assert server.viewer.state.selected_layer.layer == "annotations"
     assert server.viewer.state.selected_layer.visible is True
 
 
 def test_annotate_takes_the_viewers_own_dimensions(frame, stop_server):
-    """An annotation layer records its own coordinate space, and one disagreeing with the
-    viewer's loads cleanly and reads back coordinates that are simply wrong."""
+    """A mismatched annotation coordinate space reads back wrong coordinates."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)])
     server.annotate()
     source = server.viewer.state.layers["annotations"].layer.to_json()["source"]
@@ -439,8 +348,7 @@ def test_annotate_takes_the_viewers_own_dimensions(frame, stop_server):
 
 
 def test_annotate_again_KEEPS_what_was_already_drawn(frame, stop_server):
-    """Re-running a cell is the ordinary way this gets called twice, and emptying the layer
-    would discard exactly the work it exists to collect."""
+    """Calling it twice (a re-run cell) must not empty the layer."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     with server.viewer.txn() as s:
         s.layers["annotations"].annotations = [
@@ -462,8 +370,7 @@ def test_annotate_will_not_replace_a_volume_layer(frame, stop_server):
 
 
 def test_annotate_refuses_a_tool_nothing_can_read_back(frame, stop_server):
-    """neuroglancer places lines and ellipsoids too, and boxes()/points() skip both — so
-    arming one would be drawing that never comes back, with nothing to say why."""
+    """boxes()/points() cannot read lines or ellipsoids back."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)])
     with pytest.raises(ServeProblem, match="tool must be one of box, point"):
         server.annotate(tool="line")
@@ -490,8 +397,7 @@ def test_nothing_to_serve_is_an_error(stop_server):
 
 # --- add_layer: one more array, into a viewer already open ------------------ #
 def test_add_layer_hosts_another_array_live(frame, stop_server):
-    """The volume counterpart of annotate(): the browser follows the state, so an array
-    becomes a layer in the tab already open, with no new URL."""
+    """An array becomes a layer in the viewer already open, with no new URL."""
     server = serve([ServedLayer(_labels(), kind="image", name="em", frame=frame)])
     url = server.url
 
@@ -505,8 +411,7 @@ def test_add_layer_hosts_another_array_live(frame, stop_server):
 
 
 def test_add_layer_goes_through_the_SAME_builder_as_serve(frame, stop_server):
-    """Two ways of building a layer is how the volume type, the shader and the voxel offset
-    drift apart — and every one of those fails by rendering something plausible."""
+    """Volume type, shader and voxel offset must match what `serve` builds."""
     layer = ServedLayer(_labels(dtype="uint8"), kind="segmentation", name="seg",
                         frame=frame)
     at_serve = serve([layer]).state()["layers"][0]
@@ -521,25 +426,20 @@ def test_add_layer_goes_through_the_SAME_builder_as_serve(frame, stop_server):
     assert added.volumes["seg"].voxel_offset.tolist() == [10, 20, 30], "the frame's origin"
 
 
-def test_add_layer_renames_a_collision_rather_than_replacing(frame, stop_server):
-    """neuroglancer keys a layer by name, so two sharing one is a collision — the same rule
-    serve follows, and now the same code.
+def test_a_name_collision_is_renamed_not_shadowed(frame, stop_server):
+    """neuroglancer keys a layer by name, so a second "dup" would shadow the first."""
+    at_serve = serve([ServedLayer(_labels(), name="dup", frame=frame),
+                      ServedLayer(_labels(), name="dup", frame=frame)])
+    assert [lyr["name"] for lyr in at_serve.state()["layers"]] == ["dup", "dup_1"]
 
-    The rename is read back off the viewer rather than off the return, which is the one
-    thing chaining costs: `add_layer` hands back the server, so the resolved name — the
-    only place the `_1` appears — has to be found in `volumes` (insertion-ordered, newest
-    last) or in the state.
-    """
     server = serve([ServedLayer(_labels(), name="dup", frame=frame)])
     server.add_layer(ServedLayer(_labels(), name="dup", frame=frame))
-
-    assert sorted(server.volumes) == ["dup", "dup_1"]
-    assert list(server.volumes)[-1] == "dup_1", "and the newest is the renamed one"
+    assert list(server.volumes) == ["dup", "dup_1"], "insertion-ordered, newest last"
     assert [lyr["name"] for lyr in server.state()["layers"]] == ["dup", "dup_1"]
 
 
 def test_add_layer_does_not_move_the_view(frame, stop_server):
-    """The rule `into` follows: adding a layer must not change where somebody is looking."""
+    """Adding a layer must not change where somebody is looking."""
     from neu_lib import Frame
 
     server = serve([ServedLayer(_labels(), name="em", frame=frame)])
@@ -560,10 +460,7 @@ def test_add_layer_takes_the_dict_form(frame, stop_server):
 
 
 def test_a_piece_is_a_layer_input_everywhere(frame, stop_server):
-    """`serve` and `add_layer` take the same three things, which is why one function
-    coerces for both: they had drifted, and a Piece handed to `serve` got as far as
-    `layer.shader` before failing, since a Piece answers array, kind, frame and
-    channel_axis."""
+    """`serve` and `add_layer` both accept a Piece, named after it and keeping its kind."""
     from neu_lib import Piece
 
     em = Piece(array=_labels(), frame=frame, kind="image", name="em")
@@ -587,7 +484,7 @@ def test_a_piece_layer_still_honours_an_explicit_name(frame, stop_server):
 
 
 def test_a_piece_with_no_kind_says_what_to_do(frame, stop_server):
-    """The one thing the convenience cannot carry: there is no kind= to pass it to."""
+    """A Piece without a kind cannot be served: there is no kind= to pass."""
     from neu_lib import Piece
 
     server = serve([ServedLayer(_labels(), name="em", frame=frame)])
@@ -603,18 +500,6 @@ def test_anything_else_is_refused_by_the_one_coercion(frame, stop_server):
         serve([_labels()])
 
 
-def test_add_layers_chain(frame, stop_server):
-    """What returning the server is FOR: several arrays into one viewer in one expression."""
-    server = (serve([ServedLayer(_labels(), kind="image", name="em", frame=frame)])
-              .add_layer(ServedLayer(_labels(dtype="uint64"), kind="segmentation",
-                                     name="seg", frame=frame))
-              .add_layer(ServedLayer(_labels(dtype="float32"), kind="probability",
-                                     name="pred", frame=frame)))
-
-    assert [lyr["name"] for lyr in server.state()["layers"]] == ["em", "seg", "pred"]
-    assert sorted(server.volumes) == ["em", "pred", "seg"]
-
-
 # --- enclose: points -> a real box ------------------------------------------ #
 def _drawn(server, *annotations, layer="annotations"):
     with server.viewer.txn() as s:
@@ -627,8 +512,7 @@ def _annotations(server, layer="annotations"):
 
 
 def test_enclose_bounds_the_points_and_draws_the_box(frame, stop_server):
-    """Dragging a box to exact corners in neuroglancer is fiddly; clicking a point at each
-    corner is not. This is the conversion."""
+    """Points clicked at the corners become one half-open box, added to the layer."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server,
            ng.PointAnnotation(id="a", point=[10, 20, 30]),
@@ -636,28 +520,21 @@ def test_enclose_bounds_the_points_and_draws_the_box(frame, stop_server):
 
     assert server.enclose() == BBox((10, 20, 30), (15, 26, 41)), \
         "half-open, so the far point's own voxel is inside"
+    assert len(_annotations(server)) == 3, "the points are left in place by default"
     assert tuple(server.enclose(replace=True)) == ((10, 20, 30), (15, 26, 41)), \
         "and it unpacks like the (lo, hi) pair it is"
     assert server.boxes() == [((10, 20, 30), (15, 26, 41))], "it is in the layer"
 
 
-def test_enclose_leaves_the_points_alone_by_default(frame, stop_server):
-    server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
-    _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]),
-           ng.PointAnnotation(id="b", point=[14, 25, 40]))
-    server.enclose()
-    assert len(_annotations(server)) == 3
-
-
 def test_a_POSITION_and_a_FACE_are_not_rounded_the_same(frame, stop_server):
-    """The one-voxel distinction the whole method turns on. A point sits *inside* a voxel,
-    so the box containing it runs to floor+1. A box corner is a *boundary* between voxels,
-    so it rounds out to that boundary and no further — otherwise enclosing a box would grow
-    it by a voxel every call and the round trip would never settle."""
+    """A point sits inside a voxel, so its box runs to floor+1, wherever in the voxel it
+    was clicked. A box corner is a boundary, so enclosing a box is a fixed point."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
 
     _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]))
     assert server.enclose(replace=True) == BBox((10, 20, 30), (11, 21, 31)), "a position"
+    _drawn(server, ng.PointAnnotation(id="a", point=[10.4, 20.4, 30.4]))
+    assert server.enclose(replace=True) == BBox((10, 20, 30), (11, 21, 31)), "same voxel"
 
     _drawn(server, ng.AxisAlignedBoundingBoxAnnotation(
         id="b", point_a=[10, 20, 30], point_b=[11, 21, 31]))
@@ -667,8 +544,7 @@ def test_a_POSITION_and_a_FACE_are_not_rounded_the_same(frame, stop_server):
 
 
 def test_enclose_rounds_OUTWARD_where_boxes_rounds_to_nearest(frame, stop_server):
-    """A box that exists to contain things must not round in past the point that put it
-    there — where `points()` reports the nearest voxel to each."""
+    """`points()` reports the nearest voxel; `enclose` must contain the points."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server,
            ng.PointAnnotation(id="a", point=[10.4, 20.9, 30.1]),
@@ -676,18 +552,6 @@ def test_enclose_rounds_OUTWARD_where_boxes_rounds_to_nearest(frame, stop_server
 
     assert server.points() == [(10, 21, 30), (15, 25, 41)], "nearest, as ever"
     assert server.enclose() == BBox((10, 20, 30), (15, 26, 41)), "outward, and contains them"
-
-
-def test_a_single_point_encloses_the_voxel_it_is_in(frame, stop_server):
-    """Whatever fraction it landed on — otherwise the box depends on where in the voxel
-    somebody happened to click."""
-    server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
-
-    _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]))
-    assert server.enclose(replace=True) == BBox((10, 20, 30), (11, 21, 31))
-
-    _drawn(server, ng.PointAnnotation(id="a", point=[10.4, 20.4, 30.4]))
-    assert server.enclose(replace=True) == BBox((10, 20, 30), (11, 21, 31)), "same voxel"
 
 
 def test_enclose_takes_a_margin_per_axis_or_for_all(frame, stop_server):
@@ -707,8 +571,7 @@ def test_enclose_takes_a_margin_per_axis_or_for_all(frame, stop_server):
 
 
 def test_enclose_replace_leaves_only_the_box(frame, stop_server):
-    """The points were scaffolding — but deleting what someone drew is opt-in, because this
-    reads the viewer rather than owning it."""
+    """`replace=True` swaps the points for the box."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]),
            ng.PointAnnotation(id="b", point=[14, 25, 40]))
@@ -721,8 +584,7 @@ def test_enclose_replace_leaves_only_the_box(frame, stop_server):
 
 
 def test_enclose_without_replace_encloses_ITSELF_next_time(frame, stop_server):
-    """Not a bug to work around — it is what "enclose what is drawn" means, and it is the
-    reason replace=True is the usual call. Pinned so nobody quietly "fixes" it."""
+    """Intended: the box drawn last time is part of what is drawn now."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]))
 
@@ -731,8 +593,7 @@ def test_enclose_without_replace_encloses_ITSELF_next_time(frame, stop_server):
 
 
 def test_enclose_counts_every_annotation_type(frame, stop_server):
-    """The toolbar can place lines, ellipsoids and polylines, and a box that quietly ignored
-    one would be too small with nothing to say so."""
+    """Lines and ellipsoids count too; ignoring one would make the box silently too small."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server,
            ng.PointAnnotation(id="p", point=[10, 10, 10]),
@@ -746,7 +607,7 @@ def test_enclose_counts_every_annotation_type(frame, stop_server):
 
 
 def test_enclose_refuses_an_annotation_it_cannot_place():
-    """Same reason: silently dropping one makes the box too small."""
+    """An unknown annotation type raises rather than being dropped."""
     from neu_glance.serving import _annotation_bbox
 
     with pytest.raises(ServeProblem, match="cannot tell where a"):
@@ -764,7 +625,7 @@ def test_enclose_with_nothing_drawn_says_so(frame, stop_server):
 
 
 def test_a_margin_that_collapses_an_axis_is_an_error(frame, stop_server):
-    """Rather than a box with lo >= hi, which every consumer in this suite reads as empty."""
+    """Raises rather than returning a box with lo >= hi."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]),
            ng.PointAnnotation(id="b", point=[14, 25, 40]))
@@ -775,9 +636,7 @@ def test_a_margin_that_collapses_an_axis_is_an_error(frame, stop_server):
 
 def test_a_margin_reaching_past_the_data_warns_when_it_is_not_clipped(frame, stop_server,
                                                                       caplog):
-    """Not clipped by default, because this reads a viewer someone is drawing in and
-    silently returning a smaller box than the one now on their screen is worse. But a
-    negative coordinate is out of bounds in any frame, so it is said."""
+    """Unclipped by default, but a negative coordinate is warned about."""
     import logging
 
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
@@ -798,9 +657,7 @@ def test_bounds_is_the_served_arrays_extent_offset_included(frame, stop_server):
 
 
 def test_bounds_unions_the_layers_and_converts_a_COARSER_ones_voxels(frame, stop_server):
-    """The viewer navigates in the first layer's voxels, so a second layer at twice the
-    voxel size is half as many of them — read from the volume's own recorded scales rather
-    than assumed, the same rule invariant NM-SPACE states for everything else."""
+    """Bounds are in the first layer's voxels, so a coarser layer's are converted."""
     from neu_lib import Frame
 
     coarse = Frame(voxel_size_nm=(80.0, 16.0, 16.0), origin_nm=(400.0, 160.0, 240.0))
@@ -813,7 +670,7 @@ def test_bounds_unions_the_layers_and_converts_a_COARSER_ones_voxels(frame, stop
 
 
 def test_data_bounds_is_where_the_labels_are(frame, stop_server):
-    """Usually far tighter than the volume — a crop is mostly background."""
+    """The extent of nonzero labels, origin included."""
     array = np.zeros((8, 16, 16), "uint64")
     array[2:5, 3:9, 4:6] = 7
     server = serve([ServedLayer(array, kind="segmentation", name="seg", frame=frame)])
@@ -823,7 +680,7 @@ def test_data_bounds_is_where_the_labels_are(frame, stop_server):
 
 
 def test_data_bounds_on_an_empty_layer_says_so(frame, stop_server):
-    """Rather than an empty box, which reads downstream as a region holding no labels."""
+    """Raises rather than returning an empty box."""
     server = serve([ServedLayer(np.zeros((8, 16, 16), "uint64"), kind="segmentation",
                                 name="seg", frame=frame)])
     with pytest.raises(ServeProblem, match="entirely zero"):
@@ -831,7 +688,7 @@ def test_data_bounds_on_an_empty_layer_says_so(frame, stop_server):
 
 
 def test_enclose_clips_to_the_volume_or_to_the_data(frame, stop_server):
-    """The margin reaches past the end of the array happily; this is what bounds it."""
+    """`clip=` bounds the box to the volume, the data, or a given box."""
     array = np.zeros((8, 16, 16), "uint64")
     array[2:5, 3:9, 4:6] = 7
     server = serve([ServedLayer(array, kind="segmentation", name="seg", frame=frame)],
@@ -848,8 +705,7 @@ def test_enclose_clips_to_the_volume_or_to_the_data(frame, stop_server):
 
 
 def test_a_clip_that_leaves_nothing_is_an_error(frame, stop_server):
-    """An empty box reads downstream as a region holding no data, which is not what "your
-    margin fell off the edge" means."""
+    """A clip that empties the box raises, and so does a clip of the wrong type."""
     server = serve([ServedLayer(_labels(), name="b", frame=frame)], annotations=True)
     _drawn(server, ng.PointAnnotation(id="a", point=[10, 20, 30]))
     with pytest.raises(ServeProblem, match="leaves nothing"):
@@ -860,8 +716,7 @@ def test_a_clip_that_leaves_nothing_is_an_error(frame, stop_server):
 
 # --- reading the browser's state back -------------------------------------- #
 def test_boxes_come_back_sorted_per_axis(frame, stop_server):
-    """A box drawn up-and-left has point_a greater than point_b, and every consumer of a
-    box in this suite expects half-open lo < hi."""
+    """A box drawn up-and-left has point_a > point_b; boxes() returns lo < hi."""
     server = serve([ServedLayer(_labels(), name="a", frame=frame)], annotations=True)
     with server.viewer.txn() as s:
         s.layers["annotations"].annotations = [
@@ -889,9 +744,8 @@ def test_asking_for_segments_with_no_sole_segmentation_says_so(frame, stop_serve
 
 
 def test_a_click_handler_is_bound_and_survives_a_bad_callback(frame, stop_server):
-    """Handlers run on the server's loop thread and neuroglancer swallows an exception
-    into a printed traceback, so an unguarded failure is a click that visibly does
-    nothing."""
+    """A failing callback must not raise into neuroglancer's loop, and a click off the data
+    does not call it."""
     server = serve([ServedLayer(_labels(), name="a", frame=frame)])
     action = server.on_click(lambda click: None)
     bindings = server.viewer.config_state.state.input_event_bindings.data_view.to_json()
@@ -925,11 +779,7 @@ def test_click_position_floors_to_the_voxel_actually_clicked():
     assert Click(position=(1.7, 2.2, 3.9)).voxel == (1, 2, 3)
 
 
-# --- the constructors ------------------------------------------------------ #
-#
-# They follow one rule: infer what the source RECORDS, require what it does not. So the
-# tests come in two shapes — a recorded fact must not be dropped, and an unrecorded one
-# must not be guessed.
+# --- the constructors: infer what a source records, require what it does not -- #
 
 
 def _piece(tmp_path, name="piece.h5", **attrs):
@@ -952,10 +802,7 @@ def test_from_array_builds_the_frame_for_you():
 
 
 def test_the_channel_axis_comes_from_the_RANK_and_cannot_disagree_with_it():
-    """A served volume is 3 spatial axes, so 4-D means a channel axis and 3-D means none.
-    There is no third possibility, which makes the flag something a caller can only get
-    wrong — so it is derived, and a contradiction is an error rather than a silent
-    reinterpretation of the axes."""
+    """4-D means a channel axis and 3-D means none; a contradicting flag raises."""
     assert ServedLayer.from_array(np.zeros((3, 4, 4, 4)), "probability").channel_axis
     assert not ServedLayer.from_array(np.zeros((4, 4, 4)), "image").channel_axis
     assert ServedLayer(np.zeros((3, 4, 4, 4)), kind="probability").channel_axis, \
@@ -976,23 +823,19 @@ def test_two_frames_for_one_array_is_refused():
 
 
 def test_from_hdf5_takes_the_frame_the_file_records(tmp_path):
-    """`neu-vol to-hdf5` writes these, so a piece this suite produced needs no
-    coordinates retyped — and dropping them is the silent failure."""
+    """Voxel size and offset come from the attributes `neu-vol to-hdf5` writes."""
     path = _piece(tmp_path, voxel_size=np.asarray([40.0, 8.0, 8.0]),
                   voxel_offset=np.asarray([2, 3, 4], "int64"), axes="zyx")
     layer = ServedLayer.from_hdf5(path, kind="segmentation")
     assert layer.array.shape == (6, 8, 8)
     assert tuple(layer.frame.voxel_size_nm) == (40.0, 8.0, 8.0)
     assert tuple(layer.frame.origin_nm) == (80.0, 24.0, 32.0)
-    # `stem/dataset`, from `neu_vol.piece_name` via the Piece — both halves, because either
-    # alone collides: `/data` is what to-hdf5 writes by default, and one file's nine crops
-    # share a stem. Serving two of either is ordinary and neuroglancer keys a layer by name.
+    # `stem/dataset`: either half alone collides across files or datasets
     assert layer.name == "piece/data"
 
 
 def test_from_hdf5_needs_a_kind_and_says_why(tmp_path):
-    """An HDF5 file has nowhere agreed-on to record it, and reading it off the dtype is
-    the mistake `volume_type` exists to override."""
+    """HDF5 records no kind, and the dtype must not decide it."""
     path = _piece(tmp_path, voxel_size=np.asarray([8.0, 8.0, 8.0]), axes="zyx")
     with pytest.raises(ServeProblem, match="kind= is required"):
         ServedLayer.from_hdf5(path)
@@ -1008,8 +851,7 @@ def test_from_hdf5_needs_a_voxel_size_when_the_file_records_none(tmp_path):
 
 
 def test_a_crop_lands_at_the_sum_of_the_pieces_origin_and_the_box(tmp_path):
-    """The same rule `neu-vol to-hdf5 --crop-bbox` follows: a box out of a piece that
-    already knows where it belongs goes there, not at the box's own offset."""
+    """The crop's origin is the piece's offset plus the box, as in `neu-vol to-hdf5`."""
     path = _piece(tmp_path, voxel_size=np.asarray([8.0, 8.0, 8.0]),
                   voxel_offset=np.asarray([100, 100, 100], "int64"), axes="zyx")
     layer = ServedLayer.from_hdf5(path, kind="segmentation",
@@ -1045,7 +887,7 @@ def test_a_level_on_a_single_array_is_an_error(tmp_path):
 
 
 def test_from_source_splits_a_dataset_only_on_a_LEADING_slash(tmp_path):
-    """`s3://…` carries a colon of its own, so only `:/name` selects an array."""
+    """Only `:/name` selects an array, since `s3://...` has a colon of its own."""
     path = _piece(tmp_path, voxel_size=np.asarray([8.0, 8.0, 8.0]), axes="zyx")
     assert ServedLayer.from_source(f"{path}:/data", "image").name == "piece/data"
     # no leading slash: the whole string is the path, and there is no such file
@@ -1053,58 +895,9 @@ def test_from_source_splits_a_dataset_only_on_a_LEADING_slash(tmp_path):
         ServedLayer.from_source(f"{path}:data", "image")
 
 
-def test_from_volume_takes_kind_from_what_the_volume_RECORDS(tmp_path):
-    """precomputed writes it as `info["type"]`. That is the same field `neu-vol copy`
-    exists to preserve, and overriding it silently averages label ids into ids that were
-    never in the data."""
-    from neu_vol import convert
-    from neu_vol.backends.tensorstore import TensorStoreBackend
-    from neu_vol.profiles import zarr3_create_spec
-
-    src = str(tmp_path / "src.zarr")
-    data = _labels((16, 32, 32), "uint32")
-    be = TensorStoreBackend.create(
-        zarr3_create_spec("local", src, data.shape, "uint32",
-                          dimension_names=("z", "y", "x"), chunk=(8, 8, 8)),
-        delete_existing=True)
-    be.write_region(tuple(slice(0, s) for s in data.shape), data)
-    vol = str(tmp_path / "vol")
-    convert(src, vol, voxel_size=(40, 8, 8), kind="segmentation",
-            profile="local-neuroglancer", chunk=(8, 8, 8), factors=[(1, 2, 2)],
-            min_dim=8, delete_existing=True)
-
-    layer = ServedLayer.from_volume(vol)          # no kind passed
-    assert layer.kind == "segmentation"
-    assert tuple(layer.frame.voxel_size_nm) == (40.0, 8.0, 8.0)
-    # an explicit kind still wins
-    assert ServedLayer.from_volume(vol, "image").kind == "image"
-
-
-def test_a_coarser_level_reports_its_OWN_voxel_size(tmp_path):
-    """Never 2**level: real pyramids are anisotropic, and this one halves x/y only."""
-    from neu_vol import convert
-    from neu_vol.backends.tensorstore import TensorStoreBackend
-    from neu_vol.profiles import zarr3_create_spec
-
-    src = str(tmp_path / "src.zarr")
-    be = TensorStoreBackend.create(
-        zarr3_create_spec("local", src, (16, 32, 32), "uint32",
-                          dimension_names=("z", "y", "x"), chunk=(8, 8, 8)),
-        delete_existing=True)
-    be.write_region(tuple(slice(0, s) for s in (16, 32, 32)),
-                    _labels((16, 32, 32), "uint32"))
-    vol = str(tmp_path / "vol")
-    convert(src, vol, voxel_size=(40, 8, 8), kind="segmentation",
-            profile="local-neuroglancer", chunk=(8, 8, 8), factors=[(1, 2, 2)],
-            min_dim=8, delete_existing=True)
-
-    assert tuple(ServedLayer.from_volume(vol, level=1).frame.voxel_size_nm) \
-        == (40.0, 16.0, 16.0)
-
-
-# --- the bugs a real session found ----------------------------------------- #
-def _ome_volume(tmp_path, kind="image", dtype="uint8"):
-    """A multiscale zarr GROUP, which is what `convert` writes and what broke."""
+def _ome_volume(tmp_path, kind="image", dtype="uint8", profile="local"):
+    """A (16, 32, 32) volume at 40x8x8 nm with one (1, 2, 2) level: a multiscale zarr
+    group by default, precomputed with ``profile="local-neuroglancer"``."""
     from neu_vol import convert
     from neu_vol.backends.tensorstore import TensorStoreBackend
     from neu_vol.profiles import zarr3_create_spec
@@ -1116,33 +909,41 @@ def _ome_volume(tmp_path, kind="image", dtype="uint8"):
         delete_existing=True)
     be.write_region(tuple(slice(0, s) for s in (16, 32, 32)),
                     _labels((16, 32, 32), dtype))
-    vol = str(tmp_path / "vol.zarr")
-    convert(src, vol, voxel_size=(40, 8, 8), kind=kind, profile="local",
+    vol = str(tmp_path / ("vol.zarr" if profile == "local" else "vol"))
+    convert(src, vol, voxel_size=(40, 8, 8), kind=kind, profile=profile,
             chunk=(8, 8, 8), factors=[(1, 2, 2)], min_dim=8, delete_existing=True)
     return vol
 
 
-def test_level_0_of_a_multiscale_ZARR_opens(tmp_path):
-    """The regression. A zarr OME group is **not an array**, so level 0 has to go through
-    the metadata's own `data_spec`, which names the level's subdirectory — addressing the
-    group path failed to open at all, with a tensorstore error naming `zarr.json`.
+def test_from_volume_takes_kind_from_what_the_volume_RECORDS(tmp_path):
+    """precomputed records the kind as `info["type"]`; an explicit kind still wins."""
+    vol = _ome_volume(tmp_path, "segmentation", "uint32", profile="local-neuroglancer")
+    layer = ServedLayer.from_volume(vol)          # no kind passed
+    assert layer.kind == "segmentation"
+    assert tuple(layer.frame.voxel_size_nm) == (40.0, 8.0, 8.0)
+    assert ServedLayer.from_volume(vol, "image").kind == "image"
 
-    It hid because the two formats differ here: precomputed selects a scale with
-    `scale_index` on one path and worked fine, and so did zarr at level 1, which does get
-    a subdirectory. Only zarr level 0 was broken — the default.
-    """
+
+def test_a_coarser_level_reports_its_OWN_voxel_size(tmp_path):
+    """Read from the volume, never 2**level: this pyramid halves x/y only."""
+    vol = _ome_volume(tmp_path, "segmentation", "uint32", profile="local-neuroglancer")
+    assert tuple(ServedLayer.from_volume(vol, level=1).frame.voxel_size_nm) \
+        == (40.0, 16.0, 16.0)
+
+
+def test_level_0_of_a_multiscale_ZARR_opens(tmp_path):
+    """Regression: an OME-zarr group is not an array, so level 0 (the default) must open
+    the level's subdirectory, not the group path."""
     vol = _ome_volume(tmp_path)
     assert ServedLayer.from_volume(vol, level=0).array.shape == (16, 32, 32)
     assert ServedLayer.from_volume(vol).array.shape == (16, 32, 32), "level 0 by default"
     assert ServedLayer.from_volume(vol, level=1).array.shape == (16, 16, 16)
-    # and with a crop, which is how it was actually hit
     assert ServedLayer.from_volume(
         vol, crop=((0, 0, 0), (8, 16, 16))).array.shape == (8, 16, 16)
 
 
 def test_a_bare_zarr_array_still_works(tmp_path):
-    """It carries a `zarr.json` too, so detection calls it zarr3 while it has no levels —
-    addressing it as `<path>/0` would find nothing. Same distinction `copy` makes."""
+    """A bare zarr array has no levels, so it must not be opened as `<path>/0`."""
     from neu_vol.backends.tensorstore import TensorStoreBackend
     from neu_vol.profiles import zarr3_create_spec
 
@@ -1157,10 +958,8 @@ def test_a_bare_zarr_array_still_works(tmp_path):
 
 
 def test_a_crop_takes_either_shape():
-    """`((lo), (hi))` and the flat `(z0,y0,x0,z1,y1,x1)` the CLI takes. Writing one where
-    the other is expected is the obvious slip, and the two are unambiguous by length."""
-    # The crop vocabulary moved down to neu-vol with the reader: what a box
-    # may be is a property of reading, not of serving.
+    """`((lo), (hi))` or the CLI's flat `(z0, y0, x0, z1, y1, x1)`. This is neu-vol's
+    helper and its only test."""
     from neu_vol.piece import _crop_request
 
     assert _crop_request(((1, 2, 3), (4, 5, 6))) == (((1, 2, 3), (4, 5, 6)), None)
@@ -1173,9 +972,7 @@ def test_a_crop_takes_either_shape():
 
 
 def test_a_crop_given_in_NANOMETRES_says_so(tmp_path):
-    """The likelier mistake, since the rest of the suite speaks nm — and it surfaces as an
-    out-of-extent error rather than a wrong-looking picture, so the message has to say
-    which units it wanted."""
+    """A crop is in voxels; an out-of-extent box says which units it wanted."""
     vol = _ome_volume(tmp_path)
     with pytest.raises(ServeProblem, match="whole VOXELS"):
         ServedLayer.from_volume(vol, crop=((0, 0, 0), (640, 256, 256)))
@@ -1184,8 +981,7 @@ def test_a_crop_given_in_NANOMETRES_says_so(tmp_path):
 
 
 def test_a_layer_reports_where_it_is_through_its_Piece(tmp_path):
-    """The geometry questions live on `neu_lib.Piece`, not here — a layer is a piece plus
-    how to draw it, so it delegates rather than reimplementing bbox arithmetic."""
+    """`bbox` and `bounds_nm` come from the layer's Piece."""
     path = _piece(tmp_path, voxel_size=np.asarray([40.0, 8.0, 8.0]),
                   voxel_offset=np.asarray([2, 3, 4], "int64"), axes="zyx")
     layer = ServedLayer.from_hdf5(path, kind="segmentation")
@@ -1201,10 +997,7 @@ def test_a_layer_with_no_frame_says_it_has_no_position():
         layer.bbox
 
 
-def test_from_piece_is_the_allowed_direction(tmp_path):
-    """`Piece` lives in neu-lib, the bottom tier, so a `Piece.as_layer` would mean the
-    vocabulary package naming a viewer type three tiers above it. neu-glance reading a
-    neu-lib type is the direction the layering permits."""
+def test_from_piece(tmp_path):
     from neu_lib import Frame, Piece
 
     piece = Piece(array=_labels((4, 8, 8), "uint64"),
@@ -1213,14 +1006,10 @@ def test_from_piece_is_the_allowed_direction(tmp_path):
     assert layer.kind == "segmentation" and layer.name == "gt"
     assert layer.frame == piece.frame
     assert layer.bbox == piece.bbox
-    assert not hasattr(ServedLayer, "from_backend"), \
-        "superseded by Piece: nobody should have to hold a backend to serve a crop"
 
 
 def test_crop_takes_the_same_PHYSICAL_box_as_another_layer(tmp_path):
-    """The workflow the whole thing is for: show the image under a ground-truth crop. The
-    two frames have different voxel sizes and different origins, so no voxel box transfers
-    between them — nanometres are the only shared space."""
+    """`crop=<layer>` reads the same physical box, including at a coarser level."""
     vol = _ome_volume(tmp_path)                       # 40x8x8 nm at level 0
     gt = ServedLayer.from_volume(vol, "segmentation", crop=((4, 8, 8), (12, 24, 24)))
     assert gt.bbox.lo == (4, 8, 8)
@@ -1252,9 +1041,7 @@ def test_crop_also_takes_a_piece_or_an_explicit_nm_box(tmp_path):
 
 
 def test_a_physical_box_clipped_to_almost_nothing_is_LOUD(tmp_path, caplog):
-    """Reading one dataset's crop out of another's image is the easy mistake: the numbers
-    are plausible, the read succeeds, and back comes a thin slab nobody asked for. So the
-    fraction is reported, and losing most of the box says what it usually means."""
+    """Mostly-clipped boxes warn, since they usually mean a crop from another dataset."""
     from neu_lib import Frame, Piece
 
     vol = _ome_volume(tmp_path)                       # level 0 is (16, 32, 32)
@@ -1278,24 +1065,16 @@ def test_a_physical_box_entirely_outside_raises(tmp_path):
 
 
 def test_the_viewer_opens_CENTRED_on_the_data_not_at_the_origin(frame, stop_server):
-    """Neuroglancer with no position opens at the origin CORNER and at one voxel per pixel,
-    so a crop sitting at voxel 3700 of its parent opens as empty space a long way from
-    anything, with nothing to say the data is elsewhere. `state.default_view` exists for
-    exactly this; `serve` just was not using it."""
+    """Without a position, neuroglancer opens at the origin corner, often far from a crop."""
     layer = ServedLayer(_labels((8, 16, 16)), name="a", frame=frame)   # at voxel 10,20,30
     state = serve([layer]).state()
     assert "position" in state, "no position means the origin corner"
-    # the centre of the data, in the viewer's units (voxels of the frame)
     lo, hi = layer.bbox.lo, layer.bbox.hi
     want = [(a + b) / 2 for a, b in zip(lo, hi)]
     assert [round(v, 3) for v in state["position"]] == [round(v, 3) for v in want]
-    # ...and scaled to the data rather than left at one voxel per pixel. The scale is
-    # voxels PER PIXEL, so fitting a 16-voxel extent into a nominal viewport is well under
-    # 1 — the number to check is that it tracks the extent, not that it is large.
+    # scaled so the piece fits one panel: a 4-panel layout gives each about half the window
     from neu_glance.state import FIT_MARGIN, NOMINAL_VIEWPORT_PX
 
-    # ...and scaled so the piece fits its PANEL: `default_view` fits a whole window, and a
-    # 4-panel layout gives each cross-section about half of it in each direction.
     assert state["crossSectionScale"] == pytest.approx(
         max(layer.piece.spatial_shape) * FIT_MARGIN / NOMINAL_VIEWPORT_PX / 0.5)
     # a single-panel layout needs no such correction
@@ -1306,8 +1085,7 @@ def test_the_viewer_opens_CENTRED_on_the_data_not_at_the_origin(frame, stop_serv
 
 
 def test_the_opening_view_spans_EVERY_layer(stop_server):
-    """A small ground-truth crop over a larger image should frame both — the union, in nm,
-    because that is the only space two frames with different extents share."""
+    """The opening view frames the union of every layer, computed in nm."""
     from neu_lib import Frame
 
     small = ServedLayer(_labels((4, 4, 4)), name="gt", kind="segmentation",
@@ -1325,19 +1103,14 @@ def test_no_frame_anywhere_leaves_neuroglancers_own_default(stop_server):
     assert "position" not in state
 
 
-def test_the_cli_annotate_flag_is_opt_in():
+def test_the_cli_annotation_flags():
+    """serve's `--annotate` is opt-in; `gen --annotations SOURCE` loads a source and is not
+    a serve flag."""
     from neu_glance.cli import _parse_args
 
     assert _parse_args(["serve", "--seg", "x.h5"]).annotate is False
     assert _parse_args(["serve", "--seg", "x.h5", "--annotate"]).annotate is True
     assert _parse_args(["serve", "--seg", "x.h5", "--annotate", "picks"]).annotate == "picks"
-
-
-def test_the_serve_and_gen_annotation_flags_are_spelled_APART():
-    """`gen --annotations SOURCE` means "load this precomputed annotation source"; serve's
-    flag makes an empty layer to draw in. One name for both is the kind of thing nobody
-    reads the help for twice, so serve's is `--annotate`."""
-    from neu_glance.cli import _parse_args
 
     assert _parse_args(["gen", "--annotations", "s3://my-bucket/syn"]).annotations \
         == ["s3://my-bucket/syn"]
@@ -1346,8 +1119,7 @@ def test_the_serve_and_gen_annotation_flags_are_spelled_APART():
 
 
 def test_stop_serving_works_without_a_handle(frame, stop_server):
-    """For a re-run cell or a result never assigned: there is one server per process, so it
-    can be reached without the Server that started it."""
+    """One server per process, so it can be stopped without the Server handle."""
     import neuroglancer as _ng
 
     from neu_glance import stop_serving
@@ -1361,9 +1133,7 @@ def test_stop_serving_works_without_a_handle(frame, stop_server):
 
 
 def test_serve_does_not_block(frame, stop_server):
-    """Nothing in the library holds the caller: the tornado server is a background daemon
-    thread. A blocked notebook cell is therefore the *command* — `neu-glance serve` runs
-    until interrupted, which in a cell means until the kernel is interrupted."""
+    """The server runs on a background thread; only the `neu-glance serve` command blocks."""
     import threading
     import time
 

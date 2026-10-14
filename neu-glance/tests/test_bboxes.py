@@ -1,12 +1,10 @@
-"""`neu-glance bboxes`: a layer from where a sparse volume's data actually is.
+"""`neu-glance bboxes`: a layer of boxes around a sparse volume's data.
 
-The occupancy analysis itself lives in neu-vol and is tested there; what these check
-is the turn from boxes into a layer. The weight is on the zyx/xyz flip, because getting it
-wrong mirrors every annotation through the z=x diagonal and still produces a layer that loads.
+Occupancy itself is neu-vol's and tested there; these check the layer, above all the
+zyx -> xyz flip.
 """
 
 import json
-import os
 
 import numpy as np
 import pytest
@@ -20,11 +18,7 @@ from neu_glance.layers import boxes_layer, output_dimensions, render
 
 
 def _sparse(tmp_path, name, *, profile, chunk=(8, 8, 8)):
-    """A real two-level volume, 32^3, holding two separated 8^3 labeled blocks.
-
-    Built through `convert` so the levels, `info`/`zarr.json` and the elision of all-fill
-    chunks are the production ones — occupancy here means what it means in a real run.
-    """
+    """A two-level 32^3 volume with two separate labelled 8^3 blocks, built by `convert`."""
     seg = np.zeros((32, 32, 32), np.uint64)
     seg[0:8, 0:8, 0:8] = 3                       # cell (0,0,0)
     seg[16:24, 24:32, 8:16] = 4                  # cell (2,3,1)
@@ -45,7 +39,7 @@ def _sparse(tmp_path, name, *, profile, chunk=(8, 8, 8)):
 # the JSON
 # --------------------------------------------------------------------------- #
 def test_layer_coordinates_are_flipped_to_xyz():
-    """zyx in memory, xyz on the wire. Reversed, every box is mirrored."""
+    """zyx in memory, xyz in the layer."""
     regions = [{"lo": (1, 2, 3), "hi": (4, 5, 6), "n_labels": 7}]
     layer = boxes_layer(regions, {d: [8e-9, "m"] for d in "xyz"})
     ann = layer["annotations"][0]
@@ -61,8 +55,7 @@ def test_points_sit_at_the_centre():
 
 
 def test_layer_declares_its_own_dimensions():
-    """So the layer can be pasted into any state of the volume, whatever the viewer is
-    displaying in — the coordinates are read in the layer's frame, not the global one."""
+    """The layer carries its own dimensions, so it pastes into any state of the volume."""
     layer = boxes_layer([], {"x": [8e-9, "m"]})
     assert layer["source"]["url"] == "local://annotations"
     assert layer["source"]["transform"]["outputDimensions"] == {"x": [8e-9, "m"]}
@@ -77,8 +70,7 @@ def test_voxel_size_becomes_metres():
 
 @pytest.mark.parametrize("units", [None, "furlong"])
 def test_unusable_units_warn_instead_of_inventing_a_scale(units):
-    """A wrong scale would place the boxes somewhere plausible and wrong; unitless at
-    least fails visibly, and the warning names the flag that fixes it."""
+    """Unusable units give a unitless layer and a warning naming `--voxel-size`."""
     voxel = None if units is None else (8.0, 8.0, 8.0)
     dims, warning = output_dimensions(voxel, units)
     assert dims == {d: [1, ""] for d in "xyz"}
@@ -86,13 +78,8 @@ def test_unusable_units_warn_instead_of_inventing_a_scale(units):
 
 
 def test_render_stays_valid_json_with_one_line_per_annotation():
-    """Pins a bug that produced a loadable-looking layer with no annotations in it.
-
-    The renderer swaps each annotation for a placeholder, dumps, then substitutes the
-    one-line form back. A placeholder built from control characters is re-escaped by
-    json.dumps, so every substitution missed and the annotations shipped as the
-    placeholder *strings* — valid JSON, twelve entries, none of them an annotation.
-    """
+    """Regression: placeholders used for the one-line-per-annotation layout once leaked into
+    the output in place of the annotations."""
     regions = [{"lo": (0, 0, 0), "hi": (8, 8, 8), "n_labels": 2},
                {"lo": (8, 8, 8), "hi": (16, 16, 16), "n_labels": 3}]
     layer = boxes_layer(regions, {d: [8e-9, "m"] for d in "xyz"})
@@ -120,15 +107,6 @@ def test_stdout_is_only_json_so_it_can_be_redirected(tmp_path, capsys):
     assert layer["type"] == "annotation"
     assert len(layer["annotations"]) == 2
     assert "region(s)" in captured.err, "the summary belongs on stderr"
-
-
-def test_out_writes_the_file_and_leaves_stdout_empty(tmp_path, capsys):
-    dst = _sparse(tmp_path, "vol", profile="local-neuroglancer")
-    out = str(tmp_path / "layer.json")
-    cli.main(["bboxes", dst, "--tighten-level", "1", "--out", out])
-    assert capsys.readouterr().out == ""
-    with open(out) as f:
-        assert len(json.load(f)["annotations"]) == 2
 
 
 def test_a_state_is_loadable_and_carries_the_volume_layer(tmp_path, capsys):
@@ -160,7 +138,7 @@ def test_label_and_name_flow_through(tmp_path, capsys):
 
 
 def test_an_empty_volume_reports_nothing_to_annotate(tmp_path, capsys):
-    """Distinguishable from a failure: exit 1, and it says why."""
+    """Exit 1, with the reason."""
     from neu_vol.ops.create import create_volume
 
     dst = str(tmp_path / "empty")
@@ -176,12 +154,8 @@ def test_a_missing_volume_exits_cleanly(tmp_path):
 
 
 def test_out_goes_through_the_kvstore_not_open(tmp_path, capsys):
-    """So `--out s3://...` works at all.
-
-    Pinned with a local path whose parent does not exist: the file driver creates it,
-    while `open()` would raise. That is the same code path a remote --out takes, and it
-    is the only part of it a test can exercise without a bucket.
-    """
+    """`--out` writes through the kvstore (so s3:// works): a missing parent is created, and
+    stdout stays clean."""
     dst = _sparse(tmp_path, "vol", profile="local-neuroglancer")
     out = str(tmp_path / "does" / "not" / "exist" / "layer.json")
     assert cli.main(["bboxes", dst, "--tighten-level", "1", "--out", out]) == 0
@@ -189,7 +163,3 @@ def test_out_goes_through_the_kvstore_not_open(tmp_path, capsys):
         assert len(json.load(f)["annotations"]) == 2
     assert capsys.readouterr().out == "", "--out must keep stdout clean"
 
-
-def test_bboxes_is_wired_to_the_subcommand():
-    assert cli._parse_args(["bboxes", "v"]).func is cli.cmd_bboxes
-    assert not os.path.exists("v"), "parsing must not touch the volume"

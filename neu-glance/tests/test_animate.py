@@ -1,18 +1,7 @@
-"""Timelines, interpolation and the layer split — all of it without a browser.
+"""Timelines, interpolation and the layer split, without a browser.
 
-Nothing here needs neuroglancer, and that is the point: the interpolation core is where the
-subtle bugs live, and none of them crash. A fade that starts from the wrong value, a zoom
-interpolated linearly, a quaternion taking the long way round, a property that quietly
-acquires a midpoint it should never have had — every one of those renders a complete,
-plausible-looking animation that is simply not the one that was asked for. So these check
-*values*.
-
-The tail of the file needs neuroglancer, and only to pin two things against it: that our
-ported maths still agrees with the viewer's own, and that the states we synthesise are ones
-the viewer will actually accept.
-
-Source URLs here are `s3://my-bucket/...` throughout. Real data locations do not go in this
-repo.
+Interpolation bugs never crash; they render a plausible wrong animation, so these check
+values. The tail needs neuroglancer, to check our maths and states against the viewer's.
 """
 
 import json
@@ -21,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from neu_glance.animate import (CAMERA_KEYS, EASINGS, FADE_FROM, LAYER_DEFAULTS,
-                                PROPERTY_KINDS, AnimateProblem, Timeline, Tween, ease,
-                                interpolate_color_map, interpolate_hex_color,
-                                interpolate_quaternion, interpolate_zoom, kind_for)
+                                AnimateProblem, Timeline, ease, interpolate_color_map,
+                                interpolate_hex_color, interpolate_quaternion,
+                                interpolate_zoom, kind_for)
 from neu_glance.state import (StateProblem, split_segment_layer, state_url,
                               subset_layers)
 
@@ -54,21 +43,14 @@ def _layer(state, name):
 # easing
 # --------------------------------------------------------------------------- #
 def test_every_easing_is_pinned_at_both_ends_and_never_overshoots():
-    """An overshooting curve drives objectAlpha past 1, and neuroglancer clamps SILENTLY.
-
-    The animation then flattens at the ends of every transition with nothing on screen or in
-    the state to say why, which reads as a rendering problem rather than a curve problem.
-    """
+    """An overshoot drives objectAlpha past 1, which neuroglancer clamps silently."""
     for name in EASINGS:
         assert ease(name, 0.0) == pytest.approx(0.0), name
         assert ease(name, 1.0) == pytest.approx(1.0), name
         samples = [ease(name, i / 100) for i in range(101)]
         assert all(0.0 <= v <= 1.0 for v in samples), name
         assert all(b >= a - 1e-12 for a, b in zip(samples, samples[1:])), name
-
-
-def test_easing_clamps_outside_the_unit_interval():
-    """A tween evaluated a hair past its window must not extrapolate past its end value."""
+    # and clamps outside [0, 1], so a tween evaluated past its window cannot extrapolate
     assert ease("in-out", 1.5) == pytest.approx(1.0)
     assert ease("in-out", -0.5) == pytest.approx(0.0)
 
@@ -82,11 +64,7 @@ def test_an_unknown_easing_names_the_ones_that_exist():
 # interpolators
 # --------------------------------------------------------------------------- #
 def test_zoom_is_interpolated_geometrically_not_linearly():
-    """Zoom is perceived multiplicatively; a linear ramp visibly accelerates near the close end.
-
-    12000 -> 3000 halfway is 6000, not 7500. This IS the "slow and smooth" requirement rather
-    than a refinement of it — the linear version reads as a camera that lost control.
-    """
+    """Zoom is perceived multiplicatively: 12000 -> 3000 halfway is 6000, not 7500."""
     assert interpolate_zoom(12000.0, 3000.0, 0.5) == pytest.approx(6000.0)
     assert interpolate_zoom(1000.0, 4000.0, 0.5) == pytest.approx(2000.0)
     assert interpolate_zoom(12000.0, 3000.0, 0.0) == pytest.approx(12000.0)
@@ -94,16 +72,12 @@ def test_zoom_is_interpolated_geometrically_not_linearly():
 
 
 def test_a_zoom_through_a_non_positive_scale_falls_back_rather_than_raising():
-    """math.log(0) raises, and a state can carry a zero scale. Dying mid-render is worse."""
+    """A state can carry a zero scale, where math.log would raise."""
     assert interpolate_zoom(0.0, 100.0, 0.5) == pytest.approx(50.0)
 
 
 def test_a_quaternion_takes_the_SHORT_way_round():
-    """q and -q are the same rotation. Without the sign flip the camera takes a lazy full spin.
-
-    Half of the way from the identity to (almost) its negation must stay near one of them, not
-    swing out to the far side of the sphere.
-    """
+    """q and -q are the same rotation; without the sign flip the camera spins the long way."""
     a = [0.0, 0.0, 0.0, 1.0]
     b = [0.0, 0.0, -0.0871557, -0.9961947]        # -(a 10-degree rotation): 170 deg apart raw
     mid = interpolate_quaternion(a, b, 0.5)
@@ -111,7 +85,7 @@ def test_a_quaternion_takes_the_SHORT_way_round():
 
 
 def test_slerp_of_two_nearly_equal_quaternions_does_not_divide_by_zero():
-    """sin(omega) goes to zero as the angle does; the small-angle branch is what keeps it finite."""
+    """The small-angle branch keeps sin(omega) -> 0 finite."""
     a = [0.0, 0.0, 0.0, 1.0]
     b = [1e-9, 0.0, 0.0, 1.0]
     assert interpolate_quaternion(a, b, 0.5) == pytest.approx(a, abs=1e-6)
@@ -128,26 +102,21 @@ def test_slerp_is_exact_at_both_ends_and_keeps_unit_length():
 
 
 def test_a_colour_ramp_to_black_does_not_go_muddy_in_the_middle():
-    """Hex channels are gamma-encoded, so averaging them is not averaging light.
-
-    Every fade-in ramp has black or white at one end, so this is the common case rather than a
-    corner. The naive midpoint of black to red is #800000, which reads as a dark maroon; in
-    linear light it is #bc0000, which reads as half-lit. Pinned so a later "simplification" to
-    a straight lerp cannot silently change the look of every render.
-    """
+    """Hex channels are gamma-encoded, so colours ramp in linear light (#bc0000, not
+    #800000, halfway from black to red)."""
     assert interpolate_hex_color("#000000", "#ff0000", 0.5) == "#bc0000"
     assert interpolate_hex_color("#000000", "#ff0000", 0.5, space="srgb") == "#800000"
 
 
 def test_colour_endpoints_are_exact_and_names_are_accepted():
-    """Parsing goes through shaders.as_hex_color, so there is no second colour parser here."""
+    """Names and tuples are parsed by `shaders.as_hex_color`."""
     assert interpolate_hex_color("black", "red", 0.0) == "#000000"
     assert interpolate_hex_color("black", "red", 1.0) == "#ff0000"
     assert interpolate_hex_color((0, 0, 0), "#ffffff", 1.0) == "#ffffff"
 
 
 def test_segment_colours_interpolate_per_key_and_step_where_one_side_has_none():
-    """A segment popping to a new colour partway through a fade gets blamed on the data."""
+    """Keys in both maps ramp; a key on one side only holds or appears at the end."""
     a = {"1": "#000000", "2": "#ff0000"}
     b = {"1": "#ff0000", "3": "#00ff00"}
     mid = interpolate_color_map(a, b, 0.5)
@@ -158,11 +127,7 @@ def test_segment_colours_interpolate_per_key_and_step_where_one_side_has_none():
 
 
 def test_a_property_nobody_thought_about_STEPS_rather_than_being_averaged():
-    """A blended `source` URL or a two-thirds-applied shader is not a thing.
-
-    Stepping by default means an unrecognised property is held and then swapped, which is at
-    worst abrupt. Lerping by default would produce nonsense that still renders.
-    """
+    """Unknown properties step: a blended `source` URL or half-applied shader is nonsense."""
     assert kind_for("someFutureProperty") == "step"
     assert kind_for("source") == "step"
     assert kind_for("segments") == "step"
@@ -170,17 +135,11 @@ def test_a_property_nobody_thought_about_STEPS_rather_than_being_averaged():
     assert kind_for("projectionScale") == "zoom"
 
 
-def test_the_segment_list_is_never_blended():
-    """A fractional segment list is meaningless, and `segments` is the property most likely to
-    be reached for instead of splitting the layer."""
-    assert PROPERTY_KINDS["segments"] == "step"
-
-
 # --------------------------------------------------------------------------- #
 # tween semantics
 # --------------------------------------------------------------------------- #
 def test_a_tween_pins_its_end_value_after_its_window_closes():
-    """A fade that quietly un-fades once its window passes reads as a data problem."""
+    """Past its window a tween holds its end value."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.tween(layer="s", at=1.0, seconds=2.0, objectAlpha=0.25)
     assert _layer(tl.at(3.0), "s")["objectAlpha"] == pytest.approx(0.25)
@@ -195,19 +154,14 @@ def test_a_tween_contributes_nothing_before_it_starts():
 
 
 def test_an_absent_property_starts_from_NEUROGLANCERS_DEFAULT_not_from_zero():
-    """objectAlpha absent means fully opaque, not invisible.
-
-    Starting a fade-OUT from zero would make it a no-op, and starting a fade-in from 1.0 the
-    same — either way the tween is written, the render succeeds, and nothing moves.
-    """
+    """An absent objectAlpha means fully opaque, so a fade-out starts from 1, not 0."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)        # no objectAlpha in the state
     tl.tween(layer="s", at=0.0, seconds=2.0, objectAlpha=0.0)
-    assert LAYER_DEFAULTS["objectAlpha"] == 1.0
     assert _layer(tl.at(1.0), "s")["objectAlpha"] == pytest.approx(0.5)
 
 
 def test_a_later_tween_starts_where_the_previous_one_ENDED_not_at_the_base_value():
-    """Otherwise a there-and-back snaps to the opening value at the start of the second leg."""
+    """A there-and-back must not snap to the opening value at the second leg."""
     tl = Timeline(_state(_seg("s", ["1"], objectAlpha=1.0)), fps=10.0)
     tl.tween(layer="s", at=0.0, seconds=2.0, ease="linear", objectAlpha=0.0)
     tl.tween(layer="s", at=4.0, seconds=2.0, ease="linear", objectAlpha=1.0)
@@ -216,8 +170,7 @@ def test_a_later_tween_starts_where_the_previous_one_ENDED_not_at_the_base_value
 
 
 def test_two_tweens_overlapping_on_one_property_are_refused():
-    """Silently dropping one of two fades leaves an animation subtly wrong with nothing to
-    point at. Touching endpoints are fine — that is an ordinary hand-off."""
+    """Overlapping tweens on one property raise; abutting ones are a normal hand-off."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.tween(layer="s", at=0.0, seconds=2.0, objectAlpha=0.0)
     with pytest.raises(AnimateProblem, match="overlap"):
@@ -226,12 +179,8 @@ def test_two_tweens_overlapping_on_one_property_are_refused():
 
 
 def test_windows_that_ABUT_survive_the_arithmetic_that_produced_them():
-    """`start + i*step` and `start + (i+1)*step` reach the same instant by different routes.
-
-    `4.0 + 7*0.8 + 0.8` is 10.400000000000002; `4.0 + 8*0.8` is 10.4. Without a tolerance a
-    correctly-built follow-the-action sequence is refused for an overlap of two femtoseconds,
-    and the message is baffling because the two printed numbers are identical.
-    """
+    """`4.0 + 7*0.8 + 0.8` != `4.0 + 8*0.8` in floating point; abutting windows built that
+    way must not count as overlapping."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     start, step = 4.0, 0.8
     for i in range(12):                       # long enough for the error to accumulate
@@ -241,7 +190,7 @@ def test_windows_that_ABUT_survive_the_arithmetic_that_produced_them():
 
 
 def test_a_REAL_overlap_is_still_refused():
-    """The tolerance must not turn the guard off — a nanosecond, not a free pass."""
+    """The tolerance must not disable the overlap check."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.tween(layer="s", at=0.0, seconds=2.0, objectAlpha=0.0)
     with pytest.raises(AnimateProblem, match="overlap"):
@@ -249,25 +198,21 @@ def test_a_REAL_overlap_is_still_refused():
 
 
 def test_a_tween_naming_a_layer_that_is_not_there_RAISES():
-    """Neuroglancer's own Layers.interpolate silently skips an unmatched layer.
-
-    That makes a typo look like a rendering bug: everything else animates and one object sits
-    still. Better to refuse and list what the state actually has.
-    """
+    """A typo'd layer name raises and lists the real ones (neuroglancer skips it silently)."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     with pytest.raises(AnimateProblem, match="'s'"):
         tl.tween(layer="typo", at=0.0, seconds=1.0, objectAlpha=0.0)
 
 
 def test_a_layer_name_containing_a_dot_and_a_space_addresses_correctly():
-    """Why a path is a tuple and not a dotted string: the real scene has `head.precomputed`."""
+    """Paths are tuples, so a layer named `head.precomputed v2` works."""
     tl = Timeline(_state(_seg("head.precomputed v2", ["1"])), fps=10.0)
     tl.tween(layer="head.precomputed v2", at=0.0, seconds=1.0, meshSilhouetteRendering=10.0)
     assert _layer(tl.at(1.0), "head.precomputed v2")["meshSilhouetteRendering"] == 10.0
 
 
 def test_interpolating_never_mutates_the_state_it_was_given():
-    """A mutated base compounds: every later frame is built on the previous frame's edits."""
+    """A mutated base would compound across frames."""
     original = _state(_seg("s", ["1"], objectAlpha=1.0))
     snapshot = json.dumps(original)
     tl = Timeline(original, fps=10.0)
@@ -297,7 +242,7 @@ def test_a_step_property_given_a_window_says_so_rather_than_pretending_to_ramp()
 # frame enumeration
 # --------------------------------------------------------------------------- #
 def test_the_frame_count_INCLUDES_the_last_frame():
-    """A 2 s timeline at 30 fps is 61 frames. Off by one here truncates every render."""
+    """A 2 s timeline at 30 fps is 61 frames."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=30.0)
     tl.tween(layer="s", at=0.0, seconds=2.0, objectAlpha=0.0)
     assert tl.duration == pytest.approx(2.0)
@@ -306,8 +251,7 @@ def test_the_frame_count_INCLUDES_the_last_frame():
 
 
 def test_frame_times_are_exact_multiples_of_the_frame_interval():
-    """A running sum drifts, and a drifting clock puts the last frames of a long render at
-    times no keyframe ever named."""
+    """Frame times are i / fps, not a drifting running sum."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=30.0)
     tl.hold(10.0)
     for i, t, _ in tl.frames():
@@ -321,7 +265,7 @@ def test_a_zero_length_timeline_still_renders_one_frame():
 
 
 def test_start_and_end_frame_select_a_range_with_the_SAME_numbering():
-    """Resume and split renders write into one directory; a renumbered range overwrites."""
+    """A frame range keeps the global numbering, so split renders share one directory."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.hold(2.0)
     chunk = list(tl.frames(start_frame=5, end_frame=9))
@@ -336,8 +280,7 @@ def test_the_first_frame_is_the_base_state_where_no_tween_has_opened():
 
 
 def test_the_cursor_moves_only_when_hold_is_called():
-    """Two tweens written one after another must run TOGETHER unless told otherwise —
-    a fade-while-moving is the common case, not the awkward one."""
+    """Consecutive tweens run together unless `hold` advances the cursor."""
     tl = Timeline(_state(_seg("a", ["1"]), _seg("b", ["2"])), fps=10.0)
     tl.tween(layer="a", seconds=1.0, objectAlpha=0.0)
     tl.tween(layer="b", seconds=1.0, objectAlpha=0.0)
@@ -351,7 +294,7 @@ def test_the_cursor_moves_only_when_hold_is_called():
 # the layer split
 # --------------------------------------------------------------------------- #
 def test_splitting_gives_one_layer_per_segment_carrying_the_source():
-    """Neuroglancer has no per-segment alpha, so this is the only route to a per-object fade."""
+    """One layer per segment (neuroglancer has no per-segment alpha), sharing the source."""
     state = _state(_seg("seg", ["1", "2", "3"]))
     out, created, _ = split_segment_layer(state, "seg", name_template="n{segment}")
     assert created == {"1": "n1", "2": "n2", "3": "n3"}
@@ -363,12 +306,7 @@ def test_splitting_gives_one_layer_per_segment_carrying_the_source():
 
 
 def test_each_split_layer_keeps_its_segments_colour_INCLUDING_a_hashed_one():
-    """Losing a colour gives a perfectly attractive scene in entirely the wrong colours.
-
-    An explicit entry is carried across. A segment with no entry is hash-coloured by
-    neuroglancer from (colorSeed, segment_id) and nothing else, both of which a verbatim copy
-    preserves — so it must come out identical without any colour being written.
-    """
+    """Explicit colours carry across; a hashed one stays hashed, since `colorSeed` is kept."""
     state = _state(_seg("seg", ["1", "2"], segmentColors={"1": "#19ffb6"}, colorSeed=17))
     out, created, _ = split_segment_layer(state, "seg", name_template="n{segment}")
     assert _layer(out, "n1")["segmentColors"] == {"1": "#19ffb6"}
@@ -378,8 +316,7 @@ def test_each_split_layer_keeps_its_segments_colour_INCLUDING_a_hashed_one():
 
 
 def test_the_render_properties_carry_across_without_a_whitelist():
-    """A whitelist here would go stale against the next viewer release, silently dropping
-    whatever it had not heard of."""
+    """Every layer property is copied, not a whitelist."""
     state = _state(_seg("seg", ["1"], selectedAlpha=0, meshSilhouetteRendering=3.3,
                         saturation=0.5, notSelectedAlpha=0.1, tab="segments"))
     out, created, _ = split_segment_layer(state, "seg", name_template="n{segment}")
@@ -392,8 +329,7 @@ def test_the_render_properties_carry_across_without_a_whitelist():
 
 
 def test_a_starred_but_hidden_segment_does_not_become_a_VISIBLE_layer():
-    """A `!` prefix means starred and NOT shown. Splitting those in would put objects on
-    screen that the author had deliberately switched off."""
+    """A `!` segment is starred but hidden, and stays out of the split."""
     state = _state(_seg("seg", ["1", "!2", "3"]))
     out, created, _ = split_segment_layer(state, "seg", name_template="n{segment}")
     assert set(created) == {"1", "3"}
@@ -401,8 +337,7 @@ def test_a_starred_but_hidden_segment_does_not_become_a_VISIBLE_layer():
 
 
 def test_the_original_layer_is_kept_so_references_to_it_do_not_dangle():
-    """`selectedLayer`, a synapse layer's `linkedSegmentationLayer` and a toolPalettes entry
-    all name a layer by name, and neuroglancer resolves a missing one to nothing in silence."""
+    """The original stays (hidden, emptied), since other state keys name it."""
     state = _state(_seg("seg", ["1"]), selectedLayer={"layer": "seg", "visible": True})
     out, _, _ = split_segment_layer(state, "seg", name_template="n{segment}")
     assert _layer(out, "seg")["visible"] is False
@@ -411,8 +346,7 @@ def test_the_original_layer_is_kept_so_references_to_it_do_not_dangle():
 
 
 def test_the_split_layers_replace_the_original_IN_PLACE_so_draw_order_is_kept():
-    """Neuroglancer draws in layer order; moving twenty-five layers to the end changes what
-    is in front of what."""
+    """Neuroglancer draws in layer order, so the split layers go where the original was."""
     state = _state({"type": "image", "name": "em", "source": "zarr://s3://my-bucket/em"},
                    _seg("seg", ["1", "2"]),
                    _seg("rois", ["9"]))
@@ -421,7 +355,7 @@ def test_the_split_layers_replace_the_original_IN_PLACE_so_draw_order_is_kept():
 
 
 def test_segment_ids_stay_STRINGS_through_the_split():
-    """A 19-digit uint64 through a JSON number comes back rounded."""
+    """A uint64 id through a JSON number would come back rounded."""
     big = "18446744073709551615"
     state = _state(_seg("seg", [big]))
     out, created, _ = split_segment_layer(state, "seg", name_template="n{segment}")
@@ -437,7 +371,7 @@ def test_splitting_never_mutates_the_state_it_was_given():
 
 
 def test_a_split_layer_name_that_collides_is_renamed_and_REPORTED():
-    """Neuroglancer keys a layer by name, so a collision is a collision, not a duplicate."""
+    """Neuroglancer keys a layer by name."""
     state = _state(_seg("seg", ["1"]), _seg("n1", ["9"]))
     out, created, notes = split_segment_layer(state, "seg", name_template="n{segment}")
     assert created == {"1": "n1-2"}
@@ -445,7 +379,7 @@ def test_a_split_layer_name_that_collides_is_renamed_and_REPORTED():
 
 
 def test_explicit_names_beat_the_template():
-    """A 19-digit body id in the layer bar is unreadable; names are what make it usable."""
+    """`names=` beats `name_template`."""
     state = _state(_seg("seg", ["1", "2"]))
     out, created, _ = split_segment_layer(
         state, "seg", names={"1": "KC-alpha"}, name_template="n{segment}")
@@ -470,8 +404,7 @@ def test_asking_to_split_a_hidden_segment_explains_the_exclamation_mark():
 # groups, sequences and the camera
 # --------------------------------------------------------------------------- #
 def test_a_sequence_starts_every_layer_HIDDEN_without_being_asked():
-    """Otherwise the scene opens with everything already visible and the fades do nothing —
-    a render that succeeds, takes an hour, and shows the wrong thing."""
+    """Otherwise the scene opens fully visible and the fades do nothing."""
     tl = Timeline(_state(_seg("seg", ["1", "2"])), fps=10.0)
     made = tl.split("seg", prefix="n")
     tl.group("g1", [made["1"]])
@@ -497,7 +430,7 @@ def test_a_sequence_staggers_the_groups_and_finishes_them_all():
 
 
 def test_a_group_naming_a_layer_that_is_not_there_is_refused_at_GROUP_time():
-    """Catching it here names the mistake; catching it at render time names a frame index."""
+    """Caught when the group is defined, not at render time."""
     tl = Timeline(_state(_seg("seg", ["1"])), fps=10.0)
     with pytest.raises(AnimateProblem, match="not in this state"):
         tl.group("g", ["neuron 404"])
@@ -511,8 +444,7 @@ def test_an_undefined_group_in_a_sequence_lists_the_defined_ones():
 
 
 def test_view_takes_ONLY_the_camera_keys_from_the_state_it_is_given():
-    """"Move the camera to here" must not quietly swap the scene — a keyframe URL also
-    carries layers, a layout and segment lists."""
+    """A keyframe state's layers, layout and segments are ignored; only the camera moves."""
     tl = Timeline(_state(_seg("seg", ["1"])), fps=10.0)
     target = _state(_seg("other", ["9"]), projectionScale=3000.0, layout="4panel")
     tl.view(target, at=0.0, seconds=2.0)
@@ -524,7 +456,7 @@ def test_view_takes_ONLY_the_camera_keys_from_the_state_it_is_given():
 
 
 def test_view_accepts_a_neuroglancer_url_because_that_is_how_a_view_gets_tuned():
-    """Framing a 3D view is done by dragging, not by writing quaternions."""
+    """A view can be tuned in the browser and pasted as a URL."""
     tl = Timeline(_state(_seg("seg", ["1"])), fps=10.0)
     target = _state(_seg("seg", ["1"]), projectionScale=3000.0)
     tl.view(state_url(target), at=0.0, seconds=2.0)
@@ -538,8 +470,7 @@ def test_view_on_a_state_with_no_camera_in_it_says_so():
 
 
 def test_a_zoom_tween_with_no_scale_anywhere_asks_for_an_explicit_start():
-    """neuroglancer declares projectionScale optional with NO default — it fits the data
-    instead — so there is no honest value to start a zoom from."""
+    """projectionScale has no default in neuroglancer, so a zoom needs `start=`."""
     state = _state(_seg("seg", ["1"]))
     del state["projectionScale"]
     tl = Timeline(state, fps=10.0)
@@ -552,28 +483,18 @@ def test_a_zoom_tween_with_no_scale_anywhere_asks_for_an_explicit_start():
 # relative camera moves
 # --------------------------------------------------------------------------- #
 def test_a_FULL_TURN_is_expressible_which_is_the_whole_point_of_orbit():
-    """Slerp between two views cannot do this, and no number of keyframes fixes it.
-
-    Slerp takes the shortest arc, so the two ends of a 360-degree turn are the same
-    orientation and interpolating between them is a no-op; 200 degrees silently becomes 160
-    the other way. Orbit varies the ANGLE instead, so any rotation is expressible.
-    """
+    """Slerp cannot express a full turn (its ends coincide); orbit varies the angle."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.orbit(360, at=0.0, seconds=4.0, ease="linear")
     quarters = [tl.at(t)["projectionOrientation"] for t in (0.0, 1.0, 2.0, 3.0, 4.0)]
     assert quarters[2] == pytest.approx([0.0, 1.0, 0.0, 0.0], abs=1e-9)      # halfway = 180
-    # q and -q are the SAME rotation, so a full turn comes back to the start's negation.
+    # a full turn comes back to the start's negation, the same rotation
     assert quarters[4] == pytest.approx([-v for v in quarters[0]], abs=1e-9)
     assert all(sum(v * v for v in q) == pytest.approx(1.0, abs=1e-9) for q in quarters)
 
 
 def test_a_relative_move_PINS_ITS_EVALUATED_END_not_its_delta():
-    """Past its window a tween pins its end — and a relative move's `end` is a DELTA.
-
-    Returning it verbatim puts the orbit's `{axis, degrees}` dict where the quaternion
-    belongs, and the zoom's bare factor where the scale belongs. It is the last frame of the
-    move that breaks, which is the one checked last.
-    """
+    """A relative move's `end` is a delta; past the window, the evaluated end is held."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.orbit(90, at=0.0, seconds=2.0)
     tl.zoom(0.25, at=0.0, seconds=2.0)
@@ -585,8 +506,7 @@ def test_a_relative_move_PINS_ITS_EVALUATED_END_not_its_delta():
 
 
 def test_zoom_is_multiplicative_and_geometric():
-    """Relative so it composes and needs no knowledge of the current scale — which after a
-    frame_on is a number nobody wrote down."""
+    """`zoom` is a factor, interpolated geometrically."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.zoom(0.25, at=0.0, seconds=2.0, ease="linear")
     assert tl.at(1.0)["projectionScale"] == pytest.approx(6000.0)     # geometric midpoint
@@ -596,19 +516,14 @@ def test_zoom_is_multiplicative_and_geometric():
 
 
 def test_a_screen_axis_and_a_volume_axis_compose_on_OPPOSITE_sides():
-    """Which side you multiply on is what makes a spin follow the camera or the specimen.
-
-    Post-multiplying reads the axis in the camera's frame, so `up` means "left-to-right as I
-    am looking at it" from any starting view; pre-multiplying reads it in the volume's, so a
-    shot about `z` is anatomically meaningful and reproducible across scenes.
-    """
+    """Screen axes (`up`) are in the camera's frame and volume axes (`y`) in the volume's;
+    they differ except from the identity."""
     tilted = _state(_seg("s", ["1"]), projectionOrientation=[0.5, 0.5, 0.5, 0.5])
     screen = Timeline(tilted, fps=10.0)
     screen.orbit(90, axis="up", at=0.0, seconds=1.0)
     volume = Timeline(tilted, fps=10.0)
     volume.orbit(90, axis="y", at=0.0, seconds=1.0)
     assert screen.at(1.0)["projectionOrientation"] != volume.at(1.0)["projectionOrientation"]
-    # From the identity there is nothing to tell them apart, which is the sanity check.
     flat_screen = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     flat_screen.orbit(90, axis="up", at=0.0, seconds=1.0)
     flat_volume = Timeline(_state(_seg("s", ["1"])), fps=10.0)
@@ -626,7 +541,7 @@ def test_an_unknown_orbit_axis_lists_the_known_ones():
 
 
 def test_relative_moves_CHAIN_from_where_the_previous_one_ended():
-    """Two orbits in a row must add up, not restart from the base state each time."""
+    """Two orbits in a row add up."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.orbit(90, at=0.0, seconds=1.0)
     tl.orbit(90, at=2.0, seconds=1.0)
@@ -649,10 +564,7 @@ def test_frame_on_centres_the_box_and_fits_it():
 
 
 def test_frame_on_converts_NANOMETRES_to_the_viewers_own_voxels():
-    """`segment_boxes` returns nm — the suite's model space — but neuroglancer's `position`
-    is in the state's voxels. Confusing them does not raise: it points the camera somewhere
-    plausible and wrong by the voxel size, a factor of eight on an 8 nm volume.
-    """
+    """Boxes are in nm by default; neuroglancer's `position` is in the state's voxels."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)                   # 8 nm isotropic
     tl.frame_on(((0.0, 800.0, 1600.0), (400.0, 2400.0, 4800.0)), at=0.0, seconds=2.0)
     assert tl.at(2.0)["position"] == pytest.approx([400.0, 200.0, 25.0])
@@ -666,7 +578,7 @@ def test_frame_on_accepts_anything_with_lo_and_hi_so_a_BBox_works():
 
 
 def test_frame_on_without_zoom_pans_only():
-    """For following something at a fixed scale rather than fitting it."""
+    """`zoom=False` pans only."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.frame_on(((0.0, 100.0, 200.0), (50.0, 300.0, 600.0)), at=0.0, seconds=1.0,
                 units="voxels", zoom=False)
@@ -682,7 +594,7 @@ def test_a_state_with_no_dimensions_says_so_rather_than_framing_the_wrong_place(
 
 
 def test_framing_and_orbiting_compose():
-    """Frame an object, then turn around it — the shot this whole API exists for."""
+    """Frame an object, then orbit and zoom around it."""
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
     tl.frame_on(((0.0, 100.0, 200.0), (50.0, 300.0, 600.0)), at=0.0, seconds=2.0,
                 units="voxels")
@@ -698,8 +610,7 @@ def test_framing_and_orbiting_compose():
 # serialization
 # --------------------------------------------------------------------------- #
 def test_a_timeline_round_trips_through_json():
-    """The timeline written beside the frames is what makes a render reproducible and its
-    timings editable without re-deriving them."""
+    """The timeline is saved beside the frames, so a render can be reproduced."""
     tl = Timeline(_state(_seg("seg", ["1", "2"])), fps=24.0)
     made = tl.split("seg", prefix="n")
     tl.group("g", [made["1"]])
@@ -714,7 +625,7 @@ def test_a_timeline_round_trips_through_json():
 
 
 def test_an_explicit_duration_overrides_the_derived_one():
-    """A trailing hold of stillness at the end of an animation is a normal thing to want."""
+    """For a hold at the end."""
     tl = Timeline(_state(_seg("seg", ["1"])), fps=10.0)
     tl.tween(layer="seg", seconds=1.0, objectAlpha=0.0)
     assert tl.duration == pytest.approx(1.0)
@@ -731,8 +642,7 @@ from neuroglancer import viewer_state as _vs            # noqa: E402
 
 
 def test_our_zoom_and_slerp_agree_with_neuroglancers_own():
-    """Ported from viewer_state.py:75-111 rather than re-derived. This is what stops the two
-    drifting after a later cleanup here or an upgrade there."""
+    """Ported from neuroglancer's viewer_state; this keeps the two from drifting."""
     import numpy as np
     for a, b in [(12000.0, 3000.0), (1.0, 1000.0), (0.25, 0.5)]:
         for t in (0.0, 0.1, 0.5, 0.9, 1.0):
@@ -748,8 +658,7 @@ def test_our_zoom_and_slerp_agree_with_neuroglancers_own():
 
 
 def test_our_layer_defaults_agree_with_the_viewers_declared_defaults():
-    """A viewer release changing one of these would move where every unspecified fade starts,
-    and nothing else would notice."""
+    """These defaults decide where an unspecified fade starts."""
     declared = {}
     for name in ("objectAlpha", "selectedAlpha", "notSelectedAlpha", "saturation",
                  "meshSilhouetteRendering", "meshRenderScale", "crossSectionRenderScale"):
@@ -761,12 +670,8 @@ def test_our_layer_defaults_agree_with_the_viewers_declared_defaults():
 
 
 def test_every_frame_state_is_accepted_by_neuroglancers_own_state_model():
-    """The guard that pure dict interpolation still yields SCHEMA-LEGAL states.
-
-    A colour that is not #rrggbb, an orientation of length three, a float where a list
-    belongs — all of those would otherwise surface as a blank viewport at render time, an hour
-    in. `ViewerState` construction works fine even though `ViewerState.interpolate` does not.
-    """
+    """Every interpolated frame must be a schema-legal state; otherwise the viewport goes
+    blank at render time."""
     state = _state(_seg("seg", ["1", "2"], segmentColors={"1": "#19ffb6"},
                         meshSilhouetteRendering=3.3),
                    {"type": "image", "name": "em", "source": "zarr://s3://my-bucket/em"})
@@ -784,21 +689,6 @@ def test_every_frame_state_is_accepted_by_neuroglancers_own_state_model():
         ng.ViewerState(json.loads(json.dumps(frame))).to_json()
 
 
-def test_neuroglancers_own_interpolate_is_deliberately_not_used():
-    """`ViewerState.interpolate` raises for a state with ANY layer, in 2.41.2.
-
-    `Layer.interpolate` (viewer_state.py:437-443) reads `a.layer_position`; the property is
-    `local_position`/`localPosition`. `neuroglancer.tool.video_tool` is dead as shipped for
-    the same reason. If this test ever starts failing, the bug has been fixed upstream — which
-    still would not make it usable here, because it covers neither meshSilhouetteRendering nor
-    segmentColors and it materialises defaults the input never had.
-    """
-    a = ng.ViewerState(_state(_seg("seg", ["1"])))
-    b = ng.ViewerState(_state(_seg("seg", ["1"], objectAlpha=0.0)))
-    with pytest.raises(AttributeError, match="layer_position"):
-        ng.ViewerState.interpolate(a, b, 0.5)
-
-
 def test_importing_animate_does_not_pull_in_neuroglancer():
     """The interpolation core stays testable in a CI that installs no extras."""
     import subprocess
@@ -813,8 +703,7 @@ def test_importing_animate_does_not_pull_in_neuroglancer():
 # one layer per NAMED SET
 # --------------------------------------------------------------------------- #
 def test_a_set_becomes_ONE_layer_carrying_all_its_segments():
-    """Populations, not individuals: four hundred Kenyon cells want one layer, not four
-    hundred. `split_segment_layer` is the other half of this pair."""
+    """One layer per named set of segments."""
     state = _state(_seg("seg", ["1", "2", "3", "4"]))
     out, made, _ = subset_layers(state, "seg", {"KCs": ["1", "2"], "MBONs": ["3"]})
     assert made == {"KCs": "KCs", "MBONs": "MBONs"}
@@ -823,7 +712,7 @@ def test_a_set_becomes_ONE_layer_carrying_all_its_segments():
 
 
 def test_a_set_is_coloured_UNIFORMLY_by_default_not_by_a_per_segment_map():
-    """A map would need one identical entry per body; the default means "everything here"."""
+    """A set's colour is `segmentDefaultColor`, not a per-segment map."""
     state = _state(_seg("seg", ["1", "2"]))
     out, _, _ = subset_layers(state, "seg", {"KCs": ["1", "2"]}, colors={"KCs": "#ffcc33"})
     assert _layer(out, "KCs")["segmentDefaultColor"] == "#ffcc33"
@@ -831,17 +720,14 @@ def test_a_set_is_coloured_UNIFORMLY_by_default_not_by_a_per_segment_map():
 
 
 def test_an_inherited_segmentColors_entry_is_DROPPED_because_it_would_override():
-    """A per-segment colour beats segmentDefaultColor, so a scene where a few bodies had been
-    coloured by hand would render those few in their old colours and the rest in the new one —
-    a set that is *almost* uniform, which reads as a data problem rather than a leftover."""
+    """A leftover per-segment colour would override the set's colour for that body."""
     state = _state(_seg("seg", ["1", "2"], segmentColors={"1": "#19ffb6"}))
     out, _, _ = subset_layers(state, "seg", {"KCs": ["1", "2"]}, colors={"KCs": "#ffcc33"})
     assert "segmentColors" not in _layer(out, "KCs")
 
 
 def test_an_empty_set_makes_no_layer_and_says_so():
-    """A query matching nothing is normal while composing sets; a layer with no segments is
-    not, and would sit in the layer bar looking like a bug."""
+    """An empty set adds no layer, with a note."""
     state = _state(_seg("seg", ["1"]))
     out, made, notes = subset_layers(state, "seg", {"KCs": ["1"], "nothing": []})
     assert made == {"KCs": "KCs"}
@@ -849,8 +735,7 @@ def test_an_empty_set_makes_no_layer_and_says_so():
 
 
 def test_set_layers_replace_the_original_IN_PLACE_and_keep_it_emptied():
-    """Same two rules as the per-segment split: draw order is layer order, and a dangling
-    layer name resolves to nothing in silence."""
+    """Same rules as the per-segment split: in place, original kept hidden."""
     state = _state({"type": "image", "name": "em", "source": "zarr://s3://my-bucket/em"},
                    _seg("seg", ["1", "2"]),
                    _seg("rois", ["9"]))
@@ -873,7 +758,7 @@ def test_a_set_name_colliding_with_a_layer_is_renamed_and_reported():
 
 
 def test_timeline_sets_returns_the_layer_names_and_they_animate():
-    """The whole point: a set fades as one object."""
+    """A set fades as one object."""
     tl = Timeline(_state(_seg("seg", ["1", "2", "3"])), fps=10.0)
     made = tl.sets("seg", {"KCs": ["1", "2"], "MBONs": ["3"]},
                    colors={"KCs": "#ffcc33", "MBONs": "#ff4d4d"})
@@ -885,13 +770,7 @@ def test_timeline_sets_returns_the_layer_names_and_they_animate():
 
 
 def test_rotation_safe_framing_fits_the_DIAGONAL_not_the_box():
-    """A box framed at one angle exceeds the frame at another as its long axis swings towards
-    the vertical. The bounding sphere is the only extent rotation cannot grow.
-
-    Measured on the real head mesh: framed on the box, 6 of 9 angles of a full turn clipped;
-    on the diagonal, 0 of 9. It costs size — the diagonal of that box is 1.5x its longest
-    axis, paid at every angle.
-    """
+    """`rotation_safe` fits the bounding sphere, which no rotation can push out of frame."""
     import math
 
     tl = Timeline(_state(_seg("s", ["1"])), fps=10.0)
@@ -915,10 +794,8 @@ def test_rotation_safe_still_honours_the_margin():
 
 
 def test_a_set_colour_is_normalised_to_hex_whatever_form_it_arrives_in():
-    """`segmentDefaultColor` must be #rrggbb, and anything else is IGNORED rather than
-    refused — so a matplotlib-style (0.12, 0.47, 0.71), which is what a palette hands you,
-    would stringify to something unparseable and every body would fall back to its hash
-    colour. The whole scene comes out in the wrong palette and nothing says so."""
+    """neuroglancer ignores a `segmentDefaultColor` that is not #rrggbb, so tuples and names
+    are converted."""
     state = _state(_seg("seg", ["1"]))
     out, _, _ = subset_layers(state, "seg", {"a": ["1"]},
                               colors={"a": (0.12156862745098039, 0.4666666666666667,

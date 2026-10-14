@@ -1,8 +1,7 @@
 """`neu-glance annotate`: a local annotation layer from coordinates the caller supplies.
 
-The assertions that matter are the ones about *where* an annotation ends up, because a
-misplaced annotation is a perfectly valid annotation: the zyx -> xyz flip, and the unit
-conversions. Neither fails loudly, and both put things somewhere real but wrong.
+The checks that matter are where an annotation lands (the zyx -> xyz flip, unit
+conversion), since a misplaced annotation is still a valid one.
 """
 
 import json
@@ -19,11 +18,8 @@ from neu_glance import cli, layers as _layers
 
 @pytest.fixture
 def volume(tmp_path):
-    """A small anisotropic pyramid: level 1 is (1,2,2) of level 0, not (2,2,2).
-
-    Anisotropy is the point — it is what distinguishes reading the real per-level voxel
-    sizes from assuming 2**N, and (1,2,2) is the common real pyramid.
-    """
+    """An anisotropic pyramid, 40x8x8 nm, level 1 a (1, 2, 2) downsample: assuming 2**N
+    per level would get it wrong."""
     data = np.zeros((16, 32, 32), dtype=np.uint8)
     data[2:6, 4:8, 4:8] = 3
     src = str(tmp_path / "src.zarr")
@@ -56,7 +52,7 @@ def _csv(tmp_path, name, text):
 # geometry and the flip
 # --------------------------------------------------------------------------- #
 def test_points_from_csv_are_written_xyz(tmp_path, volume, capsys):
-    """Columns are read as zyx and written as xyz. Getting this wrong mirrors the set."""
+    """Columns are read as zyx and written as xyz."""
     path = _csv(tmp_path, "p.csv", "z,y,x\n1,2,3\n4,5,6\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path)
 
@@ -66,21 +62,15 @@ def test_points_from_csv_are_written_xyz(tmp_path, volume, capsys):
 
 
 def test_columns_are_found_by_name_not_position(tmp_path, volume, capsys):
-    """A real synapse table has its own column order and extra columns."""
+    """Extra columns and any column order are fine."""
     path = _csv(tmp_path, "p.csv",
                 "body,x,confidence,z,note,y\n99,3,0.8,1,hi,2\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path)
     assert layer["annotations"][0]["point"] == [3, 2, 1]
 
 
-def test_a_missing_column_says_which_one(tmp_path, volume):
-    path = _csv(tmp_path, "p.csv", "z,y\n1,2\n")
-    with pytest.raises(SystemExit, match=r"needs column\(s\) x"):
-        cli.main(["annotate","--volume", volume, "--points", path])
-
-
 def test_box_corners_are_sorted_but_line_direction_is_kept(tmp_path, volume, capsys):
-    """A reversed bbox renders as nothing; a reversed line is a line the other way."""
+    """A reversed box would render as nothing; a reversed line is just the other way."""
     boxes = _csv(tmp_path, "b.csv", "z0,y0,x0,z1,y1,x1\n8,8,8,2,2,2\n")
     lines = _csv(tmp_path, "l.csv", "z0,y0,x0,z1,y1,x1\n8,8,8,2,2,2\n")
     layer, _ = _run(capsys, "--volume", volume, "--boxes", boxes, "--lines", lines)
@@ -102,7 +92,7 @@ def test_ellipsoids_carry_centre_and_radii(tmp_path, volume, capsys):
 
 
 def test_one_layer_may_mix_kinds(tmp_path, volume, capsys):
-    """Local annotations allow it; a precomputed source is one type per source."""
+    """Local annotation layers may mix types."""
     path = _csv(tmp_path, "p.csv", "z,y,x\n1,2,3\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path,
                     "--box", "0,0,0,4,4,4", "--line", "1,1,1,2,2,2")
@@ -124,7 +114,7 @@ def test_ids_and_descriptions_come_from_the_csv(tmp_path, volume, capsys):
 
 
 def test_segments_are_strings_in_a_per_relationship_array(tmp_path, volume, capsys):
-    """A uint64 body id does not survive a JSON number, and the field is nested."""
+    """uint64 ids stay strings, one list per relationship."""
     path = _csv(tmp_path, "p.csv",
                 "z,y,x,segments\n1,2,3,22032970 22032971\n4,5,6,10000000000000000001\n")
     layer, err = _run(capsys, "--volume", volume, "--points", path)
@@ -137,9 +127,8 @@ def test_segments_are_strings_in_a_per_relationship_array(tmp_path, volume, caps
 # relationships bound to segmentation layers (--link)
 # --------------------------------------------------------------------------- #
 def test_link_binds_each_relationship_to_its_layer(tmp_path, volume, capsys):
-    """One annotation naming a body in the reference AND a segment in a delivery, each
-    selectable in its own layer. `annotationRelationships` must be plain NAMES: a list of
-    (name, layer) pairs is what the viewer rejects with "expected a string"."""
+    """Each relationship binds to its own layer. `annotationRelationships` must be plain
+    names; the viewer rejects (name, layer) pairs with "expected a string"."""
     path = _csv(tmp_path, "l.csv",
                 "z0,y0,x0,z1,y1,x1,segments:gt,segments:vi\n"
                 "1,2,3,4,5,6,2034 2153,139245\n")
@@ -153,8 +142,8 @@ def test_link_binds_each_relationship_to_its_layer(tmp_path, volume, capsys):
 
 
 def test_segment_lists_follow_the_LINK_order_not_the_column_order(tmp_path, volume, capsys):
-    """Neuroglancer pairs each list with a relationship by POSITION, so a CSV that happens
-    to put its columns the other way round must not swap which layer the ids select in."""
+    """Neuroglancer pairs segment lists with relationships by position, so the lists
+    follow the --link order."""
     path = _csv(tmp_path, "p.csv", "z,y,x,segments:vi,segments:gt\n1,2,3,7,9\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path,
                     "--link", "gt=G", "--link", "vi=V")
@@ -163,8 +152,7 @@ def test_segment_lists_follow_the_LINK_order_not_the_column_order(tmp_path, volu
 
 
 def test_an_empty_relationship_is_an_empty_list_not_a_shifted_one(tmp_path, volume, capsys):
-    """A delivery with nothing at the point is an answer; dropping its list would move the
-    next relationship's ids into its slot."""
+    """Dropping an empty list would shift the next relationship's ids into its slot."""
     path = _csv(tmp_path, "p.csv", "z,y,x,segments:gt,segments:vi\n1,2,3,,5\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path,
                     "--link", "gt=G", "--link", "vi=V")
@@ -187,55 +175,36 @@ def test_without_link_the_layer_is_unchanged(tmp_path, volume, capsys):
     assert layer["annotations"][0]["segments"] == [["42"]]
 
 
-def test_relationship_columns_without_any_link_are_refused(tmp_path, volume):
-    path = _csv(tmp_path, "p.csv", "z,y,x,segments:gt\n1,2,3,42\n")
-    with pytest.raises(SystemExit, match="no --link says which layer"):
-        cli.main(["annotate", "--volume", volume, "--points", path])
-
-
-def test_a_relationship_nobody_linked_is_refused_rather_than_dropped(tmp_path, volume):
-    path = _csv(tmp_path, "p.csv", "z,y,x,segments:gt,segments:vi\n1,2,3,1,2\n")
-    with pytest.raises(SystemExit, match="vi appear in the input but no --link"):
-        cli.main(["annotate", "--volume", volume, "--points", path, "--link", "gt=G"])
-
-
-def test_a_relationship_linked_twice_is_refused(tmp_path, volume):
-    path = _csv(tmp_path, "p.csv", "z,y,x\n1,2,3\n")
-    with pytest.raises(SystemExit, match="twice"):
-        cli.main(["annotate", "--volume", volume, "--points", path,
-                  "--link", "gt=A", "--link", "gt=B"])
-
-
 def test_a_linked_layer_may_have_relationships_no_annotation_uses(tmp_path, volume, capsys):
-    """A delivery that does not reach a region still belongs to the layer: linking it and
-    listing nothing is correct, not an error."""
+    """A linked relationship no annotation uses gets an empty list."""
     path = _csv(tmp_path, "p.csv", "z,y,x,segments:gt\n1,2,3,5\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path,
                     "--link", "gt=G", "--link", "vi=V")
     assert layer["annotations"][0]["segments"] == [["5"], []]
 
 
-def test_a_segment_id_that_went_through_a_spreadsheet_is_rejected(tmp_path, volume):
-    """`1.23e+18` is what Excel does to a body id, and it links to nothing."""
-    path = _csv(tmp_path, "p.csv", "z,y,x,segments\n1,2,3,1.23e+18\n")
-    with pytest.raises(SystemExit, match="not a whole number"):
-        cli.main(["annotate","--volume", volume, "--points", path])
-
-
-def test_duplicate_ids_are_refused(tmp_path, volume):
-    path = _csv(tmp_path, "p.csv", "id,z,y,x\nsame,1,2,3\nsame,4,5,6\n")
-    with pytest.raises(SystemExit, match="duplicate annotation id"):
-        cli.main(["annotate","--volume", volume, "--points", path])
+@pytest.mark.parametrize("csv,extra,match", [
+    ("z,y\n1,2\n", [], r"needs column\(s\) x"),
+    # what a spreadsheet does to a body id
+    ("z,y,x,segments\n1,2,3,1.23e+18\n", [], "not a whole number"),
+    ("id,z,y,x\nsame,1,2,3\nsame,4,5,6\n", [], "duplicate annotation id"),
+    ("z,y,x,segments:gt\n1,2,3,42\n", [], "no --link says which layer"),
+    ("z,y,x,segments:gt,segments:vi\n1,2,3,1,2\n", ["--link", "gt=G"],
+     "vi appear in the input but no --link"),
+    ("z,y,x\n1,2,3\n", ["--link", "gt=A", "--link", "gt=B"], "twice"),
+], ids=["missing-column", "spreadsheet-id", "duplicate-id", "unlinked-columns",
+        "one-unlinked", "linked-twice"])
+def test_a_bad_input_is_refused(tmp_path, volume, csv, extra, match):
+    path = _csv(tmp_path, "p.csv", csv)
+    with pytest.raises(SystemExit, match=match):
+        cli.main(["annotate", "--volume", volume, "--points", path, *extra])
 
 
 # --------------------------------------------------------------------------- #
-# units: the failure mode of the whole command
+# units
 # --------------------------------------------------------------------------- #
 def test_scale_uses_the_real_per_level_voxel_sizes(tmp_path, volume, capsys):
-    """With factors (1,2,2), a scale-1 voxel is 1 level-0 voxel in z and 2 in y/x.
-
-    2**N would move z as well, putting every annotation in the wrong plane.
-    """
+    """With factors (1, 2, 2), a scale-1 voxel is 1 level-0 voxel in z and 2 in y and x."""
     path = _csv(tmp_path, "p.csv", "z,y,x\n3,4,5\n")
     layer, err = _run(capsys, "--volume", volume, "--points", path, "--scale", "1")
     assert layer["annotations"][0]["point"] == [10, 8, 3]      # xyz: x2, x2, x1
@@ -243,7 +212,7 @@ def test_scale_uses_the_real_per_level_voxel_sizes(tmp_path, volume, capsys):
 
 
 def test_nm_divides_by_the_level0_voxel_size(tmp_path, volume, capsys):
-    """The pyramid is 40x8x8 nm, so z does not convert like y and x."""
+    """40x8x8 nm, so z converts differently from y and x."""
     path = _csv(tmp_path, "p.csv", "z,y,x\n400,80,160\n")
     layer, _ = _run(capsys, "--volume", volume, "--points", path, "--nm")
     assert layer["annotations"][0]["point"] == [20, 10, 10]    # xyz
@@ -257,7 +226,7 @@ def test_scale_without_a_volume_is_refused(tmp_path):
 
 
 def test_coordinates_outside_the_volume_are_reported(tmp_path, volume, capsys):
-    """The only check available against a unit mistake, so it has to be loud."""
+    """The only check against a unit mistake, so it warns and suggests --scale / --nm."""
     path = _csv(tmp_path, "p.csv", "z,y,x\n1,2,3\n99999,2,3\n")
     _, err = _run(capsys, "--volume", volume, "--points", path)
     assert "WARNING: 1 annotation(s) fall outside" in err
@@ -301,7 +270,7 @@ def test_out_writes_the_layer(tmp_path, volume, capsys):
 
 
 def test_the_layer_composes_with_gen(tmp_path, volume, capsys):
-    """The whole point of emitting a layer: `gen --layer` inlines it."""
+    """`gen --layer` inlines the emitted layer."""
     from neu_glance.state import parse_url
 
     out = tmp_path / "layer.json"
@@ -316,17 +285,13 @@ def test_the_layer_composes_with_gen(tmp_path, volume, capsys):
 
 
 def test_the_cli_column_spec_matches_the_layers_one():
-    """The parser needs the columns at build time, so cli.py repeats them.
-
-    Importing `layers` at parser-build time would pull neu-vol into every
-    `neu-glance --help`, so the duplication stays — and this is what keeps it from drifting.
-    """
+    """cli.py keeps its own copy (importing `layers` would load neu-vol for --help)."""
     assert cli._ANN_CSV_COLUMNS == _layers.CSV_COLUMNS
     assert {k for _p, k in cli._ANN_FLAGS} == set(_layers.KINDS)
 
 
 def test_occupancy_boxes_still_go_through_the_shared_builder(tmp_path, volume, capsys):
-    """`bboxes` and `annotate` share local_layer/build_annotation."""
+    """`bboxes` builds its boxes through the same local-layer builder."""
     assert cli.main(["bboxes", volume, "--no-tighten"]) == 0
     layer = json.loads(capsys.readouterr().out)
     assert layer["source"]["url"] == "local://annotations"

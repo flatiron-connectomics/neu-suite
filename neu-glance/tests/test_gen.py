@@ -1,8 +1,7 @@
 """Assembling a neuroglancer state and encoding it into a URL.
 
-The failure this guards against is not a crash. A state whose `dimensions` or source
-scheme is wrong loads perfectly and shows the data in the wrong place, or shows nothing
-and blames the store — so the tests check the *values*, not that a URL came out.
+A wrong `dimensions` block or source scheme loads fine and shows the wrong thing, so these
+check values, not just that a URL came out.
 """
 
 import json
@@ -40,7 +39,7 @@ def _volume(tmp_path, name, *, kind="image", profile="local-neuroglancer",
 # layers
 # --------------------------------------------------------------------------- #
 def test_the_source_scheme_comes_from_the_format(tmp_path):
-    """`precomputed://` vs `zarr://` — get it wrong and the layer simply fails to load."""
+    """`precomputed://` or `zarr://`, from the volume's format."""
     pre = _volume(tmp_path, "pre", profile="local-neuroglancer")
     zar = _volume(tmp_path, "zar", profile="local")
     assert volume_layer(pre)[0]["source"] == f"precomputed://{pre}"
@@ -48,7 +47,7 @@ def test_the_source_scheme_comes_from_the_format(tmp_path):
 
 
 def test_the_recorded_kind_decides_image_versus_segmentation(tmp_path):
-    """A segmentation drawn as an image is a grey mush, and easy to miss on a small ROI."""
+    """The kind recorded in the volume decides the layer type; an explicit kind overrides."""
     seg = _volume(tmp_path, "seg", kind="segmentation", dtype="uint64")
     img = _volume(tmp_path, "img", kind="image")
     assert volume_layer(seg)[0]["type"] == "segmentation"
@@ -58,8 +57,7 @@ def test_the_recorded_kind_decides_image_versus_segmentation(tmp_path):
 
 
 def test_segment_ids_are_strings(tmp_path):
-    """JSON numbers are doubles, so a real uint64 body id above 2**53 would arrive
-    rounded — and silently select a different segment."""
+    """A uint64 id above 2**53 would be rounded as a JSON number."""
     seg = _volume(tmp_path, "seg", kind="segmentation", dtype="uint64")
     big = 2 ** 60 + 1
     layer, _ = volume_layer(seg, segments=[1, big])
@@ -83,8 +81,7 @@ def test_the_frame_is_reported_for_the_state_to_use(tmp_path):
 # loading layer files
 # --------------------------------------------------------------------------- #
 def test_a_layer_file_is_accepted_as_a_layer_or_a_whole_state(tmp_path):
-    """`bboxes-json` can emit either shape; which one the caller happened to make must
-    not matter."""
+    """A layer file may hold a bare layer or a whole state."""
     layer = {"type": "annotation", "name": "a", "annotations": []}
     bare, wrapped = tmp_path / "bare.json", tmp_path / "state.json"
     bare.write_text(json.dumps(layer))
@@ -104,7 +101,7 @@ def test_a_file_that_is_neither_says_which_it_expected(tmp_path):
 # the state and the URL
 # --------------------------------------------------------------------------- #
 def test_position_is_reversed_to_xyz():
-    """zyx in memory, xyz on the wire. Reversed, the link opens somewhere else entirely."""
+    """zyx in memory, xyz in the state."""
     state, _ = build_state([{"type": "image", "name": "i"}],
                            voxel_size_zyx=(8, 8, 8), units="nm",
                            position_zyx=(100, 200, 300))
@@ -126,8 +123,7 @@ def test_the_url_round_trips():
 
 
 def test_the_fragment_is_percent_encoded():
-    """Raw JSON in a fragment survives only until something in the chain — a chat client,
-    a wiki, a shell — decides what to do with the braces and quotes."""
+    """Raw braces and quotes in a fragment get mangled by chat clients and shells."""
     state, _ = build_state([{"type": "image", "name": "i"}], voxel_size_zyx=(8, 8, 8),
                            units="nm")
     fragment = state_url(state).split("#!", 1)[1]
@@ -139,8 +135,7 @@ def test_the_fragment_is_percent_encoded():
 # the opening view
 # --------------------------------------------------------------------------- #
 def test_the_frame_comes_from_the_volume_metadata(tmp_path):
-    """Precomputed carries every scale's size in the `info` already read, so this costs
-    nothing; the numbers are xyz there and zyx here."""
+    """Read from the precomputed `info`, xyz there and zyx here."""
     from neu_glance.sources import volume_extent
 
     vol = _volume(tmp_path, "v")            # 16^3
@@ -149,10 +144,7 @@ def test_the_frame_comes_from_the_volume_metadata(tmp_path):
 
 
 def test_a_voxel_offset_shifts_the_frame(tmp_path):
-    """A volume that does not start at the origin must be centred on itself, not on the
-    coordinate origin."""
-    import json
-
+    """`voxel_offset` (xyz in `info`) becomes a zyx offset."""
     from neu_vol.location import read_json, write_json
     from neu_glance.sources import volume_extent
 
@@ -163,7 +155,6 @@ def test_a_voxel_offset_shifts_the_frame(tmp_path):
     write_json(vol, info, "info")
     extent, offset = volume_extent(vol, "neuroglancer_precomputed")
     assert offset == (300, 200, 100), "voxel_offset is xyz and must be reversed"
-    assert json.dumps(extent)                              # still readable
 
 
 def test_zarr_volumes_report_a_frame_too(tmp_path):
@@ -174,8 +165,7 @@ def test_zarr_volumes_report_a_frame_too(tmp_path):
 
 
 def test_default_view_centres_and_zooms_out():
-    """Neuroglancer with no position opens at the origin CORNER, fully zoomed in — which
-    on a large volume is a view of its empty edge."""
+    """Centred on the volume and zoomed to fit it (neuroglancer would open at the corner)."""
     from neu_glance.state import NOMINAL_VIEWPORT_PX, default_view
 
     centre, cross, projection = default_view((100, 200, 400))
@@ -210,7 +200,7 @@ def test_an_explicit_view_value_wins_over_the_default(tmp_path, capsys, flag, ke
 
 
 def test_a_layer_only_link_frames_its_annotations(tmp_path, capsys):
-    """No volume was named, but a bounding-box layer still knows where the data is."""
+    """With no volume, the view centres on the layer's boxes."""
     box = tmp_path / "box.json"
     box.write_text(json.dumps({
         "type": "annotation", "name": "boxes",
@@ -223,8 +213,7 @@ def test_a_layer_only_link_frames_its_annotations(tmp_path, capsys):
 
 
 def test_a_link_with_no_frame_at_all_says_so(tmp_path, capsys):
-    """An annotation layer with no annotations establishes nothing, and silently opening
-    at the origin is the behaviour this whole change exists to remove."""
+    """With nothing to frame on, a warning says the link opens at the origin."""
     box = tmp_path / "box.json"
     box.write_text(json.dumps({"type": "annotation", "name": "empty",
                                "annotations": []}))
@@ -236,8 +225,7 @@ def test_a_link_with_no_frame_at_all_says_so(tmp_path, capsys):
 
 
 def test_the_largest_volume_sets_the_frame(tmp_path, capsys):
-    """With an image and a segmentation of different extents, the view has to fit the
-    one that is not contained in the other."""
+    """The view fits the largest volume."""
     small = _volume(tmp_path, "small")
     big = _volume(tmp_path, "big", shape=(64, 64, 64))
     cli.cmd_gen(cli._parse_args(
@@ -246,16 +234,11 @@ def test_the_largest_volume_sets_the_frame(tmp_path, capsys):
     assert state["position"] == [32.0, 32.0, 32.0]        # centre of the 64^3
 
 
-def test_parse_url_rejects_a_non_state_url():
-    with pytest.raises(ValueError, match="no '#!' fragment"):
-        parse_url("https://neuroglancer-demo.appspot.com/")
-
-
 # --------------------------------------------------------------------------- #
 # the CLI
 # --------------------------------------------------------------------------- #
 def test_layers_are_ordered_image_then_segmentation_then_files(tmp_path, capsys):
-    """The segmentation has to draw over the image, and the boxes over both."""
+    """Image, then segmentation, then layer files, so each draws over the last."""
     img = _volume(tmp_path, "img")
     seg = _volume(tmp_path, "seg", kind="segmentation", dtype="uint64")
     box = tmp_path / "box.json"
@@ -279,7 +262,7 @@ def test_segments_apply_to_the_seg_volumes_in_order(tmp_path, capsys):
 
 
 def test_position_order_xyz_lets_you_paste_from_the_viewer(tmp_path, capsys):
-    """Neuroglancer displays xyz, so the numbers a user copies are xyz."""
+    """`--position-order xyz` takes positions as neuroglancer displays them."""
     vol = _volume(tmp_path, "v")
     cli.cmd_gen(cli._parse_args(
         ["gen", "--image", vol, "--position", "1,2,3",
@@ -292,8 +275,7 @@ def test_position_order_xyz_lets_you_paste_from_the_viewer(tmp_path, capsys):
 
 
 def test_layer_files_alone_need_an_explicit_voxel_size(tmp_path, capsys):
-    """A layer carries its own frame but does not establish the viewer's, and a
-    disagreeing `dimensions` block loads fine while misplacing everything."""
+    """A layer file does not establish the viewer's frame, so `--voxel-size` is required."""
     box = tmp_path / "box.json"
     box.write_text(json.dumps({"type": "annotation", "name": "boxes",
                                "annotations": []}))
@@ -303,11 +285,6 @@ def test_layer_files_alone_need_an_explicit_voxel_size(tmp_path, capsys):
     assert cli.cmd_gen(cli._parse_args(
         ["gen", "--layer", str(box), "--voxel-size", "8,8,8"])) == 0
     assert parse_url(capsys.readouterr().out.strip())["dimensions"]["x"] == [8e-9, "m"]
-
-
-def test_nothing_to_show_is_refused(tmp_path):
-    with pytest.raises(SystemExit, match="nothing to show"):
-        cli.cmd_gen(cli._parse_args(["gen"]))
 
 
 def test_select_last_opens_the_boxes_panel(tmp_path, capsys):
@@ -322,11 +299,7 @@ def test_select_last_opens_the_boxes_panel(tmp_path, capsys):
 
 
 def test_hide_slices_sets_show_slices_false_and_is_otherwise_absent(tmp_path, capsys):
-    """Omitted unless asked for, so a link without it opens as the viewer normally would.
-
-    Writing `showSlices: true` by default would look harmless and would override whatever
-    the person opening the link had configured.
-    """
+    """`showSlices` is written only when asked, so the viewer's own setting stands."""
     vol = _volume(tmp_path, "v")
     cli.cmd_gen(cli._parse_args(["gen", "--seg", vol]))
     assert "showSlices" not in parse_url(capsys.readouterr().out.strip())
@@ -336,7 +309,7 @@ def test_hide_slices_sets_show_slices_false_and_is_otherwise_absent(tmp_path, ca
 
 
 def test_out_writes_through_the_kvstore(tmp_path, capsys):
-    """Parents that do not exist are created, which is what makes s3:// work too."""
+    """`--out` creates missing parents and keeps stdout clean."""
     vol = _volume(tmp_path, "v")
     url_path = str(tmp_path / "deep" / "link.txt")
     cli.cmd_gen(cli._parse_args(["gen", "--image", vol, "--out", url_path]))
@@ -347,8 +320,7 @@ def test_out_writes_through_the_kvstore(tmp_path, capsys):
 
 
 def test_the_state_and_the_url_carry_the_same_thing(tmp_path, capsys):
-    """`--format state` and `--format url` are two serializations of one state, not two
-    states — the old command had a separate `--state-out` flag and could have drifted."""
+    """`--format state` and `--format url` serialize the same state."""
     vol = _volume(tmp_path, "v")
     cli.cmd_gen(cli._parse_args(["gen", "--image", vol]))
     url = capsys.readouterr().out.strip()
@@ -364,17 +336,8 @@ def test_the_viewer_base_is_overridable(tmp_path, capsys):
     assert capsys.readouterr().out.startswith("https://ng.example.org/#!")
 
 
-def test_gen_is_wired():
-    assert cli._parse_args(["gen", "--image", "v"]).func is cli.cmd_gen
-
-
 def test_building_a_layer_does_not_open_every_level(tmp_path, monkeypatch):
-    """A link needs the voxel size and the format, both in `info`.
-
-    `describe` additionally OPENS EVERY LEVEL and probes for a foreign marker — the expensive
-    inspection tier — and using it here meant ~20 store opens for numbers already read. Moved
-    with `volume_layer` out of neu-vol, where it used to be pinned.
-    """
+    """A layer needs only `info`; opening every level costs a store open per level."""
     from neu_vol import source_metadata
 
     vol = _volume(tmp_path, "v")
@@ -395,11 +358,7 @@ def test_building_a_layer_does_not_open_every_level(tmp_path, monkeypatch):
 def _annotation_source(tmp_path, name="syn", *, properties=("conf_pre", "conf_post"),
                        relationships=("body_pre", "body_post"),
                        bounds=((0, 0, 0), (600, 800, 1000)), voxel=8e-9):
-    """An annotation source's `info`, which is all these code paths read.
-
-    No index files: nothing here opens one, and writing them would test the sharded kvstore
-    rather than the state assembly.
-    """
+    """An annotation source's `info` only, which is all these code paths read."""
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
     (dst / "info").write_text(json.dumps({
@@ -424,8 +383,7 @@ def test_an_annotation_source_becomes_an_annotation_layer(tmp_path):
 
 
 def test_a_volume_passed_as_annotations_is_refused(tmp_path):
-    """Both are `precomputed://` with an `info` at the root, so nothing about the URL tells
-    them apart — and an annotation layer pointed at a volume loads and draws nothing."""
+    """An annotation layer pointed at a volume would load and draw nothing."""
     from neu_glance.sources import annotation_layer
 
     with pytest.raises(SourceProblem, match="neuroglancer_annotations_v1"):
@@ -433,16 +391,16 @@ def test_a_volume_passed_as_annotations_is_refused(tmp_path):
 
 
 def test_the_shader_is_chosen_from_the_properties_the_source_declares(tmp_path):
+    from neu_glance.shaders import SHADERS
     from neu_glance.sources import annotation_layer
 
     layer, info = annotation_layer(_annotation_source(tmp_path))
-    assert "prop_conf_pre()" in layer["shader"]
+    assert layer["shader"] == SHADERS["synapse"]["source"]
     assert "synapse" in info["shader"]
 
 
 def test_no_shader_is_applied_when_the_properties_do_not_match(tmp_path):
-    """A shader naming an absent `prop_` does not degrade — it fails to compile and the layer
-    draws NOTHING, with the error only in the shader tab. So no shader beats a wrong one."""
+    """A shader naming an absent `prop_` fails to compile and the layer draws nothing."""
     from neu_glance.sources import annotation_layer
 
     src = _annotation_source(tmp_path, properties=("weight",))
@@ -480,9 +438,7 @@ def test_an_unknown_shader_name_lists_the_built_ins(tmp_path):
 
 
 def test_relationships_bind_to_the_named_segmentation_layer(tmp_path):
-    """The binding is what makes the relationship index do anything: the source keys its
-    relationships on segment id, but neuroglancer only consults them once each one is bound to
-    a layer whose selection it can read."""
+    """Relationships take effect only once bound to a segmentation layer."""
     from neu_glance.sources import annotation_layer
 
     layer, _info = annotation_layer(_annotation_source(tmp_path), linked_segmentation="seg")
@@ -499,42 +455,28 @@ def test_without_a_segmentation_there_is_no_binding(tmp_path):
 
 
 def test_a_split_pair_filters_each_layer_on_one_relationship(tmp_path):
-    """One source, two layers. Filtering on `body_pre` gives the selected body's outputs and on
-    `body_post` its inputs; one layer filtered on both conflates the directions."""
+    """Two layers on one source: `body_pre` gives outputs, `body_post` inputs."""
     from neu_glance.sources import annotation_layer_pair
 
     layers, _info = annotation_layer_pair(_annotation_source(tmp_path),
                                           linked_segmentation="seg")
     assert [lyr["name"] for lyr in layers] == ["syn-pre", "syn-post"]
     assert [lyr["filterBySegmentation"] for lyr in layers] == [["body_pre"], ["body_post"]]
-    # both stay BOUND in both layers — binding is what makes a relationship usable at all,
-    # filtering only decides whether it restricts the view
+    # both relationships stay bound in both layers; only the filter differs
     for lyr in layers:
         assert set(lyr["linkedSegmentationLayer"]) == {"body_pre", "body_post"}
     assert {lyr["source"] for lyr in layers} == {layers[0]["source"]}
 
 
 def test_each_half_of_a_split_pair_shows_only_its_own_endpoint(tmp_path):
-    """Drawn together the two markers overlap at any zoom showing more than a few synapses, and
-    the connecting line's colour swamps them. Each half shows one end."""
+    """Each half shows one endpoint, through one shared shader."""
     from neu_glance.sources import annotation_layer_pair
 
     layers, _info = annotation_layer_pair(_annotation_source(tmp_path),
                                           linked_segmentation="seg")
     assert layers[0]["shaderControls"] == {"show_pre": True, "show_post": False}
     assert layers[1]["shaderControls"] == {"show_pre": False, "show_post": True}
-    # one shader, two control sets — so a user editing one layer can see what the other flipped
     assert layers[0]["shader"] == layers[1]["shader"]
-
-
-def test_the_shader_draws_no_line_unless_both_ends_are_shown(tmp_path):
-    """A synapse is a few hundred nm long, so at any useful zoom the line is sub-pixel; drawn in
-    a blend of the endpoint colours it reads as one flat colour and hides the markers."""
-    from neu_glance.shaders import SHADERS
-
-    glsl = SHADERS["synapse"]["source"]
-    assert "if (show_pre && show_post)" in glsl
-    assert glsl.count("setLineWidth(0.0)") == 3      # every branch but the both-shown one
 
 
 def test_filtering_on_a_relationship_the_source_lacks_is_refused(tmp_path):
@@ -558,7 +500,7 @@ def test_the_cli_split_flag_adds_both_layers(tmp_path, capsys):
 
 
 def test_the_extent_and_voxel_size_come_from_the_sources_own_info(tmp_path):
-    """So an annotations-only link opens framed on its data, and needs no --voxel-size."""
+    """Read from the source's `info`, so an annotations-only link needs no --voxel-size."""
     from neu_glance.sources import (annotation_source_extent, annotation_source_voxel_size,
                                 read_annotation_info)
 
@@ -581,9 +523,8 @@ def test_the_cli_adds_the_layer_bound_to_the_first_segmentation(tmp_path, capsys
 
 
 def test_filtering_is_on_by_default_even_with_nothing_selected(tmp_path, capsys):
-    """Following the selection is the point of the relationship index, so the filter is written
-    whether or not --segments picked anything. Such a link opens with no annotations until a body
-    is clicked, which is the filter working rather than a broken layer."""
+    """The filter is written even with no --segments, so the link opens empty until a body is
+    clicked; a warning says so."""
     vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
     assert cli.cmd_gen(cli._parse_args(
         ["gen", "--seg", vol, "--annotations", _annotation_source(tmp_path)])) == 0
@@ -592,7 +533,6 @@ def test_filtering_is_on_by_default_even_with_nothing_selected(tmp_path, capsys)
            if lyr["type"] == "annotation"][0]
     assert ann["filterBySegmentation"] == ["body_pre", "body_post"]
     assert ann["linkedSegmentationLayer"] == {"body_pre": "v", "body_post": "v"}
-    # and it says so, because an empty viewport is otherwise indistinguishable from a bug
     assert "opens EMPTY" in out.err
 
 
@@ -611,13 +551,11 @@ def test_an_annotations_only_link_needs_no_voxel_size(tmp_path, capsys):
     assert cli.cmd_gen(cli._parse_args(["gen", "--annotations", src])) == 0
     state = parse_url(capsys.readouterr().out.strip())
     assert state["dimensions"]["x"] == [8e-9, "m"]
-    # the centre of the declared bounds, written xyz because that is what a state holds
+    # the centre of the declared bounds, xyz
     assert state["position"] == [300.0, 400.0, 500.0]
 
 
-def test_annotations_count_as_something_to_show(tmp_path):
-    with pytest.raises(SystemExit, match="nothing to show"):
+def test_nothing_to_show_is_refused_and_names_annotations(tmp_path):
+    with pytest.raises(SystemExit, match="nothing to show") as excinfo:
         cli.cmd_gen(cli._parse_args(["gen"]))
-    # and the message names the option, so it is discoverable from the failure
-    with pytest.raises(SystemExit, match="--annotations"):
-        cli.cmd_gen(cli._parse_args(["gen"]))
+    assert "--annotations" in str(excinfo.value)

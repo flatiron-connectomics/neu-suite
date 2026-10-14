@@ -1,8 +1,5 @@
-"""The output stage the three producers share: ``--format``, ``--into``, ``--out``.
-
-This is where the split from `neu-vol` actually changed behaviour rather than moving it, so the
-assertions here are about the new contract: one state builder behind all three formats, and a
-merge that leaves the incoming view alone.
+"""The output stage the three producers share (``--format``, ``--into``, ``--out``), plus
+`parse`, `shaders`, `help` and the import contract.
 """
 
 import json
@@ -42,8 +39,7 @@ def _out(capsys):
 # --format
 # --------------------------------------------------------------------------- #
 def test_gen_defaults_to_a_url_and_bboxes_to_a_layer(volume, capsys):
-    """Each command keeps the default its `neu-vol` predecessor had, so the break is in the
-    names only and not in what a command does when you run it the same way."""
+    """`gen` defaults to a URL, `bboxes` to a layer."""
     cli.main(["gen", "--image", volume])
     assert _out(capsys).startswith("https://")
 
@@ -64,8 +60,7 @@ def test_every_producer_can_emit_all_three_formats(volume, capsys):
 
 
 def test_a_state_from_a_producer_includes_the_volume(volume, capsys):
-    """A layer is the default and needs no volume. A whole state without one shows
-    annotations floating in nothing."""
+    """`--format state` includes the volume layer under the annotations."""
     cli.main(["annotate", "--volume", volume, "--point", "1,2,3", "--format", "state"])
     state = json.loads(_out(capsys))
     assert state["layers"][0]["type"] == "segmentation"
@@ -73,16 +68,14 @@ def test_a_state_from_a_producer_includes_the_volume(volume, capsys):
 
 
 def test_gen_does_not_offer_format_layer(volume, capsys):
-    """`gen` composes a whole state, so a bare layer is not one of its outputs. Argparse
-    rejects it rather than the command failing later with a count mismatch."""
+    """`gen` makes a whole state, so argparse rejects `--format layer`."""
     with pytest.raises(SystemExit):
         cli.main(["gen", "--image", volume, "--format", "layer"])
     assert "invalid choice" in capsys.readouterr().err
 
 
 def test_into_does_not_add_the_volume_again(tmp_path, volume, capsys):
-    """The state being merged into already has whatever volumes it was built with; adding
-    this one again would duplicate it or collide with its name."""
+    """The state merged into already has its volumes."""
     _base, path = _base_state(tmp_path)
     cli.main(["bboxes", volume, "--no-tighten", "--into", path, "--format", "state"])
     state = json.loads(_out(capsys))
@@ -116,9 +109,7 @@ def _base_state(tmp_path, name="base.json", extra=None):
 
 
 def test_into_appends_and_keeps_the_existing_view(tmp_path, volume, capsys):
-    """"Add a layer to my view" must not move the view — and must not re-derive
-    `dimensions`, since a state whose dimensions disagree with its layers loads fine and
-    puts everything in the wrong place."""
+    """Merging keeps the view and the `dimensions` of the existing state."""
     base, path = _base_state(tmp_path)
     cli.main(["annotate", "--volume", volume, "--point", "1,2,3", "--into", path])
     state = parse_url(_out(capsys))
@@ -129,7 +120,7 @@ def test_into_appends_and_keeps_the_existing_view(tmp_path, volume, capsys):
 
 
 def test_into_accepts_a_url_as_well_as_a_file(tmp_path, volume, capsys):
-    """So it works on a link copied straight out of the browser, with no `parse` step."""
+    """`--into` takes a link copied from the browser."""
     from neu_glance.state import state_url
 
     base, _path = _base_state(tmp_path)
@@ -140,8 +131,8 @@ def test_into_accepts_a_url_as_well_as_a_file(tmp_path, volume, capsys):
 
 
 def test_into_names_the_quoting_trap_for_a_url_that_lost_its_bang(tmp_path, volume):
-    """Double quotes let bash expand `#!%7B...` to `#7B...`. That is still a URL, and must
-    fail as a broken one rather than as "no such file"."""
+    """A URL whose `#!` bash expanded away (double quotes) gets a quoting hint, not
+    "no such file"."""
     from neu_glance.state import state_url
 
     base, _path = _base_state(tmp_path)
@@ -152,8 +143,7 @@ def test_into_names_the_quoting_trap_for_a_url_that_lost_its_bang(tmp_path, volu
 
 
 def test_serve_into_fails_the_same_way_and_before_reading_anything(tmp_path):
-    """The --seg path does not exist, so reaching it would fail differently: the state is
-    checked first."""
+    """The state is checked before the (absent) --seg file is read."""
     pytest.importorskip("neuroglancer", reason="the serve extra is not installed")
     from neu_glance.state import state_url
 
@@ -177,8 +167,7 @@ def test_the_into_error_is_yellow_only_on_a_terminal(monkeypatch):
 
 def test_the_into_error_is_yellow_through_main_despite_the_log_filter(
         tmp_path, volume, monkeypatch):
-    """`quiet_store_logs` swaps fd 2 for a pipe inside `main`, so asking stderr there always
-    says "not a terminal". The answer has to be taken before the swap."""
+    """`main` replaces fd 2 with a pipe, so whether stderr is a terminal is decided before."""
     import io
 
     from neu_glance.state import state_url
@@ -198,8 +187,7 @@ def test_the_into_error_is_yellow_through_main_despite_the_log_filter(
 
 
 def test_into_renames_a_clashing_layer_and_says_so(tmp_path, volume, capsys):
-    """Neuroglancer keys a layer by name, so two layers sharing one is a collision rather
-    than a duplicate — and the second silently shadows the first."""
+    """Neuroglancer keys layers by name, so a clash is renamed, with a note."""
     _base, path = _base_state(
         tmp_path, extra={"layers": [{"type": "annotation", "name": "annotations"}]})
     cli.main(["annotate", "--volume", volume, "--point", "1,2,3", "--into", path])
@@ -232,7 +220,7 @@ def test_into_needs_a_state_not_a_bare_layer(tmp_path, volume):
 
 
 def test_into_needs_no_voxel_size_because_the_state_has_dimensions(tmp_path, capsys):
-    """Without --into this same invocation is refused for having no frame."""
+    """The merged state supplies the frame that a bare layer file lacks."""
     _base, path = _base_state(tmp_path)
     box = tmp_path / "box.json"
     box.write_text(json.dumps({"type": "annotation", "name": "boxes", "annotations": []}))
@@ -243,7 +231,8 @@ def test_into_needs_no_voxel_size_because_the_state_has_dimensions(tmp_path, cap
 
 
 def test_gen_into_with_nothing_to_add_turns_a_state_file_into_its_link(tmp_path, capsys):
-    """The inverse of `parse`. Without --into the same bare `gen` is still refused."""
+    """`gen --into` with nothing to add re-emits the state as a link (the inverse of
+    `parse`)."""
     base, path = _base_state(tmp_path)
     assert cli.main(["gen", "--into", path]) == 0
     assert parse_url(_out(capsys)) == base
@@ -291,8 +280,7 @@ def test_parse_can_list_just_the_layers(volume, capsys):
 
 
 def test_parse_survives_a_layers_entry_that_is_not_an_object(tmp_path, capsys):
-    """A published reference state carries a bare string in `layers` as a comment, so this
-    must not assume every entry is a dict."""
+    """A `layers` entry may be a bare string (used as a comment in published states)."""
     from neu_glance.state import state_url
 
     url = state_url({"layers": ["# a note", {"type": "image", "name": "em"}]})
@@ -322,33 +310,22 @@ def test_an_unknown_shader_name_is_refused():
 # --------------------------------------------------------------------------- #
 # the import contract
 # --------------------------------------------------------------------------- #
-def test_importing_the_package_does_not_pull_in_neu_vol():
-    """`cli` reads __version__ from __init__, so an eager import there would make every
-    `neu-glance --help` pay for tensorstore. The lazy exports are what keep it cheap."""
+@pytest.mark.parametrize("code", [
+    # the lazy exports keep `import neu_glance` (which --help needs) off neu_vol and numpy
+    "import sys, neu_glance; assert 'neu_vol' not in sys.modules; "
+    "assert 'numpy' not in sys.modules; assert neu_glance.build_state",
+    "import sys; from neu_glance import cli; cli.build_parser(); "
+    "assert 'neu_vol' not in sys.modules",
+], ids=["import-package", "build-parser"])
+def test_neu_vol_is_not_imported(code):
     import subprocess
     import sys
 
-    code = ("import sys, neu_glance; "
-            "assert 'neu_vol' not in sys.modules; "
-            "assert 'numpy' not in sys.modules; "
-            "assert neu_glance.build_state")
-    subprocess.run([sys.executable, "-c", code], check=True)
-
-
-def test_building_the_parser_does_not_pull_in_neu_vol():
-    import subprocess
-    import sys
-
-    code = ("import sys; from neu_glance import cli; cli.build_parser(); "
-            "assert 'neu_vol' not in sys.modules, "
-            "'building the parser imported neu_vol'")
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
-    """`neu-glance help serve` and `neu-glance serve --help` are the same thing to everyone
-    except argparse, and being told "invalid choice" for one of them is a poor greeting
-    from a tool whose whole surface is subcommands."""
+    """`neu-glance help serve` prints the same text as `neu-glance serve --help`."""
     assert cli.main(["help"]) == 0
     assert "usage: neu-glance" in capsys.readouterr().out
 
@@ -356,7 +333,6 @@ def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
     printed = capsys.readouterr().out
     assert "usage: neu-glance serve" in printed and "--color" in printed
 
-    # the same text, because re-parsing means there is no second rendering to drift
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["serve", "--help"])
     assert capsys.readouterr().out == printed

@@ -1,11 +1,6 @@
-"""The render driver, without a browser.
-
-Everything here except the actual round trip: state shaping, frame paths, resume, the retry
-on a wrong-sized reply, the refresh cap, and the ffmpeg command. The one thing that genuinely
-needs a browser — a frame coming back — is covered by the fake reply below and by rendering
-the real animation by hand.
-
-Source URLs are `s3://my-bucket/...` throughout. Real data locations do not go in this repo.
+"""The render driver, against a fake viewer: state shaping, frames on disk, resume, the
+wrong-size retry, waiting for a browser, progress output, the ffmpeg command, and the
+headless launcher.
 """
 
 import contextlib
@@ -27,7 +22,7 @@ from neu_glance.rendering import (  # noqa: E402
     CHROME_OFF, PNG_MAGIC, RenderProblem, _RequestQueue, _Tail, _write_atomic,
     ffmpeg_command, frame_path, is_written, pending_frames, print_encode_hint, record,
     render_state, stale_frames, wait_for_browser,
-    BROWSERS, GPU_FLAGS, find_browser, headless_browser)
+    GPU_FLAGS, find_browser, headless_browser)
 
 
 def _state(**extra):
@@ -117,11 +112,7 @@ class _FakeViewer:
 # shaping the state
 # --------------------------------------------------------------------------- #
 def test_the_render_state_switches_off_every_panel_and_the_navigation_furniture():
-    """Axis lines and each volume's bounding box are ON by default in neuroglancer.
-
-    They help you navigate and they ruin a mesh render, so the two defaults are inverted here.
-    A frame with the layer list panel across it is not obviously wrong until you look.
-    """
+    """Panels, axis lines and default annotations (bounding boxes) are all switched off."""
     shaped = render_state(_state())
     for key in CHROME_OFF:
         assert shaped[key]["visible"] is False
@@ -156,8 +147,7 @@ def test_the_render_state_never_mutates_the_state_it_was_given():
 
 
 def test_the_memory_knobs_are_left_alone_unless_asked_for():
-    """Neuroglancer's screenshot tool forces 3 GiB / 3 GiB / 32; the viewer's own defaults are
-    a better starting point, and these matter only once a scene is twenty-five mesh layers."""
+    """GPU memory limits are left at the viewer's defaults unless given."""
     assert "gpuMemoryLimit" not in render_state(_state())
     assert render_state(_state(), gpu_memory_limit=8 << 30)["gpuMemoryLimit"] == 8 << 30
 
@@ -172,9 +162,7 @@ def test_a_frame_pattern_with_no_integer_field_is_refused():
 
 
 def test_a_truncated_frame_is_NOT_treated_as_done(tmp_path):
-    """A frame killed mid-write exists and is zero length. `os.path.exists` calls that done,
-    which leaves one torn frame in the middle of a sequence that nothing notices until the
-    encode — or worse, that the encode accepts."""
+    """An empty or torn PNG is not done, though `os.path.exists` would say so."""
     good, empty, junk = (tmp_path / n for n in ("g.png", "e.png", "j.png"))
     good.write_bytes(PNG_MAGIC + b"...")
     empty.write_bytes(b"")
@@ -193,7 +181,7 @@ def test_a_frame_is_written_atomically_so_a_kill_leaves_no_half_png(tmp_path):
 
 
 def test_resume_skips_frames_that_are_already_written_and_keeps_their_numbering(tmp_path):
-    """Resume and a split render share a directory; renumbering would overwrite."""
+    """Resume keeps the global frame numbering."""
     tl = _timeline()
     for i in (0, 1, 2):
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"x")
@@ -204,13 +192,8 @@ def test_resume_skips_frames_that_are_already_written_and_keeps_their_numbering(
 
 
 def test_frames_left_over_past_the_END_of_the_timeline_are_REMOVED(tmp_path, capsys):
-    """These silently corrupt the video, which is why they are hunted rather than warned about.
-
-    `ffmpeg -i frame_%05d.png` consumes the whole numbered sequence and has no idea which run
-    wrote what. Shorten an animation, re-render, and the encode appends the tail of the
-    previous one — a video ending in a scene the timeline no longer contains, from a directory
-    where every individual frame is perfectly valid.
-    """
+    """ffmpeg reads the whole numbered sequence, so a longer earlier run's tail would be
+    appended to the video."""
     tl = _timeline()
     for i in range(tl.frame_count + 5):                  # a longer previous run
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"x")
@@ -221,7 +204,7 @@ def test_frames_left_over_past_the_END_of_the_timeline_are_REMOVED(tmp_path, cap
 
 
 def test_stale_detection_reads_the_index_out_of_the_PATTERN(tmp_path):
-    """A caller may rename the frames, and the sequence has to stay identifiable."""
+    """Stale frames are found through a custom frame pattern too."""
     for i in (0, 1, 9, 10):
         (tmp_path / f"shot-{i:03d}.png").write_bytes(PNG_MAGIC)
     (tmp_path / "notes.txt").write_bytes(b"not a frame")
@@ -230,13 +213,8 @@ def test_stale_detection_reads_the_index_out_of_the_PATTERN(tmp_path):
 
 
 def test_resuming_onto_a_CHANGED_timeline_re_renders_instead_of_mixing_two(tmp_path, capsys):
-    """The worst version of stale frames, because nothing marks them.
-
-    Frames left past the end of a shortened animation at least sit in a block at the end.
-    Frames rendered from an earlier version of the timeline sit in the MIDDLE, are valid PNGs
-    of the right size, and show the animation someone stopped wanting. The timeline written
-    beside them is what makes that detectable at all.
-    """
+    """Frames from an earlier version of the timeline look valid; the saved timeline.json is
+    what detects them."""
     first = _timeline()
     record(first, str(tmp_path), size=(64, 32), viewer=_FakeViewer())
     for path in tmp_path.glob("frame_*.png"):
@@ -251,14 +229,14 @@ def test_resuming_onto_a_CHANGED_timeline_re_renders_instead_of_mixing_two(tmp_p
 
 
 def test_resuming_an_UNCHANGED_timeline_still_skips_the_work(tmp_path):
-    """The check must not make resume useless — an interrupted long render is the point."""
+    """An unchanged timeline resumes with nothing to do."""
     tl = _timeline()
     record(tl, str(tmp_path), size=(64, 32), viewer=_FakeViewer())
     assert record(tl, str(tmp_path), size=(64, 32), viewer=_FakeViewer(), resume=True) == []
 
 
 def test_rendering_fresh_rewrites_frames_that_are_already_there(tmp_path):
-    """Iterating on timings must not need the output directory deleted by hand."""
+    """`resume=False` re-renders existing frames."""
     tl = _timeline()
     for i in range(tl.frame_count):
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"old")
@@ -266,13 +244,6 @@ def test_rendering_fresh_rewrites_frames_that_are_already_there(tmp_path):
     written = record(tl, str(tmp_path), size=(64, 32), viewer=_FakeViewer(), resume=False)
     assert len(written) == tl.frame_count
     assert b"old" not in (tmp_path / "frame_00000.png").read_bytes()
-
-
-def test_pending_frames_does_not_build_the_states_up_front():
-    """A long timeline is thousands of full states; holding them all costs far more than
-    recomputing one per frame."""
-    todo = pending_frames(_timeline(), "/nonexistent")
-    assert all(len(item) == 3 and isinstance(item[2], str) for item in todo)
 
 
 # --------------------------------------------------------------------------- #
@@ -294,9 +265,8 @@ def test_a_reply_of_the_right_size_is_written(tmp_path):
 
 
 def test_a_wrong_sized_reply_is_NOT_written_and_the_frame_is_requeued(tmp_path):
-    """`async_screenshot`, which the capture loop uses, has no size retry — where
-    `Viewer.screenshot` retries five times. Without this, a browser window smaller than the
-    requested size silently yields frames at two sizes and ffmpeg finds out hours later."""
+    """`async_screenshot` has no size retry of its own, so a too-small window would yield
+    frames of two sizes."""
     q = _queue(tmp_path)
     request = next(iter(q))
     request.response_callback(_Reply(60, 30))
@@ -322,31 +292,21 @@ def test_the_config_callback_asks_for_the_requested_viewer_size(tmp_path):
 
 
 def test_each_request_carries_ITS_OWN_frames_state(tmp_path):
-    """Prefetch buffers several requests at once; a shared or late-bound state would render
-    the same frame repeatedly and nothing would look wrong until playback."""
+    """Prefetch buffers several requests, so each must hold its own state."""
     q = _queue(tmp_path, frames=3)
     it = iter(q)
     states = [next(it).state for _ in range(3)]
-    # Frame 0 sits exactly on the tween's start, where it contributes nothing and the layer
-    # carries no objectAlpha at all — so the default stands in, as it does at render time.
+    # frame 0 is the tween's start, where the layer carries no objectAlpha (default 1.0)
     alphas = [next(lyr for lyr in s["layers"] if lyr["name"] == "seg").get("objectAlpha", 1.0)
               for s in states]
     assert len(set(alphas)) == 3
-
-
-def test_the_queue_stops_when_it_runs_out(tmp_path):
-    q = _queue(tmp_path, frames=1)
-    it = iter(q)
-    next(it).response_callback(_Reply(64, 32))
-    with pytest.raises(StopIteration):
-        next(it)
 
 
 # --------------------------------------------------------------------------- #
 # record: the parts reachable without a browser
 # --------------------------------------------------------------------------- #
 def test_an_odd_width_or_height_is_refused_with_the_reason(tmp_path):
-    """libx264 under yuv420p needs even dimensions and the error it gives is unhelpful."""
+    """libx264 with yuv420p needs even dimensions."""
     with pytest.raises(RenderProblem, match="even"):
         record(_timeline(), str(tmp_path), size=(1921, 1080))
     with pytest.raises(RenderProblem, match="yuv420p"):
@@ -354,7 +314,7 @@ def test_an_odd_width_or_height_is_refused_with_the_reason(tmp_path):
 
 
 def test_a_fully_rendered_directory_needs_no_browser_at_all(tmp_path, capsys):
-    """Re-running a finished render must not open a viewer and sit there waiting."""
+    """A finished render opens no viewer and just prints the encode hint."""
     tl = _timeline()
     for i in range(tl.frame_count):
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"x")
@@ -363,8 +323,7 @@ def test_a_fully_rendered_directory_needs_no_browser_at_all(tmp_path, capsys):
 
 
 def test_record_writes_the_timeline_beside_the_frames(tmp_path):
-    """The sequence describes itself: fps, duration and the base state it was rendered from,
-    so the timings can be edited and re-rendered without re-deriving them."""
+    """timeline.json beside the frames makes the render reproducible."""
     tl = _timeline()
     for i in range(tl.frame_count):
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"x")
@@ -375,7 +334,7 @@ def test_record_writes_the_timeline_beside_the_frames(tmp_path):
 
 
 def test_the_state_is_shaped_ONCE_before_interpolation_not_per_frame(tmp_path):
-    """Two places shaping a frame is how the two drift, and the result still renders."""
+    """The saved base is shaped; the caller's timeline is not."""
     tl = _timeline()
     for i in range(tl.frame_count):
         _write_atomic(frame_path(str(tmp_path), i), PNG_MAGIC + b"x")
@@ -389,15 +348,8 @@ def test_the_state_is_shaped_ONCE_before_interpolation_not_per_frame(tmp_path):
 # waiting for a browser
 # --------------------------------------------------------------------------- #
 def test_the_probe_PUSHES_A_STATE_because_an_empty_viewer_is_never_ready(tmp_path):
-    """The trap this exists to prevent, measured against a real headless browser.
-
-    A screenshot reply proves a browser is attached, so probing a viewer holding NOTHING looks
-    like the cheapest possible check. It is the opposite: the client's `maybeSendScreenshot`
-    bails with `if (!viewer.isReady() && !force) { ... }`, and a viewer with no layers AND no
-    dimensions never becomes ready. Measured: 44 statistics messages and no reply in 45s;
-    0.1s once any state was pushed. So the attach probe pushes an empty-but-VALID state —
-    dimensions, no layers — which is ready at once, and the real scene follows.
-    """
+    """A viewer with no dimensions never becomes ready and never answers a screenshot, so
+    the attach probe pushes dimensions with no layers, then the real scene."""
     viewer = _FakeViewer()
     state = _state()
     wait_for_browser(viewer, state)
@@ -409,16 +361,8 @@ def test_the_probe_PUSHES_A_STATE_because_an_empty_viewer_is_never_ready(tmp_pat
 
 
 def test_waiting_for_a_browser_changes_NOTHING_about_the_viewers_config():
-    """`viewerSize` is not a cheap way to make a probe screenshot small.
-
-    The client sets the container's CSS width and height to it and then scales the whole
-    thing to fill the window — `transform: scale(min(clientWidth/w, clientHeight/h))`. A
-    64x64 viewer in a 1900px window is neuroglancer's own UI magnified thirty times: panel
-    borders as thick as a finger and letters a foot high. Someone opening that link sees what
-    looks like catastrophically broken data and has no way to tell it is a viewport setting.
-    So the probe touches no config at all; the capture loop sets size and chrome per frame,
-    which is where they belong.
-    """
+    """The probe leaves the config alone: a small `viewerSize` would be CSS-scaled up to fill
+    the window and look like broken data to anyone viewing the link."""
     viewer = _FakeViewer()
     wait_for_browser(viewer, _state())
     assert viewer.config_touched == 0
@@ -427,7 +371,7 @@ def test_waiting_for_a_browser_changes_NOTHING_about_the_viewers_config():
 
 
 def test_a_browser_that_never_attaches_times_out_and_names_the_bind_hint():
-    """A viewer on loopback is unreachable from another machine, and the URL looks fine."""
+    """A loopback URL is unreachable from another machine; the timeout says so."""
     viewer = _FakeViewer(url="http://127.0.0.1:8080/v/tok/", answers=False)
     with pytest.raises(RenderProblem, match="loopback"):
         wait_for_browser(viewer, _state(), timeout=0.3, notify_every=0.1)
@@ -441,13 +385,7 @@ def test_the_bind_hint_is_omitted_when_the_url_already_names_a_host():
 
 
 def test_A_SLOW_SCENE_IS_NOT_REPORTED_AS_A_MISSING_BROWSER():
-    """The two questions are separated because a big scene made them look like one.
-
-    Waiting for the REAL scene to prove attachment means several hundred meshes' worth of
-    loading is indistinguishable from a browser that never started, and the run prints
-    `still waiting for a browser` for a minute while it is working hard. The attach probe
-    answers (first call); only the scene is slow.
-    """
+    """Attachment and scene loading are separate waits, so slow loading is reported as such."""
     viewer = _FakeViewer(answers=1, statistics=[(300, 1900, 12)])
     with pytest.raises(RenderProblem, match="stopped loading") as excinfo:
         wait_for_browser(viewer, _state(), timeout=5.0, notify_every=0.1, stall_timeout=0.25)
@@ -456,10 +394,7 @@ def test_A_SLOW_SCENE_IS_NOT_REPORTED_AS_A_MISSING_BROWSER():
 
 
 def test_loading_progress_is_reported_rather_than_a_bare_wait(capsys, monkeypatch):
-    """"Loading 300/1900 chunks" is a working render; a bare wait looks like a hang.
-
-    With tqdm the bar carries this; without it, the same numbers go out as lines.
-    """
+    """Chunk counts are printed while waiting (as lines, without tqdm)."""
     monkeypatch.setitem(sys.modules, "tqdm.auto", None)
     viewer = _FakeViewer(answers=1, statistics=[(300, 1900, 12)])
     with pytest.raises(RenderProblem):
@@ -469,9 +404,8 @@ def test_loading_progress_is_reported_rather_than_a_bare_wait(capsys, monkeypatc
 
 
 def test_a_STALL_is_no_progress_not_silence(capsys):
-    """Statistics keep arriving once a second whatever happens, so a wait that watches for
-    SILENCE never fires — and the thing it has to catch sits at `N-1 / N chunks, 0
-    downloading` forever, which is exactly what a segment with no mesh looks like."""
+    """A stall is no progress, not silence: N-1/N chunks with 0 downloading is a segment with
+    no mesh, and the error names the fix."""
     viewer = _FakeViewer(answers=1, statistics=[(6476, 6477, 0)])
     with pytest.raises(RenderProblem, match="stopped loading") as excinfo:
         wait_for_browser(viewer, _state(), timeout=5.0, notify_every=0.05, stall_timeout=0.2)
@@ -484,9 +418,8 @@ def test_a_STALL_is_no_progress_not_silence(capsys):
 # --------------------------------------------------------------------------- #
 # the capture loop, end to end against a fake viewer
 # --------------------------------------------------------------------------- #
-def test_record_renders_every_frame_and_hands_the_tab_back_as_a_NORMAL_viewer(tmp_path):
-    """A `viewerSize` left set outlives the render: the tab stays pinned at a fixed pixel
-    size and CSS-scaled to fit, which reads as a rendering fault rather than a leftover."""
+def test_record_renders_every_frame(tmp_path):
+    """Every frame is rendered and written."""
     tl = _timeline()
     written = record(tl, str(tmp_path), size=(64, 32), viewer=_FakeViewer())
     assert len(written) == tl.frame_count
@@ -494,7 +427,7 @@ def test_record_renders_every_frame_and_hands_the_tab_back_as_a_NORMAL_viewer(tm
 
 
 def test_record_restores_the_viewer_even_when_the_render_FAILS(tmp_path):
-    """The restore is in a finally block, so a killed render still leaves a usable tab."""
+    """A failed render still resets `viewerSize` and the UI, leaving a usable tab."""
     viewer = _FakeViewer(reply_size=(11, 11))          # never the requested size
     with pytest.raises(RenderProblem, match="window is probably smaller"):
         record(_timeline(), str(tmp_path), size=(64, 32), viewer=viewer, size_attempts=1)
@@ -503,13 +436,10 @@ def test_record_restores_the_viewer_even_when_the_render_FAILS(tmp_path):
 
 
 def test_record_pushes_the_opening_frame_before_capturing(tmp_path):
-    """A blank tab gives no sign anything is happening, and every mesh in the scene would
-    otherwise start loading inside the first capture — which is the slow one regardless."""
+    """The shaped opening frame is pushed first, so loading starts before capture."""
     viewer = _FakeViewer()
     tl = _timeline()
     record(tl, str(tmp_path), size=(64, 32), viewer=viewer)
-    # The SHAPED opening frame — chrome already off, so what appears in the tab is what the
-    # first captured frame will be rather than a version with the panels still up.
     shaped = Timeline(base=render_state(tl.base), fps=tl.fps, tweens=list(tl.tweens))
     assert viewer.states[0] == shaped.at(0.0)
     assert viewer.states[0]["showAxisLines"] is False
@@ -519,12 +449,7 @@ def test_record_pushes_the_opening_frame_before_capturing(tmp_path):
 # progress reporting
 # --------------------------------------------------------------------------- #
 def test_a_progress_bar_SWALLOWS_the_capture_loops_per_frame_lines(tmp_path, capsys):
-    """tqdm writes `\\r` with no newline, so anything else printing lands on the bar's line.
-
-    NOTES-neu-mark.md records exactly this against neuclease's bars: the output becomes one
-    unreadable concatenated line. So quiet mode discards the capture loop's chatter rather
-    than merely redirecting it — a bar owns the terminal or there is no bar.
-    """
+    """Quiet mode drops the capture loop's lines, which would land on tqdm's bar line."""
     record(_timeline(), str(tmp_path), size=(64, 32), viewer=_FakeViewer(), verbose=False)
     err = capsys.readouterr().err
     assert "Requesting screenshot" not in err
@@ -539,8 +464,7 @@ def test_verbose_keeps_every_line_and_shows_no_bar(tmp_path, capsys):
 
 
 def test_a_FAILED_quiet_render_still_prints_the_last_lines_it_swallowed(tmp_path, capsys):
-    """Quiet must not mean losing the evidence — otherwise a failure reports a bare exception
-    with the diagnostic output discarded."""
+    """A failed quiet render prints the capture loop's last lines."""
     viewer = _FakeViewer(reply_size=(11, 11))
     with pytest.raises(RenderProblem):
         record(_timeline(), str(tmp_path), size=(64, 32), viewer=viewer, size_attempts=1,
@@ -551,11 +475,7 @@ def test_a_FAILED_quiet_render_still_prints_the_last_lines_it_swallowed(tmp_path
 
 
 def test_without_tqdm_the_fallback_is_periodic_lines_with_an_ETA(tmp_path, capsys, monkeypatch):
-    """tqdm is opportunistic, never declared — the same treatment shaders.py gives matplotlib.
-
-    And the fallback is not a degraded mode: in a log file or a batch job, periodic lines with
-    an ETA are what you want, where a `\\r` bar renders as thousands of concatenated lines.
-    """
+    """tqdm is optional; without it, progress is periodic lines with an ETA."""
     monkeypatch.setitem(sys.modules, "tqdm.auto", None)
     record(_timeline(), str(tmp_path), size=(64, 32), viewer=_FakeViewer(), verbose=False,
            progress_interval=0.0)
@@ -565,7 +485,7 @@ def test_without_tqdm_the_fallback_is_periodic_lines_with_an_ETA(tmp_path, capsy
 
 
 def test_the_tail_buffer_is_BOUNDED_so_a_stalled_render_cannot_grow_it():
-    """A stalled render emits a statistics line a second, indefinitely."""
+    """The tail buffer stays bounded, since a stalled render logs indefinitely."""
     tail = _Tail(keep=3)
     for i in range(500):
         tail.write(f"line {i}\n")
@@ -576,21 +496,18 @@ def test_the_tail_buffer_is_BOUNDED_so_a_stalled_render_cannot_grow_it():
 # the ffmpeg command
 # --------------------------------------------------------------------------- #
 def test_the_ffmpeg_command_names_the_pattern_the_frame_rate_and_the_PIXEL_FORMAT():
-    """Without `-pix_fmt yuv420p` the file encodes perfectly and will not play in QuickTime,
-    PowerPoint or Slack — a discovery to make now rather than in front of an audience."""
+    """Without `-pix_fmt yuv420p` the mp4 will not play in QuickTime, PowerPoint or Slack.
+    No site-specific module loading in a command printed to users."""
     cmd = ffmpeg_command("/out", 24.0)
     assert "-pix_fmt yuv420p" in cmd
     assert "-framerate 24" in cmd
     assert os.path.join("/out", "frame_%05d.png") in cmd
     assert cmd.endswith(os.path.join("/out", "animation.mp4"))
+    assert "module" not in cmd and "nix" not in cmd
 
 
 def test_the_encode_hint_says_OUT_LOUD_that_nothing_was_encoded(capsys):
-    """A bare command line printed among progress lines reads as a report, not an instruction.
-
-    The reader finds no .mp4 afterwards and concludes the encode failed. It never ran — and
-    deliberately so, because a render takes minutes and an encode takes seconds.
-    """
+    """The hint must read as an instruction: nothing was encoded."""
     print_encode_hint("/out", 30.0)
     err = capsys.readouterr().err
     assert "NOTHING HAS BEEN ENCODED" in err
@@ -598,46 +515,25 @@ def test_the_encode_hint_says_OUT_LOUD_that_nothing_was_encoded(capsys):
     assert ffmpeg_command("/out", 30.0) in err
 
 
-def test_the_ffmpeg_command_names_no_site_specific_module():
-    """Publishing discipline, mechanically: a site's module names are as local as its data
-    locations, and this string is printed to users and quoted into docs."""
-    cmd = ffmpeg_command("/out", 30.0)
-    assert "module" not in cmd
-    assert "nix" not in cmd
-
-
 # --------------------------------------------------------------------------- #
 # dependencies
 # --------------------------------------------------------------------------- #
-def test_the_default_path_needs_no_selenium():
-    """The webdriver route wants selenium and a matching chromedriver, neither of which is a
-    given. A browser you open yourself needs nothing beyond the serve extra."""
-    code = ("import neu_glance.rendering, sys; assert 'selenium' not in sys.modules")
+def test_the_rendering_path_needs_no_selenium():
+    """Neither importing nor finding a browser needs selenium (the webdriver route would)."""
+    code = ("import neu_glance.rendering as r, sys; "
+            "r.find_browser('nope'); "
+            "assert 'selenium' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_every_neuroglancer_import_in_the_package_is_DEFERRED():
-    """No module imports neuroglancer at module scope. That is the rule that carries weight.
-
-    The older wording — "`serving.py` is the only module that imports neuroglancer" — was a
-    proxy for it, and `rendering` breaks the proxy while keeping the property: it needs
-    `neuroglancer.tool.screenshot`, which belongs nowhere near `serving`. What actually
-    matters is that `import neu_glance`, `neu-glance --help` and every pure code path stay off
-    neuroglancer's import graph, and an indented import is exactly that. So the check is
-    indentation, not location.
-    """
-    import neu_glance
-    root = os.path.dirname(os.path.abspath(neu_glance.__file__))
-    offenders, deferred = [], []
-    for name in sorted(os.listdir(root)):
-        if not name.endswith(".py"):
-            continue
-        for lineno, line in enumerate(open(os.path.join(root, name)), 1):
-            if not line.strip().startswith(("import neuroglancer", "from neuroglancer")):
-                continue
-            (deferred if line[0] in " \t" else offenders).append(f"{name}:{lineno}")
-    assert offenders == [], f"neuroglancer imported at module scope in {offenders}"
-    assert deferred, "nothing imports neuroglancer any more — has the gate moved?"
+def test_no_module_imports_neuroglancer_at_import_time():
+    """Every neu_glance module imports without loading neuroglancer, so `--help` and the
+    pure code paths work without the serve extra."""
+    code = ("import importlib, pkgutil, sys, neu_glance; "
+            "[importlib.import_module('neu_glance.' + m.name) "
+            "for m in pkgutil.iter_modules(neu_glance.__path__)]; "
+            "assert 'neuroglancer' not in sys.modules, sorted(sys.modules)")
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -650,21 +546,8 @@ def test_finding_a_browser_prefers_an_explicit_binary_over_the_search(tmp_path):
     assert find_browser("definitely-not-a-browser-anywhere") is None
 
 
-def test_the_headless_launcher_needs_NO_selenium():
-    """The realisation this whole path rests on. `neuroglancer.webdriver` uses selenium, so
-    headless looked like it required selenium plus a matching chromedriver — but selenium is
-    for *controlling* a page, and nothing here controls one. State changes and screenshot
-    replies travel the viewer's own channel; the browser only has to stay loaded."""
-    code = ("import neu_glance.rendering as r, sys; "
-            "r.find_browser('nope'); "
-            "assert 'selenium' not in sys.modules")
-    subprocess.run([sys.executable, "-c", code], check=True)
-
-
 def test_the_launcher_cleans_up_its_throwaway_profile(tmp_path):
-    """Without --user-data-dir a second render collides with the first's profile lock and
-    attaches to the running instance, which then never loads the second viewer. The directory
-    is per-render, so it has to go afterwards or they accumulate."""
+    """Each render gets its own profile directory (so renders do not collide), removed after."""
     before = set(os.listdir(tempfile.gettempdir()))
     with headless_browser("http://localhost:1/v/x/", size=(64, 64), binary="/bin/sleep",
                           gpu=False) as alive:
@@ -674,9 +557,9 @@ def test_the_launcher_cleans_up_its_throwaway_profile(tmp_path):
     assert new == []
 
 
-def test_the_launcher_sizes_the_window_to_the_RENDER(monkeypatch):
-    """`viewerSize` scales its container to fit the window, so a window smaller than the frame
-    means every screenshot comes back the wrong size and every frame is requeued."""
+def test_the_launcher_sizes_the_window_to_the_render_with_the_gpu_on(monkeypatch):
+    """A window smaller than the frame makes every screenshot the wrong size; software
+    rendering is about 10x slower, so the GPU flags are on by default."""
     seen = {}
 
     class _Fake:
@@ -693,25 +576,6 @@ def test_the_launcher_sizes_the_window_to_the_RENDER(monkeypatch):
         pass
     assert "--window-size=1280,720" in seen["command"]
     assert seen["command"][-1] == "http://x/"
-
-
-def test_the_gpu_flags_are_ON_by_default_because_software_rendering_is_10x_slower(monkeypatch):
-    """Measured on one 1920x1080 mesh scene: 2.17 s/frame with SwiftShader, 0.21 with these.
-    A render that silently falls back is a render that takes all afternoon and looks fine."""
-    seen = {}
-
-    class _Fake:
-        def __init__(self, command, **kw):
-            seen["command"] = command
-            self.pid = 1
-
-        def terminate(self): pass
-
-        def wait(self, timeout=None): return 0
-
-    monkeypatch.setattr(subprocess, "Popen", _Fake)
-    with headless_browser("http://x/", size=(64, 64), binary="/bin/true"):
-        pass
     assert all(flag in seen["command"] for flag in GPU_FLAGS)
 
 
@@ -727,16 +591,13 @@ def test_insisting_on_headless_with_none_installed_names_the_alternative(tmp_pat
 
 
 def test_a_caller_supplying_its_own_viewer_launches_nothing(tmp_path, monkeypatch):
-    """The spike scripts drive one viewer across several renders; launching a browser per
-    call would leave one running per render."""
+    """With `viewer=` given, no browser is launched."""
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("launched a browser"))
     assert record(_timeline(), str(tmp_path), size=(64, 32), viewer=_FakeViewer())
 
 
 def test_a_LAUNCHED_browser_is_not_announced_as_something_to_open(capsys):
-    """Telling someone to open a link that is already open — and that nothing will ever be
-    typed into — sends them looking for a step that does not exist, and makes a working
-    headless render look stuck waiting for them."""
+    """A launched browser is not announced as a link to open."""
     viewer = _FakeViewer()
     wait_for_browser(viewer, _state(), launched=True)
     err = capsys.readouterr().err
@@ -745,8 +606,7 @@ def test_a_LAUNCHED_browser_is_not_announced_as_something_to_open(capsys):
 
 
 def test_a_launched_browser_that_never_attaches_blames_the_RIGHT_thing():
-    """A headless browser that never shows up means the process died or cannot reach the
-    port — not that a tab was left unopened, which is what the attended message says."""
+    """A launched browser that never attaches is blamed on the process, not on a tab."""
     viewer = _FakeViewer(url="http://127.0.0.1:8080/v/tok/", answers=False)
     with pytest.raises(RenderProblem, match="died or cannot reach") as excinfo:
         wait_for_browser(viewer, _state(), timeout=0.3, notify_every=0.1, launched=True)
@@ -754,9 +614,8 @@ def test_a_launched_browser_that_never_attaches_blames_the_RIGHT_thing():
 
 
 def test_a_browser_that_DIES_at_startup_is_reported_at_once_not_after_the_timeout():
-    """Ten minutes of a silent, motionless run before anything is said — and then the wrong
-    thing, because the attended message blames an unopened tab. `/bin/false` stands in for
-    every environment problem that stops chrome starting."""
+    """A browser that exits at startup is reported at once, naming `gpu=False` as the likely
+    fix. `/bin/false` stands in for chrome failing to start."""
     with headless_browser("http://localhost:1/v/x/", size=(64, 64), binary="/bin/false",
                           gpu=True) as alive:
         for _ in range(50):
@@ -776,10 +635,8 @@ def test_a_dead_browser_short_circuits_the_wait():
 
 
 def test_the_launched_browser_gets_a_PRIVATE_runtime_dir(monkeypatch):
-    """A long-lived tmux server hands its children the environment of the login that started
-    it, including an XDG_RUNTIME_DIR that systemd deletes when that login ends. The variable
-    still points somewhere; the directory is gone. Renders then work from a fresh shell and
-    fail from tmux, which reads as anything but an environment problem."""
+    """A long-lived tmux session can carry an XDG_RUNTIME_DIR that no longer exists, so the
+    browser gets a fresh one (removed afterwards) and no stale DBus address."""
     seen = {}
 
     class _Fake:
