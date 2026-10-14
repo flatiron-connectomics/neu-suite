@@ -1,37 +1,12 @@
-"""A 3D coordinate that does arithmetic: positions, offsets and extents in one type.
+"""A 3D coordinate that does arithmetic: :class:`Vec3`, for positions, offsets and extents.
 
-## Why this exists
+    offset = Vec3.of(other.bbox.lo) - Vec3.of(mesh.bbox.lo)
+    mesh.translate(offset)
 
-Everything geometric in this suite is a triple, and until now those triples were tuples —
-``BBox.lo``, ``BBox.hi``, the ``offset_zyx_nm`` arguments. Tuples do not subtract, so lining
-two objects up meant writing the arithmetic out by hand::
-
-    offset = tuple(a - b for a, b in zip(other.bbox.lo, mesh.bbox.lo))   # every time
-
-which is tedious exactly when you are doing it most: placing cells from different datasets
-in one scene.
-
-## Why not just use a numpy array
-
-Because a bare ``ndarray`` makes a *coordinate* and a *point cloud* the same type. A ``(3,)``
-and an ``(N, 3)`` broadcast against each other happily, so a rank mistake produces a plausible
-answer rather than an error — which is the shape of the zyx/xyz confusion this package spends
-so much effort pinning down. :class:`Vec3` is ``(3,)`` or it does not exist.
-
-## The property that makes it free to adopt
-
-**A ``Vec3`` is accepted anywhere a sequence is**, because it implements ``__len__``,
-``__getitem__``, ``__iter__`` and ``__array__``. So ``mesh.translate(Vec3(0, 0, 500))`` and
-``box.aligned(Vec3(64, 64, 64))`` work with no change to either signature, and nothing that
-already takes a tuple has to learn about this type. It is additive in the same way
-:class:`~neu_lib.grid.BBox` was: the functions it serves neither use it nor know about it.
-
-## Axis order
-
-``z``, ``y``, ``x``, matching the package's in-memory convention everywhere else — see the
-module docstring for :mod:`neu_lib`. :attr:`xyz` is the one conversion, for the renderer and
-for anything writing to disk; :func:`~neu_lib.frame.to_xyz` remains the equivalent for
-``(N, 3)`` arrays.
+Unlike a ``(3,)`` numpy array, a ``Vec3`` cannot be broadcast against an ``(N, 3)`` point
+array by accident: building one from anything but three components raises. It works
+anywhere a length-3 sequence is accepted, since it supports ``len``, indexing, iteration
+and ``np.asarray``. Components are zyx; :attr:`Vec3.xyz` gives the reversed order.
 """
 
 from __future__ import annotations
@@ -45,12 +20,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Vec3:
-    """Three components in the package's zyx order. Immutable, hashable, and arithmetic.
+    """Three components, zyx. Frozen and hashable.
 
-    ``+``, ``-``, ``*``, ``/`` and unary ``-`` accept another :class:`Vec3`, any length-3
-    sequence, or a scalar (broadcast to all three). Anything else defers to the other
-    operand — so ``Vec3(...) * np.zeros((5, 3))`` gives the ``(5, 3)`` array numpy would,
-    rather than an error from here.
+    ``+``, ``-``, ``*``, ``/`` and unary ``-`` take another :class:`Vec3`, a length-3
+    sequence, or a scalar (applied to all three). Any other operand is left to its own
+    type, so ``Vec3(...) * np.zeros((5, 3))`` gives the ``(5, 3)`` array numpy would.
     """
 
     z: float
@@ -65,11 +39,7 @@ class Vec3:
 
     @classmethod
     def of(cls, value: Any) -> "Vec3":
-        """From a :class:`Vec3`, a length-3 sequence, or a scalar broadcast to all three.
-
-        The one coercion, used by every operator, so "what counts as a vector here" is
-        answered in a single place.
-        """
+        """From a :class:`Vec3`, a length-3 sequence, or a scalar applied to all three."""
         if isinstance(value, Vec3):
             return value
         if np.isscalar(value) or (isinstance(value, np.ndarray) and value.ndim == 0):
@@ -107,20 +77,17 @@ class Vec3:
 
     @property
     def xyz(self) -> tuple[float, float, float]:
-        """Reversed, for the renderer and for anything the precomputed format stores."""
+        """The components reversed, as renderers and the precomputed format expect."""
         return (self.x, self.y, self.z)
 
     @property
     def array(self) -> np.ndarray:
-        """A fresh ``(3,)`` float64 array. Mutating it cannot affect this vector."""
+        """A new ``(3,)`` float64 array."""
         return np.array([self.z, self.y, self.x], dtype=np.float64)
 
     def rounded(self) -> "Vec3":
-        """Each component to the nearest integer, halves away from zero.
-
-        Not :func:`round`, which rounds halves to even, so ``0.5`` and ``1.5`` would land on
-        the same value — the same reason :func:`neu_lib.grid._nearest` does its own thing.
-        """
+        """Each component to the nearest integer, halves away from zero (not to even, as
+        :func:`round` would)."""
         return Vec3(*(math.floor(v + 0.5) if v >= 0 else math.ceil(v - 0.5) for v in self))
 
     # -- arithmetic ------------------------------------------------------------
@@ -166,7 +133,7 @@ class Vec3:
         return Vec3(-self.z, -self.y, -self.x)
 
     def norm(self) -> float:
-        """Euclidean length — the distance, when this is the difference of two positions."""
+        """Euclidean length."""
         return math.sqrt(self.z * self.z + self.y * self.y + self.x * self.x)
 
     def __repr__(self) -> str:

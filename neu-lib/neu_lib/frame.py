@@ -1,19 +1,9 @@
-"""Voxel indices to physical nanometres, and the one place axis order flips.
+"""Voxel indices to physical nanometres (:class:`Frame`), and the zyx-to-xyz flip.
 
-Two conventions hold everywhere in this package, and both are load-bearing:
-
-**One model space: physical nanometres.** Geometry never carries an integer scale, and
-never derives a factor from ``2 ** scale``. Real pyramids are anisotropic — halving x
-and y while leaving z alone is ordinary — so a scale index means nothing without the
-source's own per-level voxel sizes. Resolving an index to a :class:`Frame` is the
-``sources`` layer's job, from metadata it has read; by the time anything reaches
-``geometry`` it is already in nm.
-
-**zyx in memory, xyz at the boundary.** Every array here is zyx. The renderer wants
-xyz, and :func:`to_xyz` is the only conversion — one call site per drawable in the
-backend, rather than a flip scattered through the geometry. Getting this wrong mirrors
-everything through the z=x diagonal, which looks like plausible data in the wrong place
-rather than like an error.
+A level's voxel size comes from the source's metadata, never from ``2 ** level``: real
+pyramids are anisotropic (halving x and y but not z is common). Arrays are zyx;
+:func:`to_xyz` is the one conversion to a renderer's xyz, and getting the order wrong
+mirrors data through the z=x diagonal without any error.
 """
 
 from __future__ import annotations
@@ -25,11 +15,8 @@ import numpy as np
 
 
 def to_xyz(points_zyx: np.ndarray) -> np.ndarray:
-    """Reverse the last axis: the single zyx→xyz conversion, for the renderer.
-
-    Returns a C-contiguous ``float32`` array, which is what a GPU buffer wants and what
-    a reversed view is not.
-    """
+    """``(N, 3)`` zyx points as xyz, in a new C-contiguous ``float32`` array (what a GPU
+    buffer needs; a reversed view is not contiguous)."""
     arr = np.asarray(points_zyx)
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError(f"expected an (N, 3) array, got shape {arr.shape}")
@@ -38,14 +25,11 @@ def to_xyz(points_zyx: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class Frame:
-    """Maps voxel indices at some level to physical nanometres. zyx.
+    """Maps voxel indices at one level to physical nanometres, zyx, per axis:
+    ``nm = index * voxel_size_nm + origin_nm``.
 
-    ``nm = index * voxel_size_nm + origin_nm``. The origin is where the level's voxel
-    ``(0, 0, 0)`` sits in the shared nm space, which is how a cropped volume stays in
-    its parent's frame.
-
-    Anisotropy is the reason this is a per-axis tuple rather than a number, and the
-    reason it exists at all rather than an ``int`` scale.
+    ``origin_nm`` is where voxel ``(0, 0, 0)`` sits, which is how a crop stays in its
+    parent's coordinates.
     """
 
     voxel_size_nm: tuple[float, float, float]
@@ -83,19 +67,13 @@ class Frame:
         return out[0] if single else out
 
     def voxel_box(self, bounds_nm, *, outward: bool = True) -> "BBox":
-        """A physical ``(lo, hi)`` in nanometres, as a box in **this** frame's voxels.
+        """A physical ``(lo, hi)`` in nm, as a box in this frame's voxels. Use it to find
+        the same place at another level, or in a crop's parent.
 
-        The conversion between two levels of the same data, and between a crop and the
-        volume it came from — which is the only way to say "the same place" across frames,
-        since nanometres are the one shared model space (and the reason a voxel index alone
-        is meaningless here).
-
-        ``outward`` floors ``lo`` and ceils ``hi``, so the result **contains** the physical
-        box. That matters when the target is coarser than the box's own frame: a 200-voxel
-        box at 8 nm is 25 voxels at 64 nm exactly, but shifted by one it covers 26, and
-        rounding to nearest would drop a face. Pass ``outward=False`` for the nearest
-        enclosing-to-truncated box when an exact multiple is required and a mismatch should
-        be visible as a smaller box.
+        ``outward=True`` floors ``lo`` and ceils ``hi``, so the result contains the
+        physical box even when this frame is coarser (a 200-voxel box at 8 nm covers 25 or
+        26 voxels at 64 nm, depending on where it starts). ``outward=False`` rounds each end
+        to the nearest voxel instead.
         """
         import math
 
@@ -119,7 +97,7 @@ class Frame:
         return BBox(lo=tuple(lo), hi=tuple(hi))
 
     def to_voxel(self, points_nm: Sequence | np.ndarray) -> np.ndarray:
-        """nm → fractional voxel indices. Not rounded: rounding is the caller's policy."""
+        """nm → fractional voxel indices, unrounded."""
         arr = np.asarray(points_nm, dtype=np.float64)
         single = arr.ndim == 1
         if single:

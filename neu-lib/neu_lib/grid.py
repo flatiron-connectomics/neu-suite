@@ -1,30 +1,12 @@
-"""Aligning a box to a block grid: the arithmetic, per axis, and nothing else.
+"""Aligning a box to a block grid, per axis, and the :class:`BBox` type.
 
-A box that does not sit on a grid costs something different depending on *which* grid it
-misses, and there are three in play in this package:
+Which grid matters depends on the caller: a store's chunks or shards (a partial write is a
+read-modify-write, and two concurrent partial writes into one chunk lose one of them), a
+pyramid's cumulative downsampling factor, or the per-axis LCM of two chunkings. This module
+only does the integer arithmetic, independently per axis, because real grids are
+anisotropic: ``(1, 2, 2)`` pyramids and ``(128, 2048, 2048)`` chunks are both common.
 
-* the **write unit** — the chunk, or the shard where a level is sharded. A partial write
-  is a read-modify-write: it keeps the chunk's existing data, but two concurrent partial
-  writes into one object lose one of them, silently.
-* the **pyramid's cumulative factor**. A crop whose origin misses it has coarse levels
-  sitting on their own grid, each level's ``voxel_offset`` rounding to it. Level 0 stays
-  exact, so nothing looks wrong.
-* the **per-axis LCM of a source and destination chunking**, which is what decides how
-  many times a source chunk is re-fetched (see ``ops/_multiscale.plan_task_shape``).
-
-This module knows about none of them. It takes a block shape and does integer arithmetic
-on each axis independently, because real grids are anisotropic — ``(1, 2, 2)`` pyramids
-and ``(128, 2048, 2048)`` chunkings are both ordinary. Resolving *which* grid a volume
-implies is the CLI's job.
-
-**Boxes are half-open**, ``[lo, hi)``, as everywhere else here: a ``hi`` already on a
-boundary must stay where it is, which is the off-by-one that makes ``outer`` grow a
-correctly-sized box by a whole block.
-
-:class:`BBox` is the object face of the same arithmetic, for callers that pass boxes
-around rather than two sequences — notably neu-draw, which unions the extents of many
-drawables to frame a camera. It is additive: the functions above neither use it nor know
-about it, and their tuple signatures are unchanged.
+**Boxes are half-open**, ``[lo, hi)``: a ``hi`` already on a block boundary stays there.
 """
 
 from __future__ import annotations
@@ -42,12 +24,8 @@ def _ceil_div(a: int, b: int) -> int:
 
 
 def _nearest(value: int, block: int) -> int:
-    """``value`` rounded to the closest multiple of ``block``, halves upward.
-
-    Not :func:`round`, which rounds halves to even — so 192 with a 128 block would go to
-    128 while 320 went to 384, and the same box would move differently depending on where
-    it sat. Predictability matters more than symmetry here.
-    """
+    """``value`` rounded to the closest multiple of ``block``, halves upward (not to
+    even, as :func:`round` would)."""
     return math.floor(value / block + 0.5) * block
 
 
@@ -55,16 +33,15 @@ def align_box(lo: Sequence[int], hi: Sequence[int], block: Sequence[int],
               mode: str = "outer") -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Align the half-open box ``[lo, hi)`` to the ``block`` grid, per axis.
 
-    ``outer`` floors ``lo`` and ceils ``hi``: never loses a requested voxel, and is the
-    only mode that cannot fail. ``inner`` does the reverse, so the result is contained in
-    the request. ``nearest`` rounds both ends. ``origin`` aligns ``lo`` (to the nearest
-    multiple) and keeps the **extent** exactly, which is what a fixed-size crop needs —
-    its ``hi`` is then generally not on the grid, and that is the trade it makes.
+    - ``outer`` floors ``lo`` and ceils ``hi``, so no requested voxel is lost. It never
+      fails.
+    - ``inner`` ceils ``lo`` and floors ``hi``, so the result lies inside the request.
+    - ``nearest`` rounds both ends.
+    - ``origin`` rounds ``lo`` and keeps the extent, for a fixed-size crop; ``hi`` is then
+      generally off the grid.
 
-    Raises ``ValueError`` if the result would be empty on some axis: ``inner`` on a box
-    spanning no whole block, or ``nearest`` on a box whose ends round together. Both mean
-    the request is small relative to the grid, which the caller has to know about rather
-    than receive as an empty box.
+    Raises ``ValueError`` if an axis would be left empty (``inner`` on a box spanning no
+    whole block, ``nearest`` on one whose ends round together).
     """
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; known: {', '.join(MODES)}")
@@ -98,12 +75,8 @@ def align_box(lo: Sequence[int], hi: Sequence[int], block: Sequence[int],
 
 def clamp_box(lo: Sequence[int], hi: Sequence[int],
               extent: Sequence[int]) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Trim the box to ``[0, extent)`` per axis. Separate from aligning on purpose.
-
-    Clamping can put an edge back off the grid, and that edge is nonetheless fine — see
-    :func:`misaligned_axes`. Keeping the two steps apart is what lets a caller report
-    "grew to align, then trimmed to the volume" instead of one unexplained box.
-    """
+    """Trim the box to ``[0, extent)`` per axis. An edge clamped to the end of the volume
+    may fall off the grid, which is fine (see :func:`misaligned_axes`)."""
     return (tuple(max(0, int(a)) for a in lo),
             tuple(min(int(b), int(e)) for b, e in zip(hi, extent)))
 
@@ -112,10 +85,8 @@ def misaligned_axes(lo: Sequence[int], hi: Sequence[int], block: Sequence[int],
                     extent: Sequence[int] | None = None) -> list[int]:
     """Axes where an edge of ``[lo, hi)`` falls inside a block.
 
-    **An edge that coincides with the end of the volume is aligned by definition**: the
-    final block is partial in the volume itself, so there is no neighbouring data in it
-    to read-modify-write against. Without ``extent`` that exemption cannot apply, and a
-    box ending at a partial final block reads as misaligned.
+    With ``extent`` given, an edge at the end of the volume counts as aligned: the final
+    block is partial anyway, so there is no neighbouring data to read-modify-write.
     """
     bad = []
     for axis, (a, b, k) in enumerate(zip(lo, hi, block)):
@@ -126,13 +97,8 @@ def misaligned_axes(lo: Sequence[int], hi: Sequence[int], block: Sequence[int],
 
 
 def lcm_grid(*grids: Sequence[int]) -> tuple[int, ...]:
-    """Per-axis least common multiple of several block shapes.
-
-    A box on this grid is on all of them at once — the write unit *and* the pyramid
-    factor, say. Per axis, never a single number: the LCM of ``(128, 128, 128)`` and
-    ``(1, 2, 2)`` is ``(128, 128, 128)``, and collapsing that to a scalar would align z
-    to 128 for no reason.
-    """
+    """Per-axis least common multiple of several block shapes: a box on this grid is on
+    all of them, e.g. ``lcm_grid((128, 128, 128), (1, 2, 2)) == (128, 128, 128)``."""
     if not grids:
         raise ValueError("lcm_grid needs at least one grid")
     if len({len(g) for g in grids}) != 1:
@@ -142,19 +108,10 @@ def lcm_grid(*grids: Sequence[int]) -> tuple[int, ...]:
 
 @dataclass(frozen=True, order=False)
 class BBox:
-    """A half-open box ``[lo, hi)``, rank-agnostic, with integer bounds.
+    """A half-open box ``[lo, hi)`` with integer bounds, of any rank.
 
-    Immutable and hashable, so a box can key a dict or sit in a set — which is what a
-    caller collecting the extents of many objects usually wants. Every operation returns
-    a new box.
-
-    **Half-open, like everything else in this module**, and that is the whole reason
-    :meth:`from_points` adds one to the maximum: a box built from points must *contain*
-    those points, so the extreme one needs a ``hi`` past it. Getting this wrong is
-    invisible — the box is one voxel short per axis and silently drops the far face —
-    so it is asserted in the tests rather than left to reading.
-
-    Axis order is the caller's: this package holds zyx, and nothing here depends on it.
+    Frozen and hashable; every operation returns a new box. Axis order is the caller's
+    (the suite uses zyx).
     """
 
     lo: tuple[int, ...]
@@ -176,12 +133,9 @@ class BBox:
 
     @classmethod
     def from_points(cls, points: Any) -> "BBox":
-        """The smallest box containing every point. ``hi`` is ``max + 1`` per axis.
-
-        Accepts anything ``numpy`` reads as ``(N, D)``. Raises on an empty set rather
-        than returning a degenerate box: "no points" is a question about the caller's
-        input, not a box, and :meth:`empty` says so explicitly when that is meant.
-        """
+        """The smallest box containing every point of an ``(N, D)`` array. ``hi`` is
+        ``max + 1``, so the box contains the extreme points. Raises on an empty set; use
+        :meth:`empty` for an empty box."""
         import numpy as np
 
         arr = np.asarray(points)
@@ -213,11 +167,6 @@ class BBox:
         return math.prod(self.shape)
 
     # -- as arrays, for arithmetic ---------------------------------------------
-    #
-    # `lo` and `hi` are tuples, which do not subtract — so lining two objects up meant
-    # writing `tuple(a - b for a, b in zip(...))` by hand every time. These are the same
-    # numbers in a form that does arithmetic. They stay rank-agnostic like the rest of this
-    # class; `Vec3.of(box.center)` names them when the caller knows it is 3D.
 
     @property
     def lo_array(self) -> Any:
@@ -235,12 +184,8 @@ class BBox:
 
     @property
     def center(self) -> Any:
-        """The midpoint, as a float array — **not** rounded to a voxel.
-
-        Float because a box of odd extent has no integer centre, and rounding here would
-        make ``a.center - b.center`` off by up to a voxel per axis in a way that only shows
-        as a slight misregistration between two objects.
-        """
+        """The midpoint, as a float array. Not rounded: a box of odd extent has no integer
+        centre."""
         return (self.lo_array + self.hi_array) / 2.0
 
     def is_empty(self) -> bool:
@@ -265,11 +210,8 @@ class BBox:
             raise ValueError(f"rank mismatch: {self.ndim} vs {other.ndim}")
 
     def union(self, other: "BBox") -> "BBox":
-        """The smallest box containing both. An empty operand is ignored.
-
-        That last part is what makes ``reduce(BBox.union, boxes, BBox.empty())`` work:
-        without it an empty seed at the origin would drag every union back to it.
-        """
+        """The smallest box containing both. An empty operand is ignored, so
+        ``reduce(BBox.union, boxes, BBox.empty())`` works."""
         self._check(other)
         if other.is_empty():
             return self
@@ -288,15 +230,9 @@ class BBox:
         return BBox(lo, hi)
 
     def translate(self, offset: Sequence[float]) -> "BBox":
-        """Move the box. A fractional offset is **floored**, not truncated.
-
-        ``int()`` truncates toward zero, so a box shifted by ``-1.5`` moved by ``-1`` while
-        one shifted by ``+1.5`` moved by ``+1``, and ``±0.5`` moved by nothing at all — the
-        same displacement landing differently depending on its sign. Harmless while every
-        offset was an integer, which stopped being true once centring produced fractional
-        ones (a box of odd extent has no integer centre). Flooring keeps a half-open integer
-        box consistent with the grid arithmetic above, which floors throughout.
-        """
+        """Move the box. A fractional offset is floored, like the grid arithmetic in this
+        module, rather than truncated toward zero: a shift of -0.5 moves the box by -1, not
+        by nothing."""
         if len(offset) != self.ndim:
             raise ValueError(f"rank mismatch: offset={tuple(offset)} box ndim={self.ndim}")
         shift = [math.floor(d) for d in offset]
@@ -328,13 +264,9 @@ class BBox:
         return BBox(*align_box(self.lo, self.hi, block, mode=mode))
 
     def clamped(self, extent: Sequence[int]) -> "BBox":
-        """:func:`clamp_box`, as a method.
-
-        Raises if the box lies wholly outside ``extent``, rather than handing back
-        nothing: a trim that removes everything means the box was in the wrong frame,
-        and an empty return would read downstream as "this volume holds no data here".
-        Ask :meth:`intersect` when no-overlap is a legitimate answer.
-        """
+        """:func:`clamp_box`, as a method. Raises if nothing is left, which usually means
+        the box is in the wrong frame; use :meth:`intersect` when no overlap is a valid
+        answer."""
         lo, hi = clamp_box(self.lo, self.hi, extent)
         if any(b <= a for a, b in zip(lo, hi)):
             raise ValueError(

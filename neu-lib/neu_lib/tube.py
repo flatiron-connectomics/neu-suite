@@ -1,17 +1,9 @@
 """A skeleton as a solid tube: one truncated cone per edge, from its radii.
 
-The alternative to drawing lines. A line has a constant screen-space thickness, so it
-says nothing about calibre; a tube makes the per-vertex radius visible, and a radius that
-does not fit inside the body shows up as the tube breaking the surface.
-
-**Built in xyz and flipped back**, so triangle winding matches what a precomputed mesh's
-would be. Feeding zyx straight in reverses handedness and the normals face inward — which
-renders as a dark surface rather than raising, so it is the kind of mistake that looks
-like a lighting problem.
-
-Pure geometry: numpy in, numpy out, no store and no renderer. It was in
-``neu_morpho.readback`` beside the mesh readers, which made a *meshing* package a
-dependency of anything that wanted to draw a skeleton.
+Unlike lines, a tube shows calibre, and a radius too large for the body shows up as the
+tube breaking through the mesh surface. The tube is built in xyz and flipped back, so its
+triangle winding matches a precomputed mesh; built directly in zyx, the normals would
+face inward and the surface would render dark, with no error.
 """
 
 from __future__ import annotations
@@ -27,11 +19,8 @@ from .skeleton import Skeleton
 
 def skeleton_tube(skeleton: Skeleton, sides: int = 8,
                   name: Optional[str] = None) -> Mesh:
-    """A :class:`Skeleton` as a solid tube :class:`Mesh`, using its radii.
-
-    The zyx-facing API; :func:`frustum_mesh` is the xyz core. Round-tripping through
-    :meth:`Mesh.from_precomputed` is what puts the normals back outward.
-    """
+    """A :class:`Skeleton` as a solid tube :class:`Mesh` (zyx), from its radii. Raises if
+    the skeleton has none."""
     if skeleton.radii_nm is None:
         raise ValueError(
             f"skeleton {skeleton.name!r} carries no radii, so it has no tube. "
@@ -44,22 +33,12 @@ def skeleton_tube(skeleton: Skeleton, sides: int = 8,
 
 
 def frustum_mesh(vertices_xyz, edges, radii, sides: int = 8):
-    """Skeleton as one truncated cone per edge; returns ``(vertices, faces)``.
+    """One truncated cone per edge, in xyz; returns ``(vertices, faces)``.
 
-    Each edge contributes two rings of ``sides`` points — radius ``r[u]`` at one end,
-    ``r[v]`` at the other — joined by a triangle strip, so the surface is correct in
-    cross-section at every node and tapers linearly between them, exactly as the
-    format's per-vertex radius implies. That makes a radius that does not fit inside
-    the body visible as the tube breaking the mesh surface.
-
-    Rings lie in the plane perpendicular to the edge, built from an orthonormal basis
-    chosen per edge; the reference direction is swapped near the pole so the cross
-    product never degenerates. Zero-length edges are dropped rather than producing
-    NaNs.
-
-    Adjacent edges are **not** stitched to each other — at a junction the cones simply
-    overlap. That renders correctly for a solid surface and avoids inventing a joint
-    geometry the data does not specify.
+    Each edge gets a ring of ``sides`` points at each end, at that vertex's radius,
+    joined by a triangle strip, so the tube tapers linearly between nodes. Rings are
+    perpendicular to the edge. Zero-length edges are dropped. Cones are not stitched at
+    junctions; they overlap, which renders correctly as a solid surface.
     """
     v = np.asarray(vertices_xyz, dtype=float)
     e = np.asarray(edges, dtype=np.int64).reshape(-1, 2)

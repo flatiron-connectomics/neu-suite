@@ -1,24 +1,14 @@
-"""A skeleton as vertices and edges, in nm, zyx.
+"""A skeleton as vertices and edges, in nm, zyx: :class:`Skeleton`.
 
-**No polylines.** Decomposing a skeleton into branch paths needs adjacency lists, edge-id
-bookkeeping and a terminal/junction/interior walk order — several hundred lines that say
-nothing about the data, and that grow once it becomes clear how disconnected real
-segmentations are.
-
-None of it is necessary here. pygfx's ``LineSegmentMaterial`` "renders line segments
-between each two subsequent points", so an edge list draws directly::
+An edge list, never decomposed into branch paths, so any topology works: cycles,
+self-loops, thousands of disconnected components. It draws directly as line segments, in
+one buffer per body::
 
     positions = to_xyz(skeleton.segments())
     pygfx.Line(pygfx.Geometry(positions=positions), pygfx.LineSegmentMaterial(...))
 
-One buffer and one draw call per body, whatever the topology — cycles, self-loops and
-thousands of disconnected components all work, because nothing here ever interprets the
-topology. That also means one legend entry per body rather than per branch, and one
-graphics object where a fragmented body used to make hundreds.
-
-Both sources hand over exactly this shape already: precomputed skeletons are vertices,
-edges and radii; a DVID SWC table is nodes and parents, which is an edge list written
-down differently.
+Precomputed skeletons (vertices, edges, radii) and DVID's SWC tables (nodes and parents)
+both map onto it directly.
 """
 
 from __future__ import annotations
@@ -69,13 +59,8 @@ class Skeleton:
     @classmethod
     def from_precomputed(cls, vertices_xyz_nm: Any, edges: Any,
                          radii_nm: Any = None, name: Optional[str] = None) -> "Skeleton":
-        """From what ``neu_morpho.readback.read_body_skeleton`` returns.
-
-        That reader hands back **xyz** — the order the precomputed format stores — so
-        this is where the one flip into zyx happens. It has already rejected the
-        all-``-1`` sentinel radii that an ``info`` declaring no radius attribute
-        produces, so nothing here re-checks that.
-        """
+        """From xyz vertices, as the precomputed format stores them and
+        ``neu_morpho.readback.read_body_skeleton`` returns them, flipped to zyx."""
         verts = np.asarray(vertices_xyz_nm, dtype=np.float32)
         if verts.size == 0:
             verts = verts.reshape(0, 3)
@@ -89,15 +74,12 @@ class Skeleton:
                  coord_cols: Sequence[str] = ("x", "y", "z"),
                  radius_col: Optional[str] = "radius",
                  name: Optional[str] = None) -> "Skeleton":
-        """From a node/parent table — DVID's skeleton form.
+        """From a node/parent table, DVID's skeleton form.
 
-        ``coord_cols`` is read **in the order given** and then reversed, so the SWC
-        default ``("x", "y", "z")`` lands as zyx. Coordinates are voxel indices, which
-        is why ``frame`` is required and not optional: the only way to reach nm is the
-        level's real voxel size.
-
-        A parent id that is absent from the table — SWC's ``-1`` root, or a dangling
-        reference — simply contributes no edge. Nothing is required to be a tree.
+        ``coord_cols`` are read in the order given and then reversed, so the SWC default
+        ``("x", "y", "z")`` becomes zyx. Coordinates are voxel indices, converted to nm
+        with ``frame``. A parent id absent from the table (SWC's ``-1`` root, or a
+        dangling reference) adds no edge; the result need not be a tree.
         """
         nodes = np.asarray(table[node_col], dtype=np.int64)
         parents = np.asarray(table[parent_col], dtype=np.int64)
@@ -107,9 +89,7 @@ class Skeleton:
             raise ValueError(f"ragged table: {len(nodes)} nodes, {len(parents)} "
                              f"parents, {len(coords)} coordinates")
 
-        # Kept from the old implementation: a duplicate id makes the parent lookup
-        # ambiguous, and silently resolving to the last one wires edges to the wrong
-        # place. Cheap to check, invisible when wrong.
+        # A duplicate id would make the parent lookup ambiguous and wire wrong edges.
         unique, counts = np.unique(nodes, return_counts=True)
         if len(unique) != len(nodes):
             raise ValueError(f"duplicate node ids: {unique[counts > 1][:5].tolist()}")
@@ -121,9 +101,8 @@ class Skeleton:
         vertices_nm = frame.to_nm(coords[:, ::-1])
         radii = None
         if radius_col is not None and _has_column(table, radius_col):
-            # A radius is a length, so it scales with the voxel — but a single number
-            # cannot represent an anisotropic one. The mean is the honest summary, and
-            # it is exact for the isotropic pyramids this actually meets.
+            # A radius is one length, so an anisotropic voxel can only be summarised:
+            # use the mean voxel size, which is exact for isotropic data.
             radii = (np.asarray(table[radius_col], dtype=np.float64)
                      * float(np.mean(frame.voxel_size_nm)))
         return cls(vertices_nm, np.asarray(edges, dtype=np.int64).reshape(-1, 2),
@@ -138,11 +117,8 @@ class Skeleton:
         return BBox.from_points(self.vertices_zyx_nm)
 
     def segments(self) -> np.ndarray:
-        """``(2M, 3)`` zyx nm — consecutive pairs, one per edge.
-
-        The whole rendering path. Pass through :func:`~neu_draw.geometry.to_xyz` and hand
-        it to ``pygfx.LineSegmentMaterial``.
-        """
+        """``(2M, 3)`` zyx nm, the two endpoints of each edge in turn: pass through
+        :func:`~neu_lib.frame.to_xyz` to draw with ``pygfx.LineSegmentMaterial``."""
         return np.ascontiguousarray(self.vertices_zyx_nm[self.edges.reshape(-1)])
 
     def translate(self, offset_zyx_nm: Sequence[float]) -> "Skeleton":
@@ -159,23 +135,13 @@ class Skeleton:
              tolerance_nm: float = 8.0) -> "Skeleton":
         """Keep the part of the skeleton on one side of a region boundary.
 
-        ``inside`` takes an ``(N, 3)`` zyx nm array and returns an ``(N,)`` bool array.
-        Taking a **predicate rather than a mask object** is what keeps this module free
-        of any volume type: whatever eventually backs a region — an RLE mask, a coarse
-        dense array — plugs in here without geometry knowing.
+        ``inside`` takes an ``(N, 3)`` zyx nm array and returns an ``(N,)`` bool array (see
+        :mod:`neu_lib.predicates`). An edge with one endpoint kept is bisected to within
+        ``tolerance_nm`` and ends at a new vertex on the boundary, so branches stop at the
+        region surface. Every kept vertex is retained, including ones left with no edges.
 
-        An edge with one endpoint kept is **bisected**, and a vertex is inserted at the
-        boundary, so branches terminate at the region surface instead of at the last
-        vertex inside. All crossing edges bisect together, one vectorised ``inside``
-        call per round, rather than one call per point.
-
-        Kept vertices are all retained, including any left with no edges — a vertex is
-        inside or it is not, and dropping the isolated ones would quietly change the
-        bounding box.
-
-        Limitation, inherited and unchanged: an edge whose endpoints are on the same
-        side is assumed not to cross. A region thinner than the edge spacing can be
-        missed entirely.
+        Limitation: an edge whose endpoints are on the same side is assumed not to cross,
+        so a region thinner than the edge spacing can be missed.
         """
         verts = self.vertices_zyx_nm
         keep = np.asarray(inside(verts), dtype=bool).ravel()
@@ -229,20 +195,16 @@ class Skeleton:
                  ) -> tuple["Skeleton", np.ndarray, np.ndarray]:
         """Insert a vertex where each edge crosses a region boundary, keeping both sides.
 
-        Returns ``(skeleton, inside, boundary)``: the skeleton with every crossing edge
-        split in two at the boundary, plus one bool per vertex for "in the region" and
-        "is an inserted boundary vertex". Original vertices keep their indices; the
-        boundary vertices are appended, on the inside, within ``tolerance_nm`` of the
-        surface — the same bisection :meth:`crop` uses, so a distance measured from them
-        starts at the region surface rather than at the last vertex inside it.
+        Returns ``(skeleton, inside, boundary)``: the skeleton with each crossing edge split
+        in two, plus one bool per vertex for "in the region" and "is an inserted boundary
+        vertex". Original vertices keep their indices; boundary vertices are appended, on
+        the inside, within ``tolerance_nm`` of the surface (the bisection :meth:`crop`
+        uses).
 
-        **The edge layout is part of the contract**, so per-edge flags can follow the
-        split: the uncrossed edges first, in their original order, then one
-        ``(inside endpoint, boundary)`` edge per crossing edge, then one
-        ``(boundary, outside endpoint)`` edge per crossing edge, both in original order.
-
-        Same inherited limitation as :meth:`crop`: an edge whose endpoints are on the
-        same side is assumed not to cross.
+        The edge order is guaranteed, so per-edge data can follow the split: uncrossed
+        edges in their original order, then one ``(inside endpoint, boundary)`` edge per
+        crossing edge, then one ``(boundary, outside endpoint)`` edge per crossing edge.
+        Same limitation as :meth:`crop`.
         """
         verts = self.vertices_zyx_nm
         keep = np.asarray(inside(verts), dtype=bool).ravel()
@@ -290,11 +252,8 @@ class Skeleton:
 
 def _bisect(p_in: np.ndarray, p_out: np.ndarray, inside: InsideFn,
             keep_inside: bool, tolerance_nm: float) -> np.ndarray:
-    """Fraction along each ``p_in -> p_out`` of the last point still on the kept side.
-
-    Bisects every segment at once: one ``inside`` call per round over all of them, and
-    the round count is set by the longest, so a short segment simply converges early.
-    """
+    """Fraction along each ``p_in -> p_out`` of the last point still on the kept side,
+    bisecting all segments together with one ``inside`` call per round."""
     if tolerance_nm <= 0:
         raise ValueError(f"tolerance_nm must be positive, got {tolerance_nm}")
     if not len(p_in):

@@ -1,20 +1,16 @@
 """neu-lib: the vocabulary the neu-* suite shares.
 
-Boxes and grid arithmetic, the voxel-to-nanometre frame, and the two geometry types
-meshes and skeletons are carried in. **Nothing here reads a store, opens a canvas or
-imports anything but numpy** — that is what lets every tier of the suite name these
-types without inheriting an I/O stack, and it is the line to hold: if something needs
-to open a store it belongs in neu-vol.
+Boxes and grid arithmetic, the voxel-to-nanometre frame, arrays placed in that frame,
+pyramid levels, meshes and skeletons. **Nothing here reads a store, opens a canvas or
+imports anything but numpy**, so every package in the suite can use these types without
+pulling in an I/O stack. Anything that opens a store belongs in neu-vol.
 
 Two conventions run through all of it, and both fail silently when broken:
 
-* **zyx in memory, and physical nanometres as the one model space.** A geometry
-  object never carries an integer scale, and never derives a factor from
-  ``2 ** level`` — real pyramids are anisotropic. :func:`~neu_lib.frame.to_xyz` is
-  the single conversion to the renderer's order.
-* **Boxes are half-open**, ``[lo, hi)``. A ``hi`` already on a block boundary must
-  not move, which is the off-by-one behind ``align_box(..., "outer")`` and behind
-  :meth:`BBox.from_points` adding one to its maximum.
+* **zyx in memory, physical nanometres as the one model space.** Nothing derives a voxel
+  size from ``2 ** level``, because real pyramids are anisotropic.
+  :func:`~neu_lib.frame.to_xyz` is the single conversion to a renderer's xyz order.
+* **Boxes are half-open**, ``[lo, hi)``.
 """
 
 from .frame import Frame, to_xyz

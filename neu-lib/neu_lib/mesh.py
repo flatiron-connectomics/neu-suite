@@ -1,11 +1,4 @@
-"""A triangle mesh in nm, zyx.
-
-Deliberately plain arrays rather than a ``vol2mesh.Mesh`` wrapper. The old
-``VolumeMesh`` wrapped one, which meant every geometric operation went through a
-conda-only package that exists to *build* meshes from label volumes — work a viewer
-never does. Holding the two arrays directly is what keeps this module importable, and
-testable, with nothing but numpy.
-"""
+"""A triangle mesh in nm, zyx, held as plain numpy arrays."""
 
 from __future__ import annotations
 
@@ -47,11 +40,8 @@ class Mesh:
     @classmethod
     def from_precomputed(cls, vertices_xyz_nm: Any, faces: Any,
                          name: Optional[str] = None) -> "Mesh":
-        """From what ``neu_morpho.readback.read_body_mesh`` returns.
-
-        That reader hands back **xyz** — the order the precomputed format stores — so
-        this is where the one flip into the package's zyx convention happens.
-        """
+        """From xyz vertices, as the precomputed format stores them and
+        ``neu_morpho.readback.read_body_mesh`` returns them, flipped to zyx."""
         verts = _as_points(vertices_xyz_nm, "vertices_xyz_nm")
         return cls(np.ascontiguousarray(verts[:, ::-1]), faces, name=name)
 
@@ -59,17 +49,14 @@ class Mesh:
 
     @property
     def bbox(self) -> BBox:
-        """Integer nm bounds. Empty mesh gives an empty box rather than raising."""
+        """Integer nm bounds; an empty box for an empty mesh."""
         if not len(self.vertices_zyx_nm):
             return BBox.empty(3)
         return BBox.from_points(self.vertices_zyx_nm)
 
     def translate(self, offset_zyx_nm: Sequence[float]) -> "Mesh":
-        """Move the mesh. **Only the vertices move.**
-
-        Faces are indices and normals are directions; the old implementation added the
-        offset to all three, which silently scrambled the topology and the shading.
-        """
+        """A copy moved by ``offset_zyx_nm``. Only vertices move; faces are indices and
+        normals are directions."""
         offset = np.asarray(offset_zyx_nm, dtype=np.float64)
         if offset.shape != (3,):
             raise ValueError(f"offset must be zyx, got shape {offset.shape}")
