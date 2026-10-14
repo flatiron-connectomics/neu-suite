@@ -76,7 +76,7 @@ PACKAGES = [
      "`notebook`, `tables`, `explore`, `rule`, `segprops`, `annsource`"),
     ("neu-glance", "neu_glance",
      "Everything a remote viewer consumes: states, layers, links, shaders.",
-     "`state.build_state`, `layers`, `shaders`, `sources`"),
+     "`state.build_state`, `layers`, `shaders`, `sources`, `movie`"),
     ("neu-proc", "neu_proc",
      "Array processing: filters, label tools and distance transforms. Only the pure "
      "array-in-array-out half so far.",
@@ -182,6 +182,8 @@ def write_api_index(path: Path) -> None:
         ("neu_glance", "build a neuroglancer state or layer",
          "{doc}`neu_glance.state <../api/neu_glance/state/index>`, "
          "{doc}`neu_glance.layers <../api/neu_glance/layers/index>`"),
+        ("neu_glance", "render an animation through a real viewer",
+         "{doc}`neu_glance.movie <../api/neu_glance/movie/index>`"),
         ("neu_draw", "draw meshes and skeletons in a notebook",
          "{doc}`neu_draw.scene <../api/neu_draw/scene/index>` — `build_scene`, `Scene` "
          "— then `neu_draw.show`"),

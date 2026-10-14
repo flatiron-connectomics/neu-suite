@@ -237,8 +237,7 @@ mentions holds its base value.
 
 ```python
 from neu_glance import load_state
-from neu_glance.animate import Timeline
-from neu_glance.rendering import record
+from neu_glance.movie import Timeline, record
 
 tl = Timeline(load_state("scene.json"), fps=30)
 
@@ -300,7 +299,7 @@ Four things worth knowing:
   *together*, because fading while moving is the common case.
 - **Interrupting is safe and re-running resumes.** Frames are written atomically and a
   resumed render checks the PNG signature, not just that a file exists.
-- **`neu_glance.animate` is pure** — stdlib only, no neuroglancer — so a timeline can be
+- **`neu_glance.movie.animate` is pure** — stdlib only, no neuroglancer — so a timeline can be
   built, sampled and tested with nothing installed. `tl.at(4.5)` is just a state dict, and
   `state_url` turns any moment into a link you can open.
 
@@ -333,23 +332,25 @@ the four worth knowing up front:
 
 ```
 neu_glance/
-├── animate.py    a timeline of tweens over one state, and the interpolation under it
-├── layers.py     local annotation layers — from coordinates, or from occupancy boxes
-├── rendering.py  drive a viewer frame by frame and write PNGs
-├── sources.py    layers for something on a store: a volume, an annotation source
-├── serving.py    host arrays HERE and run a viewer on them
-├── shaders.py    GLSL, and the rule for choosing one — annotation and image families
-├── state.py      assemble a state, encode a URL, read one back, merge into one, split a layer
-└── cli.py        neu-glance
+├── layers.py        local annotation layers — from coordinates, or from occupancy boxes
+├── sources.py       layers for something on a store: a volume, an annotation source
+├── served_layer.py  an array to host, and how to show it
+├── serving.py       host arrays HERE and run a viewer on them
+├── shaders.py       GLSL, and the rule for choosing one — annotation and image families
+├── state.py         assemble a state, encode a URL, read one back, merge into one, split a layer
+├── movie/
+│   ├── animate.py   a timeline of tweens over one state, and the interpolation under it
+│   └── rendering.py drive a viewer frame by frame and write PNGs
+└── cli.py           neu-glance
 ```
 
-`layers.py`, `state.py` and `animate.py` are **pure** — plain data in, plain data out, no
+`layers.py`, `state.py` and `movie/animate.py` are **pure** — plain data in, plain data out, no
 store access — and `sources.py` is the only module that reads anything. That line is
 deliberate: a layer whose source is a locally served volume has no store to inspect, so state
 assembly must never require one, and a timeline's interpolation stays covered by a CI that
 installs no extras.
 
-`serving.py` and `rendering.py` are the two that need a viewer. **Neither imports
+`serving.py` and `movie/rendering.py` are the two that need a viewer. **Neither imports
 `neuroglancer` at module scope** — every such import is inside the function that needs it,
 which is what keeps `import neu_glance` and `neu-glance --help` off that import graph. A test
 checks the indentation rather than the filename, because "only `serving.py` imports it" was

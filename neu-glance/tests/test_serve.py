@@ -35,7 +35,7 @@ def test_a_missing_extra_names_the_extra(monkeypatch):
     """The failure lands at run time, so its message is the only guidance there is."""
     import builtins
 
-    import neu_glance.serving as serving
+    import neu_glance.served_layer as served_layer
 
     real = builtins.__import__
 
@@ -45,8 +45,8 @@ def test_a_missing_extra_names_the_extra(monkeypatch):
         return real(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", blocked)
-    with pytest.raises(serving.ServeProblem, match=r"neu-glance\[serve\]"):
-        serving._neuroglancer()
+    with pytest.raises(served_layer.ServeProblem, match=r"neu-glance\[serve\]"):
+        served_layer._neuroglancer()
 
 
 def test_the_cli_shader_names_agree_with_the_registry():
@@ -186,8 +186,9 @@ ng = pytest.importorskip("neuroglancer", reason="the serve extra is not installe
 
 from neu_lib import BBox  # noqa: E402
 
-from neu_glance.serving import (ServedLayer, ServeProblem,  # noqa: E402
-                                _coordinate_space, _volume_type, _voxel_offset, serve)
+from neu_glance.served_layer import (ServedLayer, ServeProblem,  # noqa: E402
+                                     _coordinate_space, _volume_type, _voxel_offset)
+from neu_glance.serving import serve  # noqa: E402
 
 
 @pytest.fixture

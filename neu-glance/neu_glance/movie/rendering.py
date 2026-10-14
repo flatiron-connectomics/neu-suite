@@ -1,7 +1,7 @@
-"""Render a :class:`neu_glance.animate.Timeline` to a sequence of PNGs, through a real viewer.
+"""Render a :class:`neu_glance.movie.animate.Timeline` to a sequence of PNGs, through a real viewer.
 
 Each frame is a round trip: Python pushes a state, the browser loads the visible chunks,
-draws, and posts the image back. :mod:`neu_glance.animate` decides what each frame is.
+draws, and posts the image back. :mod:`neu_glance.movie.animate` decides what each frame is.
 
 By default a headless chrome or chromium does the drawing, started with
 ``subprocess.Popen`` (no selenium: the viewer's own channel carries every state change and
@@ -34,7 +34,7 @@ from collections import deque
 from typing import Any, Mapping, Sequence
 
 from .animate import Timeline
-from .serving import _neuroglancer
+from ..served_layer import _neuroglancer
 
 #: The first eight bytes of any PNG, checked on resume.
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -667,14 +667,22 @@ def print_encode_hint(out_dir: str, fps: float, *, pattern: str = "frame_%05d.pn
           file=file or sys.stderr)
 
 
-def ffmpeg_command(out_dir: str, fps: float, *, output: str | None = None, crf: int = 18,
-                   pattern: str = "frame_%05d.png") -> str:
-    """The command that turns the frames into an mp4. Printed, never run.
+#: H.264 in ``yuv420p``, the pixel format every player accepts, at a visually lossless CRF.
+#: The same settings as neu-draw's ``video.ENCODE_ARGS``.
+VIDEO_CODEC, PIXEL_FORMAT, DEFAULT_CRF = "libx264", "yuv420p", 18
+
+
+def ffmpeg_command(out_dir: str, fps: float, *, output: str | None = None,
+                   crf: int = DEFAULT_CRF, pattern: str = "frame_%05d.png") -> str:
+    """The command that turns the frames into an mp4, quoted for a shell. Printed, never run.
 
     Not run, because ffmpeg is often not on ``PATH`` (on a cluster it is usually a module),
     and because re-encoding should never mean re-rendering. Keep ``-pix_fmt yuv420p``:
     without it the video encodes but does not play in QuickTime, PowerPoint or Slack.
     """
+    import shlex
+
     dest = output or os.path.join(out_dir, "animation.mp4")
-    return (f"ffmpeg -y -framerate {fps:g} -i {os.path.join(out_dir, pattern)} "
-            f"-c:v libx264 -pix_fmt yuv420p -crf {crf} {dest}")
+    return shlex.join(["ffmpeg", "-y", "-framerate", f"{fps:g}",
+                       "-i", os.path.join(out_dir, pattern), "-c:v", VIDEO_CODEC,
+                       "-pix_fmt", PIXEL_FORMAT, "-crf", str(crf), dest])

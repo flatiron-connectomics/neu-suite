@@ -257,7 +257,7 @@ def segment_boxes(volume: str, segment_ids: Sequence[Any], *, lod: int | None = 
                   skip_missing: bool = True) -> dict[str, tuple[tuple, tuple]]:
     """``{segment_id: (lo_zyx, hi_zyx)}`` in **nanometres**, from each segment's mesh.
 
-    For :meth:`neu_glance.animate.Timeline.frame_on`. Bounds come from the mesh rather than
+    For :meth:`neu_glance.movie.animate.Timeline.frame_on`. Bounds come from the mesh rather than
     a coarse level of the segmentation, where a thin arbor can shrink or vanish and the box
     would be wrong. ``lod=None`` reads the coarsest level of detail, which is small and
     bounds the object just as well. Sharded sources and a source's own ``transform`` are

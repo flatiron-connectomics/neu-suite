@@ -5,7 +5,7 @@ tweens (:class:`Tween`), each moving one property over a window of time with an 
 Anything no tween mentions keeps its base value, so the base can be edited without
 touching the tweens.
 
-Pure: plain dicts in and out, stdlib only, no neuroglancer. :mod:`neu_glance.rendering`
+Pure: plain dicts in and out, stdlib only, no neuroglancer. :mod:`neu_glance.movie.rendering`
 is the half that needs a viewer.
 
 neuroglancer's own ``ViewerState.interpolate`` is not used: in 2.41.2 it raises for any
@@ -23,8 +23,8 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from .shaders import as_hex_color
-from .state import (FIT_MARGIN, StateProblem, default_view, parse_url,
+from ..shaders import as_hex_color
+from ..state import (FIT_MARGIN, StateProblem, default_view, parse_url,
                     split_segment_layer, subset_layers)
 
 

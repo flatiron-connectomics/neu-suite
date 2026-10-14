@@ -14,11 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from neu_glance.animate import Timeline
+from neu_glance.movie.animate import Timeline
 
 pytest.importorskip("neuroglancer", reason="the serve extra is not installed")
 
-from neu_glance.rendering import (  # noqa: E402
+from neu_glance.movie.rendering import (  # noqa: E402
     CHROME_OFF, PNG_MAGIC, RenderProblem, _RequestQueue, _Tail, _write_atomic,
     ffmpeg_command, frame_path, is_written, pending_frames, print_encode_hint, record,
     render_state, stale_frames, wait_for_browser,
@@ -506,6 +506,15 @@ def test_the_ffmpeg_command_names_the_pattern_the_frame_rate_and_the_PIXEL_FORMA
     assert "module" not in cmd and "nix" not in cmd
 
 
+def test_the_ffmpeg_command_survives_a_path_with_spaces():
+    """It is pasted into a shell, so a path is one argument however it is spelled."""
+    import shlex
+
+    argv = shlex.split(ffmpeg_command("/my renders/take 1", 30.0))
+    assert argv[argv.index("-i") + 1] == "/my renders/take 1/frame_%05d.png"
+    assert argv[-1] == "/my renders/take 1/animation.mp4"
+
+
 def test_the_encode_hint_says_OUT_LOUD_that_nothing_was_encoded(capsys):
     """The hint must read as an instruction: nothing was encoded."""
     print_encode_hint("/out", 30.0)
@@ -520,7 +529,7 @@ def test_the_encode_hint_says_OUT_LOUD_that_nothing_was_encoded(capsys):
 # --------------------------------------------------------------------------- #
 def test_the_rendering_path_needs_no_selenium():
     """Neither importing nor finding a browser needs selenium (the webdriver route would)."""
-    code = ("import neu_glance.rendering as r, sys; "
+    code = ("import neu_glance.movie.rendering as r, sys; "
             "r.find_browser('nope'); "
             "assert 'selenium' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)

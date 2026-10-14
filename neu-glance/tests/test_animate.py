@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from neu_glance.animate import (CAMERA_KEYS, EASINGS, FADE_FROM, LAYER_DEFAULTS,
+from neu_glance.movie.animate import (CAMERA_KEYS, EASINGS, FADE_FROM, LAYER_DEFAULTS,
                                 AnimateProblem, Timeline, ease, interpolate_color_map,
                                 interpolate_hex_color, interpolate_quaternion,
                                 interpolate_zoom, kind_for)
@@ -693,7 +693,7 @@ def test_importing_animate_does_not_pull_in_neuroglancer():
     """The interpolation core stays testable in a CI that installs no extras."""
     import subprocess
     import sys
-    code = ("import neu_glance.animate, sys; "
+    code = ("import neu_glance.movie.animate, sys; "
             "assert 'neuroglancer' not in sys.modules; "
             "assert 'numpy' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)
@@ -814,3 +814,15 @@ def test_an_unusable_set_colour_RAISES_rather_than_rendering_the_wrong_palette()
     with pytest.raises(ShaderProblem, match="colour for 'a'"):
         subset_layers(_state(_seg("seg", ["1"])), "seg", {"a": ["1"]},
                       colors={"a": "not-a-colour"})
+
+
+def test_every_lazy_export_resolves():
+    """The top level and `movie` name their exports as strings; a typo would surface only
+    when someone reached for the name."""
+    import neu_glance
+    from neu_glance import movie
+
+    for package in (neu_glance, movie):
+        for name in package.__all__:
+            if name != "__version__":
+                assert getattr(package, name) is not None, f"{package.__name__}.{name}"

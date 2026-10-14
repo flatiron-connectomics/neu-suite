@@ -14,10 +14,10 @@ What it makes:
 
 What it runs, both needing a browser: a **viewer** over arrays held in this process
 (:mod:`neu_glance.serving`), and an **animation**, a timeline of tweens rendered frame by
-frame through a real viewer (:mod:`neu_glance.animate`, :mod:`neu_glance.rendering`).
+frame through a real viewer (:mod:`neu_glance.movie`).
 
-Only :mod:`neu_glance.sources` reads a store; ``layers``, ``state`` and ``animate`` are
-pure. Top-level names resolve lazily (PEP 562), so ``neu-glance --help`` does not import
+Only :mod:`neu_glance.sources` reads a store; ``layers``, ``state`` and
+``movie.animate`` are pure. Top-level names resolve lazily (PEP 562), so ``neu-glance --help`` does not import
 neu-vol.
 """
 
@@ -42,15 +42,6 @@ _EXPORTS = {
     "segment_tags": "sources",
     "segment_boxes": "sources",
     "read_segment_properties": "sources",
-    # Animation: `animate` is stdlib only; `rendering` needs the `serve` extra.
-    "Timeline": "animate",
-    "Tween": "animate",
-    "EASINGS": "animate",
-    "AnimateProblem": "animate",
-    "record": "rendering",
-    "render_state": "rendering",
-    "ffmpeg_command": "rendering",
-    "RenderProblem": "rendering",
     "volume_layer": "sources",
     "volume_extent": "sources",
     "annotation_layer": "sources",
@@ -72,21 +63,26 @@ _EXPORTS = {
     # Hosting arrays in this process: `serve` is the function, `serving` the module.
     "serve": "serving",
     "stop_serving": "serving",
-    "ServedLayer": "serving",
+    "ServedLayer": "served_layer",
     "Server": "serving",
-    "ServeProblem": "serving",
+    "ServeProblem": "served_layer",
 }
 
-__all__ = ["__version__", *sorted(_EXPORTS)]
+#: Subpackages exposed whole at the top level.
+_SUBPACKAGES = ("movie",)
+
+__all__ = ["__version__", *sorted(_EXPORTS), *_SUBPACKAGES]
 
 
 def __getattr__(name: str):
-    """Resolve a top-level export on first use."""
+    """Resolve a top-level export or subpackage on first use."""
+    import importlib
+
+    if name in _SUBPACKAGES:
+        return importlib.import_module(f".{name}", __name__)
     module = _EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-
     return getattr(importlib.import_module(f".{module}", __name__), name)
 
 
