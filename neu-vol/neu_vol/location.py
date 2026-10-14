@@ -71,6 +71,14 @@ def join(kvstore: Mapping[str, Any], *parts: str) -> dict[str, Any]:
     return kv
 
 
+def as_directory(kvstore: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of ``kvstore`` whose ``path`` ends in ``/``, for a driver given it as a root."""
+    kv = dict(kvstore)
+    if "path" in kv and not str(kv["path"]).endswith("/"):
+        kv["path"] = str(kv["path"]) + "/"
+    return kv
+
+
 def spec_kvstore(spec: Mapping[str, Any]) -> dict[str, Any]:
     """kvstore for a backend spec (handles 'kvstore', 'path', and scheme URLs)."""
     if "kvstore" in spec:
@@ -214,9 +222,7 @@ def list_keys(location: str | Mapping[str, Any], *parts: str,
     where the docstring here promised "one small request".
     """
     kv = join(to_kvstore(location), *parts) if parts else dict(to_kvstore(location))
-    if "path" in kv and not str(kv["path"]).endswith("/"):
-        kv["path"] = str(kv["path"]) + "/"
-    store = _open_store(kv)
+    store = _open_store(as_directory(kv))
     out: list[str] = []
     for key in store.list().result():
         out.append(key.decode() if isinstance(key, bytes) else str(key))

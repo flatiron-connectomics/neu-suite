@@ -25,7 +25,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from .location import join, spec_kvstore, to_kvstore
+from .location import as_directory, join, read_bytes, spec_kvstore, to_kvstore
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,9 @@ def finest_populated_scale(location: str | Mapping[str, Any],
     Tier 2 is what stops a sparse ground-truth volume — no origin chunk at scale 0, one
     at scale 1, every scale correctly written — from being read at the wrong scale.
     """
-    order = sorted(range(len(scales)), key=lambda i: tuple(scales[i]["resolution"]))
+    from .scales import finest_first
+
+    order = finest_first(scales)
     for pos, i in enumerate(order):
         if not scale_stores_chunks(location, scales[i]):
             continue
@@ -245,11 +247,13 @@ def require_populated_scale(spec: Mapping[str, Any], *, op: str = "convert") -> 
     """
     if not str(spec.get("backend", "")).startswith("neuroglancer_precomputed"):
         return
-    kv = _kvstore_of(spec)
-    raw = _read_key(kv, "info")
-    if raw is None:
+    from .scales import precomputed_info
+
+    kv = as_directory(spec_kvstore(spec))
+    info = precomputed_info(kv)
+    if info is None:
         return
-    scales = json.loads(raw)["scales"]
+    scales = info["scales"]
     idx = int(spec.get("scale_index") or 0)
     if not 0 <= idx < len(scales):
         raise ValueError(
@@ -311,13 +315,11 @@ def other_format_markers(location: str | Mapping[str, Any], fmt: str) -> list[st
     # have returned that format instead, so there is nothing left to shadow.
     if fmt in ("dvid", "webknossos", "mapped") or fmt in SINGLE_LEVEL_FORMATS:
         return []
-    kv = to_kvstore(location)
-    if "path" in kv and not str(kv["path"]).endswith("/"):
-        kv["path"] = str(kv["path"]) + "/"
+    kv = as_directory(to_kvstore(location))
     fmt = "neuroglancer_precomputed" if str(fmt).startswith("neuroglancer_precomputed") \
         else fmt
     return [marker for f, marker in FORMAT_MARKERS.items()
-            if f != fmt and _read_key(kv, marker) is not None]
+            if f != fmt and read_bytes(kv, marker) is not None]
 
 
 def detect_file_backend(location: str | Mapping[str, Any]) -> str | None:
@@ -425,10 +427,10 @@ def detect_backend(location: str | Mapping[str, Any]) -> str | None:
     if is_descriptor(location):
         return "mapped"
 
-    kv = to_kvstore(location)
-    if "path" in kv and not str(kv["path"]).endswith("/"):
-        kv["path"] = str(kv["path"]) + "/"
-    raw = _read_key(kv, "info")
+    from .scales import finest_first
+
+    kv = as_directory(to_kvstore(location))
+    raw = read_bytes(kv, "info")
     if raw is not None:
         try:
             scales = json.loads(raw)["scales"]
@@ -437,41 +439,20 @@ def detect_backend(location: str | Mapping[str, Any]) -> str | None:
             # — but one that stores nothing answers nothing, and an `info` may well
             # declare scales that were never written. So all of them are offered, in the
             # order that keeps the listing fallback on the cheapest prefix.
-            ordered = sorted(scales, key=lambda s: tuple(s["resolution"]), reverse=True)
+            ordered = [scales[i] for i in reversed(finest_first(scales))]
         except Exception:
             return "neuroglancer_precomputed"
         if precomputed_chunks_are_gzipped(kv, ordered):
             return PRECOMPUTED_GZ
         return "neuroglancer_precomputed"
-    if _read_key(kv, "zarr.json") is not None:
+    if read_bytes(kv, "zarr.json") is not None:
         return "zarr3"
-    if _read_key(kv, ".zarray") is not None or _read_key(kv, ".zgroup") is not None:
+    if read_bytes(kv, ".zarray") is not None or read_bytes(kv, ".zgroup") is not None:
         return "zarr2"
     # `location`, not `kv`: the trailing slash added above makes an ordinary file path
     # fail every `os.path.isfile` test, and a spec's own kvstore has already been
     # normalised past the form the filesystem answers about.
     return detect_file_backend(location)
-
-
-def _kvstore_of(spec: Mapping[str, Any], *, trailing_slash: bool = True) -> dict[str, Any]:
-    kv = spec_kvstore(spec)  # handles 'kvstore', local 'path', and s3://... URLs
-    if trailing_slash and "path" in kv and not str(kv["path"]).endswith("/"):
-        kv["path"] = str(kv["path"]) + "/"
-    return kv
-
-
-def _read_key(kvstore: Mapping[str, Any], key: str) -> bytes | None:
-    """Read one metadata object.
-
-    Goes through ``location.read_bytes`` rather than opening a kvstore directly,
-    so it gets the S3 credential bootstrap and the per-prefix store cache like
-    every other store-opening path. Opening raw here meant the credential chain
-    fell through to the EC2 metadata service — which does not exist on Rusty — and
-    waited out a socket timeout on *each* of ``detect_backend``'s four probes.
-    """
-    from .location import read_bytes
-
-    return read_bytes(dict(kvstore), key)
 
 
 def location_spec(location: str, fmt: str, *,
@@ -574,12 +555,13 @@ def read_level_voxel_sizes(spec: Mapping[str, Any]) -> list[tuple[float, ...]] |
         # A lookup changes ids, not geometry: the levels are the source's.
         return read_level_voxel_sizes(spec["source"])
     if backend in ("neuroglancer_precomputed", PRECOMPUTED_GZ):   # same `info`
-        raw = _read_key(_kvstore_of(spec), "info")
-        if raw is None:
+        from .scales import finest_first, precomputed_info, precomputed_level
+
+        info = precomputed_info(spec_kvstore(spec))
+        if info is None:
             return None
-        scales = json.loads(raw)["scales"]
-        ordered = sorted(scales, key=lambda s: tuple(s["resolution"]))
-        return [tuple(float(v) for v in s["resolution"][::-1]) for s in ordered]
+        scales = info["scales"]
+        return [precomputed_level(scales[i])[1].voxel_size_nm for i in finest_first(scales)]
     if backend == "hdf5":
         # One level, and it is the file's own. Returned as a list of one so a caller
         # asking "what does level N measure" gets the same shape of answer for every
@@ -589,46 +571,27 @@ def read_level_voxel_sizes(spec: Mapping[str, Any]) -> list[tuple[float, ...]] |
         meta = _read_hdf5(spec)
         return [tuple(meta["voxel_size"])] if meta else None
     if backend == "zarr3":
-        raw = _read_key(_kvstore_of(spec), "zarr.json")
-        if raw is None:
-            return None
-        ome = json.loads(raw).get("attributes", {}).get("ome")
-        if not ome:
-            return None
-        ms = ome["multiscales"][0]
-        spatial = [i for i, a in enumerate(ms["axes"]) if a.get("type") == "space"]
-        out = []
-        for ds in ms["datasets"]:
-            scale = next(t["scale"] for t in ds["coordinateTransformations"]
-                         if t["type"] == "scale")
-            out.append(tuple(float(scale[i]) for i in spatial))
-        return out
+        from .scales import ome_levels, ome_multiscale, read_zarr_json
+
+        ms = ome_multiscale(read_zarr_json(spec_kvstore(spec)))
+        return [frame.voxel_size_nm for _, frame in ome_levels(ms)] if ms else None
     return None
 
 
 def _read_zarr_ome(spec: Mapping[str, Any]) -> dict | None:
-    raw = _read_key(_kvstore_of(spec), "zarr.json")
-    if raw is None:
-        return None
-    meta = json.loads(raw)
-    attrs = meta.get("attributes", {})
-    ome = attrs.get("ome")
-    if meta.get("node_type") != "group" or not ome:
-        return None  # bare array (or non-OME group) -> no coordinate metadata
-    ms = ome["multiscales"][0]
-    axes = ms["axes"]
-    ds0 = ms["datasets"][0]
-    ct = ds0["coordinateTransformations"]
-    scale = next(t["scale"] for t in ct if t["type"] == "scale")
-    translation = next((t["translation"] for t in ct if t["type"] == "translation"),
-                       [0.0] * len(scale))
+    from .scales import ome_levels, ome_multiscale, read_zarr_json, spatial_axes
 
-    spatial = [i for i, a in enumerate(axes) if a.get("type") == "space"]
+    ms = ome_multiscale(read_zarr_json(spec_kvstore(spec)))
+    if ms is None:
+        return None  # absent, a bare array, or a non-OME group: no coordinate metadata
+    axes = ms["axes"]
+    path0, frame0 = ome_levels(ms)[0]
+    spatial = spatial_axes(ms)
     has_channels = any(a.get("type") == "channel" for a in axes)
     return {
-        "data_spec": {"backend": "zarr3", "kvstore": join(spec_kvstore(spec), ds0["path"])},
-        "voxel_size": tuple(scale[i] for i in spatial),
-        "offset": tuple(translation[i] for i in spatial),
+        "data_spec": {"backend": "zarr3", "kvstore": join(spec_kvstore(spec), path0)},
+        "voxel_size": frame0.voxel_size_nm,
+        "offset": frame0.origin_nm,
         "units": axes[spatial[0]].get("unit"),
         "spatial_axes": tuple(axes[i]["name"] for i in spatial),
         "has_channels": has_channels,
@@ -866,13 +829,14 @@ def _read_mapped(spec: Mapping[str, Any]) -> dict | None:
 
 
 def _read_precomputed(spec: Mapping[str, Any]) -> dict | None:
-    kv = _kvstore_of(spec)
-    raw = _read_key(kv, "info")
-    if raw is None:
+    from .scales import finest_first, precomputed_info, precomputed_level
+
+    kv = as_directory(spec_kvstore(spec))
+    info = precomputed_info(kv)
+    if info is None:
         return None
-    info = json.loads(raw)
     scales = info["scales"]
-    finest = min(range(len(scales)), key=lambda i: tuple(scales[i]["resolution"]))
+    finest = finest_first(scales)[0]
 
     # Level 0 = the finest scale that was actually WRITTEN, not simply the finest one
     # declared. `info` is a claim about the volume's layout and the chunk objects are
@@ -896,11 +860,7 @@ def _read_precomputed(spec: Mapping[str, Any]) -> dict | None:
         raise ValueError(
             f"source level {idx} does not exist: this volume's `info` declares "
             f"{len(scales)} scale(s), 0-{len(scales) - 1}")
-    sc0 = scales[idx]
-    res_xyz = sc0["resolution"]
-    voxel_size = tuple(float(v) for v in res_xyz[::-1])          # -> (z, y, x)
-    voxel_offset_xyz = sc0.get("voxel_offset", [0, 0, 0])
-    offset = tuple(float(o) * v for o, v in zip(voxel_offset_xyz[::-1], voxel_size))
+    _, frame = precomputed_level(scales[idx])
     nch = int(info.get("num_channels", 1))
     return {
         # Carry the CALLER's backend through. Hardcoding "neuroglancer_precomputed"
@@ -910,8 +870,8 @@ def _read_precomputed(spec: Mapping[str, Any]) -> dict | None:
         # it must not contradict what detection decided.
         "data_spec": {"backend": spec.get("backend") or "neuroglancer_precomputed",
                       "kvstore": spec_kvstore(spec), "scale_index": idx},
-        "voxel_size": voxel_size,
-        "offset": offset,
+        "voxel_size": frame.voxel_size_nm,
+        "offset": frame.origin_nm,
         "units": "nm",
         "spatial_axes": ("z", "y", "x"),
         "has_channels": nch > 1,

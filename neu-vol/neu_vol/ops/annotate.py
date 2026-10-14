@@ -31,7 +31,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from ..location import list_keys, read_json
+from ..location import list_keys
 from ..source_metadata import (PRECOMPUTED_GZ, detect_backend, existing_levels,
                                level_spec, require_chunked_volume)
 
@@ -103,11 +103,12 @@ def occupied_cells(volume: str, fmt: str, level: int,
                 if k.rsplit("/", 1)[-1] not in ZARR_METADATA]
         cells = {c for c in (_zarr_cell(k, len(cell)) for k in keys) if c}
     else:
-        info = read_json(volume.rstrip("/") + "/info") or {}
-        scales = sorted(info.get("scales", []), key=lambda s: tuple(s["resolution"]))
+        from ..scales import finest_first, precomputed_info
+
+        scales = (precomputed_info(volume) or {}).get("scales", [])
         if level >= len(scales):
             raise NoOccupancy(f"{volume} has no scale {level}")
-        keys = list_keys(volume, scales[level]["key"])
+        keys = list_keys(volume, scales[finest_first(scales)[level]]["key"])
         cells = {c for c in (_precomputed_cell(k, cell) for k in keys) if c}
     if keys and not cells:
         raise NoOccupancy(

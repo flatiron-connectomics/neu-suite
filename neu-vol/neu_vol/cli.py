@@ -1350,11 +1350,10 @@ def _stored_chunks(volume: str, fmt: str, level: int, scale_key: str | None) -> 
 
 def _precomputed_scale_keys(volume: str) -> dict[int, str]:
     """``{level: scale key}`` finest-first, matching how levels are numbered elsewhere."""
-    from neu_vol.location import read_json
+    from neu_vol.scales import finest_first, precomputed_info
 
-    info = read_json(volume.rstrip("/") + "/info") or {}
-    ordered = sorted(info.get("scales", []), key=lambda s: tuple(s["resolution"]))
-    return {i: s["key"] for i, s in enumerate(ordered)}
+    scales = (precomputed_info(volume) or {}).get("scales", [])
+    return {i: scales[j]["key"] for i, j in enumerate(finest_first(scales))}
 
 
 def cmd_progress(args) -> int:

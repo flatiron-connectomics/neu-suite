@@ -30,17 +30,10 @@ _TAG_TO_DRIVER = {
 
 
 def _kvstore_from_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
-    from ..location import ensure_credentials, to_kvstore
+    from ..location import ensure_credentials, spec_kvstore
 
-    if "kvstore" in spec:
-        kv = dict(spec["kvstore"])
-    elif "path" in spec:
-        kv = to_kvstore(spec["path"])          # local path or s3://... URL
-    else:
-        raise ValueError("spec needs either 'kvstore' or 'path'")
-    # Shared with location._kv so both store-opening paths bootstrap identically;
-    # see ensure_credentials for why it must happen per process.
-    return ensure_credentials(kv)
+    # The same credential bootstrap as location's own store opener.
+    return ensure_credentials(spec_kvstore(spec))
 
 
 def _compressor_codec(name: str | None, level: int | None) -> list[dict[str, Any]]:
