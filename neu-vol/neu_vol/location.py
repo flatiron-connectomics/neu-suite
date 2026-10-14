@@ -17,18 +17,9 @@ _SCHEMES = {"s3://": "s3", "gs://": "gcs"}
 def _resolve_local(path: str) -> str:
     """A filesystem path as tensorstore will accept it: absolute, with ``~`` expanded.
 
-    **tensorstore's file driver rejects a relative path outright** — a ``..`` segment gives
-    ``Invalid file path`` from deep inside the JSON binding, naming neither the caller nor
-    the reason. So ``../data/piece.h5`` from a notebook one directory down failed, which is
-    the most ordinary way anyone refers to a file.
-
-    Resolved here rather than in each entry point because this is the one place every local
-    location passes through, and a path that is absolute by the time it reaches a spec is
-    also a path that still means the same thing on a dask worker with a different working
-    directory — which is the harder version of the same bug.
-
-    ``normpath`` (inside ``abspath``) collapses the ``..``; a trailing slash goes with it,
-    which costs nothing because every caller that needs one appends it itself.
+    tensorstore's file driver rejects relative paths, and an absolute path also means the
+    same thing on a worker with a different working directory. A trailing slash is
+    dropped; callers that need one append it.
     """
     if not path:
         return path        # a degenerate location, left alone rather than made the cwd
@@ -38,12 +29,8 @@ def _resolve_local(path: str) -> str:
 def to_kvstore(location: str | Mapping[str, Any]) -> dict[str, Any]:
     """Normalize a location to a TensorStore kvstore spec.
 
-    Accepts a local path, an ``s3://bucket/prefix`` / ``gs://bucket/prefix`` URL,
-    or an existing kvstore dict.
-
-    A local path is made **absolute** with ``~`` expanded (:func:`_resolve_local`), because
-    tensorstore's file driver refuses a relative one — and because an absolute path still
-    means the same thing on a worker whose working directory is elsewhere.
+    Accepts a local path (made absolute, ``~`` expanded), an ``s3://bucket/prefix`` /
+    ``gs://bucket/prefix`` URL, or an existing kvstore dict.
     """
     if isinstance(location, Mapping):
         kv = dict(location)
@@ -89,12 +76,8 @@ def spec_kvstore(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def is_local(location: str | Mapping[str, Any]) -> bool:
-    """True if ``location`` resolves to an ordinary filesystem path.
-
-    Callers that genuinely need POSIX semantics (sqlite, append-in-place logs,
-    ``os.replace``) use this to reject object-store locations up front with a
-    clear message, rather than failing deep inside a write.
-    """
+    """True if ``location`` resolves to an ordinary filesystem path, for callers that need
+    POSIX semantics (sqlite, appended logs) to refuse an object store up front."""
     return to_kvstore(location).get("driver") == "file"
 
 
@@ -109,24 +92,16 @@ def local_path(location: str | Mapping[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Byte / JSON I/O over a kvstore
-#
-# One code path for local files and object stores, so callers never branch on
-# the destination. Note the file driver creates missing parent directories on
-# write, so these replace `os.makedirs` + `open` rather than supplementing it.
+# Byte / JSON I/O over a kvstore: one code path for local files and object stores.
+# The file driver creates missing parent directories on write.
 # --------------------------------------------------------------------------- #
 def ensure_credentials(kvstore: Mapping[str, Any]) -> dict[str, Any]:
     """Bootstrap object-store credentials for a kvstore that is about to be opened.
 
-    **Call this at every point where a store is opened, not where a spec is
-    built.** tensorstore 0.1.84's S3 *profile* provider cannot read
-    ``~/.aws/credentials``, so ``aws.ensure_aws_credentials`` copies the profile
-    into ``AWS_*`` env vars for its *environment* provider — which means the
-    bootstrap is **per process**, and a process that skips it gets a 403 on every
-    write. That failure mode is nasty on dask: whether a given worker has
-    bootstrapped depends on whether it happened to open an S3 store earlier in the
-    run, so the same code path succeeds on some workers and 403s on others, and
-    which is which changes with worker startup timing.
+    Call it wherever a store is opened, not where a spec is built: tensorstore's S3
+    profile provider cannot read ``~/.aws/credentials``, so the profile is copied into
+    ``AWS_*`` environment variables, per process. A dask worker that skipped it would get
+    403s while others succeed.
     """
     kv = dict(kvstore)
     if kv.get("driver") == "s3":
@@ -135,12 +110,9 @@ def ensure_credentials(kvstore: Mapping[str, Any]) -> dict[str, Any]:
     return kv
 
 
-# Opened stores, keyed by their *prefix* spec. A KvStore is a handle to a prefix,
-# not to one object, so every read/write under that prefix can share one — and
-# reopening is not free: each S3 open reconstructs the credential provider chain,
-# which costs setup and emits two absl ERROR lines per open. Unbounded by design;
-# the key space is the handful of prefixes one run writes to (volume, mesh,
-# skeleton). Per process, so dask workers each build their own after forking.
+# Opened stores, keyed by their prefix spec, so every read and write under a prefix
+# shares one: each S3 open rebuilds the credential chain and logs two benign ERROR
+# lines. Unbounded; a run touches a handful of prefixes. Per process.
 _STORES: dict[str, Any] = {}
 
 
@@ -162,9 +134,7 @@ def _kv(location: str | Mapping[str, Any], *parts: str):
     key = ""
     base = str(kv.get("path", ""))
     if base:
-        # Split the final segment off as the key so the store is opened on the
-        # containing prefix — a trailing separator is what keeps the key from
-        # being concatenated onto the directory name.
+        # The final segment is the key, so the store opens on the containing prefix.
         head, _, tail = base.rstrip("/").rpartition("/")
         kv["path"] = (head + "/") if head else ("/" if base.startswith("/") else "")
         key = tail
@@ -180,17 +150,10 @@ def read_bytes(location: str | Mapping[str, Any], *parts: str) -> bytes | None:
 
 def read_range(location: str | Mapping[str, Any], start: int, end: int,
                *parts: str) -> bytes | None:
-    """Read the half-open byte range ``[start, end)`` of one object.
+    """Read the half-open byte range ``[start, end)`` of one object; ``None`` if absent.
 
-    ``None`` if the object does not exist. A range reaching past the end of the object
-    is **not** an error — the store returns what is there, so a short result means the
-    object is smaller than asked for, not that the read failed. Callers that need the
-    full range must check the length themselves.
-
-    Goes through the same cached, credential-bootstrapped opener as :func:`read_bytes`;
-    on an object store this becomes an HTTP Range request rather than a full fetch,
-    which is the entire point — a shard file is tens of MB and the wanted entry is
-    typically a few hundred bytes.
+    A range past the end of the object returns what is there, so callers needing the
+    full range check the length. On an object store this is an HTTP Range request.
     """
     store, key = _kv(location, *parts)
     result = store.read(key, byte_range=slice(int(start), int(end))).result()
@@ -207,19 +170,10 @@ def list_keys(location: str | Mapping[str, Any], *parts: str,
               limit: int | None = None) -> list[str]:
     """Key names directly under a prefix.
 
-    Goes through the cached, credential-bootstrapped opener like every other access
-    here.
-
-    **``limit`` truncates the RESULT, not the request, and does not bound the cost.**
-    tensorstore's ``kvstore.list()`` returns a future of the complete listing, so the
-    whole enumeration happens before Python can stop reading it — a prefix with millions
-    of objects costs the same with ``limit=4`` as without. It is useful only for keeping
-    the returned list small.
-
-    So there is no cheap way to sample a large prefix. To answer a question about one
-    object, probe it by name with :func:`exists`; to bound a listing, list a narrower
-    prefix. Getting this wrong cost 51 s inside ``detect_backend`` on a dense volume,
-    where the docstring here promised "one small request".
+    ``limit`` truncates the result, not the request: tensorstore enumerates the whole
+    prefix first, so a prefix with millions of objects costs the same either way. To ask
+    about one object, probe it by name with :func:`exists`; to bound a listing, list a
+    narrower prefix.
     """
     kv = join(to_kvstore(location), *parts) if parts else dict(to_kvstore(location))
     store = _open_store(as_directory(kv))
@@ -256,25 +210,12 @@ def write_json(location: str | Mapping[str, Any], obj: Any, *parts: str,
 def default_progress_path(dst: str | Mapping[str, Any]) -> str:
     """Default manifest path for a destination (local: alongside it; remote: cwd).
 
-    A manifest must be an ordinary file — it is appended to and fsynced per task — so for a
-    remote destination it cannot live beside the volume and lands in the working directory
-    instead. That is where the name has to do the disambiguating, and the **last path
-    component alone is not enough**: two prefixes ending in the same word are entirely
-    ordinary (``…/specimen3/gt_v1_eval`` and ``…/specimen5/gt_v1_eval``), and two runs
-    sharing a manifest do not merely interleave a log. They read each other's records on
-    resume and skip each other's blocks, and a ``--fresh`` run truncates the other's
-    history mid-flight. Nothing about the output looks wrong afterwards.
-
-    So a remote name carries a short digest of the **whole** location beside the readable
-    tail: ``gt_v1_eval.4f2a91c7.progress.jsonl``. The digest covers only the identity fields
-    — driver, bucket, path — rather than the kvstore dict, so a field added there later
-    cannot rename the manifest a run is in the middle of appending to. The trailing slash is
-    normalised away for the same reason: ``s3://b/k`` and ``s3://b/k/`` are one destination
-    and must resolve to one manifest, or a resumed run would start over and `neu-vol
-    progress` would report on nothing.
-
-    Local destinations keep their old name: a path beside the volume is already unique, and
-    renaming those would orphan every manifest already on disk.
+    A manifest is appended to and fsynced, so for a remote destination it lands in the
+    working directory. Its name then carries a digest of the whole location beside the
+    last component (``seg.4f2a91c7.progress.jsonl``), so two destinations ending in the
+    same word never share a manifest, which would make each resume skip the other's
+    blocks. The digest covers driver, bucket and path only, trailing slash removed, so one
+    destination always maps to one manifest.
     """
     kv = to_kvstore(dst)
     if kv.get("driver") == "file":

@@ -1,19 +1,12 @@
-"""Addressing a DVID instance, and resolving which *version* of it you get.
+"""Addressing a DVID instance, and resolving which version of it you get.
 
-This module is deliberately **instance-type agnostic**. Everything here works the same
-for a ``labelmap``, an ``annotation`` or a ``keyvalue`` instance, because none of it
-touches the data — it addresses an instance, resolves a ref to a node, and records what
-that node was. The labelmap-specific parts (geometry, the array view) live in
-``backends/dvid.py``, which imports from here.
+Instance-type agnostic: it addresses an instance, resolves a ref to a node and records
+that node, for a ``labelmap``, ``annotation`` or ``keyvalue`` alike, so neu-mark can use
+it without an array. The labelmap geometry and array view are in ``backends/dvid.py``.
+Also here: fetching DVID ROIs as one positioned label array (:func:`roi_volume`).
 
-That split exists because consumers above this package need the version machinery
-without wanting an array. ``neu-mark`` pulls synapse elements and body annotations
-out of DVID; it needs :func:`parse_url`, :func:`resolve_node`, :func:`node_summary` and
-:func:`node_provenance` exactly as ``convert`` does, and reaching into a *backend* module
-for them would be reaching past the thing it wanted.
-
-**The one non-obvious rule: resolve the ref once, in the driver.** A ``uuid`` may be a
-branch ref, and a branch ref names a node that moves. See :func:`resolve_node`.
+A ``uuid`` may be a branch ref, which names a node that moves: resolve it once, in the
+driver (:func:`resolve_node`).
 """
 
 from __future__ import annotations
@@ -30,8 +23,7 @@ from neu_lib import Frame
 #: ``dvid+https://`` exists because that wrapper cannot be told to use TLS otherwise.
 _SCHEMES = {"dvid+https://": "https://", "dvid://": ""}
 
-#: Raised as an ImportError message wherever neuclease is first needed. Spelled out
-#: because "pip install neuclease" is the natural next move and it does not work.
+#: The ImportError message wherever neuclease is first needed; it is not pip-installable.
 MISSING = (
     "Talking to DVID needs the `neuclease` package, which is not installed here.\n\n"
     "neuclease cannot be a pip dependency: it needs `libdvid-cpp`, `vigra` and "
@@ -45,20 +37,13 @@ MISSING = (
 def parse_url(url: str) -> dict[str, str]:
     """``dvid://<server>/<uuid>/<instance>`` -> the spec fields.
 
-    Three path segments, always, because all three are required to address an
-    instance and none of them may contain a ``/``:
+    Exactly three segments, split on ``/`` only:
 
-    - ``server`` may carry a port (``emdata3:8900``) and may be a bare host
-      (``dvid.example.org``), in which case neuclease prepends
-      ``http://``. Use the ``dvid+https://`` scheme for a TLS server.
-    - ``uuid`` may be a bare uuid (``93fdbc``), an abbreviated one, or the
-      ``uuid:branch`` form DVID accepts (``93fdbc:main``).
-    - ``instance`` is the data instance name — ``labels`` for a labelmap,
-      ``synapses`` for point annotations, ``labels_annotations`` for a keyvalue.
-      Nothing here cares which; the caller checks the type it needs.
-
-    Both colons above are why this splits on ``/`` only: a port and a branch
-    qualifier both contain ``:``, and neither contains a slash.
+    - ``server`` may carry a port (``emdata3:8900``); a bare host gets ``http://`` from
+      neuclease. Use the ``dvid+https://`` scheme for a TLS server.
+    - ``uuid`` may be a full or abbreviated uuid, or the ``uuid:branch`` form
+      (``93fdbc:main``).
+    - ``instance`` is the data instance name; the caller checks its type.
     """
     for scheme, prefix in _SCHEMES.items():
         if url.startswith(scheme):
@@ -102,17 +87,13 @@ def address(spec: Mapping[str, Any]) -> tuple[str, str, str]:
             f"DVID spec is missing {e}; it needs 'server', 'uuid' and 'instance'") from e
 
 
-#: How far back to walk looking for a locked node. In a nightly lock-and-spawn repo the
-#: answer is 1 (measured on a production instance: 448 nodes on `main`, 447 locked, the
-#: single open one being HEAD), so a bound this size only ever matters if something is wrong.
+#: How far back to walk looking for a locked node. In a lock-and-spawn repo the answer is
+#: 1, so the bound matters only if something is wrong.
 _MAX_LOCK_WALK = 100
 
 
-#: Resolutions already made, keyed by (server, ref, prefer_locked). A ref costs two
-#: HTTP requests to resolve (resolve_ref + fetch_commit) and several call sites ask
-#: independently — the CLI's crop helpers peek at source metadata before `convert` runs.
-#: Caching also keeps the "this node is OPEN" warning to one line instead of one per
-#: caller. Per process, like every other cache here.
+#: Resolutions already made, keyed by (server, ref, prefer_locked), per process: a ref
+#: costs two requests and several call sites resolve the same one.
 _NODES: dict[tuple[str, str, bool], dict] = {}
 
 
@@ -122,25 +103,15 @@ def clear_node_cache() -> None:
 
 
 def resolve_node(spec: Mapping[str, Any], *, prefer_locked: bool = False) -> dict:
-    """Resolve this spec's ``uuid`` **ref** to a concrete node, and say if it is locked.
+    """Resolve this spec's ``uuid`` ref to a concrete node, and say if it is locked.
 
-    ``uuid`` may be a branch ref (``93fdbc:main``) rather than a node id, and a branch
-    ref resolves to the branch HEAD — which in a lock-and-spawn workflow is the **open**
-    node. Two consequences, and the first is a correctness bug rather than a nicety:
+    A branch ref (``93fdbc:main``) resolves to the branch HEAD, which in a
+    lock-and-spawn workflow is the open, still-mutable node. Resolve once, in the driver,
+    and hand workers the concrete uuid: per-worker resolution could read two versions if
+    HEAD moves mid-run.
 
-    - **The ref must be resolved once, in the driver, not per worker.** Workers reopen
-      the backend from ``data_spec``; if that carried the ref, a lock-and-spawn landing
-      mid-run would move HEAD and later workers would read a *different node* than
-      earlier ones, producing a volume stitched from two versions with nothing to show
-      it. So ``read_source_metadata`` resolves and puts the concrete uuid in
-      ``data_spec`` — the same discipline as invariant 9. The identical rule applies to
-      a table of synapses: half from one node and half from the next is not a snapshot.
-    - **An open node is mutable**, so a pull from one is not reproducible even if
-      nothing goes wrong. That is worth saying out loud, which the caller does.
-
-    ``prefer_locked`` walks back to the newest locked node — DVID's own ``ref~N``
-    ancestor syntax, which needs the ``repo:branch`` form; a bare uuid cannot be walked
-    from on a multi-repo server, and is already a pinned node anyway.
+    ``prefer_locked`` walks back to the newest locked node with DVID's ``ref~N`` syntax,
+    which needs the ``repo:branch`` form. Returns ``{"ref", "uuid", "locked", "walked"}``.
     """
     try:
         from neuclease.dvid import fetch_commit, resolve_ref
@@ -177,20 +148,16 @@ def resolve_node(spec: Mapping[str, Any], *, prefer_locked: bool = False) -> dic
         f"them is still open, which is not what a lock-and-spawn repo looks like")
 
 
-#: Node fields worth keeping from the repo DAG. `Log` is deliberately omitted — it is
-#: the full mutation log and can be enormous.
+#: Node fields kept from the repo DAG; `Log`, the full mutation log, is omitted.
 _NODE_FIELDS = ("Branch", "Note", "VersionID", "Created", "Updated")
 
 
 def node_summary(spec: Mapping[str, Any]) -> dict:
     """Both candidate nodes for a ref: what it points at now, and the newest locked one.
 
-    ``neu-vol info`` shows both because they are different answers to "which version
-    would I get", and the choice between them is the choice between a reproducible
-    export and a convenient one. Returns ``{"head": node, "locked": node | None,
-    "locked_error": str | None}``; ``locked`` is the same object as ``head`` when the
-    ref already points at a locked node, and ``None`` when no locked node is reachable
-    (a bare uuid on a multi-repo server cannot be walked back from).
+    Returns ``{"head": node, "locked": node | None, "locked_error": str | None}``;
+    ``locked`` is ``head`` when the ref already points at a locked node, and ``None`` when
+    no locked node is reachable.
     """
     head = resolve_node(spec)
     if head["locked"]:
@@ -206,17 +173,9 @@ def node_summary(spec: Mapping[str, Any]) -> dict:
 def node_provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
     """What a pull came from, for the record written beside the output.
 
-    The resolved ``uuid`` is the load-bearing field: a branch ref means something
-    different tomorrow, and the whole point of pulling successive proofreading
-    snapshots is being able to say which one you have. ``requested`` keeps the ref that
-    was actually typed, since "the newest locked node on main" and "this node" are
-    different provenance claims even when they name the same uuid today.
-
-    There is **no per-instance mutation id** to record: DVID's mutation id and lastmod
-    endpoints are both per-*body*. What characterises a snapshot instead is the node's
-    own DAG metadata, which is all this records. Callers add whatever else describes
-    their own read — the labelmap backend appends ``maxlabel`` and ``supervoxels``,
-    ``neu-mark`` appends element counts.
+    The resolved ``uuid`` identifies the snapshot; ``requested`` keeps the ref as typed.
+    The node's DAG metadata is recorded too (DVID has no per-instance mutation id).
+    Callers add fields describing their own read.
     """
     server, ref, instance = address(spec)
     out = {
@@ -230,8 +189,7 @@ def node_provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
         "ancestors_walked": node.get("walked", 0),
         "instance": instance,
     }
-    # Nice to have, and not worth failing a completed run over, so this degrades to a
-    # recorded error rather than an exception.
+    # Not worth failing a completed run over: recorded as an error instead.
     try:
         from neuclease.dvid import fetch_repo_info
 
@@ -244,11 +202,7 @@ def node_provenance(spec: Mapping[str, Any], node: Mapping[str, Any]) -> dict:
 
 
 def instance_info(spec: Mapping[str, Any]) -> dict:
-    """DVID's ``/info`` for this instance. Separate so metadata readers need no backend.
-
-    ``read_source_metadata`` calls this rather than opening a backend, keeping the
-    "what is this volume" path one HTTP request rather than a full open.
-    """
+    """DVID's ``/info`` for this instance: one request, no backend opened."""
     try:
         from neuclease.dvid import fetch_instance_info
     except ImportError as exc:
@@ -265,10 +219,8 @@ def instance_type(info: Mapping[str, Any]) -> str | None:
 def synced_instances(info: Mapping[str, Any]) -> list[str]:
     """Instances this one is synced to, from ``Base.Syncs``.
 
-    Load-bearing for annotation instances: DVID's ``/label/<id>`` endpoint — the only
-    way to ask "which elements are in this body" — exists **only** when the annotation
-    instance is synced to a labelmap. An unsynced instance answers with an error rather
-    than an empty list, so callers check this up front instead of mid-fetch.
+    An annotation instance answers ``/label/<id>`` only when synced to a labelmap, so
+    callers check this before fetching per body.
     """
     return list(info.get("Base", {}).get("Syncs") or [])
 
@@ -290,9 +242,8 @@ def check_instance_type(info: Mapping[str, Any], spec: Mapping[str, Any],
 # --------------------------------------------------------------------------- #
 ROI_INSTANCE = "roi"
 
-#: DVID stores an ROI as a set of whole blocks of the scale-0 grid, 32 voxels on a side,
-#: and its ``ranges`` endpoint answers in block coordinates. So an ROI's native resolution
-#: is one block per voxel — "scale 5" in neuclease's terms — and nothing finer exists.
+#: DVID stores an ROI as whole 32-voxel blocks of the scale-0 grid, so one ROI voxel is
+#: one block ("scale 5" in neuclease's terms).
 ROI_BLOCK_VOXELS = 32
 
 
@@ -310,12 +261,9 @@ def available_rois(spec: Mapping[str, Any]) -> list[str]:
 
 
 def resolve_roi_set(spec: Mapping[str, Any], rois: Sequence[str]) -> list[str]:
-    """Validate an ROI name list against the node, before anything expensive happens.
+    """Validate an ROI name list against the node before fetching any of them.
 
-    Checked up front because building a combined volume fetches every named ROI — ~1 s
-    each on a real server — and a typo would otherwise surface as a failure or, worse, as
-    a silently smaller region. The order given is kept: it decides which ROI wins where
-    two intersect.
+    The order given is kept: it decides which ROI wins where two intersect.
     """
     wanted = [str(r).strip() for r in rois if str(r).strip()]
     if not wanted:
@@ -345,12 +293,9 @@ def _closest(name: str, candidates: Iterable[str], n: int = 5) -> list[str]:
 
 def fetch_roi_ranges(spec: Mapping[str, Any], rois: Sequence[str], *,
                      processes: int = 0) -> tuple[list[str], dict, dict]:
-    """``(names, ranges, boxes)`` — the expensive half of building an ROI volume.
-
-    One request per ROI. Kept separate from the unpack because a caller measuring overlap
-    unpacks the same ranges twice in different orders, and should not refetch to do it.
-    ``boxes`` omits any ROI that holds no blocks.
-    """
+    """``(names, ranges, boxes)``: the fetch half of building an ROI volume, one request
+    per ROI, separate so the ranges can be unpacked more than once. ``boxes`` omits any ROI
+    that holds no blocks."""
     try:
         from neuclease.dvid.roi import fetch_roi_ranges_and_boxes
     except ImportError as exc:
@@ -366,10 +311,8 @@ def roi_frame(box_lo_blocks: Sequence[int], voxel_size_nm: Sequence[float],
               origin_nm: Sequence[float] = (0.0, 0.0, 0.0)) -> Frame:
     """The :class:`Frame` of an ROI array whose voxel ``(0, 0, 0)`` is block ``box_lo``.
 
-    ``voxel_size_nm`` and ``origin_nm`` describe the **scale-0 grid** the DVID node
-    indexes (the same grid its synapse coordinates are in). DVID records neither, which is
-    why they are arguments: an ROI is integer blocks, and only the caller's volume knows
-    how large a voxel is.
+    ``voxel_size_nm`` and ``origin_nm`` describe the scale-0 grid the node indexes, which
+    DVID does not record.
     """
     size = np.asarray(voxel_size_nm, dtype=np.float64) * ROI_BLOCK_VOXELS
     lo = np.asarray(box_lo_blocks, dtype=np.float64)
@@ -381,9 +324,8 @@ class RoiVolume:
     """A combined ROI label array, positioned in nm.
 
     ``labels[z, y, x] == i`` means block ``(z, y, x)`` belongs to ``names[i - 1]``; 0 is
-    in none of them. Where ROIs intersect, the one named **later** holds the voxel, and
-    ``overlaps`` records each intersecting pair with its size in blocks, so a caller can
-    decide whether that matters rather than never learning it happened.
+    in none. Where ROIs intersect the one named later holds the voxel, and ``overlaps``
+    records each intersecting pair with its size in blocks.
     """
 
     labels: np.ndarray
@@ -407,11 +349,9 @@ def roi_volume(spec: Mapping[str, Any], rois: Sequence[str], *,
                processes: int = 0) -> RoiVolume:
     """Fetch the named ROIs as one label array with its :class:`Frame`.
 
-    ``spec`` addresses any instance on the node (ROIs are per node, not per instance).
-    ``voxel_size_nm`` / ``origin_nm`` are the scale-0 grid's — see :func:`roi_frame`.
-
-    An ROI holding no blocks **raises**: it would otherwise contribute nothing and the
-    result would look like a smaller region rather than a broken name.
+    ``spec`` addresses any instance on the node (ROIs are per node). ``voxel_size_nm`` /
+    ``origin_nm`` are the scale-0 grid's (see :func:`roi_frame`). An ROI holding no blocks
+    raises.
     """
     try:
         from neuclease.dvid.roi import unpack_roi_ranges_to_combined_volume

@@ -1,43 +1,25 @@
 """Writing and reading ``neuroglancer_uint64_sharded_v1`` indexes.
 
-A sharded index turns "one object per key" into a handful of ``.shard`` files. That is not a
-nicety at scale: a precomputed annotation source keyed by annotation id needs one object per
-annotation, and the reference male-CNS synapse dataset has ~312M of them — 1,024 shards of
-~31 MB instead of 312 million objects. The same arithmetic bites a volume, where file count
-is volume/chunk³ and ceph enforces inode quotas as well as capacity.
+A sharded index stores many keys in a few ``.shard`` files instead of one object each,
+which matters at scale: an annotation source with hundreds of millions of annotations, or a
+volume under an inode quota.
 
-**Writing does not implement any of the format, deliberately.** tensorstore already ships a
-``neuroglancer_uint64_sharded`` kvstore driver that reads *and writes* it, so :func:`write_all`
-and :func:`read_one` are thin wrappers that open one. That avoids reimplementing
-murmurhash3_x86_128, minishard tables, the shard-index layout and the two gzip layers — every
-one of which produces a spec-legal file that a viewer silently rejects when it is subtly wrong.
+Writing goes entirely through tensorstore's ``neuroglancer_uint64_sharded`` kvstore driver
+(:func:`write_all`, :func:`read_one`), so the format is not reimplemented for it.
+:class:`ShardReader` is the one exception: the sharded multi-resolution mesh format stores
+fragment data outside the index, at byte offsets relative to the manifest, and the driver
+cannot say where an entry lies. So the addressing (hash, shard index, minishard table) is
+reimplemented here, for reading, and a test asserts it agrees with the driver.
 
-**:class:`ShardReader` is the one exception, and it is narrow.** The driver addresses entries
-by KEY, and that is all it can do — which is not enough for the sharded multi-resolution mesh
-format, where the mesh fragment data is *not an indexed entry at all*. It sits immediately
-before the object's manifest in the same shard file and is addressed by byte offsets relative
-to it, so reading a mesh requires knowing where in the shard the manifest landed. There is no
-tensorstore API for that, so the addressing — hash, shard index, minishard table — is
-reimplemented here. Nothing about *writing* is, and :func:`read_one` deliberately stays on the
-driver: ``test_shard_reader_agrees_with_tensorstore`` asserts the two paths return the same
-bytes for the same key, which is what keeps this from being a second unverified implementation.
+Two things a caller has to get right:
 
-Verified against the published reference rather than only against ourselves: opening
-``gs://flyem-male-cns/v1.0/male-cns-v1.0-synapses-precomputed/by_id/`` with its own sharding
-spec and reading one annotation by key returned the same bytes as decoding that annotation
-by hand out of the spatial index. Two independent paths, one answer.
+- **Keys are 8-byte big-endian uint64** (:func:`key`); everything else in precomputed is
+  little-endian.
+- **The ``metadata`` block is the sharding spec that also goes into your ``info``.** Pass
+  the same dict to both.
 
-## The two things a caller has to get right
-
-- **Keys are 8-byte BIG-endian uint64** (:func:`key`). Everything else in precomputed is
-  little-endian, so this is the one place the byte order flips.
-- **The ``metadata`` block is the sharding spec that goes into your own ``info``.** Pass the
-  *same dict* to both, or the file and the metadata describing it can drift — and a reader
-  trusts the metadata.
-
-``shard_bits=0`` with ``minishard_bits=0`` is legal and useful: it writes a single
-``0.shard``, which is what the reference does for its coarsest spatial level. Shard
-everything, and let the bit counts collapse where a level is small; one code path.
+``shard_bits=0`` with ``minishard_bits=0`` writes a single ``0.shard``, which suits a
+small index.
 """
 
 from __future__ import annotations
@@ -60,9 +42,7 @@ def key(chunk_id: int) -> bytes:
 def morton_bits(grid_shape: Sequence[int]) -> list[int]:
     """How many bits the compressed Morton code spends on each dimension.
 
-    The spec's own condition, ``2**i < grid_size[dim]``, which is ``ceil(log2(size))`` — and
-    **zero** for a size-1 dimension. That is the "compressed" part: a flat grid spends no bits
-    on the axis it does not subdivide.
+    ``ceil(log2(size))`` per the spec, so zero for a size-1 dimension.
     """
     out = []
     for size in grid_shape:
@@ -76,20 +56,12 @@ def morton_bits(grid_shape: Sequence[int]) -> list[int]:
 def compressed_morton_code(positions, grid_shape: Sequence[int]):
     """Compressed Morton codes for grid cell positions, as precomputed keys them.
 
-    ``positions`` is ``(n, 3)`` or ``(3,)`` in the **same axis order as grid_shape**, which for
-    precomputed means **xyz with x varying fastest**. Returns an ``int64`` array (or one int).
+    ``positions`` is ``(n, 3)`` or ``(3,)`` in the same axis order as ``grid_shape``, which
+    for precomputed is xyz with x varying fastest. Returns an ``int64`` array (or one int).
 
-    This is how a **sharded** index addresses a grid cell — a volume chunk or an annotation
-    source's spatial cell alike. It is emphatically *not* a row-major flattening, and the
-    difference is a silent one: the two agree whenever at most one axis is subdivided, so a
-    1×1×1 or 2×1×1 grid gives identical keys and any test on a small grid passes. They diverge
-    as soon as two axes are, and then the objects are written at keys nothing ever requests —
-    the data is all present and the viewer renders none of it. Measured on a real annotation
-    source: agreement fell from every cell at the coarsest levels to 0 of 867 at the finest,
-    leaving 2.9% of annotations reachable.
-
-    Volumes never come through here — tensorstore keys those itself — so this exists for
-    hand-built sharded indexes, which today means the annotation spatial index.
+    Not a row-major flattening: the two agree only while at most one axis is subdivided,
+    so a small-grid test cannot tell them apart. Used for hand-built sharded indexes such
+    as an annotation spatial index; tensorstore keys volume chunks itself.
     """
     import numpy as np
 
@@ -114,8 +86,7 @@ def sharding_spec(*, shard_bits: int, minishard_bits: int, preshift_bits: int = 
     """The sharding metadata, for both the kvstore and the ``info`` that describes it.
 
     ``2**shard_bits`` is the number of ``.shard`` files. ``minishard_bits`` splits each shard
-    internally, which bounds how much index a reader must fetch to find one key — the
-    reference uses 9 for a 1,024-shard ``by_id`` and 0 for a single-file spatial level.
+    internally, bounding how much index a reader fetches to find one key.
     """
     for name, value in (("shard_bits", shard_bits), ("minishard_bits", minishard_bits),
                         ("preshift_bits", preshift_bits)):
@@ -137,12 +108,8 @@ def plan_sharding(n_keys: int, *, per_shard: int = 30_000,
                   max_shard_bits: int = 10) -> dict[str, Any]:
     """Sharding parameters for ``n_keys`` entries, aiming at ``per_shard`` keys per file.
 
-    Chosen so a shard is a sensible object to fetch — the reference lands at ~300k keys and
-    ~31 MB per shard, which is larger than we want for 1.4M annotations, so the default aims
-    smaller. ``minishard_bits`` then keeps each minishard index modest, since a reader
-    fetching one key must decode a whole minishard index.
-
-    This is a heuristic, not a rule from the spec. Override it when you know better.
+    ``minishard_bits`` then keeps each minishard index small, since a reader fetching one
+    key decodes a whole minishard index. A heuristic, not a rule from the spec.
     """
     if n_keys <= 0:
         raise ValueError("n_keys must be positive")
@@ -160,11 +127,9 @@ def plan_sharding(n_keys: int, *, per_shard: int = 30_000,
 
 def open_kvstore(location: str | Mapping[str, Any], metadata: Mapping[str, Any],
                  *parts: str):
-    """A sharded kvstore rooted at ``location``/``parts``.
+    """A sharded kvstore rooted at ``location``/``parts``, local or remote.
 
-    ``location`` is anything :mod:`neu_vol.location` understands, so a local path and
-    ``s3://`` behave the same. The trailing slash matters to the driver, so it is added here
-    rather than left to the caller.
+    The trailing slash the driver needs is added here.
     """
     import tensorstore as ts
 
@@ -182,18 +147,9 @@ def open_kvstore(location: str | Mapping[str, Any], metadata: Mapping[str, Any],
 def clear(location: str | Mapping[str, Any], *parts: str) -> int:
     """Delete the ``.shard`` objects of an index. Returns how many were removed.
 
-    Named for what it is rather than folded into a flag, because a partly written index is a
-    real state: this is not atomic, so an interrupted rewrite leaves fewer shards than either
-    version had. That is still better than the alternative it exists to prevent — see
-    :func:`write_all`.
-
-    **Only ``.shard`` objects are removed, and that restriction is load-bearing.** This used
-    to delete every key under the prefix, which is harmless where an index owns its own
-    directory — as every annotation index does — and destructive where it does not. A sharded
-    mesh or skeleton lives in the *same* directory as the ``info`` that describes it, so a
-    rewrite there took the ``info`` with it and left a subresource that reads as absent: the
-    shards are all present and correct, nothing declares them, and every body comes back
-    ``None``. The shard filename is fixed by the spec, so filtering on it is exact.
+    Not atomic: an interrupted rewrite leaves fewer shards than either version had. Only
+    ``.shard`` objects are removed, because a sharded mesh or skeleton shares its
+    directory with the ``info`` that declares it.
     """
     from .location import _kv, list_keys
 
@@ -212,21 +168,13 @@ def write_all(location: str | Mapping[str, Any], metadata: Mapping[str, Any],
               replace: bool = True) -> int:
     """Write ``(chunk_id, bytes)`` pairs into a sharded index. Returns how many.
 
-    One transaction for the whole batch: the driver assembles each shard in memory and emits
-    it as a single object, so writing key-by-key outside a transaction would rewrite a shard
-    per key. That is the difference between one PUT per shard and one per annotation, which
-    is the entire reason for sharding.
+    One transaction for the whole batch, so each shard is written once rather than once
+    per key.
 
-    **``replace`` deletes the existing shards first, and defaults to on because the
-    alternative silently MERGES.** A sharded index is a key-value store: writing keys 1..N
-    leaves any key already present and not in that set exactly where it was. So rewriting an
-    index whose KEY SPACE changed — a spatial index regridded, a body list narrowed — produces
-    a file containing both generations, and a reader asking for a key that only the old one
-    used gets a stale answer. The object *names* are unchanged, so a listing looks right and
-    the staleness is inside the shards. This cost a debugging session: a spatial index rewritten
-    from row-major keys to Morton keys read back correct data at the wrong positions, because
-    the old row-major entries were still there. Pass ``replace=False`` only to add to an index
-    on purpose.
+    ``replace`` (the default) deletes the existing shards first. Without it, keys already
+    present and not rewritten stay, so an index whose key space changed would hold both
+    generations behind unchanged object names. Pass ``replace=False`` only to add to an
+    index on purpose.
     """
     import tensorstore as ts
 
@@ -271,15 +219,11 @@ def _fmix32(h: int) -> int:
 
 
 def murmurhash3_x86_128_low64(data: bytes, seed: int = 0) -> int:
-    """The low 64 bits of MurmurHash3 x86_128 — the hash the sharded format specifies.
+    """The low 64 bits of MurmurHash3 x86_128, the hash the sharded format specifies.
 
-    Pure Python, which is fine: it is called once per key looked up, never per byte of
-    data. The alternative was a compiled dependency (``mmh3``) in a package whose install
-    story is already delicate, for one hash of one 8-byte value.
-
-    Note ``x86_128``, **not** ``x64_128``: the two are different functions producing different
-    digests, and picking the wrong one sends every read to a shard that does not hold the
-    key — which reads back as "this object does not exist" rather than as an error.
+    Pure Python: it runs once per key looked up, so a compiled dependency is not worth it.
+    ``x86_128``, not ``x64_128``, which gives a different digest and sends every read to the
+    wrong shard.
     """
     c1, c2, c3, c4 = 0x239B961B, 0xAB0E9789, 0x38B34AE5, 0xA1E38B93
     h1 = h2 = h3 = h4 = seed & _M32
@@ -378,18 +322,14 @@ def shard_location(chunk_id: int, metadata: Mapping[str, Any]) -> tuple[str, int
 
 
 class ShardReader:
-    """Locates and reads entries of a sharded index, by key *and* by byte offset.
+    """Locates and reads entries of a sharded index, by key and by byte offset.
 
-    Exists for the one thing tensorstore's driver cannot do — say **where** in its shard
-    an entry lives. The sharded multi-resolution mesh format needs that, because a body's
-    mesh fragment data is not an indexed entry: it sits immediately before the manifest
-    and is addressed relative to it. :func:`read_one` remains the right call for anything
-    that only wants a value.
+    For the sharded multi-resolution mesh format, whose fragment data sits before the
+    manifest at an offset the tensorstore driver cannot report. :func:`read_one` is the
+    call for anything that only wants a value.
 
-    The shard index (one small read per shard) and each minishard index are cached on the
-    instance, so fetching many bodies costs one pair of index reads per shard touched
-    rather than per body. Reuse one reader across a batch; it holds no store handles of
-    its own beyond what :mod:`neu_vol.location` already caches per process.
+    The shard and minishard indexes are cached on the instance, so reuse one reader across
+    a batch: each shard's indexes are then read once rather than once per body.
     """
 
     def __init__(self, location: str | Mapping[str, Any], metadata: Mapping[str, Any],
@@ -415,9 +355,7 @@ class ShardReader:
 
             raw = self.read_range(shard, 0, self._index_length)
             if raw is None or len(raw) < self._index_length:
-                # A shard file that does not exist holds no keys. Short is equally
-                # fatal and equally not an error to the caller: either way there is
-                # nothing to look up here.
+                # A missing or short shard file holds no keys to look up.
                 self._shard_index[shard] = None
             else:
                 self._shard_index[shard] = np.frombuffer(raw, dtype="<u8").reshape(-1, 2)
@@ -457,11 +395,10 @@ class ShardReader:
         return result
 
     def locate(self, chunk_id: int) -> tuple[str, int, int] | None:
-        """``(shard, offset, size)`` of the STORED entry, or ``None`` if the key is absent.
+        """``(shard, offset, size)`` of the stored entry, or ``None`` if the key is absent.
 
-        ``size`` is the encoded length on disk, so with ``data_encoding='gzip'`` it is the
-        compressed size — which is exactly what the mesh format's arithmetic wants, since
-        the fragment data abuts the stored bytes rather than the decoded ones.
+        ``size`` is the encoded length on disk (compressed, with ``data_encoding='gzip'``),
+        which is what the mesh format's offsets are relative to.
         """
         import numpy as np
 

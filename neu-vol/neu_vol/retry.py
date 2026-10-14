@@ -1,26 +1,16 @@
-"""Bounded retry for transient object-store failures.
+"""Bounded retry for transient object-store and DVID failures.
 
-Object stores fail transiently at a rate that only shows up at scale: a
-whole-volume copy is tens of thousands of requests, and TLS connections get reset,
-throttled, or 500'd. TensorStore retries at the request level, but errors still
-surface (observed: ``UNAVAILABLE ... CURL error SSL connect error: Recv failure:
-Connection reset by peer``, ``curl_code=35``, which killed a 10,692-block copy
-after it had already succeeded).
+At the scale of a whole-volume copy, connections get reset, throttled or answered with
+5xx even after TensorStore's own request-level retries; a shared DVID server answers
+overload with 503.
 
-The same applies to DVID sources, which are HTTP and answer overload with 503 — and
-which typically sit on a **shared** server, so throttling is expected rather than
-exceptional.
+Classification is by message text, since TensorStore raises both ``PERMISSION_DENIED``
+and ``UNAVAILABLE`` as ``ValueError``. Permanent markers are checked first and win, so a
+403 fails at once, and an unrecognized error is permanent, so a new failure mode
+surfaces promptly.
 
-**Classification is by message text, not exception type.** TensorStore maps absl
-status codes onto builtin Python exceptions, so both ``PERMISSION_DENIED`` and
-``UNAVAILABLE`` arrive as ``ValueError`` — the type carries no signal. Permanent
-markers are therefore checked *first* and win: a 403 must never be retried, or a
-misconfigured run burns its whole backoff budget on every task before failing.
-Unrecognized errors are treated as **permanent**, so a new failure mode surfaces
-promptly instead of being retried into a timeout.
-
-Only wrap operations that are safe to repeat. Writing a block of voxels to the
-same region is idempotent; appending to a manifest is not.
+Only wrap operations that are safe to repeat: writing a block to the same region is;
+appending to a manifest is not.
 """
 
 from __future__ import annotations
@@ -61,13 +51,7 @@ TRANSIENT_MARKERS = (
     "RequestTimeout",
     "http_response_code='50",  # 500/503
 
-    # DVID, which reaches us through `requests` rather than tensorstore and therefore
-    # spells everything differently — none of the markers above match a `requests`
-    # exception. Without these an overloaded DVID (which answers with 503) is
-    # unrecognized, and unrecognized means permanent, so one throttle kills the run.
-    # `requests` formats status errors as "<code> Server Error: <reason> for url: ...",
-    # so the code and the word are enough to be specific without matching a URL or a
-    # DVID error body that happens to contain a number.
+    # DVID, through `requests`, whose status errors read "<code> Server Error: ...".
     "429 Client Error",      # too many requests: DVID/proxy throttling
     "500 Server Error",
     "502 Server Error",
@@ -95,9 +79,8 @@ def with_retry(fn: Callable[[], T], *, attempts: int = 5, base_delay: float = 1.
     """Call ``fn``, retrying transient failures with exponential backoff.
 
     Raises the last exception once ``attempts`` is exhausted, and re-raises a
-    permanent error immediately. ``jitter`` spreads retries across concurrent
-    workers — without it, 48 workers that hit the same throttle all come back
-    simultaneously and reproduce it.
+    permanent error immediately. ``jitter`` spreads retries across concurrent workers,
+    so many workers hitting one throttle do not all return at once.
     """
     delay = base_delay
     for attempt in range(1, attempts + 1):

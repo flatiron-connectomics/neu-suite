@@ -19,7 +19,7 @@ import numpy as np
 # Schedule
 # --------------------------------------------------------------------------- #
 def _downsampled_shape(shape: Sequence[int], factor: Sequence[int]) -> tuple[int, ...]:
-    """Ceil-division shape after downsampling (ragged edges kept, docs §6b)."""
+    """Ceil-division shape after downsampling (ragged edges kept)."""
     return tuple(-(-s // f) for s, f in zip(shape, factor))
 
 
@@ -49,13 +49,9 @@ def downsample_schedule(
     :func:`auto_factor`, stopping when the volume's largest spatial dimension is <=
     ``min_dim``, when no axis can be coarsened, or at ``max_levels``.
 
-    **``max_levels`` counts LEVELS, including level 0**, so it bounds the returned list
-    at ``max_levels - 1``: ``max_levels=8`` gives levels 0..7, and ``max_levels=1`` a
-    single-scale volume. It used to bound the list itself, which meant the flag named
-    "max levels" permitted one more level than it said — ``--max-levels 8`` produced 9
-    — and so read as a no-op at the default. Anything comparing a schedule against a
-    pyramid already on disk (``neu-vol downsample``) needs the number that built it,
-    which is now one higher than the value that was passed then.
+    ``max_levels`` counts levels including level 0, so the returned list has at most
+    ``max_levels - 1`` entries: ``max_levels=8`` gives levels 0..7, and ``max_levels=1`` a
+    single-scale volume.
     """
     if factors is not None:
         return [tuple(int(x) for x in f) for f in factors]
@@ -106,11 +102,9 @@ def mean_downsample(arr: np.ndarray, factors: Sequence[int]) -> np.ndarray:
 
     Integer dtypes are rounded; float dtypes preserved. For images/probabilities.
 
-    Memory-light: the per-window sum is accumulated at the *output* size (via
-    ``reduce(dtype=...)``) rather than upcasting the whole input region to
-    float64, and the validity mask is built only when a block is ragged. This
-    keeps a 512^3-block downsample at a few GB instead of ~30 GB (which
-    OOM-killed SLURM workers).
+    The per-window sum is accumulated at the output size rather than upcasting the whole
+    input to float64, and the validity mask is built only for a ragged block, which keeps
+    a 512^3 block at a few GB instead of ~30 GB.
     """
     factors = tuple(int(f) for f in factors)
     pad = [(0, (-s) % f) for s, f in zip(arr.shape, factors)]

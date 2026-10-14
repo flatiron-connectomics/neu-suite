@@ -1,30 +1,19 @@
 """A supervoxel volume read through a lookup table, addressed by a small descriptor file.
 
-What this is for: a segmentation delivered as supervoxels plus several agglomeration
-*views* (webknossos' ``agglomerate_view_NN``) is one volume and N tables, not N volumes.
-Each view is ``table[supervoxels]``, so it can be read on the fly — for evaluation,
-inspection, a crop — and converted into a real volume only once a view is chosen.
-
-A view is addressed by a **descriptor**, a JSON file naming the volume and the table::
+A segmentation delivered as supervoxels plus agglomeration views (webknossos'
+``agglomerate_view_NN``) is one volume and N tables; each view is ``table[supervoxels]``,
+read on the fly. A view is addressed by a descriptor, a JSON file any location-taking
+entry point accepts (``neu-vol info``, ``read_piece``, ``neu-vol convert --src``)::
 
     {"neu_vol": "mapped-volume", "version": 1,
      "source": "/path/to/supervoxels.precomputed",
      "table": "agglomerate_view_80.npy", "mapping": "agglomerate_view_80"}
 
-Being a file is what lets every location-taking entry point use it unchanged:
-``neu-vol info``, ``read_piece`` (so ``neu-eval compare --segmentation``), and
-``neu-vol convert --src`` for the conversion. Relative paths in it resolve against the
-descriptor's own directory, so a directory of tables and descriptors can be moved whole.
-
-**Coarse levels are approximate, level 0 is exact.** A coarse level of the source is a
-*mode* of supervoxels, and ``table[mode(sv)]`` is not ``mode(table[sv])``: a coarse voxel
-gets the view's id for its most common supervoxel, not its most common agglomerate. Fine
-for looking; for anything measured, read level 0. ``convert`` reads level 0 and rebuilds
-the pyramid from the mapped labels, so a converted view is exact at every level.
-
-Descriptors and tables may be local or on an object store (``s3://…``), through
-``neu_vol.location`` like every other read here. A table is a few MB per view and is
-loaded whole, once per process.
+Relative paths resolve against the descriptor's directory, so a directory of views moves
+whole. Level 0 is exact; coarse levels are approximate, since ``table[mode(sv)]`` is not
+``mode(table[sv])``, so measure at level 0 (``convert`` rebuilds the pyramid from it).
+Descriptors and tables may be local or on an object store; a table is loaded whole, once
+per process.
 """
 
 from __future__ import annotations

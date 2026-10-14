@@ -1,42 +1,23 @@
 """Addressing a webknossos layer, its credentials, and the few REST calls behind it.
 
-A webknossos dataset is read over HTTP, the way a DVID instance is: there is no store to
-open, so it is addressed by URL — ``wk://DATASET/LAYER`` — and the server it lives on and
-the token that opens it come from a **credentials file**, never from the URL or a spec.
-The array view is ``backends/webknossos.py``; this module is everything that is not the
-array, so a caller wanting the mapping list or the dataset record needs no backend.
+A layer is addressed as ``wk://DATASET/LAYER``; the server and token come from a
+credentials file, never from the URL or a spec. The array view is
+``backends/webknossos.py``. Stdlib only (``urllib``): the official ``webknossos`` client
+pins packages this environment holds newer versions of, and only a few routes are needed.
 
-**Stdlib only.** The ``webknossos`` package is the official client, but it pins older
-``click``/``httpx``/``networkx``/``rich``/``psutil`` than this environment holds, and the
-part of it needed here is four GET routes. ``urllib`` does those without touching the env.
-The routes and API versions below are the ones ``webknossos`` 4.2.2 itself uses.
+Supervoxels are the default: a ``mapping`` spec field (an agglomerate view) is applied
+by the server on every read, and leaving it unset reads the raw over-segmentation, even
+when the viewer shows a default mapping.
 
-**Supervoxels are the default, and that is a deliberate difference from the viewer.** A
-segmentation layer stores an over-segmentation; neurons exist only once an *agglomerate
-mapping* is applied, and the layer usually names one as its default view. ``webknossos``'
-own ``download()`` never applies it, so a download is supervoxels whatever the viewer
-showed. Here the mapping is a spec field (``mapping``) applied **by the server on every
-read**, and leaving it unset reads supervoxels — the right input for evaluating
-agglomeration views against each other, since each view is then a relabelling of one
-volume. ``convert`` says so whenever a layer has a default view that is not being applied.
+Credentials, first hit wins: ``$WK_TOKEN`` (+ ``$WK_URL``), then ``$NEU_WK_CREDENTIALS``,
+else ``~/.config/webknossos/credentials.toml``:
 
-Credentials, first hit wins:
+.. code-block:: toml
 
-1. ``$WK_TOKEN`` (+ ``$WK_URL``) — the variables the ``webknossos`` package reads, so an
-   existing setup carries over.
-2. ``$NEU_WK_CREDENTIALS``, else ``~/.config/webknossos/credentials.toml``:
-
-   .. code-block:: toml
-
-      # chmod 600 — this is a secret
-      url = "https://webknossos.org"
-      token = "..."              # https://webknossos.org/account/token
-      organization = "..."       # optional: narrows dataset-name lookup
-
-A file in the home directory rather than in a repo or the workspace, for the same reason as
-``~/.aws/credentials`` (see ``aws.py``): it is a secret, the repos are public, and home is
-shared with SLURM workers, which each read it themselves — the token is never put into a
-spec, a manifest, a job script or ``provenance.json``.
+   # chmod 600 — this is a secret
+   url = "https://webknossos.org"
+   token = "..."              # https://webknossos.org/account/token
+   organization = "..."       # optional: narrows dataset-name lookup
 """
 
 from __future__ import annotations
@@ -232,12 +213,8 @@ def data_api(datastore: str) -> str:
 # datasets
 # --------------------------------------------------------------------------- #
 def resolve_dataset_id(dataset: str, *, creds: Mapping[str, Any] | None = None) -> str:
-    """A dataset name (or id) -> its id. Ambiguity raises rather than picking one.
-
-    Names are not unique across organizations, and ``webknossos`` itself resolves an
-    ambiguous name by taking the first and warning — which on a re-run could be a
-    different dataset. An id is what goes into ``data_spec`` and the provenance.
-    """
+    """A dataset name (or id) -> its id. An ambiguous name raises rather than picking one,
+    since names are not unique across organizations."""
     creds = creds or credentials()
     if _DATASET_ID.match(dataset):
         return dataset
@@ -515,11 +492,7 @@ def agglomerate_table(spec: Mapping[str, Any], mapping: str, n_ids: int, *,
 
 
 def check_mapping(spec: Mapping[str, Any], mapping: str) -> None:
-    """Refuse a mapping the layer does not have, naming the ones it does.
-
-    Checked up front because the alternative is a 400 from every task of a run — or, if a
-    server ever ignored an unknown name, a volume of supervoxels labelled as a view.
-    """
+    """Refuse a mapping the layer does not have, naming the ones it does."""
     have = mappings(spec)
     if mapping not in have["agglomerate"] + have["json"]:
         listed = ", ".join(have["agglomerate"] + have["json"]) or "none"

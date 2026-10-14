@@ -24,10 +24,8 @@ __all__ = ["read_body_skeleton", "read_body_mesh", "mesh_transform",
 class UnsupportedSubresource(ValueError):
     """A mesh or skeleton subresource is in a form this module cannot decode.
 
-    Separate from "this body has no mesh", which is an ordinary ``None``, because the two
-    are otherwise indistinguishable to a caller and mean opposite things: one is data, the
-    other is a reader pointed at the wrong format. Anything batching reads should let this
-    propagate rather than counting it as a missing body.
+    Distinct from a body with no mesh, which is an ordinary ``None``: anything batching
+    reads should let this propagate rather than count it as a missing body.
     """
 
 
@@ -35,33 +33,15 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
                        *, require_radii: bool = True):
     """``(vertices_xyz_nm, edges, radii_nm)`` for one body, or ``None`` if absent.
 
-    Vertices come back in the order the format **stores**, which is xyz — matching
-    :func:`read_body_mesh`, so the two overlay without a flip. Everything else in
-    the suite holds vertices zyx in memory, which is what makes this worth stating.
+    Vertices come back xyz, the order the format stores, matching :func:`read_body_mesh`
+    so the two overlay without a flip; the rest of the suite holds zyx in memory. They
+    are physical nm, mapped through the skeleton ``info``'s ``transform`` as the mesh
+    reader maps its own. Sharded and unsharded skeletons are both read.
 
-    Raises if the skeleton carries no usable ``radius`` attribute rather than
-    returning something drawable-but-wrong. **A length check is not enough**: when
-    the subresource ``info`` declares no radius attribute, osteoid still hands back
-    one value per vertex, filled with the sentinel ``-1``. That is finite and the
-    right length, so it survives every structural check and then renders as an
-    inverted tube. Negative radii are the signal.
-
-    ``require_radii=False`` returns ``radii_nm=None`` instead of raising, for a source
-    that legitimately publishes **centrelines only**. FlyEM's male-CNS is one: its
-    skeleton ``info`` is bare ``{"@type": "neuroglancer_skeletons"}`` with no
-    ``vertex_attributes``, so every body comes back all -1. Cable length and topology
-    are still there; calibre is not, and has to come from elsewhere. Keep the default
-    ``True`` — on a volume neu-skel wrote, missing radii mean something went wrong.
-
-    Reads **sharded and unsharded** skeletons alike, on the ``sharding`` key of the
-    skeleton directory's own ``info``. Simpler than the mesh case: a skeleton is a single
-    keyed value, so there is no fragment data sitting outside the index and the sharded
-    read is an ordinary lookup.
-
-    Vertices are **physical nm**, mapped through the skeleton ``info``'s ``transform``
-    exactly as :func:`read_body_mesh` maps the mesh one. Keeping the two in step is the
-    whole point — a source that scales one and not the other puts a neuron's skeleton and
-    its own surface in different spaces, which is the failure this pair exists to avoid.
+    Raises if the skeleton has no usable ``radius`` attribute. With none declared,
+    osteoid returns one ``-1`` per vertex, which passes a length check and renders as an
+    inverted tube, so negative radii are refused. ``require_radii=False`` returns
+    ``radii_nm=None`` instead, for a source that publishes centrelines only.
     """
     from osteoid import Skeleton
 
@@ -109,21 +89,10 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
 def _radius_scale(matrix, volume: str, skeleton_dir: str, require_radii: bool):
     """The factor carrying a skeleton's radii into nm alongside its vertices.
 
-    A radius is a length, not a point, so it does not transform the way a vertex does —
-    only the linear part applies, and only cleanly when that part is a **uniform** scale.
-    That is the shape every real one has (male-CNS's mesh transform is ``diag(16)``), so
-    the uniform case is handled and the anisotropic one refuses: scaling the vertices by 16
-    and leaving the radii alone returns something whose coordinates and calibre are in
-    different units, drawn as a neuron of plausible shape and wrong thickness.
-
-    Returns the factor to multiply by — ``1.0`` where there is nothing to do — or ``None``
-    meaning **the radii are unusable and must be dropped**. Under an anisotropic transform
-    there is no single correct radius, so this raises when radii were asked for and returns
-    ``None`` when ``require_radii=False``. That flag already means "centreline is enough",
-    and it is the only honest answer here: a source can be perfectly good for length and
-    topology while having no scalar calibre at all. Note ``None`` never means "leave them
-    alone" — returning the stored radii unscaled beside nm vertices is the mixed-units bug
-    this exists to prevent.
+    A radius is a length, so only a uniform linear scale carries it. Returns that factor
+    (``1.0`` for identity), or ``None`` meaning the radii must be dropped: under a
+    non-uniform transform there is no single radius, so this raises when radii are
+    required and returns ``None`` otherwise.
     """
     if matrix is None:
         return 1.0
@@ -140,15 +109,9 @@ def _radius_scale(matrix, volume: str, skeleton_dir: str, require_radii: bool):
         f"anisotropy is intended.")
 
 
-#: One :class:`~neu_vol.sharded.ShardReader` per (volume, subresource directory), holding the
-#: shard and minishard indexes it has parsed. Those cannot change under a live session for a
-#: published volume, and rebuilding them per body costs a pair of range requests each —
-#: measured against the male-CNS meshes on GCS, 8 bodies out of one shard took 0.70 s with a
-#: fresh reader per body and 0.10 s sharing one. `preshift_bits` is what makes that the normal
-#: case rather than a lucky one: it exists to put runs of consecutive ids in the same shard, so
-#: a batch of neighbouring bodies concentrates rather than spreading. Same reasoning as
-#: `neu_vol.location`'s store cache, and the same tolerance for a race — two threads may
-#: build a reader each, which wastes one parse and is otherwise harmless.
+#: One :class:`~neu_vol.sharded.ShardReader` per (volume, subresource directory), keeping
+#: its parsed indexes, so a batch of bodies from one shard does not re-read them (8 bodies:
+#: 0.70 s with a reader each, 0.10 s sharing one). A race builds a reader twice, harmlessly.
 _SHARD_READERS: dict[tuple, Any] = {}
 
 
@@ -173,14 +136,8 @@ def _subresource_info(volume: str, subdir: str) -> dict:
     return json.loads(raw) if raw else {}
 
 
-#: The ``@type``\ s each reader here understands. Anything else is a real precomputed format
-#: this module cannot decode.
-#:
-#: ``neuroglancer_legacy_mesh`` is the single-resolution format that predates the
-#: multi-resolution one and is what published ROI and neuropil sources are commonly written
-#: in — a JSON manifest at ``<body>:0`` naming separate fragment files, each a bare
-#: ``uint32 count``, ``float32 xyz * count``, ``uint32`` triangle indices. It carries no LODs
-#: and no Draco, so it needs none of the multires machinery below.
+#: The ``@type``\ s each reader here understands. ``neuroglancer_legacy_mesh`` is the
+#: single-resolution format published ROI and neuropil sources often use.
 _SUPPORTED_TYPES = {"mesh": ("neuroglancer_multilod_draco", "neuroglancer_legacy_mesh"),
                     "skeleton": ("neuroglancer_skeletons",)}
 
@@ -189,17 +146,10 @@ LEGACY_MESH = "neuroglancer_legacy_mesh"
 
 
 def _check_supported(info, volume: str, subdir: str, kind: str) -> None:
-    """Refuse a subresource whose format this module cannot read.
+    """Refuse a subresource whose declared ``@type`` this module cannot read.
 
-    **The point is to fail loudly instead of returning ``None``.** Every unreadable form
-    fails the same silent way otherwise: the keys this reader asks for are not the keys the
-    format uses, so every body reports absent and an entire volume reads as "holds no
-    meshes". That is indistinguishable from a correct answer, and it is what a sharded
-    store did here before sharding was supported — the meshes were all present.
-
-    An ``info`` with no ``@type``, or none at all, is allowed through: that is the shape of
-    a hand-made or legacy-unsharded directory, which the plain keyed read does handle.
-    Only a declared and unrecognised type is refused.
+    Otherwise every body would read as absent, indistinguishable from a volume with no
+    meshes. An ``info`` with no ``@type``, or none at all, is allowed through.
     """
     declared = (info or {}).get("@type")
     expected = _SUPPORTED_TYPES[kind]
@@ -215,18 +165,10 @@ def _check_supported(info, volume: str, subdir: str, kind: str) -> None:
 def _read_legacy_mesh(volume: str, body_id: int, mesh_dir: str):
     """``(vertices_xyz, faces)`` for a ``neuroglancer_legacy_mesh`` body, or ``None``.
 
-    The single-resolution format: ``<body>:0`` is a JSON manifest naming fragment files, and
-    each fragment is a bare little-endian ``uint32`` vertex count, then that many ``float32``
-    xyz triples, then ``uint32`` triangle indices filling the rest. No LODs, no Draco, no
-    octree — so none of the multires machinery applies, and the whole reader is this function.
-
-    The manifest names fragments **relative to the mesh directory**, and a body may have
-    several; their faces are rebased as they are concatenated, exactly as the multires path
-    does across octree cells.
-
-    A truncated fragment is refused rather than silently yielding a partial mesh: the vertex
-    count is in the header, so a file too short to hold it is a detectable corruption, and a
-    mesh missing its last few thousand vertices looks like a real but subtly wrong neuron.
+    ``<body>:0`` is a JSON manifest naming fragment files relative to the mesh directory;
+    each fragment is a little-endian ``uint32`` vertex count, that many ``float32`` xyz
+    triples, then ``uint32`` triangle indices. Fragments are concatenated with faces
+    rebased. A fragment shorter than its vertex count requires is refused as truncated.
     """
     import json
 
@@ -259,11 +201,8 @@ def _read_legacy_mesh(volume: str, body_id: int, mesh_dir: str):
 
 
 def _transform_matrix(info):
-    """A subresource ``transform`` as a ``(3, 4)`` matrix, or ``None`` when it is identity.
-
-    ``None`` rather than the identity so the caller skips the multiply entirely — this
-    runs per body, and identity is the case for everything neu-morpho writes.
-    """
+    """A subresource ``transform`` as a ``(3, 4)`` matrix, or ``None`` when it is identity,
+    so the caller skips the multiply."""
     values = (info or {}).get("transform")
     if values is None:
         return None
@@ -308,12 +247,8 @@ def _parse_manifest(manifest: bytes):
 def _single_lod_manifest(parsed, want: int) -> bytes:
     """Re-emit the manifest declaring only LOD ``want``, with the earlier LODs empty.
 
-    The LODs are kept rather than renumbered, and that is the whole subtlety: a fragment
-    carries no LOD of its own, its cell size is ``chunk_shape * 2**lod`` from the position
-    it occupies in the manifest. Relabelling LOD 3 as LOD 0 to save a few bytes would
-    dequantize its vertices against a cell 8x too small and silently shrink the mesh.
-    So LODs 0..want-1 stay present and are declared to hold zero fragments, which costs
-    nothing on the wire and lets the fragment data for ``want`` be the whole payload.
+    Kept, not renumbered: a fragment's cell size is ``chunk_shape * 2**lod`` from its
+    position in the manifest, so relabelling LOD 3 as 0 would shrink the mesh 8x.
     """
     counts = np.zeros(want + 1, dtype="<u4")
     counts[want] = parsed["counts"][want]
@@ -328,23 +263,13 @@ def _single_lod_manifest(parsed, want: int) -> bytes:
 
 
 def _sharded_object(volume: str, body_id: int, mesh_dir: str, sharding, lod):
-    """``(fragment_data, manifest, lod)`` for one body and ONE LOD, or ``None``.
+    """``(fragment_data, manifest, lod)`` for one body and one LOD, or ``None``.
 
-    The two halves an unsharded store keeps as ``<body>`` and ``<body>.index`` are both
-    inside a ``.shard`` file here, and only the manifest is an indexed entry. The
-    fragment data is **not addressable by key at all**: the spec places it immediately
-    before the manifest in the same file, so the whole payload occupies
-    ``[manifest_offset - total_size, manifest_offset)``, LODs in order. That is the whole
-    reason this needs :class:`~neu_vol.sharded.ShardReader` rather than a keyed read.
-
-    **Only the requested LOD is fetched**, which is the difference between a usable and a
-    painful batch: the pyramid is dominated by LOD 0, so the coarsest LOD — the default,
-    and the one a whole-neuron view wants — is well under 1% of the bytes. Measured on two
-    male-CNS bodies, fetching everything to return the coarsest was a 160x and a 232x
-    over-read. The returned manifest is re-emitted to match the truncated payload.
-
-    Returning blobs rather than decoding here is what lets the caller stage them in the
-    unsharded layout and hand both cases to the same parser.
+    Only the manifest is an indexed shard entry; the fragment data sits immediately
+    before it, at ``[manifest_offset - total_size, manifest_offset)`` with LODs in order,
+    which is why this needs :class:`~neu_vol.sharded.ShardReader`. Only the requested LOD
+    is fetched (the coarsest is typically under 1% of the bytes), and the manifest is
+    re-emitted to match.
     """
     reader = _shard_reader(volume, mesh_dir, sharding)
     found = reader.locate(int(body_id))
@@ -367,10 +292,7 @@ def _sharded_object(volume: str, body_id: int, mesh_dir: str, sharding, lod):
     total = sum(per_lod)
     start = offset - total + sum(per_lod[:want])
 
-    # Check the extent before asking for it. A manifest claiming more fragment data than
-    # can fit before it puts the start of the read at a negative offset, which the store
-    # reports as an unsupported byte range — an error about slice syntax, several layers
-    # from the actual problem.
+    # Checked first: a negative start would surface as an obscure byte-range error.
     if total > offset:
         raise ValueError(
             f"body {body_id}: manifest claims {total} bytes of mesh fragment data but "
@@ -391,33 +313,20 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
                    mesh_dir: str = "mesh"):
     """``(vertices_xyz_nm, faces, lod)`` for one LOD, or ``None`` if absent.
 
-    ``lod`` defaults to the **coarsest** present, which is the cheapest to draw;
-    pass 0 for full detail. Fragments are octree cells, so the requested LOD's
-    cells are concatenated with their face indices rebased.
+    ``lod`` defaults to the coarsest present, the cheapest to draw; pass 0 for full
+    detail. The LOD's octree fragments are concatenated with face indices rebased.
+    Sharded and unsharded meshes are both read, by the ``sharding`` key of the mesh
+    ``info``; a sharded read fetches only the requested LOD.
 
-    Reads **sharded and unsharded** meshes alike, deciding on the ``sharding`` key of
-    the mesh directory's own ``info``. A sharded store has no ``<body>`` object to
-    fetch, so the unsharded reader came back ``None`` for every body — indistinguishable
-    from a volume that holds no meshes. The sharded path fetches **only the requested
-    LOD**; the unsharded one reads the whole object, because there the LODs share a single
-    key and there is no range to ask for.
-
-    Vertices are **always physical nm**, per the one-model-space invariant: the stored
-    coordinates are mapped through the mesh ``info``'s ``transform``, unconditionally and
-    with no opt-out. Every mesh neu-morpho writes declares an **identity** transform
-    (its vertices are already nm), so this changes nothing about our own output and
-    matters only for a foreign source — FlyEM's male-CNS declares ``diag(16)``, whose
-    meshes were coming back 16x too small and 16x out of register with the skeletons from
-    the same volume, with nothing to say so. :func:`mesh_transform` reports the matrix for
-    anyone who needs the stored-model coordinates back.
+    Vertices are always physical nm: stored coordinates go through the mesh ``info``'s
+    ``transform``, with no opt-out. neu-morpho writes identity; a foreign source may not
+    (one published source declares ``diag(16)``). :func:`mesh_transform` reports it.
     """
     info = _subresource_info(volume, mesh_dir)
     _check_supported(info, volume, mesh_dir, "mesh")
 
     if info.get("@type") == LEGACY_MESH:
-        # Single-resolution: no LODs, so the only honest answer to a `lod` request is 0.
-        # Silently handing back the one mesh for `lod=3` would misreport the detail level to
-        # a caller that asked for it deliberately.
+        # Single-resolution: only LOD 0 exists.
         if lod not in (None, 0):
             raise ValueError(
                 f"body {body_id}: {volume}/{mesh_dir} is {LEGACY_MESH}, which has a single "
@@ -504,15 +413,10 @@ def _decode_lod(manifest: bytes, data: bytes, bits: int, lod: int | None, body_i
 def mesh_transform(volume: str, mesh_dir: str = "mesh"):
     """The mesh ``info``'s stored-model to nm ``transform``, as a ``(3, 4)`` matrix.
 
-    Always a matrix, identity included — unlike the private helper, which returns
-    ``None`` for identity to skip work. :func:`read_body_mesh` has already applied this,
-    so it is here for reporting what happened and for recovering stored-model
-    coordinates from the nm ones.
-
-    **Raises when there is no ``info`` at the given location**, rather than falling back
-    to identity. An identity matrix is a perfectly plausible answer, so a mistyped path
-    or a ``mesh_dir`` passed where a volume was wanted would otherwise come back as
-    "no scaling here" and be believed.
+    Identity included. :func:`read_body_mesh` has already applied it; this is for
+    reporting it and recovering stored-model coordinates. Raises when there is no
+    ``info`` at the location, since an identity answer to a mistyped path would be
+    believed.
     """
     return _declared_transform(volume, mesh_dir, "mesh", "mesh")
 
@@ -520,8 +424,7 @@ def mesh_transform(volume: str, mesh_dir: str = "mesh"):
 def skeleton_transform(volume: str, skeleton_dir: str = "skeleton"):
     """The skeleton ``info``'s ``transform``, as a ``(3, 4)`` matrix.
 
-    The counterpart to :func:`mesh_transform`, and worth having precisely because the two
-    are separate declarations that a source can disagree on.
+    Separate from :func:`mesh_transform` because a source declares the two independently.
     """
     return _declared_transform(volume, skeleton_dir, "skeleton", "skeletons")
 

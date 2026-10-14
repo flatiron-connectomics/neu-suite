@@ -1,34 +1,18 @@
 """Drop the object-store logging that is noise, and only that.
 
-TensorStore's S3 stack logs at absl ERROR severity on paths that are not errors:
-building the credential provider chain reports each provider that could not be
-constructed *before* falling through to the one that works. A run that succeeds
-completely still prints two of these per store open. There is no env var that
-turns them off (checked: ``TENSORSTORE_VERBOSE_LOGGING``, ``ABSL_MIN_LOG_LEVEL``,
-``AWS_CRT_LOG_LEVEL``, ``GLOG_minloglevel`` — none reduce the volume), and they
-come from C++ on fd 2, so ``contextlib.redirect_stderr`` cannot see them.
+TensorStore's S3 stack logs at absl ERROR severity on every successful store open: the
+credential providers that could not be built before the one that works. No environment
+variable turns this off, and it comes from C++ on fd 2, so :func:`quiet_store_logs`
+filters fd 2 through a pipe. Two rules keep it from hiding real problems:
 
-So :func:`quiet_store_logs` filters fd 2 through a pipe, dropping lines that match
-a short list of known-benign patterns and passing **everything else** through
-untouched. Two rules keep it from hiding real problems:
+1. It is a deny-list of known-noise strings, not a severity filter: an unrecognized
+   message always passes through.
+2. :data:`NEVER_DROP` wins over every pattern, so denied access, HTTP error codes and
+   tensorstore failure statuses are always printed.
 
-1. It is a deny-list of specific known-noise strings, not a severity filter. An
-   unrecognized message is always passed through.
-2. :data:`NEVER_DROP` wins over every pattern, so anything mentioning denied
-   access, an HTTP error code, or a tensorstore failure status is printed even if
-   it also matches a noise pattern.
-
-This is for **entry points** (scripts, drivers). Library code must not touch
-process-wide stderr.
-
-:func:`quiet_reads` is the same filter packaged for the *other* kind of entry point —
-a library function that a notebook calls directly, where there is no ``main()`` to wrap.
-It is still opt-in (the consumer's own function chooses to use it), so the rule above
-holds; what it removes is each consumer reimplementing the depth counter that makes
-nesting and threading safe. neu-draw arrived at that pattern first and its reasoning is
-worth repeating: expecting a user to run an incantation before their output is legible is
-the worse trade, because forgetting it after a kernel restart looks exactly like the
-filter being broken.
+:func:`quiet_store_logs` is for entry points (scripts, drivers). :func:`quiet_reads` is
+the same filter for a library function a notebook calls directly; it nests and is safe
+across threads.
 """
 
 from __future__ import annotations
@@ -40,8 +24,7 @@ import sys
 import threading
 
 # Emitted on every successful S3 open: the credential providers that could not be
-# built, before the environment provider (which aws.ensure_aws_credentials
-# populates) answers. See CLAUDE.md invariant 8.
+# built, before the environment provider (populated by aws.ensure_aws_credentials).
 BENIGN_PATTERNS = (
     "Profile credentials provider could not load a profile",
     "Failed to resolve either region, role arn or token file path",
@@ -56,10 +39,7 @@ BENIGN_PATTERNS = (
     "Failed to complete connection acquisition",
     "Client connection failed with error",
     "timed out, shutting down.",
-    # The GCS equivalent, emitted on every anonymous read of a public bucket: the
-    # provider chain reports that no gcloud application-default credentials exist
-    # before falling through to anonymous access, which then succeeds. Matching the
-    # source file catches its siblings too, and is safe because a *real* GCS auth
+    # The GCS equivalent, on every anonymous read of a public bucket. A real GCS auth
     # failure says PERMISSION_DENIED or UNAUTHENTICATED, which NEVER_DROP keeps.
     "google_auth_provider.cc",
     "Could not find the credentials file in the standard gcloud location",
@@ -143,17 +123,13 @@ _depth_lock = threading.RLock()
 def quiet_reads():
     """Filter benign store logging for one read, safe to nest and to call from threads.
 
-    For a library function that a notebook calls directly — there is no ``main()`` to
-    wrap, and from the notebook's point of view that function *is* the entry point. Wrap
-    the store-touching call in it:
+    For a library function a notebook calls directly::
 
         with quiet_reads():
             info = location.read_json(source, "info")
 
-    A no-op when :data:`reads_quiet` is false or when an outer read is already
-    filtering. The depth counter matters: only the thread that got there first ever
-    swaps fd 2, because two threads racing ``dup2`` on the same descriptor is a way to
-    lose output rather than merely filter it.
+    A no-op when :data:`reads_quiet` is false or an outer read is already filtering. Only
+    the outermost caller swaps fd 2, since racing ``dup2`` calls could lose output.
     """
     global _depth, _scoped
     if not reads_quiet:

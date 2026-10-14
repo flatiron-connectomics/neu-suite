@@ -1,33 +1,19 @@
 """How a :func:`~neu_vol.source_metadata.describe` result presents itself.
 
-``describe`` returns a mapping, because that is what every caller in the package needs
-— ``create --like`` reads ``shape`` and ``dtype``, ``downsample`` reads
-``level_voxel_sizes``, the CLI reads all of it. But a mapping is the wrong thing to
-*look at*: in a notebook a dict of nested tuples is exactly as much information as the
-CLI's table and far harder to read, and printing one was the reason people ran
-``neu-vol info`` in a subprocess instead.
+The result is a :class:`Description`: a real ``dict`` with the rendering attached, so
+``d["shape"]`` and ``dict(d)`` behave as a mapping while ``print(d)`` and a bare ``d`` in
+a notebook give the table ``neu-vol info`` prints, and :meth:`Description.frame` gives a
+DataFrame of the rows. The CLI builds its output from :meth:`Description.header_lines`
+and :meth:`Description.table_lines`, with its own store-reading sections between them,
+so there is one rendering.
 
-So the result is a :class:`Description` — a real ``dict``, with the rendering attached.
-``d["shape"]`` and ``dict(d)`` behave as before; ``print(d)`` and a bare ``d`` in a cell
-give the table, and :meth:`Description.frame` gives a DataFrame of the per-row part.
-
-**The rendering lives here rather than in the CLI, and that is the point of the module.**
-``cmd_info`` used to hold the only copy, so anything else that wanted the same table had
-to grow a second one — and two renderings of the same dict drift. The CLI now assembles
-its output from :meth:`Description.header_lines` and :meth:`Description.table_lines`
-with its own store-reading sections (DVID nodes, ``provenance.json``) in between, which
-is the only reason those are separate methods rather than one.
-
-pandas is **not** a dependency of this package and must not become one; ``frame`` imports
-it lazily and says what to install if it is missing. Nothing else here needs it.
+pandas is not a dependency; :meth:`Description.frame` imports it lazily.
 """
 
 from __future__ import annotations
 
-#: A header row whose value is absent is **omitted** rather than printed empty: an
-#: offset of ``None`` and an offset of zero mean different things, and a blank reads as
-#: the latter. The one exception is the voxel size, where "not recorded" is the fact
-#: worth stating, since it is what `convert` and `downsample` will ask for.
+#: A header row whose value is absent is omitted, since a blank would read as zero; the
+#: voxel size is the exception, because `convert` and `downsample` will ask for it.
 _MISSING_VOXEL_SIZE = "(not recorded — --voxel-size required for convert/downsample)"
 
 
@@ -38,15 +24,10 @@ def _vec(values, sep: str = "x") -> str:
 class Description(dict):
     """A ``describe`` result: a plain dict that also knows how to show itself.
 
-    Subclassing ``dict`` rather than wrapping one is deliberate — every existing caller
-    subscripts this, and a wrapper would have meant touching all of them to get a
-    notebook nicety. ``dict(d)`` strips the presentation if something needs a bare
-    mapping (JSON, a cache key).
+    ``dict(d)`` strips the presentation where a bare mapping is needed (JSON, a cache key).
     """
 
-    #: What a bare ``d`` shows in a terminal REPL, and what ``print(d)`` gives. The
-    #: table, not the mapping: the mapping is available by subscripting, and nobody reads
-    #: a screenful of nested tuples on purpose.
+    #: A bare ``d`` and ``print(d)`` show the table; the mapping is there by subscripting.
     def __repr__(self) -> str:
         return self.text()
 
@@ -54,12 +35,8 @@ class Description(dict):
 
     @property
     def is_container(self) -> bool:
-        """True when this describes an HDF5 file of several arrays and resolved none.
-
-        ``shape`` is the test because it is the field that cannot have an answer: a
-        container of thirteen differently-shaped crops has no single shape, dtype or
-        frame, so ``describe`` leaves all three ``None`` and fills ``datasets`` instead.
-        """
+        """True when this describes an HDF5 file of several arrays and resolved none
+        (``shape`` is ``None`` and ``datasets`` is filled)."""
         return self.get("shape") is None and bool(self.get("datasets"))
 
     # ------------------------------------------------------------------ text
@@ -98,11 +75,8 @@ class Description(dict):
         return out
 
     def warning_lines(self) -> list[str]:
-        """Two volumes in one directory, if that is the situation.
-
-        Whichever loses the detection order is unreachable through every path in this
-        package while still occupying the store, and nothing else says so.
-        """
+        """A warning when a second volume of another format shares this directory, and so
+        is unreachable through detection."""
         markers = self.get("other_markers") or []
         if not markers:
             return []
@@ -145,13 +119,9 @@ class Description(dict):
         return out
 
     def _no_frame_lines(self) -> list[str]:
-        """Which attribute names were searched, when none of them was there.
-
-        "This file records no scale" and "this file spells it differently" look identical
-        otherwise — and the names are parameters (``voxel_size_field`` /
-        ``offset_field``) precisely because another writer's choice is not this package's
-        to assume, so saying which ones were tried is the actionable half.
-        """
+        """Which attribute names were searched for a frame, when none was found, so a file
+        that spells them differently can be read with ``voxel_size_field`` /
+        ``offset_field``."""
         from .backends.hdf5 import FRAME_ATTRIBUTES
 
         out = ["\n  no dataset records a voxel size, so nothing here knows its physical",
@@ -189,13 +159,8 @@ class Description(dict):
         return out
 
     def text(self) -> str:
-        """The whole report as one string — the CLI's output minus its store reads.
-
-        ``provenance.json`` and the DVID node summary are *not* here: both open a store,
-        and a ``__repr__`` that makes network calls is a trap in a notebook, where
-        anything can echo an object. ``neu-vol info`` adds them between the header and
-        the table.
-        """
+        """The whole report as one string: the CLI's output minus its store reads
+        (``provenance.json``, the DVID node summary), which a ``__repr__`` must not make."""
         return "\n".join(self.header_lines() + self.warning_lines() + self.table_lines())
 
     # ------------------------------------------------------------------ notebook
@@ -215,14 +180,9 @@ class Description(dict):
     def frame(self):
         """A DataFrame of the per-row part: one row per dataset, or one per level.
 
-        The two shapes answer the two questions this object is ever asked. For an HDF5
-        container it is the dataset listing — name, shape, dtype, chunking and each
-        crop's own recorded frame — which is what you sort and filter when choosing one.
-        For anything else it is the pyramid: one row per level with its own voxel size
-        and chunking.
-
-        Values are the **numbers**, not the formatted strings the text table shows, so
-        the frame is something to compute with; ``print(d)`` is for reading.
+        For an HDF5 container, each dataset's name, shape, dtype, chunking and recorded
+        frame; otherwise one row per level with its own voxel size and chunking. Values are
+        numbers, not the formatted strings of the text table.
         """
         pd = _pandas()
         if self.is_container:
