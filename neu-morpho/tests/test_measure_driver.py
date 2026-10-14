@@ -65,10 +65,7 @@ def test_keep_records_only_the_listed_bodies(tmp_path):
 
 
 def test_refuses_a_db_that_already_holds_an_index_scan(tmp_path):
-    """Both fill voxel_count on the same grid, so running both would double every count.
-
-    Separate progress tables make the collision detectable instead of silent.
-    """
+    """Both fill voxel_count on the same grid, so running both would double every count."""
     spec, _ = _seg(tmp_path)
     db_path = str(tmp_path / "m.sqlite")
     from neu_morpho.ops.index_segments import index_segments
@@ -119,8 +116,7 @@ def test_resolve_keep_unions_files_and_properties_sources(tmp_path):
 
 
 def test_resolve_keep_refuses_a_volume_info(tmp_path):
-    """A segmentation's own info has no id list, and pointing --keep at one is an easy
-    slip: both are `info` files under a precomputed source."""
+    """A segmentation's own `info` has no id list; pointing --keep at it is refused."""
     import json
     import os
     from neu_morpho.measure.driver import resolve_keep
@@ -161,13 +157,8 @@ def test_the_index_records_its_total_too(tmp_path):
 # concurrency: a reader must not be able to kill a writer
 # --------------------------------------------------------------------------- #
 def test_a_read_only_open_writes_nothing(tmp_path):
-    """Opening to LOOK at progress must not take a write lock.
-
-    The default constructor issues `PRAGMA journal_mode` and four
-    `CREATE TABLE IF NOT EXISTS` statements, which are writes — so a progress command
-    built on a default open locked a live DB and killed a 25-minute sweep with
-    'database is locked'.
-    """
+    """A read-only open takes no write lock, so a progress check cannot make a live
+    sweep fail with 'database is locked'."""
     import sqlite3
 
     db_path = str(tmp_path / "m.sqlite")
@@ -202,7 +193,7 @@ def test_read_only_survives_a_db_without_the_newer_tables(tmp_path):
 
 
 def test_a_writer_waits_out_a_lock_instead_of_failing(tmp_path):
-    """busy_timeout is the fix that protects against readers predating the convention."""
+    """A writer waits for a lock (busy_timeout) rather than failing at once."""
     db_path = str(tmp_path / "m.sqlite")
     db = MetricsDB(db_path)
     try:

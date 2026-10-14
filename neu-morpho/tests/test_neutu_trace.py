@@ -1,12 +1,9 @@
-"""Tests for the NeuTu-style tracer.
+"""The NeuTu-style tracer.
 
-The load-bearing one is :func:`test_per_voxel_weights_match_neutu_edge_cost` —
-the substitution the plan flags as assumed-but-unverified.
-``dijkstra3d.parental_field`` takes **per-voxel** weights, whereas NeuTu's cost is
-the symmetric **edge** form ``d·[f(v₁) + f(v₂)]``. For a path with uniform step
-length these telescope to the same argmin up to constant endpoint terms, but 3D
-diagonal moves have mixed step lengths (1, √2, √3), so the equivalence is not
-free and is checked against an independent reference implementation.
+`test_per_voxel_weights_match_neutu_edge_cost` checks that dijkstra3d's per-voxel weights
+stand in for NeuTu's symmetric edge cost ``d·[f(v1) + f(v2)]``. The two agree for uniform
+steps, but 3D moves mix step lengths (1, √2, √3), so this is checked against an
+independent reference implementation.
 """
 
 from __future__ import annotations
@@ -30,6 +27,17 @@ def _tube(length=40, r=3, pad=4, bend=False):
     return np.asfortranarray(m.astype(np.uint8))
 
 
+def _y_body():
+    """A Y: a stem along z splitting into two arms."""
+    s = (60, 60, 24)
+    zz, yy, xx = np.indices(s)
+    stem = (zz >= 6) & (zz < 30) & ((yy - 30) ** 2 + (xx - 12) ** 2 <= 9)
+    t = np.clip(zz - 30, 0, None)
+    arm1 = (zz >= 30) & (zz < 54) & ((yy - 30 - t) ** 2 + (xx - 12) ** 2 <= 9)
+    arm2 = (zz >= 30) & (zz < 54) & ((yy - 30 + t) ** 2 + (xx - 12) ** 2 <= 9)
+    return np.asfortranarray((stem | arm1 | arm2).astype(np.uint8))
+
+
 def _weights(mask):
     import edt
     import kimimaro.skeletontricks
@@ -48,8 +56,7 @@ def test_neutu_pdrf_values():
 
 
 def test_neutu_pdrf_forbids_background():
-    """Background must be inf. 1/(1+inf²) is 0 — the *cheapest* weight there is,
-    which would make empty space free to cross."""
+    """Background stays inf: 1/(1+inf²) would be 0, making empty space free to cross."""
     dbf = np.asfortranarray(np.array([[[1.0, np.inf]]], dtype=np.float32))
     p = neutu_trace.neutu_pdrf(dbf)
     assert np.isinf(p[0, 0, 1])
@@ -57,12 +64,8 @@ def test_neutu_pdrf_forbids_background():
 
 
 def _neutu_edge_cost_path(weights, src, dst):
-    """Reference Dijkstra using NeuTu's symmetric edge cost ``d·[f(u)+f(v)]``.
-
-    Deliberately plain, slow and obviously correct — it exists to check the fast
-    per-voxel path, so sharing any code with it would defeat the purpose.
-    26-connected, matching dijkstra3d.
-    """
+    """Reference Dijkstra with NeuTu's edge cost ``d·[f(u)+f(v)]``, 26-connected. Plain
+    and independent of the code under test on purpose."""
     shape = weights.shape
     offs = [(dz, dy, dx)
             for dz in (-1, 0, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
@@ -103,13 +106,8 @@ def _neutu_edge_cost_path(weights, src, dst):
 
 @pytest.mark.parametrize("bend", [False, True])
 def test_per_voxel_weights_match_neutu_edge_cost(bend):
-    """The substitution the plan says to confirm rather than assume.
-
-    Not asserting identical paths a priori: with mixed 3D step lengths the two
-    costs are not exactly proportional, so ties could break differently. What
-    must hold is that the per-voxel route is no worse *under NeuTu's own cost*
-    than NeuTu's optimum. (In practice both tubes come out bit-identical.)
-    """
+    """The per-voxel route is no worse under NeuTu's own cost than NeuTu's optimum (ties
+    may break differently, so identical paths are not required)."""
     import dijkstra3d
 
     m = _tube(length=30, r=3, bend=bend)
@@ -155,14 +153,8 @@ def test_empty_mask_returns_empty_skeleton():
 
 
 def test_default_invalidation_is_neutus_own_value():
-    """The default must stay at NeuTu's EDT+2, not a compensating constant.
-
-    A previous revision defaulted to 8.0 to "compensate for weaker target
-    selection". That was masking two bugs (the uint32 length underflow and the
-    missing loop progress guarantee); with those fixed, 2.0 reproduces NeuTu and
-    8.0 deletes real cable. If this assertion ever fails, check for a
-    reintroduced bug before accepting the new constant.
-    """
+    """NeuTu's own EDT+2. A raised value once masked two bugs and deleted real cable, so
+    if this ever needs changing, look for a reintroduced bug first."""
     assert neutu_trace.NEUTU_CONST == 2.0
     assert neutu_trace.INVALIDATION_CONST == neutu_trace.NEUTU_CONST
 
@@ -176,25 +168,16 @@ def test_tighter_invalidation_yields_more_vertices():
 
 
 def test_all_connected_components_are_traced():
-    """A single-root trace covers exactly one component and silently drops the rest.
-
-    TEASAR grows from one root, and both the parent field and the rolling-ball
-    invalidation are confined to that root's component. The root comes from
-    ``first_label`` — whichever voxel is first in memory order — so on a
-    fragmented body the trace can land on a speck. This reproduces that in
-    miniature: a small tube placed *first* in memory order, a large one after.
-    Measured on real body 6308993 (7 components, largest 96.9% of voxels) a
-    single-root trace covered 3%.
-    """
+    """Every component is traced. A single-root trace covers only the root's component,
+    and the root can land on a speck first in memory order (on a real body, a trace
+    covering 3% of it). Here a small tube comes first and a large one after."""
     m = np.zeros((60, 40, 20), dtype=np.uint8)
     m[2:8, 3:9, 3:9] = 1                                    # small, first in z
     zz, yy, xx = np.indices(m.shape)
     m[((zz >= 20) & (zz < 55) & ((yy - 25) ** 2 + (xx - 10) ** 2 <= 16))] = 1
     m = np.asfortranarray(m)
 
-    # min_length=0: this test is about component iteration, not branch rejection.
-    # At the default threshold the 6-voxel cube is legitimately dropped for being
-    # shorter than minimalLength, which would mask the bug this test guards.
+    # min_length=0, or the 6-voxel cube is legitimately dropped as too short
     skel = neutu_trace.skeletonize(m, min_length=0.0)
     v = np.asarray(skel.vertices).astype(int)
     assert len(v) > 0
@@ -205,11 +188,8 @@ def test_all_connected_components_are_traced():
 
 
 def test_component_crop_does_not_inflate_radii():
-    """Cropping to a component's bbox must pad with background.
-
-    With the crop flush against the component, ``black_border=False`` reads the
-    out-of-bounds side as non-background and the EDT at that face is too large.
-    """
+    """A component flush against the array edge: the crop must pad with background, or
+    the EDT at that face is too large."""
     m = np.zeros((30, 20, 20), dtype=np.uint8)
     zz, yy, xx = np.indices(m.shape)
     m[((zz >= 0) & (zz < 30) & ((yy - 10) ** 2 + (xx - 10) ** 2 <= 9))] = 1
@@ -218,12 +198,8 @@ def test_component_crop_does_not_inflate_radii():
 
 
 def test_min_length_rejects_short_spurs_but_keeps_the_trunk():
-    """NeuTu's `minimalLength`: reject a branch by the NEW territory it covers.
-
-    A long tube with a 2-voxel bump. The bump is a branch whose un-invalidated
-    geodesic tail is ~nothing, so it must not become cable; the trunk must
-    survive untouched.
-    """
+    """NeuTu's `minimalLength` rejects a branch by the new territory it covers: a tiny
+    bump on a tube is dropped and the trunk survives."""
     m = _tube(length=50, r=3, pad=5)
     m = np.asfortranarray(m.copy())
     m[28:30, 12:14, 4] = 1                                  # a tiny nub
@@ -236,11 +212,7 @@ def test_min_length_rejects_short_spurs_but_keeps_the_trunk():
 
 
 def test_min_length_is_measured_on_uninvalidated_length_not_geometry():
-    """The distinction that makes the criterion work.
-
-    ``_uninvalidated_length`` must measure only the trailing run of still-valid
-    voxels, so a long path that mostly retreads covered ground scores low.
-    """
+    """Only the trailing run of still-valid voxels counts."""
     path = np.array([[i, 0, 0] for i in range(10)])
     labels = np.ones((12, 2, 2), dtype=np.uint8)
     assert neutu_trace._uninvalidated_length(path, labels) == pytest.approx(9.0)
@@ -254,13 +226,8 @@ def test_min_length_is_measured_on_uninvalidated_length_not_geometry():
 
 
 def test_uninvalidated_length_survives_uint32_paths():
-    """dijkstra3d returns uint32 paths; np.diff on them underflows.
-
-    Any step where a coordinate DECREASES wraps to ~2**32, so the length came
-    back as ~2.7e11 and every `>= min_length` test passed — branch rejection was
-    silently disabled. The earlier version of this test used an int64 path and a
-    monotonically increasing one, so it missed both halves of the bug.
-    """
+    """dijkstra3d returns uint32 paths, and np.diff on a decreasing coordinate wraps
+    to ~2**32, which silently disables branch rejection."""
     labels = np.ones((12, 12, 12), dtype=np.uint8)
     down = np.array([[9, 5, 5], [8, 5, 5], [7, 5, 5], [6, 5, 5]], dtype=np.uint32)
     assert neutu_trace._uninvalidated_length(down, labels) == pytest.approx(3.0)
@@ -271,29 +238,16 @@ def test_uninvalidated_length_survives_uint32_paths():
 
 
 def test_branches_are_traced():
-    """A Y should produce a branch point (a degree-3 vertex), not one path."""
-    s = (60, 60, 24)
-    zz, yy, xx = np.indices(s)
-    stem = (zz >= 6) & (zz < 30) & ((yy - 30) ** 2 + (xx - 12) ** 2 <= 9)
-    t = np.clip(zz - 30, 0, None)
-    arm1 = (zz >= 30) & (zz < 54) & ((yy - 30 - t) ** 2 + (xx - 12) ** 2 <= 9)
-    arm2 = (zz >= 30) & (zz < 54) & ((yy - 30 + t) ** 2 + (xx - 12) ** 2 <= 9)
-    m = np.asfortranarray((stem | arm1 | arm2).astype(np.uint8))
-
-    skel = neutu_trace.skeletonize(m)
+    """A Y gives a branch point (a degree-3 vertex)."""
+    skel = neutu_trace.skeletonize(_y_body())
     e = np.asarray(skel.edges)
     degree = np.bincount(e.ravel(), minlength=len(np.asarray(skel.vertices)))
     assert (degree >= 3).any(), "no branch point found on a Y-shaped body"
 
 
 def test_root_seeds_from_the_thickest_voxel_not_memory_order():
-    """NeuTu's rebase: seed at the thickest voxel, not whichever comes first.
-
-    The root determines the whole parent tree, so seeding from `first_label` made
-    the skeleton depend on array layout. This builds a body whose thickest part is
-    deliberately NOT first in memory order, and checks the seed choice changes the
-    root.
-    """
+    """Seed at the thickest voxel (NeuTu's rebase), so the tree does not depend on
+    memory order. The thickest part here is deliberately not first."""
     import edt
 
     thin_z0, thin_z1, blob_z, blob_r = 2, 40, 48, 8
@@ -313,9 +267,7 @@ def test_root_seeds_from_the_thickest_voxel_not_memory_order():
     from_thick = neutu_trace._find_root(m, dbf)
     from_order = neutu_trace._find_root(m, None)
     assert from_thick is not None and from_order is not None
-    # TEASAR's root is the farthest voxel from the seed, so seeding in the blob puts
-    # it at the thin cylinder's far tip — a position the fixture fixes, not one
-    # read off a previous run.
+    # the root is the voxel farthest from the seed: the thin cylinder's far tip
     assert from_thick[0] == thin_z0
 
 
@@ -332,39 +284,25 @@ def test_find_root_ignores_zero2inf_background():
     assert m[tuple(int(v) for v in root)], "root fell outside the object"
 
 
-def test_attach_at_skeleton_keeps_the_tree_connected():
-    """Truncating at the path mask must not fragment the skeleton.
+@pytest.mark.parametrize("attach", [False, True])
+def test_attach_at_skeleton_keeps_the_tree_connected(attach):
+    """The cut at the path mask is usually not an existing vertex, so a branch needs an
+    anchor or it comes back as its own component."""
+    skel = neutu_trace.skeletonize(_y_body(), attach_at_skeleton=attach)
+    v = np.asarray(skel.vertices)
+    parent = list(range(len(v)))
 
-    The mask is a tube of radius up to 3, so the cut voxel is usually not a vertex
-    of the existing skeleton. Without prepending an anchor, nothing is shared and
-    each branch comes back as its own component.
-    """
-    s = (60, 60, 24)
-    zz, yy, xx = np.indices(s)
-    stem = (zz >= 6) & (zz < 30) & ((yy - 30) ** 2 + (xx - 12) ** 2 <= 9)
-    t = np.clip(zz - 30, 0, None)
-    arm1 = (zz >= 30) & (zz < 54) & ((yy - 30 - t) ** 2 + (xx - 12) ** 2 <= 9)
-    arm2 = (zz >= 30) & (zz < 54) & ((yy - 30 + t) ** 2 + (xx - 12) ** 2 <= 9)
-    m = np.asfortranarray((stem | arm1 | arm2).astype(np.uint8))
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
 
-    for attach in (False, True):
-        skel = neutu_trace.skeletonize(m, attach_at_skeleton=attach)
-        v = np.asarray(skel.vertices)
-        e = np.asarray(skel.edges)
-        parent = list(range(len(v)))
-
-        def find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        for a, b in e:
-            ra, rb = find(int(a)), find(int(b))
-            if ra != rb:
-                parent[ra] = rb
-        assert len({find(i) for i in range(len(v))}) == 1, (
-            f"attach_at_skeleton={attach} left the skeleton disconnected")
+    for a, b in np.asarray(skel.edges):
+        ra, rb = find(int(a)), find(int(b))
+        if ra != rb:
+            parent[ra] = rb
+    assert len({find(i) for i in range(len(v))}) == 1
 
 
 def test_path_mask_radius_is_capped():
@@ -386,31 +324,14 @@ TUBE_RADIUS = 4          # the fixture's radius; bounds below are derived from i
 
 @pytest.mark.parametrize("bend", [False, True])
 def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend):
-    """The property block-first fusion depends on.
+    """Two halves of a tube, skeletonized independently, meet at the same point on the
+    shared face, which is what lets stage 2 weld them with a seam-scale join.
 
-    Stage 2 welds fragments with a join bounded to seam scale, because widening it
-    invents cable. That only works if both blocks routed a path to the same point on
-    the shared face. Cut a tube in two, skeletonize each half independently, and
-    compare where each fragment meets the cut.
-
-    Every bound here is derived, not observed:
-
-    - **Each endpoint lies on its block's face**, within one voxel — that is what
-      ``fix_borders`` promises, and a vertex is voxel-quantized.
-    - **A straight tube must give exactly zero offset.** Both faces expose an
-      identical disc, so the contact-area centre is the same point; anything nonzero
-      means the target is not a function of the contact area alone.
-    - **A bent tube must still land inside the tube**, so the two endpoints cannot be
-      further apart than the cross-section they both sit in, ``2 * r``. Adjacent
-      blocks do not share a plane — block A ends at z=k, block B starts at z=k+1 — so
-      the two discs differ and the residual is genuinely nonzero. Its exact value is
-      set by how ``compute_border_targets`` breaks ties between equally-deep voxels,
-      which is not a property worth pinning to a number.
-    - **``fix_borders`` never makes the seam worse** than not using it.
-
-    The measured values, and what they mean for ``join_radius_nm`` on curved
-    processes, are in docs/skeletonization.md — not asserted here, so that a
-    routing improvement shows up there rather than as a test failure.
+    - each endpoint lies on its block's face, within one voxel;
+    - a straight tube gives exactly zero offset (both faces expose the same disc);
+    - a bent tube's offset stays within the cross-section, ``2 * r``, since adjacent
+      blocks do not share a plane;
+    - ``fix_borders`` never makes the seam worse than without it.
     """
     r = TUBE_RADIUS
     m = _tube(length=60, r=r, pad=4, bend=bend)
@@ -461,21 +382,9 @@ def test_border_targets_sit_on_the_faces_and_inside_the_body():
 
 
 def test_short_boundary_crossing_stub_survives_min_length():
-    """Why per-block min_length does NOT need moving to stage 2.
-
-    The worry was that a branch long overall looks short inside one block, so
-    per-block rejection would delete long-range cable. Border targets remove it:
-    anything crossing a face has a contact region there, so it gets a MANDATORY
-    target exempt from min_length and is traced regardless of its length in this
-    block. min_length then only prunes branches wholly interior to the block —
-    which is what it is for.
-
-    Geometry: a trunk running near the y-max face with a ~4-voxel spur poking
-    through it, comfortably under min_length=10. The spur has to be short *and*
-    attached, which is why the trunk sits close to the face — an earlier version put
-    the trunk far away, making the spur 12 voxels, and the vacuity guard below
-    caught it.
-    """
+    """A branch crossing a block face gets a mandatory border target, exempt from
+    min_length, so per-block rejection cannot delete long-range cable. Here a ~4-voxel
+    spur through the y-max face survives min_length=10 only with fix_borders."""
     m = np.zeros((40, 30, 30), dtype=np.uint8)
     zz, yy, xx = np.indices(m.shape)
     m[(zz >= 5) & (zz < 35) & ((yy - 25) ** 2 + (xx - 15) ** 2 <= 9)] = 1   # trunk
@@ -497,14 +406,8 @@ def test_short_boundary_crossing_stub_survives_min_length():
 
 
 def test_keep_single_object_prevents_silent_body_loss():
-    """A body shorter than min_length must survive, not vanish.
-
-    NeuTu's keepingSingleObject: if min_length rejects every branch, keep the
-    longest. Without it a small body disappears from stage 1 with no record —
-    caught by the end-to-end op writing 1 of 2 bodies. That bypasses the pipeline's
-    dust reporting, which is where short components are supposed to be accounted
-    for.
-    """
+    """NeuTu's keepingSingleObject: if min_length rejects every branch, keep the longest,
+    so a small body is not lost from stage 1 without a record."""
     m = np.zeros((20, 20, 20), dtype=np.uint8)
     zz, yy, xx = np.indices(m.shape)
     m[((zz - 10) ** 2 + (yy - 10) ** 2 + (xx - 10) ** 2) <= 9] = 1   # tiny blob

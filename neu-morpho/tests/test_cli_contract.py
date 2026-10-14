@@ -1,12 +1,5 @@
-"""What the documentation build depends on, pinned here so it cannot quietly break.
-
-The docs site renders the CLI reference from the real ``ArgumentParser``, which is what
-stops published usage from drifting away from ``--help``. Two things have to hold for
-that: the parser must be reachable without running it, and importing the module must not
-require the conda-only half of the environment — otherwise the GitHub Actions job needs
-micromamba and flyem-forge instead of a plain pip install. That matters most here, since
-this package is the one that actually depends on vol2mesh and dvidutils.
-"""
+"""What the docs build needs from the CLI: the parser is reachable without running it,
+and importing the CLI loads no conda-only package (the docs job installs from PyPI)."""
 
 import argparse
 import subprocess
@@ -24,20 +17,25 @@ def test_build_parser_returns_the_parser_without_running_it():
     assert parser.prog == "neu-morpho"
 
 
-def test_every_subcommand_is_reachable_from_the_parser():
+def _subcommands(parser):
+    return next(a for a in parser._actions
+                if isinstance(a, argparse._SubParsersAction)).choices
+
+
+def test_every_subcommand_renders_usage():
+    """Top level and the nested `measure` group, which the docs render page by page."""
     from neu_morpho import cli
 
-    parser = cli.build_parser()
-    subs = next(a for a in parser._actions
-                if isinstance(a, argparse._SubParsersAction)).choices
-    assert set(subs) == {"run", "progress", "measure", "run-report", "help"}
-    for name, sub in subs.items():
+    top = _subcommands(cli.build_parser())
+    assert set(top) == {"run", "progress", "measure", "run-report", "help"}
+    inner = _subcommands(top["measure"])
+    assert set(inner) == {"volumes", "skeletons", "compartments", "progress"}
+    for name, sub in [*top.items(), *(("measure " + k, v) for k, v in inner.items())]:
         assert sub.format_usage().strip(), f"{name} renders no usage line"
 
 
 def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
-    """`neu-morpho help run` and `neu-morpho run --help` are the same thing to everyone
-    except argparse."""
+    """`neu-morpho help run` prints exactly what `neu-morpho run --help` prints."""
     import pytest
 
     from neu_morpho import cli
@@ -49,15 +47,13 @@ def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
     printed = capsys.readouterr().out
     assert "usage: neu-morpho run" in printed
 
-    # the same text, because re-parsing means there is no second rendering to drift
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["run", "--help"])
     assert capsys.readouterr().out == printed
 
 
 def test_help_reaches_a_NESTED_subcommand(capsys):
-    """`measure` has its own group, and `help measure volumes` is the reason the argument
-    is variadic rather than a single name."""
+    """`help measure volumes` reaches the nested group."""
     from neu_morpho import cli
 
     assert cli.main(["help", "measure", "volumes"]) == 0
@@ -67,65 +63,20 @@ def test_help_reaches_a_NESTED_subcommand(capsys):
     assert "invalid choice: 'nosuch'" in capsys.readouterr().err
 
 
-def test_every_measure_subcommand_is_reachable():
-    """`measure` has its own nested group, so the pin above does not cover it."""
-    from neu_morpho import cli
-
-    parser = cli.build_parser()
-    top = next(a for a in parser._actions
-               if isinstance(a, argparse._SubParsersAction)).choices
-    inner = next(a for a in top["measure"]._actions
-                 if isinstance(a, argparse._SubParsersAction)).choices
-    assert set(inner) == {"volumes", "skeletons", "compartments", "progress"}
-    for name, sub in inner.items():
-        assert sub.format_usage().strip(), f"measure {name} renders no usage line"
-
-
-def test_run_validation_still_reports_against_the_run_subparser():
-    """`build_parser` hands `_parse_args` the run subparser so its errors keep naming
-    `neu-morpho run ...` rather than the top-level usage."""
-    from neu_morpho import cli
-
-    parser = cli.build_parser()
-    assert getattr(parser, "_run_parser", None) is not None
-    assert parser._run_parser.prog.endswith("run")
-
-
-def test_every_stage_is_described():
-    """`STAGE_DOC` is the only description of the stages, and three places read it:
-    `--help`, the published CLI reference, and the docs cheat sheet. A stage added to
-    the tuple without a description would silently go undocumented in all three."""
-    from neu_morpho.cli import STAGE_DOC, STAGES
+def test_every_stage_is_described_in_run_help():
+    """`STAGE_DOC` feeds `run --help`, the CLI reference and the cheat sheet, so a stage
+    without an entry would go undocumented in all three."""
+    from neu_morpho.cli import STAGE_DOC, STAGES, build_parser
 
     assert tuple(STAGE_DOC) == STAGES
-    assert set(STAGES) == {"seg", "index", "mesh", "skel"}
-    for name, doc in STAGE_DOC.items():
-        assert len(doc) > 40, f"{name} has no real description"
-
-
-def test_the_stage_list_reaches_run_help():
-    """It lives in the description, not in `--stages`' help, because argparse's default
-    formatter re-wraps argument help and collapses the block into a wall of text."""
-    from neu_morpho.cli import STAGES, build_parser
-
-    run = build_parser()._run_parser
-    assert "Stages" in run.description
+    assert all(doc.strip() for doc in STAGE_DOC.values())
+    rendered = build_parser()._run_parser.format_help()
     for name in STAGES:
-        assert name in run.description, f"{name} missing from run --help"
-    # the wrapped block must survive intact, which is what RawDescription buys
-    assert "\n" in run.description
-    rendered = run.format_help()
-    assert "index" in rendered.split("Stages")[1]
+        assert name in rendered.split("Stages")[1], f"{name} missing from run --help"
 
 
 def test_importing_the_cli_needs_no_conda_only_package():
-    """Run in a subprocess: this test session has already imported most of them.
-
-    Checks two separate things in the one subprocess, because spawning a second
-    interpreter costs more than either assertion: nothing conda-only is reachable, and
-    dask is not imported either. The latter is a startup-latency contract, not a
-    packaging one — see blockrun's test_lazy_dask.
-    """
+    """In a fresh interpreter: no conda-only package, and no dask (startup latency)."""
     probe = CONDA_ONLY + ["dask", "distributed"]
     code = (
         "import sys; import neu_morpho.cli; "

@@ -19,7 +19,7 @@ def _write_seg(path, vol):
 def test_index_matches_ground_truth(tmp_path):
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 100            # 8^3 = 512 voxels, bbox [4:12]
-    vol[20:28, 6:10, 6:10] = 200           # 8*4*4 = 128 voxels, spans 2 blocks in z? no (20:28 in block 1)
+    vol[20:28, 6:10, 6:10] = 200           # 8*4*4 = 128 voxels, inside block 1
     vol[12:20, 24:28, 24:28] = 300         # crosses z-block boundary (16)
     src = str(tmp_path / "seg.zarr")
     _write_seg(src, vol)
@@ -28,7 +28,7 @@ def test_index_matches_ground_truth(tmp_path):
     summary = index_segments({"backend": "zarr3", "path": src}, db_path,
                              scan_scale=0, scan_voxel_size=(8, 8, 8),
                              block_shape=(16, 16, 16), client=None)
-    assert summary["n_bodies"] == 3
+    assert summary["n_bodies"] == 3 and summary["n_kept"] is None
 
     db = MetricsDB(db_path)
     # bbox is full-res voxels (scan_scale 0 -> factor 1); half-open max
@@ -41,8 +41,8 @@ def test_index_matches_ground_truth(tmp_path):
 
 
 def test_keep_records_only_the_listed_bodies_but_records_them_in_full(tmp_path):
-    """`keep` filters the recorded rows, not the blocks — so a kept body crossing a
-    block boundary is still complete. Filtering blocks instead would truncate it."""
+    """`keep` filters recorded rows, not blocks, so a kept body crossing a block
+    boundary is still complete."""
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 100
     vol[20:28, 6:10, 6:10] = 200
@@ -64,26 +64,9 @@ def test_keep_records_only_the_listed_bodies_but_records_them_in_full(tmp_path):
         "SELECT voxel_count FROM bodies WHERE body_id=300").fetchone()[0] == 8 * 4 * 4
 
 
-def test_keep_none_records_everything(tmp_path):
-    vol = np.zeros((32, 32, 32), np.uint64)
-    vol[4:12, 4:12, 4:12] = 100
-    vol[20:28, 6:10, 6:10] = 200
-    src = str(tmp_path / "seg.zarr")
-    _write_seg(src, vol)
-    db_path = str(tmp_path / "m.sqlite")
-    summary = index_segments({"backend": "zarr3", "path": src}, db_path,
-                             scan_scale=0, scan_voxel_size=(8, 8, 8),
-                             block_shape=(16, 16, 16), keep=None, client=None)
-    assert summary["n_bodies"] == 2 and summary["n_kept"] is None
-
-
 def test_index_fills_the_bbox_of_a_row_the_skel_stage_created(tmp_path):
-    """Indexing AFTER skeletonizing must still record bboxes.
-
-    The skel stage creates rows through update_body with no bbox, and SQLite's scalar
-    `min(NULL, 5)` is NULL — so a bare min/max merge left those bodies with a NULL bbox
-    forever while voxel_count accumulated correctly. Half-populated and silent.
-    """
+    """Indexing after skeletonizing still records bboxes. The skel stage creates rows
+    with a NULL bbox, and SQLite's `min(NULL, 5)` is NULL."""
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 100
     src = str(tmp_path / "seg.zarr")

@@ -1,10 +1,5 @@
-"""Exporting the ROI's labels as a precomputed volume for inspection.
-
-The load-bearing property is the **offset**: the copy must declare where it sits
-in the source volume, or neuroglancer draws it at the origin while the meshes and
-skeletons sit tens of microns away — the alignment bug this package exists to
-avoid, reintroduced at the viewing layer.
-"""
+"""Exporting the ROI's labels as a precomputed volume. The copy must declare its
+offset in the source, or neuroglancer draws it at the origin, away from the meshes."""
 
 import json
 import os
@@ -39,7 +34,7 @@ def _write_seg(path, vol, voxel=(32.0, 32.0, 32.0)):
     return {"backend": "zarr3", "path": path}
 
 
-def test_export_carries_the_voxel_offset(tmp_path):
+def test_export_carries_the_voxel_offset_and_the_labels_land_on_the_source(tmp_path):
     vol = np.zeros((128, 128, 128), np.uint64)
     vol[70:90, 70:90, 70:90] = 5
     src = _write_seg(str(tmp_path / "seg.zarr"), vol)
@@ -62,28 +57,16 @@ def test_export_carries_the_voxel_offset(tmp_path):
     files = os.listdir(os.path.join(out, s0["key"]))
     assert files and all(len(f.split("_")) == 3 for f in files)
 
-
-def test_exported_labels_land_at_the_same_nm_as_the_source(tmp_path):
-    """Read the copy back through its own offset and confirm the labels coincide."""
-    vol = np.zeros((128, 128, 128), np.uint64)
-    vol[70:90, 70:90, 70:90] = 5
-    src = _write_seg(str(tmp_path / "seg.zarr"), vol)
-    out = str(tmp_path / "segmentation")
-    export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), roi_voxel_size=(32.0, 32.0, 32.0),
-                   block_shape=(64, 64, 64), scale_indices=[0], encoding="raw", client=None)
-
+    # read back through its own offset: the copy's local [0:64] is the source's [64:128]
     from neu_vol.backends.base import open_backend
     be = open_backend({"backend": "neuroglancer_precomputed", "path": out, "scale_index": 0})
     got = be.read_region((slice(0, 64), slice(0, 64), slice(0, 64)))
-    # the copy's local [0:64] is the source's [64:128]
     np.testing.assert_array_equal(got, vol[64:128, 64:128, 64:128])
     assert got[6:26, 6:26, 6:26].min() == 5      # the cube, at its shifted position
 
 
 def _volume_with_subresources(tmp_path):
     """A precomputed segmentation volume with mesh/ and skeleton/ inside it."""
-    import numpy as np
-
     from neu_morpho.config import MeshConfig
     from neu_morpho.precomputed import (write_body_skeleton, write_mesh_info,
                                            write_skeleton_info)
@@ -137,8 +120,6 @@ def test_link_subresources_rejects_a_wrong_or_missing_target(tmp_path):
 
 
 def test_link_subresources_refuses_an_image_volume(tmp_path):
-    import numpy as np
-
     from neu_morpho.precomputed import link_subresources
 
     out = _volume_with_subresources(tmp_path)
@@ -194,7 +175,6 @@ def test_align_can_be_turned_off(tmp_path):
 
 def _write_pyramid(tmp_path, levels=3):
     """A precomputed source with `levels` scales, 2x isotropic, distinct labels."""
-    import numpy as np
     from neu_vol.backends.tensorstore import TensorStoreBackend
     from neu_vol.profiles import precomputed_create_spec
 
@@ -215,11 +195,7 @@ def _write_pyramid(tmp_path, levels=3):
 
 
 def test_export_copies_every_scale_with_scaled_offsets(tmp_path):
-    """All source levels are copied, and each carries its own correct offset.
-
-    The offsets must scale with resolution: get that wrong and coarse levels sit
-    at the wrong place, which looks like a rendering glitch when you zoom out.
-    """
+    """Every source level is copied, each with an offset scaled to its resolution."""
     from neu_vol.backends.base import open_backend
 
     src = _write_pyramid(tmp_path, levels=3)
@@ -307,16 +283,11 @@ def _flaky_open(monkeypatch, error: str, fail_on: int):
 
 
 def test_copy_block_survives_a_transient_store_failure(tmp_path, monkeypatch):
-    """A TLS reset mid-copy must not end a run that has already copied terabytes.
-
-    Stage-1 blocks are fail-fast by design, but a copy block feeds no aggregation
-    and rewriting the same voxels is idempotent, so it retries instead.
-    """
+    """A transient store error (here a TLS reset) is retried: a copy block feeds no
+    aggregation, and rewriting the same voxels is idempotent."""
     from neu_morpho.ops.export_roi_seg import _copy_block
 
-    # What is under test is that the copy retries at all, not how long it waits —
-    # the backoff schedule itself is neu-vol's test_retry. Left real, the
-    # default 1 s base delay is spent sleeping in the one test that reaches it.
+    # the backoff schedule is neu-vol's to test; do not sleep here
     monkeypatch.setattr("neu_vol.retry.time.sleep", lambda *_: None)
     src, dst, block = _one_block_and_specs(tmp_path)
     calls = _flaky_open(monkeypatch,
@@ -344,14 +315,8 @@ def test_a_403_during_copy_is_not_retried(tmp_path, monkeypatch):
 
 
 def test_empty_blocks_write_no_objects(tmp_path):
-    """'empty' describes the DATA, not the action — TensorStore elides fill chunks.
-
-    So an all-zero block creates no object at all, and neuroglancer reads the
-    absent chunk as zero. This is why there is no point skipping the write; the
-    cost worth avoiding is the READ.
-    """
-    import os
-
+    """An all-zero block writes no object (TensorStore elides fill chunks), and
+    neuroglancer reads the absent chunk as zero."""
     vol = np.zeros((64, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 3            # only the first 32-block has labels
     src = _write_seg(str(tmp_path / "seg.zarr"), vol)

@@ -1,9 +1,5 @@
-"""Per-body skeleton measurements.
-
-The properties worth asserting are the ones that would otherwise be wrong *quietly*:
-diameter weighted by cable rather than by node, missing radii coming back as NaN rather
-than zero, and every number surviving an `exclude()` that cuts the skeleton in half.
-"""
+"""Per-body skeleton measurements: diameter weighted by cable, missing radii as NaN, and
+numbers that survive an `exclude()`."""
 
 import numpy as np
 import pytest
@@ -30,7 +26,7 @@ def test_cable_length_is_the_sum_of_edge_lengths():
 
 
 def test_cable_length_of_an_edgeless_skeleton_is_zero_not_nan():
-    """A body whose skeleton is all dust has zero cable, which is a real answer."""
+    """Zero cable is a real answer, not NaN."""
     bare = Skeleton(np.zeros((3, 3)), np.zeros((0, 2), dtype=np.int64))
     assert cable_length_nm(bare) == 0.0
 
@@ -39,9 +35,8 @@ def test_cable_length_of_an_edgeless_skeleton_is_zero_not_nan():
 # diameter — the weighting is the point
 # --------------------------------------------------------------------------- #
 def test_diameter_is_weighted_by_cable_not_by_node_count():
-    """Node density is a property of the skeletonizer, so an unweighted mean answers
-    the wrong question. Here a thin arm is finely noded and a thick arm coarsely: the
-    unweighted vertex mean leans thin, the length-weighted mean does not."""
+    """A finely noded thin arm and a coarsely noded thick arm: the per-node mean leans
+    thin, the cable-weighted mean does not."""
     # thin arm: 10 nodes over 90 nm at r=1 ; thick arm: 2 nodes over 900 nm at r=100
     thin = np.stack([np.arange(10) * 10.0, np.zeros(10), np.zeros(10)], axis=1)
     thick = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 900.0]])
@@ -66,8 +61,7 @@ def test_diameter_is_twice_the_radius():
 
 
 def test_p90_describes_the_twigs_and_p99_the_trunk():
-    """A neuron's thick part is always a small LENGTH fraction, so it sits above p90.
-    Reported because p90 not moving when a soma is excluded is otherwise surprising."""
+    """The thick part of a neuron is a small share of its cable, so it sits above p90."""
     rng = np.random.default_rng(0)
     twig_d = rng.normal(144.0, 20.0, 2000)
     trunk_d = rng.normal(600.0, 60.0, 40)
@@ -84,8 +78,7 @@ def test_p90_describes_the_twigs_and_p99_the_trunk():
 
 
 def test_missing_radii_give_nan_not_zero():
-    """Zero would read as 'infinitely thin' inside an average, silently. NaN fails
-    every comparison instead, so it cannot pass for a small number."""
+    """NaN, not zero, which would average in as 'infinitely thin'."""
     bare = Skeleton(np.array([[0.0, 0, 0], [0.0, 0, 100.0]]), np.array([[0, 1]]))
     stats = diameter_stats(bare)
     assert all(np.isnan(v) for v in stats.values())
@@ -103,29 +96,16 @@ def test_a_skeleton_of_only_zero_length_edges_has_no_diameter():
 # --------------------------------------------------------------------------- #
 # weighted_quantile
 # --------------------------------------------------------------------------- #
-def test_weighted_quantile_matches_the_unweighted_one_at_equal_weights():
-    v = np.array([1.0, 2.0, 3.0, 4.0, 100.0])
-    got = weighted_quantile(v, np.ones_like(v), [0.5])
-    assert got[0] == pytest.approx(np.median(v))
-
-
-def test_the_weighted_median_is_a_step_not_an_interpolation():
-    """The question is "half the cable is thinner than what", so the answer must be a
-    diameter that some cable actually has. Interpolating between a sparse thin sample and
-    a dominant thick one returns a value nothing measured — 180 here, when 91% of the
-    cable is at 200."""
-    got = weighted_quantile([2.0, 200.0], [90.0, 900.0], [0.5])
-    assert got[0] == 200.0
-
-
-def test_a_single_sample_is_its_own_every_quantile():
-    got = weighted_quantile([42.0], [1.0], [0.0, 0.5, 1.0])
-    assert got.tolist() == [42.0, 42.0, 42.0]
-
-
-def test_zero_weights_do_not_count():
-    got = weighted_quantile([1.0, 1000.0], [1.0, 0.0], [0.5])
-    assert got[0] == pytest.approx(1.0)
+@pytest.mark.parametrize("values, weights, qs, expected", [
+    ([1.0, 2.0, 3.0, 4.0, 100.0], [1] * 5, [0.5], [3.0]),   # equal weights: the median
+    ([2.0, 200.0], [90.0, 900.0], [0.5], [200.0]),          # a step, not an interpolation
+    ([42.0], [1.0], [0.0, 0.5, 1.0], [42.0] * 3),           # a single sample
+    ([1.0, 1000.0], [1.0, 0.0], [0.5], [1.0]),              # zero weight does not count
+], ids=["equal-weights", "step", "single", "zero-weight"])
+def test_weighted_quantile(values, weights, qs, expected):
+    """The weighted median is a value some cable actually has, never one interpolated
+    between a sparse thin sample and a dominant thick one."""
+    assert weighted_quantile(values, weights, qs).tolist() == pytest.approx(expected)
 
 
 def test_weighted_quantile_refuses_negative_weights():
@@ -154,8 +134,7 @@ def test_a_cone_matches_the_cone_formula():
 
 
 def test_volume_scales_as_the_square_of_the_radius():
-    """Which is why the inscribed-radius bias is doubled in a volume, and why this
-    number is a lower bound rather than the volume."""
+    """So an inscribed-radius bias is doubled in a volume."""
     a = frustum_volume_nm3(_rod(n=2, spacing=100.0, radius=10.0))
     b = frustum_volume_nm3(_rod(n=2, spacing=100.0, radius=20.0))
     assert b / a == pytest.approx(4.0)
@@ -164,37 +143,29 @@ def test_volume_scales_as_the_square_of_the_radius():
 # --------------------------------------------------------------------------- #
 # topology
 # --------------------------------------------------------------------------- #
-def test_a_rod_has_two_tips_and_no_branches():
-    t = topology(_rod(n=5))
-    assert (t["n_tips"], t["n_branches"], t["n_components"]) == (2, 0, 1)
+_Y = Skeleton(np.array([[0.0, 0, 0], [100.0, 0, 0], [200.0, 100.0, 0], [200.0, -100.0, 0]]),
+              np.array([[0, 1], [1, 2], [1, 3]]))
+_TWO_PIECES = Skeleton(np.array([[0.0, 0, 0], [100.0, 0, 0], [5000.0, 0, 0], [5100.0, 0, 0]]),
+                       np.array([[0, 1], [2, 3]]))
+_BARE = Skeleton(np.zeros((3, 3)), np.zeros((0, 2), dtype=np.int64))
 
 
-def test_a_y_has_three_tips_and_one_branch():
-    v = np.array([[0.0, 0, 0], [100.0, 0, 0], [200.0, 100.0, 0], [200.0, -100.0, 0]])
-    e = np.array([[0, 1], [1, 2], [1, 3]])
-    t = topology(Skeleton(v, e))
-    assert (t["n_tips"], t["n_branches"]) == (3, 1)
-
-
-def test_disconnected_pieces_are_counted_as_components():
-    """Bodies here are genuinely fragmented, verified against the raw array — so more
-    than one component is correct reporting, not a defect."""
-    v = np.array([[0.0, 0, 0], [100.0, 0, 0], [5000.0, 0, 0], [5100.0, 0, 0]])
-    e = np.array([[0, 1], [2, 3]])
-    assert topology(Skeleton(v, e))["n_components"] == 2
-
-
-def test_isolated_vertices_each_count_as_a_component():
-    bare = Skeleton(np.zeros((3, 3)), np.zeros((0, 2), dtype=np.int64))
-    assert topology(bare)["n_components"] == 3
+@pytest.mark.parametrize("skel, tips, branches, components", [
+    (_rod(n=5), 2, 0, 1),
+    (_Y, 3, 1, 1),
+    (_TWO_PIECES, 4, 0, 2),          # fragmented bodies are real here, not a defect
+    (_BARE, 0, 0, 3),                # isolated vertices each count as a component
+], ids=["rod", "y", "two-pieces", "isolated-vertices"])
+def test_topology(skel, tips, branches, components):
+    t = topology(skel)
+    assert (t["n_tips"], t["n_branches"], t["n_components"]) == (tips, branches, components)
 
 
 # --------------------------------------------------------------------------- #
 # the row, and exclusion
 # --------------------------------------------------------------------------- #
 def test_measure_skeleton_labels_what_was_measured():
-    """The two cohorts are not measured the same way, so a row that does not say which
-    variant it is cannot be compared safely."""
+    """Each row records its dataset and variant, since variants are not comparable."""
     row = measure_skeleton(_rod(), variant="minus_nucleus", body_id=7, dataset="male-cns")
     assert row["dataset"] == "male-cns" and row["body_id"] == 7
     assert row["variant"] == "minus_nucleus"
@@ -203,8 +174,7 @@ def test_measure_skeleton_labels_what_was_measured():
 
 
 def test_excluding_a_region_reduces_cable_and_the_row_still_measures():
-    """The whole point of the exclusion path: measure the same body twice, with and
-    without a compartment, and get two comparable rows."""
+    """The same body measured with and without a compartment gives comparable rows."""
     skel = _rod(n=11, spacing=100.0, radius=10.0)          # 0..1000 nm, 1000 nm cable
     whole = measure_skeleton(skel, variant="all")
     # drop the first 300 nm, as a compartment mask would

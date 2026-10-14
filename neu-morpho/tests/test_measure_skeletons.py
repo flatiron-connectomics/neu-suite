@@ -62,8 +62,7 @@ def test_cable_length_and_columns(tmp_path):
 
 
 def test_a_missing_body_is_absent_and_terminal(tmp_path):
-    """Absence is not failure: an unpublished body will not grow a skeleton, so
-    retrying it forever is waste. `failed` is the state that gets another attempt."""
+    """Absence is terminal and not retried; `failed` is the state that is retried."""
     vol = _write_skeletons(tmp_path, {100: _line()})
     db_path = str(tmp_path / "m.sqlite")
     out = sweep_skeletons(vol, db_path, bodies=[100, 999], client=None)
@@ -77,8 +76,7 @@ def test_a_missing_body_is_absent_and_terminal(tmp_path):
 
 
 def test_one_bad_body_does_not_kill_the_run(tmp_path):
-    """Per-BODY faults isolate (invariant 5). A per-block task fails fast because a
-    skipped block truncates every body in it; that reasoning does not apply here."""
+    """Per-body failures are isolated and recorded, unlike per-block ones."""
     vol = _write_skeletons(tmp_path, {100: _line(), 200: _line()})
     from neu_vol import location
     location.write_bytes(vol, b"not a skeleton", "skeleton", "300")
@@ -97,7 +95,7 @@ def test_one_bad_body_does_not_kill_the_run(tmp_path):
 
 
 def test_a_centreline_only_source_still_yields_cable(tmp_path):
-    """The published source in the driving comparison has no radii at all."""
+    """A source with no radii still gives cable length, and NaN radius."""
     vol = _write_skeletons(tmp_path, {100: _line(4, 100.0)}, radii=False)
     body, status, row = _measure_one(100, volume=vol, skeleton_dir="skeleton",
                                      require_radii=False)

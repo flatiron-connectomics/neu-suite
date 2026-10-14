@@ -1,9 +1,5 @@
-"""End-to-end: synthetic volume -> skel-chunk -> skel-fuse -> precomputed skeletons.
-
-The load-bearing case is a body spanning several blocks: its fragments must weld
-into ONE component covering the full extent (that is what ``fix_borders`` +
-``join_close_components`` buy us), not a pile of disconnected block-length stubs.
-"""
+"""End to end: skel-chunk -> skel-fuse -> precomputed skeletons. A body spanning several
+blocks must weld into one component covering its full extent."""
 
 import os
 from dataclasses import replace
@@ -80,39 +76,13 @@ def test_skeletonize_end_to_end(tmp_path):
     assert 300 <= bz.min() and bz.max() <= 400  # block 1: z voxels 40..48 -> 320..376 nm
 
 
-def test_tick_removal_runs_after_the_seam_join(tmp_path):
-    """Order invariant: postprocess must join fragments BEFORE dropping short branches.
+def test_ticks_are_removed_after_the_seam_join_and_metrics_land_in_db(tmp_path):
+    """With tick removal on, the rod is still one component over all three blocks.
 
-    ``fix_borders`` makes a fragment reach the seam via a short mandatory spur off its
-    trunk whenever the trunk's own endpoint is elsewhere. That spur is exactly what a
-    tick filter targets — so if tick removal ever ran first, it would amputate the
-    reaching branches and the body would fuse into disconnected block-length stubs
-    while every status still read "written". Nothing else here would notice: the
-    default ``postprocess_tick_nm`` is 500 nm and ``_cfg`` turns it off.
-    """
-    cfg = replace(_cfg(), postprocess_tick_nm=500.0)
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    summary = skeletonize_segments(src, out, cfg, db_path=None, client=None)
-
-    rod = _load(summary["out_dir"], 7)
-    assert len(rod.components()) == 1, "tick removal broke the seam"
-    z = rod.vertices[:, 2]
-    assert z.min() <= 8 and z.max() >= 744      # still spans all three blocks
-
-
-def test_metrics_land_in_db(tmp_path):
-    """Topology of the fused rod reaches the DB — with tick removal ON.
-
-    ``_cfg`` disables postprocessing so the other tests can see raw geometry, but an
-    "unbranched rod" claim only survives that for a tracer whose main path happens to
-    end exactly on the face centre. ``fix_borders`` makes the centre of each contact
-    area a *mandatory* target, so when the natural TEASAR extremum is elsewhere — for
-    a square cross-section it is the corner, maximally far — the fragment carries a
-    1-voxel spur from its trunk out to the seam point. That is the mechanism working,
-    not failing: the seam join runs BEFORE tick removal, so the spur does its job and
-    is then cleaned up. Production removes 94k of them over a 30-block ROI, 3.2% of
-    cable. Assert against that order, not against postprocessing being off.
+    `fix_borders` reaches each seam through a short spur, which is exactly what a tick
+    filter removes. So the seam join must run before tick removal; the other way round,
+    the body fuses into block-length stubs while every status reads "written". The
+    spurs are then cleaned up, so the DB sees an unbranched rod.
     """
     from neu_morpho.metrics_db import MetricsDB
 
@@ -120,7 +90,12 @@ def test_metrics_land_in_db(tmp_path):
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
-    skeletonize_segments(src, out, cfg, db_path=db_path, client=None)
+    summary = skeletonize_segments(src, out, cfg, db_path=db_path, client=None)
+
+    rod = _load(summary["out_dir"], 7)
+    assert len(rod.components()) == 1, "tick removal broke the seam"
+    z = rod.vertices[:, 2]
+    assert z.min() <= 8 and z.max() >= 744      # still spans all three blocks
 
     db = MetricsDB(db_path)
     row = db.con.execute(
@@ -161,9 +136,7 @@ def test_resume_skips_done_and_stage2_reuses_fragments(tmp_path):
 
 
 def test_fuse_body_welds_seams_not_just_concatenates():
-    """Guard the property the whole design rests on: fragments become one tree."""
-    from neu_morpho.skeleton import fuse_body, skeletonize_block
-
+    """Fragments become one tree, with the seam edges added."""
     cfg = _cfg()
     vol = _volume()
     frags = [skeletonize_block(vol[z0:z0 + 32], (z0, 0, 0), cfg)[7] for z0 in (0, 32, 64)]
@@ -185,14 +158,9 @@ def _split_body():
 
 
 def test_default_join_does_not_bridge_a_segmentation_split():
-    """The default radius is seam-scale: distant pieces stay apart, and stay PRESENT.
-
-    An unbounded join would connect them with one straight edge between the
-    nearest vertex pair — inventing hundreds of nm of cable that no biology
-    produced, and inflating cable_length_nm for exactly the bodies whose
-    segmentation is least trustworthy.
-    """
-    from neu_morpho.skeleton import fuse_body, join_radius_nm, skeletonize_block
+    """The default join radius is seam-scale: distant pieces of a split stay apart and
+    present. An unbounded join would invent a straight edge's worth of cable."""
+    from neu_morpho.skeleton import join_radius_nm
 
     cfg = _cfg()
     assert join_radius_nm(cfg) == 16.0                  # 2 x 8 nm voxel
@@ -205,9 +173,7 @@ def test_default_join_does_not_bridge_a_segmentation_split():
     unbounded = fuse_body(frags, replace(cfg, join_radius_nm=float("inf")), body_id=7)
     assert len(unbounded.components()) == 1
 
-    # An unbounded join adds ONE straight edge between the nearest vertex pair, so
-    # the cable it invents is exactly that pair's separation. Measure the gap from
-    # the unjoined skeleton rather than asserting a remembered ratio.
+    # the invented cable is exactly the nearest-pair gap between the two pieces
     comps = fused.components()
     ca, cb = (np.asarray(c.vertices, float) for c in comps)
     gap = float(np.linalg.norm(ca[:, None, :] - cb[None, :, :], axis=-1).min())
@@ -216,8 +182,6 @@ def test_default_join_does_not_bridge_a_segmentation_split():
 
 def test_join_radius_zero_defers_to_postprocess():
     """radius=0 skips the explicit join; postprocess's own join still welds seams."""
-    from neu_morpho.skeleton import fuse_body, skeletonize_block
-
     cfg = replace(_cfg(), join_radius_nm=0)
     vol = _volume()
     frags = [skeletonize_block(vol[z0:z0 + 32], (z0, 0, 0), cfg)[7] for z0 in (0, 32, 64)]
@@ -246,106 +210,62 @@ def _arbor_frags(cfg):
 
 
 def test_default_tick_threshold_runs():
-    """Regression: the shipped defaults must actually survive postprocess.
-
-    kimimaro's compiled remove_ticks rejects int64 edges / float64 vertices, and
-    both arise normally (skeletonize returns int64 edges; join_close_components
-    concatenates more). Every earlier test set tick=0, which short-circuits
-    remove_ticks entirely — so the shipped tick default was never executed.
-    """
+    """The shipped (non-zero) tick default runs through postprocess, whose compiled
+    remove_ticks rejects int64 edges and float64 vertices."""
     # 32 nm voxels so the ~88-voxel trunk (2816 nm) clears any sane dust default
     cfg = SkeletonConfig(anisotropy=(32.0, 32.0, 32.0), block_shape=(32, 32, 32),
                          const=30.0, dust_threshold=0)
-    # Deliberately not pinning the values — they are tuned per dataset. What must
-    # hold is that the shipped tick default is non-zero, i.e. remove_ticks really
-    # runs; a zero default would short-circuit it and re-hide the dtype crash.
-    assert cfg.postprocess_tick_nm > 0
+    assert cfg.postprocess_tick_nm > 0          # zero would skip remove_ticks entirely
 
     fused = fuse_body(_arbor_frags(cfg), cfg, body_id=7)      # must not raise
     assert fused is not None and len(fused.vertices) > 0
     assert fused.edges.dtype == np.uint32 and fused.vertices.dtype == np.float32
 
 
-def test_the_fusion_chain_preserves_the_dtype_contract():
-    """Every step of dust -> loops -> join -> ticks keeps uint32 edges, float32 vertices.
-
-    This replaces a tripwire that asserted the opposite. Until **osteoid 0.7.3**,
-    ``Skeleton.consolidate`` promoted edges to int64, and ``remove_loops`` ends in a
-    consolidate — so ``remove_ticks``, which reaches compiled code declaring
-    ``float`` / ``uint32_t`` buffers, raised ``Buffer dtype mismatch`` at any non-zero
-    tick threshold. ``kimimaro.skeletonize`` handed back int64 edges for the same
-    reason. Both are fixed upstream; the culprit was osteoid, not kimimaro, which is
-    pinned at 5.8.4 either side of the change.
-
-    ``normalize_dtypes`` stays, as a guard rather than a repair: it tests each dtype
-    before casting, so it is ~2 us on an already-correct skeleton, and what it protects
-    is the precomputed skeleton encoder downstream — invariant SPEC-VS-VIEWER, where a
-    non-float32 vertex attribute makes neuroglancer reject the entire layer.
-
-    The inlining in ``fuse_body`` is NOT affected by any of this and stays: it exists
-    for the seam join and the per-step accounting, neither of which
-    ``kimimaro.postprocess`` offers.
-    """
-    import kimimaro
-    from kimimaro.post import remove_dust, remove_loops
-
+def test_the_fusion_chain_keeps_uint32_edges_and_float32_vertices():
+    """Fragments and fused skeletons keep the dtypes the compiled postprocess and the
+    precomputed encoder require (needs osteoid >= 0.7.3, which stopped promoting edges
+    to int64 in `consolidate`)."""
     from neu_morpho.skeleton import join_radius_nm, normalize_dtypes
+    import kimimaro
 
     cfg = replace(_cfg(), postprocess_dust_nm=0.0, postprocess_tick_nm=1000.0)
     frags = [skeletonize_block(_volume()[z0:z0 + 32], (z0, 0, 0), cfg)[7]
              for z0 in range(0, 96, 32)]
-    for frag in frags:
-        assert frag.edges.dtype == np.uint32, "skeletonize used to hand back int64"
+    assert all(frag.edges.dtype == np.uint32 for frag in frags)
 
     clean = normalize_dtypes(
         kimimaro.join_close_components(frags, radius=join_radius_nm(cfg)).consolidate())
     assert clean.edges.dtype == np.uint32 and clean.vertices.dtype == np.float32
 
-    # the step that used to break it
-    looped = remove_loops(remove_dust(clean.clone(), 0.0))
-    assert looped.edges.dtype == np.uint32 and looped.vertices.dtype == np.float32
-
-    # ...and the stock entry point, at a non-zero tick threshold
-    stock = kimimaro.postprocess(clean.clone(), dust_threshold=0.0, tick_threshold=1000.0)
-    assert stock.edges.dtype == np.uint32 and stock.vertices.dtype == np.float32
-
     fused = fuse_body(frags, cfg, body_id=7)
-    assert fused is not None
     assert fused.edges.dtype == np.uint32 and fused.vertices.dtype == np.float32
 
 
-def test_fuse_body_matches_kimimaro_postprocess():
-    """fuse_body inlines postprocess's steps to measure them — pin the equivalence.
-
-    Swept over the tick threshold, including the shipped non-zero default. That used
-    to be impossible: stock postprocess raised ``Buffer dtype mismatch`` at any
-    non-zero tick, so the equivalence could only be pinned at tick=0 and the tick path
-    was compared against nothing. osteoid 0.7.3 fixed the dtype, which is what lets
-    this cover the whole chain.
-    """
+@pytest.mark.parametrize("tick_nm", [0.0, 1000.0])
+def test_fuse_body_matches_kimimaro_postprocess(tick_nm):
+    """`fuse_body` inlines postprocess's steps (for the seam join and per-step stats),
+    so it must give the same skeleton as stock `kimimaro.postprocess`."""
     import kimimaro
 
-    from neu_morpho.skeleton import (fuse_body, join_radius_nm, normalize_dtypes,
-                                        skeletonize_block)
+    from neu_morpho.skeleton import join_radius_nm, normalize_dtypes
 
-    for tick_nm in (0.0, 1000.0):
-        cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=tick_nm)
-        frags = _arbor_frags(cfg)
+    cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=tick_nm)
+    frags = _arbor_frags(cfg)
 
-        ours = fuse_body(frags, cfg, body_id=7)
+    ours = fuse_body(frags, cfg, body_id=7)
 
-        joined = kimimaro.join_close_components(frags, radius=join_radius_nm(cfg))
-        theirs = kimimaro.postprocess(normalize_dtypes(joined.consolidate()),
-                                      dust_threshold=cfg.postprocess_dust_nm,
-                                      tick_threshold=cfg.postprocess_tick_nm)
+    joined = kimimaro.join_close_components(frags, radius=join_radius_nm(cfg))
+    theirs = kimimaro.postprocess(normalize_dtypes(joined.consolidate()),
+                                  dust_threshold=cfg.postprocess_dust_nm,
+                                  tick_threshold=cfg.postprocess_tick_nm)
 
-        assert len(ours.vertices) == len(theirs.vertices), f"tick={tick_nm}"
-        assert ours.cable_length() == pytest.approx(theirs.cable_length(), rel=1e-6), \
-            f"tick={tick_nm}"
+    assert len(ours.vertices) == len(theirs.vertices)
+    assert ours.cable_length() == pytest.approx(theirs.cable_length(), rel=1e-6)
 
 
 def test_tick_removal_prunes_twigs():
-    """The inlined tick path does what it should: fewer tips, less cable."""
+    """Tick removal gives fewer tips and less cable."""
     cfg = replace(_cfg(), postprocess_dust_nm=0.0)
     frags = _arbor_frags(cfg)
 
@@ -403,7 +323,7 @@ def test_op_reports_fusion_stats(tmp_path):
 
 
 def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
-    """A body shorter than postprocess_dust_nm is deleted — surface it as "dust"."""
+    """A body shorter than postprocess_dust_nm is deleted and reported as "dust"."""
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[8:24, 14:18, 14:18] = 7          # ~128 nm of cable, well under the threshold
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), vol)
@@ -425,17 +345,10 @@ def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
 # --------------------------------------------------------------------------- #
 # The neutu tracer through the same pipeline
 # --------------------------------------------------------------------------- #
-def test_neutu_tracer_end_to_end_welds_a_spanning_body(tmp_path):
-    """The whole point of fix_borders, checked through the real two-stage op.
-
-    A body spanning three blocks must come back as ONE component covering the full
-    extent. If neutu fragments do not meet at the seams, stage 2's narrow join
-    cannot weld them and this arrives as three stubs.
-
-    min_length is left at its default so the test exercises the interaction that
-    matters: border targets are mandatory and exempt, so a fragment reaches each
-    face even when its cable inside that block is short.
-    """
+def test_neutu_tracer_end_to_end_welds_a_spanning_body_with_nm_radii(tmp_path):
+    """Through the real two-stage op, neutu fragments meet at the seams and weld into
+    one component, and radii come out in nm. `min_length` stays at its default, since
+    border targets are exempt from it."""
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
                        work_dir=str(tmp_path / "out"))
@@ -454,15 +367,6 @@ def test_neutu_tracer_end_to_end_welds_a_spanning_body(tmp_path):
     assert z.min() <= 16 and z.max() >= 736, f"z extent {z.min()}..{z.max()}"
     assert rod.cable_length() > 700
 
-
-def test_neutu_tracer_radii_are_nm_through_the_pipeline(tmp_path):
-    """Units survive stage 1 -> fragment store -> stage 2 -> precomputed."""
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
-                       work_dir=str(tmp_path / "out"))
-    summary = skeletonize_segments(src, out, replace(_cfg(), tracer="neutu"),
-                                   db_path=None, client=None)
-    rod = _load(summary["out_dir"], 7)
     r = np.asarray(rod.radius, float)
     # the rod is 4 voxels across at 8 nm/voxel, so radii are ~8-16 nm, never ~1-2
     assert r.max() >= 6.0, f"radii look like voxels, max {r.max():.2f}"

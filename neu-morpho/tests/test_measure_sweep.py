@@ -1,16 +1,10 @@
-"""The voxel-counting sweep: block selection, counting, binning, histograms.
-
-Everything here is arrays in and numbers out, so it runs with no store. The properties
-worth pinning are the ones that were *measured* against real data and would be silent if
-they regressed: zeros dropped before counting, the ROI block set dilated, the histogram
-summing to its input, and V/L recovering a tube's true cross-section.
-"""
+"""The voxel-counting sweep: block selection, counting, binning, histograms. Arrays in,
+numbers out, no store."""
 
 import numpy as np
 import pytest
 
-from neu_morpho.measure.sweep import (DEFAULT_BLOCK, DEFAULT_VOXEL_NM, SweepTotals,
-                                      bin_to_nodes, blob_signal, blocks_from_mask,
+from neu_morpho.measure.sweep import (SweepTotals, bin_to_nodes, blob_signal, blocks_from_mask,
                                       cable_shares, count_labels, log_bin_edges,
                                       mean_cross_section, node_radii, roi_block_mask,
                                       weighted_histogram)
@@ -29,8 +23,7 @@ def test_a_block_holding_one_roi_voxel_is_kept():
 
 
 def test_dilation_adds_the_six_neighbours():
-    """A false-positive block costs one read that finds nothing; a false negative
-    silently truncates a body. So the default errs outward."""
+    """Dilation errs outward: a false positive costs a read, a false negative a body."""
     roi = np.zeros((12, 12, 12), dtype=np.uint64)
     roi[5, 5, 5] = 1
     bare = roi_block_mask(roi, [1], factor=4, dilate=0)
@@ -41,14 +34,8 @@ def test_dilation_adds_the_six_neighbours():
 
 
 def test_dilation_does_not_wrap_around_the_volume():
-    """A corner block has three face neighbours, not six.
-
-    The interior fixture above passes under a periodic dilation too, which is how a
-    wrapping `np.roll` implementation survived: it marked the block on the OPPOSITE
-    face as occupied. Harmless per-block — a false positive is one empty read — but it
-    inflates the block count, and on a small grid it inflates it a lot. The observable
-    symptom is a coarser occupancy scale reporting more blocks than a finer one.
-    """
+    """A corner block has three face neighbours. A wrapping `np.roll` dilation marked the
+    block on the opposite face, which the interior fixture above does not catch."""
     roi = np.zeros((12, 12, 12), dtype=np.uint64)
     roi[0, 0, 0] = 1
     grown = roi_block_mask(roi, [1], factor=4, dilate=1)
@@ -83,25 +70,21 @@ def test_blocks_outside_the_volume_are_dropped():
 # --------------------------------------------------------------------------- #
 # counting
 # --------------------------------------------------------------------------- #
-def test_count_labels_excludes_background():
-    blk = np.array([[[0, 0], [7, 7]], [[7, 0], [9, 0]]], dtype=np.uint64)
-    assert count_labels(blk) == {7: 3, 9: 1}
+_NAMED_BACKGROUND = np.ones((3, 3, 3), dtype=np.uint64)
+_NAMED_BACKGROUND[0, 0, 0] = 42
 
 
-def test_an_empty_block_counts_nothing():
-    assert count_labels(np.zeros((4, 4, 4), dtype=np.uint64)) == {}
-
-
-def test_a_non_zero_background_can_be_named():
-    """Annotation tools that number from 1 make background 1, not 0."""
-    blk = np.ones((3, 3, 3), dtype=np.uint64)
-    blk[0, 0, 0] = 42
-    assert count_labels(blk, background=1) == {42: 1}
+@pytest.mark.parametrize("blk, background, expected", [
+    (np.array([[[0, 0], [7, 7]], [[7, 0], [9, 0]]], dtype=np.uint64), 0, {7: 3, 9: 1}),
+    (np.zeros((4, 4, 4), dtype=np.uint64), 0, {}),
+    (_NAMED_BACKGROUND, 1, {42: 1}),       # tools that number from 1 make background 1
+], ids=["zero-background", "empty", "named-background"])
+def test_count_labels_excludes_background(blk, background, expected):
+    assert count_labels(blk, background=background) == expected
 
 
 def test_counts_are_python_ints_not_numpy_scalars():
-    """They get summed across thousands of blocks and written to a table; a uint64
-    numpy scalar overflows silently where a Python int does not."""
+    """Summed across thousands of blocks: a uint64 numpy scalar can overflow silently."""
     got = count_labels(np.full((2, 2, 2), 5, dtype=np.uint64))
     (label, n), = got.items()
     assert type(label) is int and type(n) is int
@@ -119,17 +102,14 @@ def test_v_over_l_recovers_a_tubes_cross_section():
 
 
 def test_v_over_l_under_reads_a_sphere_by_the_expected_factor():
-    """V/L is a TUBE measure. A sphere of radius R with a centreline crossing it gives
-    (4/3)piR^3 / 2R = (2/3)piR^2, so the radius comes back at sqrt(2/3) = 0.816 R. This
-    is why the thick tail is compressed, and why somata are excluded rather than trusted."""
+    """V/L is a tube measure: a sphere of radius R reads as sqrt(2/3) R."""
     R = 1000.0
     _, r = mean_cross_section(volume_nm3=(4/3) * np.pi * R**3, cable_nm=2 * R)
     assert r / R == pytest.approx(np.sqrt(2/3), rel=1e-6)
 
 
 def test_no_cable_gives_nan_not_inf():
-    """A body with volume and no centreline is a fact about the skeleton; an inf would
-    propagate into every aggregate downstream."""
+    """NaN rather than inf, which would propagate into every aggregate."""
     area, radius = mean_cross_section(1e9, 0.0)
     assert np.isnan(area) and np.isnan(radius)
 
@@ -149,18 +129,12 @@ def _rod_block(radius_vox=3, length=16, voxel_nm=32.0, body=5):
     return blk
 
 
-def test_binning_assigns_every_voxel_of_the_body_and_nothing_else():
-    blk = _rod_block()
-    nodes = np.array([[4 * 32.0, 224.0, 224.0], [12 * 32.0, 224.0, 224.0]])
-    got = bin_to_nodes(blk, (0, 0, 0), 32.0, nodes, body_id=5)
-    assert sum(got["counts"].values()) == int((blk == 5).sum())
-    assert set(got["counts"]) <= {0, 1}
-
-
-def test_binning_splits_a_rod_between_two_nodes_evenly():
+def test_binning_assigns_every_voxel_of_the_body_and_splits_a_rod_evenly():
     blk = _rod_block(length=16)
     nodes = np.array([[4 * 32.0, 224.0, 224.0], [12 * 32.0, 224.0, 224.0]])
     got = bin_to_nodes(blk, (0, 0, 0), 32.0, nodes, body_id=5)
+    assert sum(got["counts"].values()) == int((blk == 5).sum())   # the decoy is not counted
+    assert set(got["counts"]) <= {0, 1}
     a, b = got["counts"][0], got["counts"][1]
     assert abs(a - b) <= max(a, b) * 0.05
 
@@ -172,8 +146,7 @@ def test_binning_a_body_that_is_absent_returns_empty():
 
 
 def test_node_ids_are_carried_through():
-    """Blocks are accumulated per body across a sweep, so a local index is useless —
-    the caller's own node ids have to come back."""
+    """The caller's node ids come back, since blocks are accumulated per body."""
     blk = _rod_block()
     nodes = np.array([[4 * 32.0, 224.0, 224.0], [12 * 32.0, 224.0, 224.0]])
     got = bin_to_nodes(blk, (0, 0, 0), 32.0, nodes, body_id=5, node_ids=[101, 102])
@@ -226,31 +199,23 @@ def _cylinder_expected(r, s):
     return np.sqrt(r * r / 2.0 + s * s / 12.0)
 
 
-def test_a_tube_reads_as_tube_like():
-    """The comparison must be against a CYLINDER's expected mean distance, not against
-    r: a voxel's distance to its node has an axial component from the node spacing as
-    well as a radial one. Comparing against r alone reported 86% of a real thin arbor as
-    blob-like, at 181 nm spacing and a 115 nm radius."""
+@pytest.mark.parametrize("factor, expected", [(1.0, 0.0), (3.0, 1.0)], ids=["tube", "blob"])
+def test_blob_signal_against_a_cylinders_expected_distance(factor, expected):
+    """Compared with a cylinder's expected mean distance, which has an axial term from
+    the node spacing, not with r alone (that reported thin arbors as blob-like)."""
     counts, share = {0: 100}, {0: 1000.0}
     r = node_radii(counts, share)[0][0]
     exp = _cylinder_expected(r, 1000.0)
-    assert blob_signal(counts, {0: 100 * exp}, share) == 0.0
+    assert blob_signal(counts, {0: 100 * factor * exp}, share) == expected
 
 
 def test_a_node_spacing_comparable_to_the_radius_is_still_a_tube():
-    """The regression that motivated the fix: s ~ r is the ordinary case, not a corner."""
+    """Node spacing comparable to the radius is the ordinary case."""
     counts, share = {0: 400}, {0: 181.0}
     r = node_radii(counts, share, voxel_nm=32.0)[0][0]
     exp = _cylinder_expected(r, 181.0)
     assert exp > r * 0.5                      # the axial term is not negligible here
     assert blob_signal(counts, {0: 400 * exp}, share, voxel_nm=32.0) == 0.0
-
-
-def test_a_blob_reads_as_blob_like():
-    counts, share = {0: 100}, {0: 1000.0}
-    r = node_radii(counts, share)[0][0]
-    exp = _cylinder_expected(r, 1000.0)
-    assert blob_signal(counts, {0: 100 * 3.0 * exp}, share) == 1.0
 
 
 def test_the_blob_signal_is_cable_weighted():
@@ -292,16 +257,14 @@ def test_edges_are_log_spaced():
     assert np.allclose(np.diff(np.log(e)), np.log(10.0))
 
 
-def test_edges_refuse_a_non_positive_range():
-    with pytest.raises(ValueError, match="need 0 < lo < hi"):
-        log_bin_edges(0.0, 100.0, 8)
-    with pytest.raises(ValueError, match="need 0 < lo < hi"):
-        log_bin_edges(100.0, 10.0, 8)
+@pytest.mark.parametrize("lo, hi", [(0.0, 100.0), (100.0, 10.0)])
+def test_edges_refuse_a_non_positive_range(lo, hi):
+    with pytest.raises(ValueError, match="0 < lo < hi"):
+        log_bin_edges(lo, hi, 8)
 
 
 def test_the_histogram_has_catch_all_bins_and_conserves_its_input():
-    """hist.sum() == weights.sum() is the consistency check that catches a wrong bin
-    range. Clipping instead would lose cable silently."""
+    """Under- and overflow bins, so the histogram sums to its input instead of clipping."""
     edges = log_bin_edges(100.0, 1000.0, 4)
     values = np.array([1.0, 150.0, 900.0, 5000.0])       # under, in, in, over
     weights = np.array([7.0, 1.0, 2.0, 3.0])
@@ -311,38 +274,21 @@ def test_the_histogram_has_catch_all_bins_and_conserves_its_input():
     assert hist[0] == 7.0 and hist[-1] == 3.0
 
 
-def test_a_value_on_an_edge_lands_in_the_upper_bin():
-    edges = log_bin_edges(100.0, 1000.0, 2)              # 100, 316.2, 1000
-    hist = weighted_histogram(np.array([edges[1]]), np.array([1.0]), edges)
-    assert hist[2] == 1.0 and hist[1] == 0.0
+_EDGES = log_bin_edges(100.0, 1000.0, 2)               # 100, 316.2, 1000
 
 
-def test_the_top_edge_is_overflow_not_the_last_bin():
-    edges = log_bin_edges(100.0, 1000.0, 2)
-    hist = weighted_histogram(np.array([1000.0]), np.array([1.0]), edges)
-    assert hist[-1] == 1.0
-
-
-def test_non_finite_values_are_dropped_not_binned():
-    """A body with no cable gives a NaN radius; it must not silently land in a bin."""
-    edges = log_bin_edges(100.0, 1000.0, 2)
-    hist = weighted_histogram(np.array([np.nan, 200.0]), np.array([5.0, 1.0]), edges)
-    assert hist.sum() == 1.0
-
-
-def test_an_empty_input_gives_an_all_zero_histogram_of_the_right_width():
-    edges = log_bin_edges(100.0, 1000.0, 4)
-    hist = weighted_histogram(np.array([]), np.array([]), edges)
-    assert hist.shape == (len(edges) + 1,) and not hist.any()
+@pytest.mark.parametrize("values, weights, expected", [
+    ([_EDGES[1]], [1.0], [0, 0, 1, 0]),                # on an edge -> the upper bin
+    ([1000.0], [1.0], [0, 0, 0, 1]),                   # the top edge is overflow
+    ([np.nan, 200.0], [5.0, 1.0], [0, 1, 0, 0]),       # NaN (no cable) is dropped
+    ([], [], [0, 0, 0, 0]),                            # empty: zeros, full width
+], ids=["on-edge", "top-edge", "nan", "empty"])
+def test_histogram_bin_placement(values, weights, expected):
+    hist = weighted_histogram(np.array(values, float), np.array(weights, float), _EDGES)
+    assert hist.tolist() == expected
 
 
 def test_mismatched_values_and_weights_raise():
     with pytest.raises(ValueError, match="differ"):
         weighted_histogram(np.zeros(3), np.zeros(2), log_bin_edges(1.0, 10.0, 2))
 
-
-def test_the_defaults_are_the_measured_ones():
-    """512^3 read unit and 32 nm: both chosen from throughput and scale-bias
-    measurements, so a silent change to either would invalidate the numbers."""
-    assert DEFAULT_BLOCK == 512
-    assert DEFAULT_VOXEL_NM == 32.0

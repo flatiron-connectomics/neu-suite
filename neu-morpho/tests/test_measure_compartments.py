@@ -25,8 +25,7 @@ def _write(path, vol, dtype="uint64"):
 # the pure joint count
 # --------------------------------------------------------------------------- #
 def test_joint_counts_keeps_label_zero():
-    """Unlabelled tissue is a real category, and keeping it is what makes
-    `sum over labels == total` an identity rather than an approximation."""
+    """Label 0 is kept, so a body's counts over labels sum exactly to its total."""
     seg = np.array([[[1, 1, 1, 2]]], dtype=np.uint64)
     sem = np.array([[[3, 5, 0, 3]]], dtype=np.uint32)
     got = joint_counts(seg, sem)
@@ -41,7 +40,7 @@ def test_joint_counts_drops_background_segmentation():
 
 
 def test_joint_counts_survives_a_large_body_id():
-    """The packed key is `body << 4 | label`; a real id is ~1e9, nowhere near overflow."""
+    """The packed key is `body << 4 | label`, which must not overflow for large ids."""
     big = np.uint64(2 ** 40 + 12345)
     seg = np.full((1, 1, 3), big, dtype=np.uint64)
     sem = np.array([[[3, 3, 5]]], dtype=np.uint32)
@@ -83,8 +82,7 @@ def test_labels_come_from_the_source(tmp_path):
 
 
 def test_a_missing_somatic_label_raises(tmp_path):
-    """Guessing the integers would produce a plausible non-somatic volume that
-    excluded the wrong thing."""
+    """Label integers are read from the source, never guessed."""
     root = str(tmp_path / "sem")
     _write_semantic_props(root, {1: "neuropil", 2: "fiber-bundle"})
     with pytest.raises(ValueError, match="no label named"):
@@ -129,7 +127,7 @@ def test_end_to_end_matches_the_volume_totals(tmp_path):
 
 
 def test_verify_names_the_shortfall_when_blocks_are_missing(tmp_path):
-    """The point of the check: a filtered pass that lost a block is reported, not silent."""
+    """A pass that lost a block is reported, not silent."""
     seg_spec, sem_spec, _, _ = _pair(tmp_path)
     db = str(tmp_path / "m.sqlite")
     sweep_volumes(seg_spec, db, voxel_size=(8, 8, 8), block=16, client=None)
@@ -157,12 +155,8 @@ def test_resume_does_not_double_count(tmp_path):
 
 
 def test_every_block_stage_is_visible_to_the_reporter(tmp_path):
-    """A stage that records progress and reports none is indistinguishable from a hang.
-
-    The reporter used to iterate a hardcoded ("index", "sweep"), so the compartment pass
-    wrote its total and its blocks and displayed neither. Both now derive from
-    BLOCK_STAGES, and this asserts the registry and the tables agree.
-    """
+    """Every stage in `BLOCK_STAGES` has a progress table and appears in `stage_counts`,
+    so no stage records progress the reporter cannot show."""
     db_path = str(tmp_path / "m.sqlite")
     d = MetricsDB(db_path)
     try:

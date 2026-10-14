@@ -140,27 +140,13 @@ def test_log_histogram_conserves_weight():
 
 
 def test_merge_keeps_boolean_flags_boolean():
-    """A plain merge turns bool into object, and `~object` is a NUMERIC bitwise NOT.
-
-    `~True` is -2 and `~False` is -1, both truthy, so `df[~df['flag']]` selects
-    everything with no error. Measured on real data: three stacked exclusions left the
-    row count unchanged, which is why this is a helper and not a note in a docstring.
-    """
+    """A plain left merge makes a bool column object dtype, where `~` is arithmetic
+    (`~True == -2`, truthy) and `df[~df.flag]` selects everything. `merge_properties`
+    keeps it bool, with absent rows False."""
     import pandas as pd
 
     bodies = pd.DataFrame({"body_id": [1, 2, 3], "v": [1.0, 2.0, 3.0]})
     props = pd.DataFrame({"body_id": [1, 2], "flag": [True, False]})
-
-    naive = bodies.merge(props, on="body_id", how="left")
-    assert naive["flag"].dtype == object                    # the trap
-    # A bare `~` on the NaN-bearing object column raises, which is survivable.
-    with pytest.raises(TypeError):
-        _ = ~naive["flag"]
-    # The DEFENSIVE idiom is the dangerous one: fillna leaves pure Python bools in an
-    # object column, and `~` on those is ARITHMETIC, not logical.
-    inverted = ~naive["flag"].fillna(False)
-    assert list(inverted) == [-2, -1, -1]          # not [False, True, True]
-    assert all(bool(v) for v in inverted)          # every value truthy, so no exclusion
 
     good = tables.merge_properties(bodies, props)
     assert pd.api.types.is_bool_dtype(good["flag"])
@@ -169,8 +155,7 @@ def test_merge_keeps_boolean_flags_boolean():
 
 
 def test_bare_tags_become_one_boolean_column_each(tmp_path):
-    """A vocabulary with no `namespace:value` convention is not mutually exclusive, so
-    there is no 'first' tag to prefer and keeping only one discards the rest."""
+    """Tags without `namespace:value` are not mutually exclusive, so each gets a column."""
     root = str(tmp_path / "src")
     _props(root, "segment_properties",
            {"@type": "neuroglancer_segment_properties",

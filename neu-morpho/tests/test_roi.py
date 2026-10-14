@@ -1,9 +1,5 @@
-"""ROI block filtering.
-
-The property that matters for ROI: a restricted run must be a *prefix* of the
-full run. Same global grid, same block indices, same regions — so fragments and
-manifest entries from a trial ROI are reused, not redone.
-"""
+"""ROI block filtering: a restricted run uses the full run's grid, block indices and
+regions, so its work is reused when the ROI is widened."""
 
 import numpy as np
 import pytest
@@ -47,12 +43,8 @@ def test_filter_none_returns_everything():
 
 
 def test_partially_overlapping_blocks_are_kept_whole():
-    """A block straddling the ROI edge is included entire, not trimmed.
-
-    Trimming would make a block's content depend on the ROI, so the same block
-    index would mean different data in two runs and resume would reuse the wrong
-    fragment.
-    """
+    """A block straddling the ROI edge is kept whole, so a block index always means
+    the same data and resume never reuses the wrong fragment."""
     full = list(iter_blocks((64, 64, 64), (32, 32, 32)))
     kept = R.filter_blocks(full, (30, 0, 0, 34, 64, 64))     # 2 voxels either side
     assert {b.index[0] for b in kept} == {0, 1}
@@ -100,7 +92,7 @@ def _two_body_volume():
 
 
 def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
-    """The payoff: widening the ROI later reuses the first run's work."""
+    """Widening the ROI later reuses the first run's blocks."""
     from neu_morpho.config import OutputConfig, SkeletonConfig
     from neu_morpho.ops.skeletonize_segments import skeletonize_segments
 
@@ -127,14 +119,8 @@ def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
 
 
 def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_path):
-    """A manifest outliving its outputs would make the next run a silent no-op.
-
-    dst may be an object store, so bookkeeping cannot live inside it and the two
-    no longer share a fate: clearing dst leaves the manifest claiming everything
-    is done. Resuming would then skip every task and report success having
-    written nothing. The ops refuse instead — see
-    ``ops/_progress.check_manifest_matches_output``.
-    """
+    """Manifests live in the work dir, not in dst, so clearing dst leaves a manifest that
+    claims everything is done. Resuming must refuse rather than write nothing."""
     import os
     import shutil
 
@@ -157,8 +143,7 @@ def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_pat
 
     m1 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
     s1 = skeletonize_segments(src, out, scfg, client=None)
-    # Manifests live in the POSIX work dir, NOT in dst — dst may be an object
-    # store, and it is the served volume, which bookkeeping must stay out of.
+    # manifests live in the work dir, never in the served volume
     for path in (m1["progress_path"], s1["progress_path"]):
         assert os.path.commonpath([os.path.abspath(path), os.path.abspath(work)]) == \
             os.path.abspath(work), f"{path} is not inside {work}"
@@ -183,11 +168,7 @@ def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_pat
 
 
 def test_guard_allows_a_first_run_and_an_ordinary_resume(tmp_path):
-    """The guard must be silent in both normal cases, or it is useless.
-
-    An empty manifest has nothing to be stale about, and a resume whose output is
-    still present is the common walltime-recovery path.
-    """
+    """The stale-manifest guard stays silent on a first run and on an ordinary resume."""
     import os
 
     from neu_morpho.config import MeshConfig, OutputConfig

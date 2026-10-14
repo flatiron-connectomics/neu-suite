@@ -6,12 +6,9 @@ from neu_morpho.allowlist import load_allowlist
 from neu_morpho import fragments as F
 
 
-def test_load_allowlist_none_means_all():
-    assert load_allowlist(None) is None
-
-
-def test_load_allowlist_iterable():
-    assert load_allowlist([1, 2, "3"]) == {1, 2, 3}
+@pytest.mark.parametrize("given, expected", [(None, None), ([1, 2, "3"], {1, 2, 3})])
+def test_load_allowlist_in_memory(given, expected):
+    assert load_allowlist(given) == expected
 
 
 def test_load_allowlist_csv(tmp_path):
@@ -56,8 +53,7 @@ def test_a_bucket_never_parses_as_a_body_id(tmp_path):
 
 
 def test_a_store_in_the_old_flat_layout_is_refused_not_read_as_empty(tmp_path):
-    # Old stores put body dirs at the top level. Reading only the buckets would see no
-    # bodies, and a resumed stage 2 would assemble nothing and report success.
+    # Reading only buckets would see no bodies, and stage 2 would report success.
     d = tmp_path / "chunked"
     (d / "42").mkdir(parents=True)
     (d / "42" / "0_0_0.drc").write_bytes(b"x")

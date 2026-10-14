@@ -1,11 +1,6 @@
-"""Per-task fault isolation, and the asymmetry it deliberately preserves.
-
-Stage 2 (one task = one body) isolates failures: bodies are independent, so
-skipping a bad one costs exactly that body and is recorded. Stage 1 (one task =
-one block) does NOT, because stage 2 aggregates across blocks — a silently
-skipped block truncates every body passing through it and erases any body wholly
-inside it, while the output still looks complete.
-"""
+"""Fault isolation, deliberately asymmetric: a per-body task failure is recorded and
+the run continues; a per-block failure aborts, because a skipped block would silently
+truncate every body passing through it."""
 
 import importlib
 import json
@@ -48,11 +43,7 @@ MESH_CFG = dict(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2, decimation_f
 # The resume trap
 # --------------------------------------------------------------------------- #
 def test_is_complete_excludes_failed_where_is_done_does_not(tmp_path):
-    """A 'failed' record must be retried, not treated as done.
-
-    blockrun's Manifest.is_done tests key PRESENCE, so resuming on is_done
-    would permanently skip exactly the tasks that need retrying.
-    """
+    """`Manifest.is_done` counts a recorded failure as done; `is_complete` must not."""
     from blockrun import Manifest
 
     path = str(tmp_path / "m.jsonl")
@@ -81,6 +72,12 @@ def test_guarded_converts_exceptions_and_passes_success_through():
     assert (key, status, metrics) == (5, FAILED, None)
     assert "kaboom" in info["error"] and "RuntimeError" in info["error"]
     assert "Traceback" in info["traceback"]
+    assert info["systemic"] is False
+
+    def oom(key):
+        raise MemoryError()
+
+    assert guarded(oom, 1)[3]["systemic"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -195,17 +192,6 @@ def test_is_systemic_classification():
     assert not is_systemic(OSError(E.EIO, "transient read error"))
 
 
-def test_guarded_flags_systemic_errors():
-    def oom(key):
-        raise MemoryError()
-
-    def odd(key):
-        raise ValueError("weird body")
-
-    assert guarded(oom, 1)[3]["systemic"] is True
-    assert guarded(odd, 1)[3]["systemic"] is False
-
-
 def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
     from neu_morpho.ops._progress import FailureBreaker, StageAborted
 
@@ -244,7 +230,7 @@ def test_breaker_can_be_disabled():
 
 
 def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path, monkeypatch):
-    """The breaker must not cost us the record of what already happened."""
+    """An abort still leaves the failure records, and they stay retryable."""
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
     from neu_morpho.ops._progress import StageAborted
 
@@ -290,7 +276,7 @@ def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
 
 
 def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monkeypatch):
-    """A trip must not leave a body's skeleton on disk without its DB metrics."""
+    """An abort leaves no skeleton on disk without its metrics in the DB."""
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
     from neu_morpho.metrics_db import MetricsDB
     from neu_morpho.ops._progress import StageAborted
@@ -323,40 +309,31 @@ def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monke
 # --------------------------------------------------------------------------- #
 # Stage 1 does NOT isolate — the asymmetry is the point
 # --------------------------------------------------------------------------- #
-def test_stage1_block_failure_still_aborts(tmp_path, monkeypatch):
-    """Block failures must stay loud: stage 2 aggregates across blocks, so a
-    silently skipped block yields a truncated body that still looks complete."""
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-
+@pytest.mark.parametrize("op", ["skeleton", "mesh"])
+def test_stage1_block_failure_aborts(tmp_path, monkeypatch, op):
+    """A block failure is loud: a silently skipped block yields truncated bodies."""
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def boom(*a, **k):
-        raise RuntimeError("block read failure")
+        raise RuntimeError("block failure")
 
-    monkeypatch.setattr(mod, "skeletonize_block", boom)
-    with pytest.raises(RuntimeError, match="block read failure"):
-        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),
-                             stages=("skel-chunk",), client=None)
-
-
-def test_stage1_mesh_block_failure_still_aborts(tmp_path, monkeypatch):
-    mod = importlib.import_module("neu_morpho.ops.meshify")
-
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-
-    def boom(*a, **k):
-        raise RuntimeError("block mesh failure")
-
-    monkeypatch.setattr(mod, "mesh_block", boom)
-    with pytest.raises(RuntimeError, match="block mesh failure"):
-        meshify(src, out, MeshConfig(**MESH_CFG), mesh_voxel_size=(8, 8, 8),
-                stages=("chunk",), client=None)
+    if op == "skeleton":
+        monkeypatch.setattr(importlib.import_module("neu_morpho.ops.skeletonize_segments"),
+                            "skeletonize_block", boom)
+        run = lambda: skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),  # noqa: E731
+                                           stages=("skel-chunk",), client=None)
+    else:
+        monkeypatch.setattr(importlib.import_module("neu_morpho.ops.meshify"),
+                            "mesh_block", boom)
+        run = lambda: meshify(src, out, MeshConfig(**MESH_CFG),  # noqa: E731
+                              mesh_voxel_size=(8, 8, 8), stages=("chunk",), client=None)
+    with pytest.raises(RuntimeError, match="block failure"):
+        run()
 
 
 def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
-    """A crash must not cost the blocks already recorded."""
+    """Blocks recorded before a crash are not redone on resume."""
     mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())

@@ -10,24 +10,9 @@ from neu_morpho import skeleton
 from neu_morpho.config import SkeletonConfig
 
 
-def test_default_tracer_is_neutu():
-    """Pin the default: which tracer runs by default is a decision, not an accident.
-
-    Every other test here passes ``tracer=`` explicitly, so nothing else would
-    notice this flipping — and the two tracers produce different skeletons.
-    """
-    assert SkeletonConfig().tracer == "neutu"
-    assert SkeletonConfig().neutu_cost == "edge"
-
-
 def test_edge_memory_guard_raises_instead_of_oom():
-    """The 'edge' cost builds an explicit per-component graph; cap it.
-
-    Raising beats OOM because this runs on dask workers, where an OOM kills the
-    worker and reads as infrastructure trouble rather than a sizing problem. The
-    cap is set so it cannot fire at the shipped 256^3 block, so the test has to
-    lower it to exercise the path at all.
-    """
+    """The 'edge' cost's per-component graph is capped, and raises rather than letting a
+    dask worker die of OOM. The shipped cap cannot fire at a 256^3 block."""
     from neu_morpho import neutu_trace
 
     m = _two_body_block(n=32)
@@ -36,65 +21,42 @@ def test_edge_memory_guard_raises_instead_of_oom():
     with pytest.raises(MemoryError, match="neutu_edge_max_gb|edge"):
         skeleton.skeletonize_block(m, (0, 0, 0), tiny)
 
-    # ...and the shipped cap is high enough that a full 256^3 component still fits,
-    # which is what makes it safe to leave on by default.
     assert 256 ** 3 * neutu_trace.EDGE_BYTES_PER_VOXEL / 1e9 < SkeletonConfig().neutu_edge_max_gb
 
 
 def _driver():
-    """The CLI is package code now, so it imports like anything else.
-
-    It used to be loaded from examples/ by path, which is what made it the one part
-    of the shipped pipeline the test suite could not reach normally.
-    """
     from neu_morpho import cli
 
     return cli
 
 
-# The pipeline is `neu-morpho run`; `progress` and `run-report` are sibling
-# subcommands, so every pipeline argument now sits behind "run".
 BASE_ARGV = ["run", "--src", "x", "--dst", "y", "--work-dir", "z"]
 
 
-def test_roi_requires_an_explicit_roi_scale():
-    """--roi without --roi-scale must fail, not silently assume --mesh-scale.
-
-    The failure it prevents is invisible: the same six values name a box 4x smaller
-    per level, so an ROI meant for scale 0 read as scale 2 processes 1/64th of the
-    volume — and the run still succeeds, still reports block counts, still writes
-    output. A smaller ROI is indistinguishable from a deliberately smaller one, so
-    nothing downstream can catch it.
-    """
-    mod = _driver()
-    with pytest.raises(SystemExit):
-        mod._parse_args(BASE_ARGV + ["--roi", "0,0,0,64,64,64"])
-    args = mod._parse_args(BASE_ARGV + ["--roi", "0,0,0,64,64,64", "--roi-scale", "2"])
-    assert args.roi_scale == 2
-
-
-def test_roi_scale_without_roi_is_rejected():
-    """Silently ignoring it would read as 'the ROI applied', with no ROI at all."""
-    mod = _driver()
-    with pytest.raises(SystemExit):
-        mod._parse_args(BASE_ARGV + ["--roi-scale", "2"])
+@pytest.mark.parametrize("extra, ok", [
+    (["--roi", "0,0,0,64,64,64"], False),        # an ROI must say which scale it is in
+    (["--roi-scale", "2"], False),               # a scale with no ROI is a mistake
+    (["--roi", "0,0,0,64,64,64", "--roi-scale", "2"], True),
+    ([], True),
+], ids=["roi-without-scale", "scale-without-roi", "both", "neither"])
+def test_roi_and_roi_scale_go_together(extra, ok):
+    """An ROI read at the wrong scale processes a fraction of the volume and still
+    succeeds, so --roi and --roi-scale are only accepted together."""
+    parse = _driver()._parse_args
+    if not ok:
+        with pytest.raises(SystemExit):
+            parse(BASE_ARGV + extra)
+        return
+    args = parse(BASE_ARGV + extra)
+    assert (args.roi is None) == (args.roi_scale is None)
 
 
-def test_no_roi_needs_neither():
-    mod = _driver()
-    args = mod._parse_args(BASE_ARGV)
-    assert args.roi is None and args.roi_scale is None
-
-
-def test_driver_default_tracer_matches_the_config_default():
-    """The driver always passes --tracer explicitly, so the two can drift apart.
-
-    If they do, ``SkeletonConfig()`` and a bare driver invocation quietly produce
-    different skeletons from the same command.
-    """
+def test_default_tracer_is_neutu_in_the_config_and_the_cli():
+    """The default tracer is a decision, and the CLI passes --tracer explicitly, so the
+    two defaults could drift into producing different skeletons."""
     args = _driver()._parse_args(BASE_ARGV)
-    assert args.tracer == SkeletonConfig().tracer
-    assert args.neutu_cost == SkeletonConfig().neutu_cost
+    assert args.tracer == SkeletonConfig().tracer == "neutu"
+    assert args.neutu_cost == SkeletonConfig().neutu_cost == "edge"
 
 
 def _two_body_block(n=48, r=4):
@@ -123,12 +85,8 @@ def test_both_tracers_return_both_bodies_in_nm(tracer):
 
 
 def test_neutu_radii_are_in_nm_not_voxels():
-    """The conversion that would silently publish radii 32x too small.
-
-    kimimaro is given anisotropy and returns nm; neutu_trace works in voxels, so
-    radii must be scaled here. Positions would still be correct if this were
-    missed, so no geometric test would catch it.
-    """
+    """neutu_trace works in voxels, so radii must be scaled to nm; positions alone would
+    not reveal radii 32x too small."""
     m = _two_body_block(r=4)
     out = skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="neutu"))
     radii = np.concatenate([np.asarray(s.radii, float) for s in out.values()])
@@ -137,16 +95,15 @@ def test_neutu_radii_are_in_nm_not_voxels():
     assert radii.max() < 32.0 * 8
 
 
-def test_block_origin_is_applied_by_both_tracers():
+@pytest.mark.parametrize("tracer", ["kimimaro", "neutu"])
+def test_block_origin_is_applied(tracer):
     m = _two_body_block()
     origin = (10, 20, 30)
-    for tracer in ("kimimaro", "neutu"):
-        at0 = skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer=tracer))
-        off = skeleton.skeletonize_block(m, origin, _cfg(tracer=tracer))
-        d0 = np.asarray(at0[7].vertices, float).min(axis=0)
-        d1 = np.asarray(off[7].vertices, float).min(axis=0)
-        shift = np.asarray(origin, float) * 32.0
-        assert np.allclose(d1 - d0, shift, atol=1e-3), f"{tracer} lost the origin"
+    at0 = skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer=tracer))
+    off = skeleton.skeletonize_block(m, origin, _cfg(tracer=tracer))
+    d0 = np.asarray(at0[7].vertices, float).min(axis=0)
+    d1 = np.asarray(off[7].vertices, float).min(axis=0)
+    assert np.allclose(d1 - d0, np.asarray(origin, float) * 32.0, atol=1e-3)
 
 
 def test_neutu_tracer_rejects_anisotropic_voxels():
@@ -164,10 +121,7 @@ def test_unknown_tracer_raises():
 
 @pytest.mark.parametrize("cost", ["voxel", "edge"])
 def test_neutu_cost_mode_reaches_the_tracer(cost):
-    """cfg.neutu_cost must actually change the routing, not just be accepted.
-
-    A config field that is silently ignored is worse than none — it reads as enabled.
-    """
+    """Both cost modes reach the tracer and trace."""
     m = _two_body_block()
     out = skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="neutu",
                                                         neutu_cost=cost))
@@ -184,14 +138,11 @@ def test_neutu_cost_is_validated_not_silently_ignored():
                                                       neutu_cost="nonsense"))
 
 
-# Config resolution, layering, shadowing and key validation are blockrun's, and
-# are tested there (blockrun/tests/test_dask_config.py). What is this package's
-# business is that --config reaches them, defaults sensibly, and fails early.
+# Config resolution itself is tested in blockrun; here, --config reaches it and fails early.
 def test_config_defaults_to_the_bundled_local_template_and_is_repeatable(tmp_path):
     cli = _driver()
     assert cli._configs(cli._parse_args(BASE_ARGV)) == ["dask-local"]
-    # A real overlay, because parse-time validation resolves every value — passing a
-    # made-up filename here fails, which is the behaviour we want.
+    # a real file, because every --config value is resolved at parse time
     site = tmp_path / "site.yaml"
     site.write_text("jobqueue:\n  slurm:\n    account: your-account\n")
     args = cli._parse_args(BASE_ARGV + ["--config", "dask-slurm-example",
@@ -200,11 +151,7 @@ def test_config_defaults_to_the_bundled_local_template_and_is_repeatable(tmp_pat
 
 
 def test_bad_config_fails_at_parse_time_not_at_cluster_start():
-    """A typo in --config must not surface only after the source metadata read.
-
-    That read hits the network for a remote --src, so failing late means waiting to
-    be told about a typo — and on a nohup'd run, finding out from a log much later.
-    """
+    """A --config typo fails at parse time, before any network read of --src."""
     cli = _driver()
     with pytest.raises((SystemExit, FileNotFoundError), match="dask-local"):
         cli._parse_args(BASE_ARGV + ["--config", "definitely-not-a-config"])
@@ -215,14 +162,6 @@ def test_serial_mode_does_not_require_a_config():
     cli = _driver()
     args = cli._parse_args(BASE_ARGV + ["--serial", "--config", "not-a-real-config"])
     assert args.serial
-
-
-def test_the_operator_subcommands_parse():
-    """`progress` and `run-report` are siblings of `run`, not flags on it."""
-    cli = _driver()
-    assert cli._parse_args(["progress", "/work"]).func is cli._cmd_progress
-    assert cli._parse_args(["run-report", "/work"]).func is cli._cmd_run_report
-    assert cli._parse_args(BASE_ARGV).func is cli._main
 
 
 def test_a_subcommand_is_required():

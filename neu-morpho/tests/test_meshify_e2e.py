@@ -1,9 +1,5 @@
-"""End-to-end: a synthetic labeled volume -> chunk -> assemble -> multires meshes.
-
-Verifies the whole block-first pipeline runs serially, that a cross-block body is
-assembled from both of its block fragments, and — via the multires fragment
-*grid-cell positions* — that bodies land at the correct nm locations (alignment).
-"""
+"""End to end: labels -> block fragments -> assembled multires meshes, with a body that
+crosses a block boundary and a check that LOD-0 cells land at the right nm position."""
 
 import os
 

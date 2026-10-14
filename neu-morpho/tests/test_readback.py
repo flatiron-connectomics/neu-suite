@@ -1,10 +1,5 @@
-"""Reading a published volume back.
-
-The round-trip tests are the reason this module exists in the package rather than in
-a script: ``precomputed.py`` writes both formats and nothing else verified that what
-it writes can be read back as what went in. A writer-only suite cannot see that,
-because a wrong-but-consistent encoding passes every check it makes.
-"""
+"""Reading a published volume back, including round trips through `precomputed.py`'s
+writers: a wrong-but-consistent encoding passes every writer-only check."""
 
 import numpy as np
 import pytest
@@ -39,9 +34,7 @@ def test_skeleton_round_trip_preserves_geometry_and_radii(tmp_path):
     v, e, r = read_body_skeleton(vol, 7)
     assert len(v) == len(skel.vertices) and len(e) == len(skel.edges)
     np.testing.assert_allclose(r, np.asarray(skel.radii, float), rtol=0, atol=1e-4)
-    # The writer flips zyx -> xyz on the way out, so the vertex that was written
-    # z-varying must come back x-varying. Getting this wrong mirrors the skeleton
-    # through the z=x diagonal and is invisible in any per-vertex count.
+    # written zyx, stored xyz: a z-varying vertex comes back x-varying
     written_zyx = np.asarray(skel.vertices, float)
     np.testing.assert_allclose(v[:, 0], written_zyx[:, 2], atol=1e-4)   # x <- x
     np.testing.assert_allclose(v[:, 2], written_zyx[:, 0], atol=1e-4)   # z <- z
@@ -55,13 +48,8 @@ def test_read_body_skeleton_is_none_when_absent(tmp_path):
 
 
 def test_read_body_skeleton_rejects_the_no_radius_sentinel(tmp_path):
-    """A skeleton whose info declares no radius attribute must raise.
-
-    osteoid does not report this as missing — it returns one value per vertex filled
-    with ``-1``. Right length, finite, and physically impossible, so only a sign
-    check catches it. This test failed against a length-only guard, which is exactly
-    the hole it exists to hold shut.
-    """
+    """No radius attribute in the info: osteoid fills radii with -1, the right length and
+    finite, so only a sign check catches it."""
     from osteoid import Skeleton
 
     from neu_morpho import precomputed
@@ -111,8 +99,7 @@ def test_mesh_round_trip_returns_the_written_geometry(tmp_path):
     v, f, lod = got
     assert lod == 0 and len(v) and len(f)
     assert f.max() < len(v), "face index out of range after fragment concatenation"
-    # Draco is lossy by quantization, not by displacement: the decoded corner must
-    # land on the written one to within the quantization step, not merely nearby.
+    # Draco is lossy by quantization only: corners land within one step
     assert np.allclose(v.min(axis=0), written.min(axis=0), atol=2.0)
     assert np.allclose(v.max(axis=0), written.max(axis=0), atol=2.0)
 
@@ -145,11 +132,8 @@ def test_read_body_mesh_is_none_when_absent(tmp_path):
 
 
 def test_require_radii_false_returns_a_centreline(tmp_path):
-    """A source may legitimately publish centrelines only — FlyEM's male-CNS skeleton
-    `info` is a bare {"@type": "neuroglancer_skeletons"} with no vertex_attributes, so
-    every body's radii arrive as the -1 sentinel. Cable length and topology survive;
-    calibre does not, and the caller has to know that rather than get -1 silently.
-    """
+    """Some published sources have centrelines only (radii all -1): the default raises,
+    and `require_radii=False` returns the centreline without radii."""
     import numpy as np
     from osteoid import Skeleton as Osteoid
 
@@ -177,17 +161,9 @@ def test_require_radii_false_returns_a_centreline(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def _pack_mesh_shard(directory, spec, body_id, data, manifest):
-    """Write a one-body sharded mesh the way the format lays one out.
-
-    A test-only writer, and necessarily an independent one: the fragment data is **not an
-    indexed entry**, so tensorstore's sharded driver cannot produce this file and
-    ``sharded.write_all`` is no help. That independence is the point — it means the reader
-    is being checked against the layout rather than against itself.
-
-    Layout is ``[shard index][fragment data][manifest][minishard index]``, with the
-    fragment data immediately before the manifest because that is the only way the
-    manifest's offsets can address it.
-    """
+    """Write a one-body sharded mesh by hand: ``[shard index][fragment data][manifest]
+    [minishard index]``. Fragment data is not an indexed entry, so tensorstore cannot
+    write this, and the reader is checked against the layout rather than itself."""
     import gzip
     import os
 
@@ -247,42 +223,29 @@ def _reshard(vol, tmp_path, body=5, **spec_kw):
     return out, spec
 
 
-def test_a_sharded_mesh_reads_back_as_the_same_geometry(tmp_path):
-    """The bug this fixes: a sharded store has no `<body>` object, so the unsharded
-    reader returned None for every body — indistinguishable from a volume with no meshes.
-    """
+@pytest.mark.parametrize("encoding", ["gzip", "raw"])
+def test_a_sharded_mesh_reads_back_as_the_same_geometry(tmp_path, encoding):
+    """A sharded store has no `<body>` object, so an unsharded read reports every body
+    absent. Under gzip the manifest is compressed but the fragment data is not, so the
+    manifest's offsets are into the stored bytes."""
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     vol = _write_unsharded_mesh(tmp_path, cfg)
     plain = read_body_mesh(vol, 5, lod=0)
     assert plain is not None
 
-    out, _ = _reshard(vol, tmp_path)
+    out, _ = _reshard(vol, tmp_path, data_encoding=encoding,
+                      minishard_index_encoding=encoding)
     got = read_body_mesh(out, 5, lod=0)
     assert got is not None, "sharded mesh read back as absent"
     np.testing.assert_array_equal(got[0], plain[0])
     np.testing.assert_array_equal(got[1], plain[1])
     assert got[2] == plain[2]
-
-
-@pytest.mark.parametrize("encoding", ["gzip", "raw"])
-def test_a_sharded_mesh_reads_under_either_data_encoding(tmp_path, encoding):
-    """`data_encoding` compresses the manifest but not the fragment data, so the
-    manifest's byte offsets are into the STORED bytes. Getting that backwards puts the
-    fragment read at the wrong place under gzip only."""
-    cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
-    vol = _write_unsharded_mesh(tmp_path, cfg)
-    plain = read_body_mesh(vol, 5, lod=0)
-
-    out, _ = _reshard(vol, tmp_path, data_encoding=encoding,
-                      minishard_index_encoding=encoding)
-    got = read_body_mesh(out, 5, lod=0)
-    assert got is not None
-    np.testing.assert_array_equal(got[0], plain[0])
+    assert read_body_mesh(out, 999, lod=0) is None      # an absent body is None
 
 
 def test_the_packed_shard_is_readable_by_tensorstore_too(tmp_path):
-    """Validates the fixture itself, and with it the shard placement: if tensorstore's
-    own driver finds the manifest at the key we hashed it to, the addressing is right."""
+    """Validates the fixture: tensorstore's own driver finds the manifest where it was
+    hashed to, so the shard addressing is right."""
     from neu_vol import sharded
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
@@ -294,16 +257,8 @@ def test_the_packed_shard_is_readable_by_tensorstore_too(tmp_path):
     assert sharded.read_one(out + "/mesh", spec, 5) == expected
 
 
-def test_a_sharded_mesh_missing_a_body_is_none(tmp_path):
-    cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
-    vol = _write_unsharded_mesh(tmp_path, cfg)
-    out, _ = _reshard(vol, tmp_path)
-    assert read_body_mesh(out, 999, lod=0) is None
-
-
 def test_a_manifest_pointing_past_its_fragment_data_raises(tmp_path):
-    """Truncated fragment data must not decode into a partial mesh. The manifest states
-    the total, so a short read is detectable and is a corrupt store, not a missing body."""
+    """Truncated fragment data is a corrupt store, not a partial mesh or a missing body."""
     import json
 
     from neu_vol import location, sharded
@@ -325,9 +280,8 @@ def test_a_manifest_pointing_past_its_fragment_data_raises(tmp_path):
 
 
 def test_the_info_transform_is_applied_so_vertices_are_nm(tmp_path):
-    """A foreign source may store model coordinates and declare the scale to nm in its
-    `transform`. FlyEM's male-CNS declares diag(16); ignoring it returns meshes 16x too
-    small and 16x out of register with the skeletons from the same volume, silently."""
+    """A source may store model coordinates and declare the scale to nm in `transform`
+    (one published source declares diag(16)); ignoring it silently shrinks the meshes."""
     from neu_morpho.readback import mesh_transform
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
@@ -354,23 +308,10 @@ def test_mesh_transform_refuses_a_location_with_no_info(tmp_path):
         mesh_transform(vol + "/mesh")           # volume and subdirectory conflated
 
 
-def test_an_identity_transform_leaves_our_own_output_untouched(tmp_path):
-    """Everything this package writes is already nm with an identity transform, so the
-    transform step must be exactly a no-op there."""
-    from neu_morpho.readback import mesh_transform
-
-    cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
-    vol = _write_unsharded_mesh(tmp_path, cfg)
-    np.testing.assert_array_equal(mesh_transform(vol),
-                                  np.hstack([np.eye(3), np.zeros((3, 1))]))
-    assert read_body_mesh(vol, 5, lod=0) is not None
-
-
 def test_a_targeted_lod_read_equals_reading_the_whole_pyramid(tmp_path):
-    """The sharded path fetches only the requested LOD's byte range and re-emits a
-    manifest to match. Every LOD must come back exactly as the unsharded reader — which
-    parses the whole object — returns it, or the range arithmetic is off by a fragment.
-    """
+    """The sharded path fetches only one LOD's bytes and re-emits a manifest that keeps
+    earlier LODs present but empty (a fragment's cell size depends on its LOD number).
+    Every LOD must match the unsharded reader, which parses the whole object."""
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0,
                      num_lods=3)
     vol = _write_unsharded_mesh(tmp_path, cfg)
@@ -389,37 +330,13 @@ def test_a_targeted_lod_read_equals_reading_the_whole_pyramid(tmp_path):
         checked += 1
     assert checked > 1, "fixture produced one LOD, so this proved nothing"
 
-    # And the default — coarsest present — must agree too, without being told which.
+    # and the default, the coarsest present
     np.testing.assert_array_equal(read_body_mesh(out, 5)[0], read_body_mesh(vol, 5)[0])
     assert read_body_mesh(out, 5)[2] == read_body_mesh(vol, 5)[2]
 
 
-def test_a_truncated_manifest_keeps_the_lod_numbering(tmp_path):
-    """A fragment's cell size is `chunk_shape * 2**lod` from where it sits in the
-    manifest, so re-emitting LOD 2 as LOD 0 would dequantize against a cell 4x too small.
-    The re-emitted manifest must therefore still declare the earlier, empty LODs."""
-    from neu_morpho.readback import _parse_manifest, _single_lod_manifest
-
-    cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0,
-                     num_lods=3)
-    vol = _write_unsharded_mesh(tmp_path, cfg)
-
-    from neu_vol import location
-    parsed = _parse_manifest(location.read_bytes(vol, "mesh", "5.index"))
-    present = [i for i, c in enumerate(parsed["counts"]) if int(c)]
-    want = present[-1]
-
-    rebuilt = _parse_manifest(_single_lod_manifest(parsed, want))
-    assert rebuilt["num_lods"] == want + 1, "earlier LODs were dropped, not emptied"
-    assert list(rebuilt["counts"][:want]) == [0] * want
-    assert int(rebuilt["counts"][want]) == int(parsed["counts"][want])
-    assert rebuilt["head"] == parsed["head"], "chunk_shape/grid_origin must survive"
-    assert rebuilt["blocks"][want] == parsed["blocks"][want]
-
-
 def test_the_shard_indexes_are_parsed_once_per_volume_not_once_per_body(tmp_path):
-    """Reading a batch must not re-parse the shard index per body: `preshift_bits` puts
-    runs of consecutive ids in one shard precisely so a batch concentrates there."""
+    """One cached shard reader per volume, so a batch does not re-parse the indexes."""
     from neu_morpho import readback
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
@@ -474,17 +391,11 @@ def test_a_sharded_skeleton_reads_back_as_the_same_geometry(tmp_path):
     assert got is not None, "sharded skeleton read back as absent"
     for a, b in zip(got, plain):
         np.testing.assert_array_equal(a, b)
-
-
-def test_a_sharded_skeleton_missing_a_body_is_none(tmp_path):
-    vol = _write_skeleton_volume(tmp_path)
-    out, _ = _reshard_skeleton(vol, tmp_path)
-    assert read_body_skeleton(out, 999) is None
+    assert read_body_skeleton(out, 999) is None          # an absent body is None
 
 
 def test_the_skeleton_info_transform_is_applied_to_vertices_and_radii(tmp_path):
-    """Vertices and radii must move together. Scaling one and not the other returns a
-    neuron of plausible shape and wrong calibre, which no shape or length check sees."""
+    """Vertices and radii scale together, or the calibre is silently wrong."""
     from neu_morpho.readback import skeleton_transform
 
     plain = read_body_skeleton(_write_skeleton_volume(tmp_path), 7)
@@ -499,37 +410,37 @@ def test_the_skeleton_info_transform_is_applied_to_vertices_and_radii(tmp_path):
 
 
 def test_a_non_uniform_skeleton_transform_refuses_to_invent_a_radius(tmp_path):
-    """There is no single radius under an anisotropic scale, so returning one would be a
-    guess presented as a measurement."""
+    """An anisotropic scale has no single radius, so radii are refused; the centreline
+    is still returned with `require_radii=False`."""
     scaled = _write_skeleton_volume(tmp_path,
                                     transform=[2, 0, 0, 0, 0, 4, 0, 0, 0, 0, 8, 0])
     with pytest.raises(ValueError, match="non-uniform transform"):
         read_body_skeleton(scaled, 7)
-    # The centreline itself is still well defined, so asking for one must still work.
     v, e, r = read_body_skeleton(scaled, 7, require_radii=False)
     assert r is None and len(v) and len(e)
 
 
-def test_the_skeleton_transform_matches_the_mesh_one_on_our_own_output(tmp_path):
-    """Both identity, which is what keeps a body's skeleton and its surface in one space."""
+def test_our_own_output_has_identity_transforms(tmp_path):
+    """What this package writes is already nm, so both transforms are exactly identity
+    and a body's skeleton and surface stay in one space."""
+    from neu_morpho import precomputed
     from neu_morpho.readback import mesh_transform, skeleton_transform
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     vol = _write_unsharded_mesh(tmp_path, cfg)
-    from neu_morpho import precomputed
     precomputed.write_skeleton_info(vol + "/skeleton")
-    np.testing.assert_array_equal(mesh_transform(vol), skeleton_transform(vol))
+    identity = np.hstack([np.eye(3), np.zeros((3, 1))])
+    np.testing.assert_array_equal(mesh_transform(vol), identity)
+    np.testing.assert_array_equal(skeleton_transform(vol), identity)
+    assert read_body_mesh(vol, 5, lod=0) is not None
 
 
 # --------------------------------------------------------------------------- #
 # the legacy single-resolution mesh format
 # --------------------------------------------------------------------------- #
 def _write_legacy_mesh(tmp_path, bodies, *, transform=None, mesh_dir="mesh"):
-    """A `neuroglancer_legacy_mesh` directory: a JSON manifest per body, plus fragments.
-
-    Written by hand rather than by `precomputed.py`, because this package does not WRITE the
-    legacy format and never will — it exists to read what other people published.
-    """
+    """A `neuroglancer_legacy_mesh` directory, by hand: this package reads the legacy
+    format but never writes it."""
     import json
     import struct
 
@@ -562,12 +473,7 @@ def _tetra(offset=0.0):
 
 
 def test_a_legacy_mesh_reads_back_as_the_geometry_it_stores(tmp_path):
-    """The format published ROI and neuropil sources are commonly written in.
-
-    Refusing it meant every body of such a volume came back absent, which is indistinguishable
-    from a volume holding no meshes at all — the exact failure `_check_supported` exists to
-    prevent, reached from the other side.
-    """
+    """The format many published ROI and neuropil sources use."""
     vertices, faces = _tetra()
     vol = _write_legacy_mesh(tmp_path, {5: [(vertices, faces)]})
     got = read_body_mesh(vol, 5)
@@ -579,11 +485,8 @@ def test_a_legacy_mesh_reads_back_as_the_geometry_it_stores(tmp_path):
 
 
 def test_several_legacy_fragments_concatenate_with_faces_REBASED(tmp_path):
-    """A body may be split across fragments, and each one's indices start at zero.
-
-    Concatenating vertices without offsetting the second fragment's faces builds triangles
-    from the first fragment's vertices — a mesh that renders, of the wrong shape.
-    """
+    """Each fragment's face indices start at zero, so they must be offset when the
+    fragments are concatenated."""
     a, b = _tetra(), _tetra(offset=100.0)
     vol = _write_legacy_mesh(tmp_path, {5: [a, b]})
     read_vertices, read_faces, _ = read_body_mesh(vol, 5)
@@ -593,12 +496,7 @@ def test_several_legacy_fragments_concatenate_with_faces_REBASED(tmp_path):
 
 
 def test_a_legacy_mesh_applies_the_sources_own_transform(tmp_path):
-    """One model space, in nanometres, whatever the publisher stored — invariant NM-SPACE.
-
-    The multires path has always done this; a legacy path that skipped it would return
-    vertices in the stored model's units for some sources and nm for others, with the same
-    function signature and nothing to say which.
-    """
+    """Legacy meshes get the source's transform too, so every reader returns nm."""
     vertices, faces = _tetra()
     vol = _write_legacy_mesh(tmp_path, {5: [(vertices, faces)]},
                              transform=[2, 0, 0, 5, 0, 2, 0, 6, 0, 0, 2, 7])
@@ -607,14 +505,13 @@ def test_a_legacy_mesh_applies_the_sources_own_transform(tmp_path):
 
 
 def test_a_legacy_mesh_body_that_is_absent_is_None_not_an_error(tmp_path):
-    """`skip_missing` in a batch depends on absence being distinguishable from breakage."""
+    """Absence must be distinguishable from breakage, for `skip_missing` in a batch."""
     vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
     assert read_body_mesh(vol, 404) is None
 
 
 def test_asking_a_legacy_mesh_for_a_LOD_IT_CANNOT_HAVE_raises(tmp_path):
-    """Handing back the single mesh for `lod=3` would misreport the detail level to a caller
-    that asked for it deliberately — the same reason the multires path refuses an absent LOD."""
+    """Single-resolution data has no LOD 3, so asking for one raises."""
     vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
     assert read_body_mesh(vol, 5, lod=0) is not None
     with pytest.raises(ValueError, match="single resolution"):
@@ -622,8 +519,7 @@ def test_asking_a_legacy_mesh_for_a_LOD_IT_CANNOT_HAVE_raises(tmp_path):
 
 
 def test_a_truncated_legacy_fragment_is_refused_not_silently_shortened(tmp_path):
-    """The vertex count is in the header, so a short file is detectable corruption — and a
-    mesh missing its last few thousand vertices looks like a real but subtly wrong object."""
+    """The header states the vertex count, so a short fragment is detectable corruption."""
     import struct
 
     vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
@@ -644,7 +540,7 @@ def test_a_manifest_naming_a_fragment_that_is_not_there_says_so(tmp_path):
 
 
 def test_an_UNKNOWN_mesh_type_is_still_refused(tmp_path):
-    """Widening the accepted set must not turn the guard off."""
+    """Accepting the legacy format did not turn off the unknown-type guard."""
     import json
 
     from neu_morpho.readback import UnsupportedSubresource

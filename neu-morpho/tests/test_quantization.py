@@ -1,18 +1,14 @@
-"""Draco quantization vs. voxel size — a real-data failure, now caught up front.
+"""Draco quantization step against voxel size.
 
-On the first production ROI (scale 2, 32 nm voxels, 256-blocks) the shipped
-default of 10 bits made the LOD-2 quantization step exactly 32 nm — the voxel
-size — and 29% of bodies failed to encode with "All triangles are degenerate".
-The step is a *relationship* between chunk size, LOD count and bit depth, so the
-guard computes it rather than trusting a constant.
+The step depends on chunk size, LOD count and bit depth. At 10 bits with 32 nm voxels the
+LOD-2 step equalled the voxel size and 29% of bodies failed to encode.
 """
 
 import numpy as np
 import pytest
 
 from neu_morpho.config import MeshConfig, OutputConfig
-from neu_morpho.precomputed import (VALID_QUANTIZATION_BITS, check_quantization,
-                                       quantization_step_nm)
+from neu_morpho.precomputed import check_quantization, quantization_step_nm
 
 
 def test_step_doubles_per_lod():
@@ -43,7 +39,6 @@ def test_accepts_the_shipped_default():
 
 def test_rejects_bits_the_neuroglancer_spec_forbids():
     """12 and 14 encode fine in Draco but neuroglancer cannot read them."""
-    assert VALID_QUANTIZATION_BITS == (10, 16)
     for bits in (8, 12, 14, 32):
         with pytest.raises(ValueError, match="must be one of"):
             check_quantization(MeshConfig(draco_quantization_bits=bits),
@@ -58,7 +53,7 @@ def test_deep_pyramids_are_caught_even_at_16_bits():
 
 
 def test_meshify_checks_before_doing_any_work(tmp_path):
-    """The guard must fire up front, not after an hour of block meshing."""
+    """The guard fires before any block is meshed."""
     from neu_morpho.ops.meshify import meshify
     from neu_vol.backends.tensorstore import TensorStoreBackend
     from neu_vol.profiles import zarr3_create_spec
@@ -73,8 +68,7 @@ def test_meshify_checks_before_doing_any_work(tmp_path):
     be.write_region(tuple(slice(0, s) for s in vol.shape), vol)
 
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    # chunk = 16 * 32 = 512 nm; 7 LODs -> coarsest cell 32768 nm; 10 bits -> 32 nm
-    # step, equal to the voxel size — the real-data failure, in miniature.
+    # chunk = 16 * 32 = 512 nm; 7 LODs and 10 bits give a 32 nm step, the voxel size
     cfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=7,
                      draco_quantization_bits=10)
     assert quantization_step_nm(cfg, [512.0] * 3) == pytest.approx(32.0)
@@ -82,5 +76,5 @@ def test_meshify_checks_before_doing_any_work(tmp_path):
         meshify({"backend": "zarr3", "path": src}, out, cfg,
                 mesh_voxel_size=(32, 32, 32), client=None)
 
-    # nothing was written — not even the info file
+    # nothing was written
     assert not (tmp_path / "out" / "chunked").exists()

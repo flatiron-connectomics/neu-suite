@@ -1,8 +1,5 @@
-"""Path length from a reference region, for synapses attached to a skeleton.
-
-Synthetic skeletons only: every expected distance below can be worked out by hand, which is
-the point — a real neuron could only check the code against itself.
-"""
+"""Path length from a reference region, for synapses attached to a skeleton. Synthetic
+skeletons only, so every expected distance can be worked out by hand."""
 
 import numpy as np
 import pytest
@@ -109,9 +106,10 @@ def test_zero_length_and_duplicate_edges_do_not_change_the_graph():
 # --------------------------------------------------------------------------- #
 # breaks and bridges
 # --------------------------------------------------------------------------- #
-def test_a_break_leaves_the_far_piece_unreachable_without_bridging():
+@pytest.mark.parametrize("max_gap_nm", [0, 150], ids=["no-bridging", "gap-wider-than-margin"])
+def test_a_break_leaves_the_far_piece_unreachable(max_gap_nm):
     per, summary = paths.synapse_distances(_broken(), [[1000.0, 0, 0]], _z_below(300.0),
-                                           max_gap_nm=0, tolerance_nm=TOL)
+                                           max_gap_nm=max_gap_nm, tolerance_nm=TOL)
     assert list(per["status"]) == ["unreachable"]
     assert np.isnan(per["distance_nm"][0])
     assert summary["n_components"] == summary["n_components_bridged"] == 2
@@ -129,12 +127,6 @@ def test_a_bridge_counts_its_length_and_is_reported():
     assert summary["cable_nm"] == pytest.approx(1000.0)     # bridges are not cable
 
 
-def test_a_gap_wider_than_the_margin_is_not_bridged():
-    per, _ = paths.synapse_distances(_broken(), [[1000.0, 0, 0]], _z_below(300.0),
-                                     max_gap_nm=150, tolerance_nm=TOL)
-    assert list(per["status"]) == ["unreachable"]
-
-
 def test_a_point_on_the_bridge_itself_is_flagged():
     per, _ = paths.synapse_distances(_broken(), [[600.0, 40.0, 0]], _z_below(300.0),
                                      max_gap_nm=250, tolerance_nm=TOL)
@@ -144,8 +136,8 @@ def test_a_point_on_the_bridge_itself_is_flagged():
 
 
 def test_a_bridge_that_crosses_the_boundary_counts_only_its_outside_part():
-    """The boundary falls inside the gap, so split_at cuts the BRIDGE — and the bridge
-    flag has to survive that split."""
+    """The boundary falls inside the gap, so the bridge itself is split, and its bridge
+    flag must survive."""
     per, summary = paths.synapse_distances(_broken(), [[1000.0, 0, 0], [300.0, 0, 0]],
                                            _z_below(600.0), max_gap_nm=250,
                                            tolerance_nm=TOL)
@@ -264,8 +256,8 @@ def _terminal_and_dip(points):
 
 
 def test_largest_ignores_a_dip_into_the_region():
-    """The measured failure: a dendrite brushing a coarse ROI. Measured from the dip, the
-    synapse at z=2800 would be 300 nm out; from the terminal it is 1800."""
+    """A dendrite brushing a coarse ROI: measured from the dip, the synapse at z=2800
+    would be 300 nm out; from the terminal it is 1800."""
     skel = Skeleton(*_chain(np.arange(0, 3001, 50)))
     pts = [[2800.0, 0, 0], [2450.0, 0, 0], [500.0, 0, 0]]
     largest, summary = paths.synapse_distances(skel, pts, _terminal_and_dip,

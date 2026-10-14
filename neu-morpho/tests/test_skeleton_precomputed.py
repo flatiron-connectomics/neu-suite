@@ -1,18 +1,12 @@
-"""The precomputed skeleton writer — format, and the zyx->xyz flip.
+"""The precomputed skeleton writer: format, and the zyx->xyz flip (getting it wrong
+mirrors skeletons through the z=x diagonal relative to their meshes)."""
 
-The flip is the skeleton counterpart of the dropped-crop-origin bug: it produces
-skeletons that look plausible but sit mirrored through the z=x diagonal relative
-to their meshes.
-"""
-
-import json
 import os
 
 import numpy as np
 import pytest
 
-from neu_morpho.precomputed import (SKELETON_VERTEX_ATTRIBUTES, encode_skeleton,
-                                       write_body_skeleton, write_skeleton_info)
+from neu_morpho.precomputed import encode_skeleton, write_body_skeleton
 
 
 def _skel(vertices_zyx, edges, radius=None):
@@ -22,15 +16,6 @@ def _skel(vertices_zyx, edges, radius=None):
     if radius is not None:
         s.radius = np.asarray(radius, np.float32)
     return s
-
-
-def test_info_is_identity_transform(tmp_path):
-    out = str(tmp_path / "skeleton")
-    write_skeleton_info(out)
-    info = json.load(open(os.path.join(out, "info")))
-    assert info["@type"] == "neuroglancer_skeletons"
-    assert info["transform"] == [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
-    assert info["vertex_attributes"] == SKELETON_VERTEX_ATTRIBUTES
 
 
 def test_encode_flips_zyx_to_xyz():
@@ -49,17 +34,8 @@ def test_encode_preserves_radius():
     np.testing.assert_array_equal(back.radius, [5.0, 7.0])
 
 
-def test_declared_attributes_are_all_float32():
-    """Neuroglancer rejects the whole layer on a non-float32 vertex attribute.
-
-    The precomputed spec permits uint8 and friends, so this is a viewer
-    constraint the spec will not warn you about: it surfaces only in the browser,
-    as "Data type not supported by WebGL: UINT8".
-    """
-    assert [a["data_type"] for a in SKELETON_VERTEX_ATTRIBUTES] == ["float32"]
-
-
 def test_write_skeleton_info_rejects_non_float32_attributes(tmp_path):
+    """The spec allows uint8, but neuroglancer rejects the whole layer for it."""
     from neu_morpho.precomputed import write_skeleton_info as w
 
     with pytest.raises(ValueError, match="must be float32"):
@@ -69,10 +45,9 @@ def test_write_skeleton_info_rejects_non_float32_attributes(tmp_path):
 
 
 def test_encode_drops_osteoid_default_vertex_types():
-    """osteoid attaches a uint8 vertex_types by default; it must not reach the file.
+    """osteoid's default uint8 vertex_types must not reach the file.
 
-    Byte-exact: 2 uint32 header + 2 verts * 3 float32 + 1 edge * 2 uint32 +
-    2 radii * float32 = 8 + 24 + 8 + 8 = 48. A stray uint8 attribute adds 2.
+    Header 8 + vertices 24 + edge 8 + radii 8 = 48 bytes; a uint8 attribute would add 2.
     """
     s = _skel([[0.0, 0, 0], [1, 1, 1]], [[0, 1]], radius=[5.0, 7.0])
     s.vertex_types = np.array([2, 3], np.uint8)          # producer attached one
@@ -94,11 +69,7 @@ def test_write_body_skeleton_roundtrip(tmp_path):
 
 
 def test_mesh_and_skeleton_agree_after_encoding():
-    """End of the alignment chain: an encoded skeleton lands inside its mesh bbox.
-
-    test_alignment.py checks this in the in-memory zyx model space; this checks it
-    survives the flip into stored xyz, which is what neuroglancer actually reads.
-    """
+    """After encoding to stored xyz, a skeleton still lands inside its mesh bbox."""
     import kimimaro
     from vol2mesh import Mesh
     from osteoid import Skeleton
@@ -128,17 +99,12 @@ def test_mesh_and_skeleton_agree_after_encoding():
 
 
 # --------------------------------------------------------------------------- #
-# Destination-agnostic writes: precomputed.py must never touch the filesystem
-# directly, or an s3:// destination silently writes nowhere.
+# Destination-agnostic writes
 # --------------------------------------------------------------------------- #
 def test_precomputed_module_uses_no_direct_file_io():
-    """A single stray open()/os.makedirs here breaks remote destinations.
-
-    vol2mesh separates encoding from writing (build_info / encode_multilod_object
-    return a dict and bytes), which is what lets every write go through the
-    kvstore. Calling multires.write_info or write_object_mesh instead would write
-    to the local filesystem behind our back — and pass every local test.
-    """
+    """A static check, kept because the failure is silent: any direct file write in
+    `precomputed.py` (open(), os, multires.write_*) writes nothing to an s3 destination
+    and passes every local test."""
     import ast
     import inspect
 
@@ -146,7 +112,6 @@ def test_precomputed_module_uses_no_direct_file_io():
 
     tree = ast.parse(inspect.getsource(precomputed))
 
-    # `os` has no business here at all — its absence is the invariant.
     imported = {alias.name.split(".")[0]
                 for node in ast.walk(tree) if isinstance(node, ast.Import)
                 for alias in node.names}
@@ -169,7 +134,8 @@ def test_precomputed_module_uses_no_direct_file_io():
 
 
 def test_skeleton_and_mesh_info_land_via_kvstore(tmp_path):
-    """The kvstore path produces exactly the same on-disk layout as before."""
+    """Both info files, written through the kvstore: identity transform, and only
+    float32 vertex attributes (neuroglancer rejects the layer otherwise)."""
     from neu_vol import read_json
 
     from neu_morpho.config import MeshConfig
@@ -184,5 +150,7 @@ def test_skeleton_and_mesh_info_land_via_kvstore(tmp_path):
     assert volume_exists(mesh_dir) and volume_exists(skel_dir)
     assert read_json(mesh_dir, "info")["@type"] == "neuroglancer_multilod_draco"
     assert read_json(skel_dir, "info")["@type"] == "neuroglancer_skeletons"
-    # identity transform: vertices are already physical nm
-    assert read_json(skel_dir, "info")["transform"] == [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+    skel_info = read_json(skel_dir, "info")
+    assert skel_info["transform"] == [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+    assert skel_info["vertex_attributes"]
+    assert all(a["data_type"] == "float32" for a in skel_info["vertex_attributes"])

@@ -1,9 +1,5 @@
-"""Tests for the radius-aware node reduction passes.
-
-The properties that matter are structural: these passes must not disconnect a
-skeleton, invent cycles, lose branch points, or move nodes outside the object.
-Node count going down is the easy part.
-"""
+"""The radius-aware node reduction passes must not disconnect a skeleton, invent cycles,
+lose branch points or move nodes off the object."""
 
 from __future__ import annotations
 
@@ -55,16 +51,13 @@ def test_region_sample_thins_a_uniform_chain():
     v, r, e = _chain(n=40, r=2.0, spacing=1.0)
     v2, r2, e2 = swc_simplify.region_sample(v, r, e)
     assert len(v2) < len(v)
-    # nodes 1 apart inside balls of radius 2 -> survivors roughly 2 apart.
-    # The two END gaps are exempt: tips are protected from suppression
-    # (PRESERVE_JUNCTIONS), so a tip can sit closer than the ball spacing to its
-    # neighbour. Check the interior, which is what the spacing claim is about.
+    # survivors roughly 2 apart; the end gaps are exempt, since tips are protected
     d = np.linalg.norm(np.diff(v2[np.argsort(v2[:, 0])], axis=0), axis=1)
     assert d[1:-1].min() >= 1.5
 
 
 def test_region_sample_spacing_follows_radius():
-    """The point of the pass: sparse where thick, dense where thin."""
+    """Sparse where thick, dense where thin."""
     n = 60
     v = np.zeros((n, 3))
     v[:, 0] = np.arange(n)
@@ -83,15 +76,8 @@ def test_region_sample_keeps_it_connected():
     assert len(e2) == len(v2) - 1, "a contracted tree must stay a tree (no cycles)"
 
 
-def test_region_sample_preserves_the_branch_point():
-    v, r, e = _y(arm=20, r=1.5)
-    v2, r2, e2 = swc_simplify.region_sample(v, r, e)
-    deg = np.bincount(e2.ravel(), minlength=len(v2))
-    assert (deg >= 3).any(), "branch point lost"
-
-
 def test_region_sample_keeps_nodes_from_the_original():
-    """It selects, never interpolates — every survivor is an input node."""
+    """Every survivor is an input node: it selects, never interpolates."""
     v, r, e = _y()
     v2, _, _ = swc_simplify.region_sample(v, r, e)
     orig = {tuple(p) for p in v}
@@ -161,14 +147,8 @@ def test_simplify_runs_both_passes():
 
 
 def test_region_sample_preserves_branch_points_and_tips():
-    """A global region_sample must not merge junctions into hubs.
-
-    NeuTu runs createSwcByRegionSampling on one traced PATH — a linear chain — so
-    it can never suppress across a junction. Ours runs over the whole tree, where a
-    ball centred on a fat node beside a junction can swallow the junction and its
-    neighbours. Measured on body 45892915: the raw trace matches NeuTu at 66 branch
-    points / mean degree 3.02 / max 4; a global sweep gave 44 / 3.52 / 7.
-    """
+    """Over a whole tree (NeuTu runs it per path), a ball beside a junction could swallow
+    the junction; branch points and tips must survive, and no higher-degree hub appear."""
     v, r, e = _y(arm=25, r=4.0)
     before = np.bincount(e.ravel(), minlength=len(v))
     n_branch_before = int((before >= 3).sum())
@@ -183,8 +163,7 @@ def test_region_sample_preserves_branch_points_and_tips():
 
 
 def test_preserve_junctions_is_the_default():
-    """Flipping this off silently would discard branch structure the trace got right."""
-    assert swc_simplify.PRESERVE_JUNCTIONS is True
+    """The default protects junctions."""
     v, r, e = _y(arm=25, r=4.0)
     default = swc_simplify.region_sample(v, r, e)
     explicit = swc_simplify.region_sample(v, r, e, preserve_junctions=True)

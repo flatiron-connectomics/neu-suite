@@ -1,5 +1,4 @@
-"""Coordinate/alignment tests — the failure mode mesh-n-bone hit (offset meshes
-and skeletons). Everything lives in one physical-nm world space."""
+"""Meshes and skeletons land in the same physical-nm space."""
 
 import numpy as np
 
@@ -32,11 +31,8 @@ def test_mesh_vertices_land_in_nm():
 
 
 def test_mesh_and_skeleton_coincide():
-    """A body at a global offset: its mesh bbox and its skeleton must overlap.
-
-    Reproduces the 231668 scenario — if the skeleton's crop origin were dropped,
-    the skeleton would sit at local coords, far outside the mesh bbox.
-    """
+    """A body at a global offset: its skeleton lies inside its mesh bbox. Dropping the
+    crop origin would leave the skeleton at local coordinates."""
     import kimimaro
     from vol2mesh import Mesh
 
@@ -60,6 +56,5 @@ def test_mesh_and_skeleton_coincide():
 
     # skeleton lies within the mesh bbox (a small margin for surface vs centerline)
     assert (s_lo >= m_lo - 8).all() and (s_hi <= m_hi + 8).all(), (m_lo, m_hi, s_lo, s_hi)
-    # z extent matches the GLOBAL rod (~80..208), not the local one (~0..128) —
-    # this is what fails if the crop origin is dropped (the 231668 bug).
+    # z extent is the global rod (~80..208), not the local one (~0..128)
     assert s_lo[0] >= 72 and s_hi[0] > 180
