@@ -61,6 +61,7 @@ __pycache__/
 .venv/
 .ipynb_checkpoints/
 
-# Editor state, ignored in every package repo here too.
+# Editor and agent state: per-user settings and Claude Code's agent worktrees.
 .vscode/
 .idea/
+.claude/
