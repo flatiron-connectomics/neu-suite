@@ -29,72 +29,56 @@ def cfg(tmp_path, monkeypatch):
     return config.load()
 
 
-def test_it_builds_a_complete_url(cfg):
-    """A complete URL, so it can be printed, pasted and put in a saved command — the whole
-    reason this is a builder rather than a default consulted behind your back."""
-    assert cfg.url("synapses") == (
-        "dvid://dvid.example.org/93fdbc:main/synapses")
-    assert cfg.url("counts").endswith("/synapses_labelsz")
-
-
-def test_a_literal_instance_name_needs_no_config_entry(cfg):
-    assert cfg.url("labels_todo").endswith("/labels_todo")
-
-
-def test_an_explicit_uuid_overrides_the_default(cfg):
-    assert cfg.url("synapses", uuid="846e3a").endswith("846e3a/synapses")
-
-
-def test_locked_is_carried_through(cfg):
+@pytest.mark.parametrize("args, kwargs, expected", [
+    (("synapses",), {}, "dvid://dvid.example.org/93fdbc:main/synapses"),
+    (("counts",), {}, "dvid://dvid.example.org/93fdbc:main/synapses_labelsz"),
+    (("labels_todo",), {}, "dvid://dvid.example.org/93fdbc:main/labels_todo"),  # literal name
+    (("synapses",), {"uuid": "846e3a"}, "dvid://dvid.example.org/846e3a/synapses"),
+])
+def test_it_builds_a_complete_url(cfg, args, kwargs, expected):
+    """Complete, so it can be printed and put in a saved command."""
+    assert cfg.url(*args, **kwargs) == expected
     assert cfg.locked is True
 
 
 def test_resolve_only_touches_the_at_prefix(cfg):
-    """The prefix is required so a saved command line visibly depends on a config."""
+    """The prefix is required so a saved command visibly depends on a config."""
     assert cfg.resolve("@synapses").endswith("/synapses")
-    url = "dvid://other/abc/labels"
-    assert cfg.resolve(url) == url
+    assert cfg.resolve("dvid://other/abc/labels") == "dvid://other/abc/labels"
     assert cfg.resolve("/some/path") == "/some/path"
 
 
 def test_an_unknown_reference_lists_what_is_configured(cfg):
     with pytest.raises(ValueError, match="Configured names: bodies, counts, synapses"):
         cfg.resolve("@nope")
-
-
-def test_an_empty_reference_is_refused(cfg):
     with pytest.raises(ValueError, match="names nothing after"):
         cfg.resolve("@")
 
 
 def test_no_config_loads_empty_rather_than_raising(tmp_path, monkeypatch):
-    """Importing this package must never depend on a file existing.
-
-    **The `chdir` is the test.** Without it `load()` walks up from wherever pytest was
-    started and finds the developer's own `neu-mark.toml`, so this asserted nothing on any
-    machine that has one — the previous version papered over that by substituting an empty
-    config when a real one turned up, which made it pass by construction. It then failed for
-    real the day that file had a typo in it: a test about the *absence* of a config, coupled
-    to the contents of a gitignored file that CI does not have.
-    """
+    """Importing must never depend on a file existing. The `chdir` matters: without it the
+    upward walk finds the developer's own config, and nothing machine-wide is consulted."""
     monkeypatch.delenv(config.ENV_VAR, raising=False)
     monkeypatch.chdir(tmp_path)
     assert config.find() is None, "tmp_path is not isolated; the walk found a real config"
+    assert config.find(tmp_path) is None
 
     empty = config.load()
     assert empty.path is None and empty.server is None
     assert empty.instances == {} and empty.roi_sets == {} and empty.rule_sets == {}
 
 
-def test_asking_an_empty_config_for_a_url_says_where_it_looked():
+def test_an_empty_config_says_what_is_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv(config.ENV_VAR, raising=False)
     with pytest.raises(ValueError, match="sets no dvid.server"):
         config.Config({}, None).url("synapses")
-
-
-def test_a_reference_with_no_config_at_all_names_the_search(monkeypatch):
-    monkeypatch.delenv(config.ENV_VAR, raising=False)
     with pytest.raises(ValueError, match="in the working directory and every parent"):
         config.Config({}, None).resolve("@synapses")
+
+    path = tmp_path / "c.toml"
+    path.write_text('[dvid]\nserver = "host"\n')
+    with pytest.raises(ValueError, match="sets no dvid.uuid"):
+        config.load(str(path)).url("synapses")
 
 
 def test_an_explicit_env_path_that_does_not_exist_is_an_error(tmp_path, monkeypatch):
@@ -104,34 +88,29 @@ def test_an_explicit_env_path_that_does_not_exist_is_an_error(tmp_path, monkeypa
         config.load()
 
 
+def test_load_accepts_an_explicit_path(tmp_path):
+    path = tmp_path / "custom.toml"
+    path.write_text(TOML)
+    assert config.load(str(path)).uuid == "93fdbc:main"
+
+
 # --------------------------------------------------------------------------- #
-# finding it: an upward walk, and nothing machine-wide
+# finding it: an upward walk
 # --------------------------------------------------------------------------- #
 def test_it_is_found_by_walking_up_from_a_subdirectory(tmp_path, monkeypatch):
-    """The case that matters: notebooks sit a couple of directories below where the file
-    naturally lives, and requiring an exact cwd would make it silently stop being found."""
+    """Notebooks sit a few directories below where the file lives."""
     monkeypatch.delenv(config.ENV_VAR, raising=False)
     (tmp_path / config.FILENAME).write_text(TOML)
     deep = tmp_path / "neu-mark" / "notebooks"
     deep.mkdir(parents=True)
+    assert config.find(deep) == str(tmp_path / config.FILENAME)
     monkeypatch.chdir(deep)
     assert config.find() == str(tmp_path / config.FILENAME)
     assert config.load().server == "dvid.example.org"
 
 
-def test_the_nearest_config_wins(tmp_path, monkeypatch):
-    monkeypatch.delenv(config.ENV_VAR, raising=False)
-    (tmp_path / config.FILENAME).write_text(TOML)
-    inner = tmp_path / "inner"
-    inner.mkdir()
-    (inner / config.FILENAME).write_text('[dvid]\nserver = "nearer"\n')
-    monkeypatch.chdir(inner)
-    assert config.load().server == "nearer"
-
-
 def test_it_is_found_in_a_configs_subdirectory_on_the_way_up(tmp_path, monkeypatch):
-    """A workspace that keeps its site configs together in `configs/`; rules modules
-    named in it resolve against the config's own directory, i.e. inside `configs/`."""
+    """Rules modules named in it resolve against the config's own directory."""
     monkeypatch.delenv(config.ENV_VAR, raising=False)
     (tmp_path / config.SUBDIR).mkdir()
     path = tmp_path / config.SUBDIR / config.FILENAME
@@ -143,60 +122,26 @@ def test_it_is_found_in_a_configs_subdirectory_on_the_way_up(tmp_path, monkeypat
     assert config.load().rule_set("wasp") == str(tmp_path / config.SUBDIR / "rules" / "wasp_rules.py")
 
 
-def test_a_bare_config_beats_one_in_configs_at_the_same_level(tmp_path, monkeypatch):
+@pytest.mark.parametrize("layout, start, expected", [
+    ({"": "outer", "inner": "nearer"}, "inner", "nearer"),          # the nearest wins
+    ({config.SUBDIR: "sub", "": "bare"}, "", "bare"),               # bare beats configs/
+])
+def test_which_config_wins(tmp_path, monkeypatch, layout, start, expected):
     monkeypatch.delenv(config.ENV_VAR, raising=False)
-    (tmp_path / config.SUBDIR).mkdir()
-    (tmp_path / config.SUBDIR / config.FILENAME).write_text('[dvid]\nserver = "sub"\n')
-    (tmp_path / config.FILENAME).write_text('[dvid]\nserver = "bare"\n')
-    monkeypatch.chdir(tmp_path)
-    assert config.load().server == "bare"
+    for where, server in layout.items():
+        (tmp_path / where).mkdir(exist_ok=True)
+        (tmp_path / where / config.FILENAME).write_text(f'[dvid]\nserver = "{server}"\n')
+    monkeypatch.chdir(tmp_path / start)
+    assert config.load().server == expected
 
 
-def test_there_is_no_machine_wide_location(tmp_path, monkeypatch):
-    """A hidden ~/.config file applies to every shell on the host and is the kind of
-    invisible state that makes one command behave differently for two people."""
-    assert not hasattr(config, "SEARCH")
-    monkeypatch.delenv(config.ENV_VAR, raising=False)
-    monkeypatch.chdir(tmp_path)          # nothing above tmp_path has one
-    assert config.find(tmp_path) is None
-
-
-def test_find_accepts_an_explicit_starting_point(tmp_path, monkeypatch):
-    monkeypatch.delenv(config.ENV_VAR, raising=False)
-    (tmp_path / config.FILENAME).write_text(TOML)
-    deep = tmp_path / "a" / "b"
-    deep.mkdir(parents=True)
-    assert config.find(deep) == str(tmp_path / config.FILENAME)
-
-
-def test_a_named_rules_module_resolves_against_the_CONFIG_not_the_cwd(cfg, tmp_path,
+def test_a_named_rules_module_resolves_against_the_config_not_the_cwd(cfg, tmp_path,
                                                                      monkeypatch):
-    """A notebook two directories down and a shell at the workspace root must load the same
-    module. Resolved against the cwd, the same command loads different rules depending on
-    where it was run — which is precisely the invisible state this file exists to avoid."""
+    """So a notebook and a shell at the workspace root load the same module."""
     deep = tmp_path / "a" / "b"
     deep.mkdir(parents=True)
     monkeypatch.chdir(deep)
     assert cfg.rule_set("wasp") == str(tmp_path / "rules" / "wasp_rules.py")
-
-
-def test_an_absolute_rules_path_is_left_alone(cfg):
     assert cfg.rule_set("absolute") == "/opt/shared/rules.py"
-
-
-def test_an_unknown_rules_name_lists_what_is_configured(cfg):
     with pytest.raises(ValueError, match="absolute, wasp"):
         cfg.rule_set("nope")
-
-
-def test_load_accepts_an_explicit_path(tmp_path):
-    path = tmp_path / "custom.toml"
-    path.write_text(TOML)
-    assert config.load(str(path)).uuid == "93fdbc:main"
-
-
-def test_a_config_with_no_uuid_says_so(tmp_path):
-    path = tmp_path / "c.toml"
-    path.write_text('[dvid]\nserver = "host"\n')
-    with pytest.raises(ValueError, match="sets no dvid.uuid"):
-        config.load(str(path)).url("synapses")

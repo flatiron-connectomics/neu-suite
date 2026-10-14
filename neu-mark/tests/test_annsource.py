@@ -45,8 +45,7 @@ def _built(**kw):
 # ids
 # --------------------------------------------------------------------------- #
 def test_ids_are_stable_across_runs():
-    """The id is the by_id key and appears in every index, so counting would renumber the
-    whole source on every export and invalidate any saved link into it."""
+    """Ids key every index, so renumbering would break saved links into the source."""
     df = connections(50)
     a = annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
                         voxel_size_xyz=[8, 8, 8], per_cell=50)
@@ -151,34 +150,24 @@ def test_every_annotation_is_emitted_exactly_once_across_levels():
     assert len(seen) == len(set(seen)) == 300
 
 
-def test_no_level_exceeds_its_declared_limit():
-    built = _built(n=400, per_cell=25)
-    for level, entries in zip(built["info"]["spatial"], built["spatial"]):
-        for _cell, payload in entries:
-            assert struct.unpack("<Q", payload[:8])[0] <= level["limit"]
-
-
 def test_no_level_is_declared_empty():
-    """A level with no cells claims detail the source does not have. The schedule stops when
-    nothing overflows, so this holds by construction — pinned because the earlier version
-    planned the depth up front and could over-provision."""
+    """A level with no cells would claim detail the source does not have."""
     built = _built(n=60, per_cell=50)
     assert all(len(e) for e in built["spatial"])
     assert len(built["info"]["spatial"]) == len(built["spatial"])
 
 
 def test_every_level_stays_near_per_cell():
-    """`per_cell` bounds what a viewer downloads for one cell. It is a target rather than a hard
-    cap, because emission is independent per annotation, so a cell lands NEAR it — but the
-    finest level must not balloon, which is what a fixed-in-advance schedule caused."""
+    """`per_cell` is a target, not a cap (emission is independent per annotation), but the
+    finest level must not balloon."""
     built = _built(n=2_000, per_cell=100)
     limits = [level["limit"] for level in built["info"]["spatial"]]
     assert max(limits) < 200, limits
 
 
 def test_the_declared_limit_is_the_largest_cell_actually_written():
-    """A viewer reads `limit` as the bound on one cell's download, so it has to describe the
-    file rather than restate the setting that generated it."""
+    """A viewer reads `limit` as the bound on one cell's download, so it must describe the
+    file, not the setting."""
     built = _built(n=800, per_cell=60)
     for level, entries in zip(built["info"]["spatial"], built["spatial"]):
         counts = [struct.unpack("<Q", p[:8])[0] for _c, p in entries]
@@ -186,13 +175,8 @@ def test_the_declared_limit_is_the_largest_cell_actually_written():
 
 
 def test_sparse_cells_are_not_drained_completely_at_a_coarse_level():
-    """The bug this pins produced a file that was valid and rendered NOTHING when zoomed in.
-
-    Capping each cell at `limit` fully empties any cell holding fewer than `limit` annotations,
-    so sparse regions stop having cells partway down the pyramid — the occupied-cell count peaks
-    and then FALLS toward the finest level. Thinning every cell by one per-level probability
-    keeps a share of every region alive, so the count rises monotonically as cells subdivide.
-    """
+    """Capping each cell at `limit` empties sparse cells, so zoomed-in views render nothing.
+    With per-level thinning the occupied-cell count rises monotonically with depth."""
     built = _built(n=4_000, per_cell=50)
     cells = [len(e) for e in built["spatial"]]
     assert len(cells) > 3
@@ -201,9 +185,7 @@ def test_sparse_cells_are_not_drained_completely_at_a_coarse_level():
 
 
 def test_the_depth_used_may_be_shallower_than_the_uniform_guess():
-    """Each level drains up to `per_cell` from *every* cell it touches, so the annotations run
-    out sooner than the average-occupancy estimate suggests. The unused tail is dropped rather
-    than declared empty."""
+    """Annotations run out sooner than the uniform estimate; the unused tail is dropped."""
     built = _built(n=2_000, per_cell=100)
     guess = annsource.plan_spatial(2_000, *BOUNDS, per_cell=100)
     assert len(built["info"]["spatial"]) < len(guess)
@@ -211,9 +193,8 @@ def test_the_depth_used_may_be_shallower_than_the_uniform_guess():
 
 
 def test_clustered_annotations_deepen_the_schedule_further_than_uniform_ones():
-    """Clustering is exactly what the uniform estimate gets wrong — the average cell is within
-    `per_cell` while dense cells are far over it — so it is the case the data-driven extension
-    has to handle, and where the depth exceeds the guess."""
+    """Clustering is what the uniform estimate gets wrong: dense cells are far over
+    `per_cell` while the average is not."""
     n = 2_000
     spread = connections(n, seed=1)
     clustered = connections(n, seed=1)
@@ -230,8 +211,7 @@ def test_clustered_annotations_deepen_the_schedule_further_than_uniform_ones():
 
 
 def test_the_terminal_level_takes_its_cells_whole_at_the_cap():
-    """With the depth capped the last level cannot subsample — the annotations left have
-    nowhere else to go, so it must exceed `per_cell` rather than silently drop them."""
+    """With the depth capped, the last level must exceed `per_cell` rather than drop any."""
     built = _built(n=2_000, per_cell=10, max_levels=3)
     assert len(built["info"]["spatial"]) == 3
     counts = [struct.unpack("<Q", p[:8])[0] for _c, p in built["spatial"][-1]]
@@ -248,9 +228,7 @@ def test_the_coarsest_level_is_a_single_cell():
 
 
 def test_levels_halve_the_largest_axis_so_cells_get_more_cubic():
-    """Level 0 is a single cell spanning the volume, so its aspect ratio is the volume's and
-    no subdivision can change that. What the halving buys is that deeper levels approach
-    cubic, which is what keeps a cell's contents spatially coherent."""
+    """Level 0 has the volume's aspect ratio; deeper levels approach cubic."""
     levels = annsource.plan_spatial(10_000, [0, 0, 0], [100, 200, 400], per_cell=100)
     grids = [tuple(l["grid_shape"]) for l in levels]
     assert grids[0] == (1, 1, 1)
@@ -299,9 +277,7 @@ def test_roi_labels_without_the_index_column_are_refused():
 
 
 def test_a_missing_conf_column_is_refused_rather_than_zero_filled():
-    """A valid file showing 0 confidence for every synapse, with nothing to say so, is the
-    silent failure this guard exists for — `connections` genuinely lacks conf, because it
-    comes from the element rather than the relationship."""
+    """Zero-filling would write a valid file claiming 0 confidence for every synapse."""
     df = connections(10).drop(columns=["post_conf"])
     with pytest.raises(KeyError, match="post_conf"):
         annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
@@ -309,8 +285,7 @@ def test_a_missing_conf_column_is_refused_rather_than_zero_filled():
 
 
 def test_an_unknown_partner_confidence_stays_nan_not_zero():
-    """Zero would claim the annotator had no confidence in a real synapse; NaN says unknown,
-    and it fails every shader comparison so such a line stays visible under a threshold."""
+    """NaN says unknown and fails every shader comparison, so the line stays visible."""
     df = connections(4)
     df.loc[df.index[:2], "post_conf"] = np.nan
     built = annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
@@ -321,8 +296,7 @@ def test_an_unknown_partner_confidence_stays_nan_not_zero():
 
 
 def test_body_ids_are_truncated_to_32_bits_in_the_property_and_full_in_the_relationship():
-    """A property cannot be uint64, so the shader-visible value is truncated — which is why
-    it is named _u32 — while the relationship key keeps the whole id."""
+    """A property cannot be uint64, so the shader copy is truncated; the relationship key is not."""
     df = connections(1)
     wide = 2**40 + 12345
     df.loc[0, "pre_body"] = wide
@@ -347,7 +321,7 @@ def test_each_index_is_sharded_for_its_own_size():
 # --------------------------------------------------------------------------- #
 # writing, and reading back through the sharded reader
 # --------------------------------------------------------------------------- #
-def test_a_written_source_reads_back_by_id(tmp_path):
+def test_a_written_source_reads_back_by_id_and_by_body(tmp_path):
     from neu_vol import sharded
 
     built = _built(n=150, partial=20)
@@ -356,17 +330,8 @@ def test_a_written_source_reads_back_by_id(tmp_path):
     assert "info" in written and f"{annsource.BY_ID_KEY}/" in written
 
     ann_id, expected = built["by_id"][7]
-    got = sharded.read_one(dst, built["info"]["by_id"]["sharding"], ann_id,
-                           annsource.BY_ID_KEY)
-    assert got == expected
-
-
-def test_a_written_relationship_index_reads_back_by_body(tmp_path):
-    from neu_vol import sharded
-
-    built = _built(n=150)
-    dst = str(tmp_path / "syn")
-    annsource.write(dst, built)
+    assert sharded.read_one(dst, built["info"]["by_id"]["sharding"], ann_id,
+                            annsource.BY_ID_KEY) == expected
     rel = [r for r in built["info"]["relationships"] if r["id"] == "body_pre"][0]
     body, expected = built["relationships"]["body_pre"][0]
     assert sharded.read_one(dst, rel["sharding"], body, rel["key"]) == expected
@@ -394,9 +359,7 @@ def _write(tmp_path, df, **kw):
 
 
 def test_verify_finds_nothing_wrong_with_a_source_it_just_wrote(tmp_path):
-    """Everything before `write` can be checked in memory; only a read-back proves the KEYS
-    are right, and a wrong key gives a viewer nothing while every byte on the store is
-    correct."""
+    """Only a read-back proves the keys are right; a wrong key gives a viewer nothing."""
     df = connections(150, partial=20)
     result = annsource.verify(_write(tmp_path, df, per_cell=50), df, sample=150)
     assert result["problems"] == []
@@ -405,8 +368,7 @@ def test_verify_finds_nothing_wrong_with_a_source_it_just_wrote(tmp_path):
 
 
 def test_verify_resolves_each_annotation_through_the_declared_sharding(tmp_path):
-    """`read_annotation` goes through the info's own sharding spec rather than the one the
-    build happened to use, which is what a viewer does."""
+    """Through the info's own sharding spec, as a viewer reads it."""
     df = connections(80)
     dst = _write(tmp_path, df, per_cell=30)
     pre = tables_positions(df, "pre_")
@@ -417,13 +379,9 @@ def test_verify_resolves_each_annotation_through_the_declared_sharding(tmp_path)
 
 
 def test_a_spatial_cell_reads_back_at_the_key_a_viewer_computes(tmp_path):
-    """The bug this pins wrote every object successfully and rendered almost nothing.
-
-    A sharded spatial index keys a cell by its compressed Morton code. A row-major flattening
-    agrees on any grid that subdivides at most one axis — so it survives small fixtures — and
-    then disagrees on nearly every cell of a real multi-axis grid. The key here is recomputed
-    from the grid POSITION, the way a reader does it, never from the writer's bookkeeping.
-    """
+    """Cells are keyed by compressed Morton code. Row-major keys agree only on grids that
+    subdivide one axis, so the key is recomputed from the grid position on a level that
+    subdivides several, as a reader does."""
     from neu_vol import sharded
 
     df = connections(1_500, seed=3)
@@ -452,8 +410,7 @@ def test_a_spatial_cell_reads_back_at_the_key_a_viewer_computes(tmp_path):
 
 
 def test_verify_checks_the_spatial_index_and_not_only_by_id(tmp_path):
-    """`verify` passed a source whose spatial index was unreachable, because it only ever
-    fetched by annotation id. A check that cannot see the index it is verifying is not one."""
+    """By-id reads alone would pass a source whose spatial index is unreachable."""
     df = connections(1_500, seed=3)
     result = annsource.verify(_write(tmp_path, df, per_cell=40), df, sample=50)
     assert result["problems"] == []
@@ -462,7 +419,7 @@ def test_verify_checks_the_spatial_index_and_not_only_by_id(tmp_path):
 
 
 def test_verify_reports_a_confidence_that_does_not_match(tmp_path):
-    """The check has to be able to fail, or a clean report says nothing."""
+    """The check has to be able to fail."""
     df = connections(60)
     dst = _write(tmp_path, df, per_cell=30)
     tampered = df.copy()

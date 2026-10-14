@@ -1,9 +1,5 @@
-"""The two stage-1 operations end to end, with DVID stubbed at the neuclease boundary.
-
-Stubbed at ``neuclease.dvid.*`` rather than at this package's own functions, so the code
-under test is the code that runs in production — the neu-vol lesson that a test
-building its own spec by hand proves nothing about the path that runs (invariant 9).
-"""
+"""The stage-1 operations end to end, with DVID stubbed at the ``neuclease.dvid`` boundary
+so the code under test is the code that runs in production."""
 
 import pandas as pd
 import pytest
@@ -19,6 +15,10 @@ from conftest import (BODY_RECORDS, COUNTS, ELEMENTS, KV_URL, LABELSZ_INFO,
 # points
 # --------------------------------------------------------------------------- #
 def test_points_writes_both_tables_and_a_provenance_sidecar(tmp_path, dvid_server):
+    """The branch ref is resolved to a concrete uuid before any fetch, so the tables are one
+    snapshot; the match rate is recorded with it."""
+    from neu_vol.location import read_json
+
     out = str(tmp_path / "syn")
     result = ops.fetch_points(_open(), out, [1, 2])
 
@@ -26,16 +26,15 @@ def test_points_writes_both_tables_and_a_provenance_sidecar(tmp_path, dvid_serve
     assert len(io.read_table(out, "points")) == 2
     assert len(io.read_table(out, "relationships")) == 3
 
-    from neu_vol.location import read_json
-
     rec = read_json(out, "provenance.json")
     assert rec["tool"] == "neu-mark"
-    assert rec["source"]["uuid"] == "d38898"
+    assert rec["source"]["uuid"] == "d38898" and rec["source"]["requested"] == "93fdbc:main"
+    assert rec["run"]["match"]["both_ends"] == 1
+    assert rec["run"]["synced_to"] == ["labels"]
 
 
 def test_relationships_are_always_fetched(dvid_server, tmp_path):
-    """`relationships=True` is the same single request, and partners are half the point.
-    neuclease's own fetch_elements_for_bodies hardcodes False and so cannot be used."""
+    """neuclease's `fetch_elements_for_bodies` hardcodes `relationships=False`."""
     ops.fetch_points(_open(), str(tmp_path / "o"), [1, 2])
     assert dvid_server and all(rels is True for _body, rels in dvid_server)
 
@@ -67,16 +66,6 @@ def test_drop_unmatched_is_opt_in(tmp_path, dvid_server):
     assert len(rels) == 2 and rels["to_body"].notna().all()
 
 
-def test_the_match_rate_is_recorded_in_the_provenance(tmp_path, dvid_server):
-    from neu_vol.location import read_json
-
-    out = str(tmp_path / "o")
-    ops.fetch_points(_open(), out, [1, 2])
-    run = read_json(out, "provenance.json")["run"]
-    assert run["match"]["both_ends"] == 1
-    assert run["synced_to"] == ["labels"]
-
-
 def test_connections_table_is_opt_in(tmp_path, dvid_server):
     out = str(tmp_path / "o")
     r = ops.fetch_points(_open(), out, [1, 2], write_connections=True)
@@ -84,9 +73,8 @@ def test_connections_table_is_opt_in(tmp_path, dvid_server):
     assert len(io.read_table(out, "connections")) == 2
 
 
-def test_a_failing_body_is_recorded_and_the_rest_still_land(tmp_path, dvid_server,
-                                                            monkeypatch):
-    """A run over thousands of bodies must not lose the successes to one bad request."""
+def test_a_permanent_error_on_one_body_is_raised_not_swallowed(tmp_path, dvid_server,
+                                                               monkeypatch):
     import neuclease.dvid.annotation as nda
 
     real = nda.fetch_label
@@ -103,8 +91,7 @@ def test_a_failing_body_is_recorded_and_the_rest_still_land(tmp_path, dvid_serve
 
 def test_an_unsynced_annotation_instance_is_refused_up_front(tmp_path, monkeypatch,
                                                              dvid_server):
-    """Without a sync there is no /label endpoint, so this would otherwise surface as one
-    failure per body."""
+    """Without a sync there is no /label endpoint: one failure per body otherwise."""
     import neu_vol.dvid as vdvid
 
     monkeypatch.setattr(vdvid, "instance_info",
@@ -116,17 +103,6 @@ def test_an_unsynced_annotation_instance_is_refused_up_front(tmp_path, monkeypat
 def test_a_keyvalue_instance_is_refused_for_points(tmp_path, dvid_server):
     with pytest.raises(ValueError, match="expected annotation"):
         ops.open_points_source(_src(KV_URL))
-
-
-def test_the_ref_is_resolved_to_a_concrete_uuid_before_any_fetch(tmp_path, dvid_server):
-    """A branch ref names a node that moves; a table half from one node and half from the
-    next is not a snapshot. Same discipline as neu-vol's invariant 9."""
-    out = str(tmp_path / "o")
-    ops.fetch_points(_open(), out, [1])
-    from neu_vol.location import read_json
-
-    src = read_json(out, "provenance.json")["source"]
-    assert src["uuid"] == "d38898" and src["requested"] == "93fdbc:main"
 
 
 def test_dvid_locked_selects_the_locked_ancestor(tmp_path, dvid_server):
@@ -164,8 +140,7 @@ def test_an_annotation_instance_is_refused_for_bodies(tmp_path, dvid_server):
 # --------------------------------------------------------------------------- #
 def test_the_whole_instance_is_read_without_ever_calling_keys(tmp_path, dvid_server,
                                                               monkeypatch):
-    """`/keys` is unreliable at this size — 52 s twice, then 504 from the proxy — and there is
-    no count endpoint, so nothing here may depend on it."""
+    """`/keys` times out on a large instance, so nothing may depend on it."""
     import neuclease.dvid.keyvalue as ndk
 
     def boom(*a, **k):
@@ -189,18 +164,16 @@ def test_the_key_ranges_are_recorded_in_the_provenance(tmp_path, dvid_server):
 
 
 def test_a_body_list_and_all_are_mutually_exclusive(tmp_path, dvid_server):
-    """They describe different populations — the >=10-synapse set holds 117 glia against
-    1,014 in the instance — so silently intersecting them would be a surprise."""
+    """They describe different populations, so silently intersecting them would surprise."""
     with pytest.raises(ValueError, match="not both"):
         ops.fetch_bodies(_open(KV_URL, "bodies"), str(tmp_path / "o"), [1],
                          everything=True)
-    with pytest.raises(ValueError, match="needs a body list, or everything=True"):
+    with pytest.raises(ValueError, match="needs a body list"):
         ops.fetch_bodies(_open(KV_URL, "bodies"), str(tmp_path / "o"))
 
 
 def test_a_boundary_key_arriving_twice_is_not_an_error(dvid_server, monkeypatch):
-    """DVID's key range is INCLUSIVE at both ends, so consecutive ranges overlap by one key.
-    That is why summing per-range counts overcounts (58,395 against 58,394 real records)."""
+    """DVID key ranges are inclusive at both ends, so consecutive ranges share a key."""
     import neuclease.dvid.keyvalue as ndk
 
     from neu_mark import dvid as ad
@@ -232,9 +205,7 @@ def test_the_same_key_with_different_values_is_an_error(dvid_server, monkeypatch
 
 
 def test_a_failing_range_is_split_rather_than_retried_whole(dvid_server, monkeypatch):
-    """The '1'..'2' range holds 16,225 records; it once completed in 13.7 s and later 504'd
-    twice at ~60 s each. The proxy window is fixed but the server's speed is not, so any
-    static bucket size is a bet on load — splitting on failure removes the bet."""
+    """A range that times out is split, since a retry would just time out more slowly."""
     import neuclease.dvid.keyvalue as ndk
 
     from neu_mark import dvid as ad
@@ -250,10 +221,7 @@ def test_a_failing_range_is_split_rather_than_retried_whole(dvid_server, monkeyp
     monkeypatch.setattr(ndk, "fetch_keyrangevalues", too_big)
     got = ad.fetch_all_body_annotations(_open(KV_URL, "bodies"))
     assert set(got["records"]) == {"11"}
-    # it split '1'..'2' into sub-ranges rather than repeating the whole thing
     assert ("1", "10") in attempted and ("11", "12") in attempted
-    # exactly ONE attempt at the failing range — no sleep-and-repeat, because repeating a
-    # request that timed out just fails again more slowly
     assert attempted.count(("1", "2")) == 1
 
 
@@ -269,20 +237,21 @@ def test_splitting_gives_up_at_a_bounded_depth(dvid_server, monkeypatch):
         ad.fetch_all_body_annotations(_open(KV_URL, "bodies"))
 
 
-def test_refine_drops_candidates_outside_the_range():
-    """`hi` is not always the next character after `lo`: splitting ' '..'0' gives ' 0'..' 9',
-    and splitting that again would put ' 0' after ' 9' and produce unsorted boundaries."""
+def test_refine_stays_sorted_and_drops_candidates_outside_the_range():
+    """`hi` is not always the next character after `lo`, e.g. ' '..' 0'."""
     from neu_mark import dvid as ad
 
+    bounds = ad.refine("1", "2")
+    assert bounds == sorted(bounds)
+    assert bounds[:3] == ["1", "10", "11"] and bounds[-1] == "2"
+    assert len(ad.key_ranges(bounds)) == 11
     assert ad.refine(" ", " 0") == [" ", " 0"]        # nothing strictly between
     inner = ad.refine(" ", "0")
     assert inner == sorted(inner) and inner[1] == " 0"
 
 
 def test_a_dead_server_fails_quickly_rather_than_recursing(dvid_server, monkeypatch):
-    """Splitting is the right answer to ONE range being too big and the wrong answer to the
-    server being down; without a budget the two look identical until the recursion exhausts
-    itself, which at depth 3 was ~16,000 requests."""
+    """Splitting answers one range being too big, not the server being down."""
     import neuclease.dvid.keyvalue as ndk
 
     from neu_mark import dvid as ad
@@ -296,17 +265,13 @@ def test_a_dead_server_fails_quickly_rather_than_recursing(dvid_server, monkeypa
     monkeypatch.setattr(ndk, "fetch_keyrangevalues", dead)
     with pytest.raises(RuntimeError):
         ad.fetch_all_body_annotations(_open(KV_URL, "bodies"))
-    # A handful of requests, not the full recursion. Whichever guard trips first is fine —
-    # the requirement is that a dead server is reported quickly, and at depth 3 with a
-    # sleeping retry this same scenario took hours.
-    assert calls["n"] < 10, calls["n"]
+    assert calls["n"] < 10, calls["n"]                 # a handful, not the full recursion
 
 
 def test_a_split_that_cannot_subdivide_is_what_stops_the_recursion(dvid_server,
                                                                   monkeypatch):
-    """No failure budget is needed, because this guard always fires first: the leading
-    sub-range of any split is `lo`..`lo + '0'`, which has nothing strictly between its bounds.
-    Verified here on a digit range, where subdivision otherwise looks unbounded."""
+    """The leading sub-range of any split (`lo`..`lo + '0'`) cannot subdivide, so this guard
+    fires before any failure budget would."""
     import neuclease.dvid.keyvalue as ndk
 
     from neu_mark import dvid as ad
@@ -318,20 +283,10 @@ def test_a_split_that_cannot_subdivide_is_what_stops_the_recursion(dvid_server,
         raise RuntimeError("504 Server Error: Gateway Time-out")
 
     monkeypatch.setattr(ndk, "fetch_keyrangevalues", dead)
-    # Passed rather than patched: `boundaries` is a default argument, bound at definition
-    # time, so setting the module constant would not reach it.
+    # Passed, not patched: `boundaries` is a default argument, bound at definition time.
     with pytest.raises(RuntimeError, match="cannot usefully be split further"):
         ad.fetch_all_body_annotations(_open(KV_URL, "bodies"), boundaries=("1", "2"))
     assert calls["n"] <= 3, calls["n"]
-
-
-def test_refine_stays_lexicographically_sorted():
-    from neu_mark import dvid as ad
-
-    bounds = ad.refine("1", "2")
-    assert bounds == sorted(bounds)
-    assert bounds[:3] == ["1", "10", "11"] and bounds[-1] == "2"
-    assert len(ad.key_ranges(bounds)) == 11
 
 
 def test_unsorted_boundaries_are_refused():
@@ -381,9 +336,8 @@ def test_select_thresholds_on_the_total_and_ranks_by_it(tmp_path, dvid_server):
 
 def test_a_total_threshold_keeps_sensory_and_outward_projecting_neurons(tmp_path,
                                                                        dvid_server):
-    """The reason the default is on the TOTAL. Body 2 has almost no postsynapses (sensory),
-    body 3 has no presynapses at all (projects outside the traced volume). Requiring both
-    would drop exactly the cells most worth looking at."""
+    """Body 2 is sensory (almost no postsynapses) and body 3 projects out of the volume (no
+    presynapses); a per-type default would drop both."""
     _out, r = _select(tmp_path, dvid_server, min_synapses=10)
     assert {2, 3} <= set(r["bodies"]["body"])
 
@@ -401,8 +355,7 @@ def test_limit_takes_the_top_n_of_the_ranking(tmp_path, dvid_server):
 
 def test_a_per_type_minimum_raises_the_query_threshold(tmp_path, dvid_server,
                                                        monkeypatch):
-    """AllSyn is the catch-all so it is >= each individual type, which makes
-    max(minimums) a sound threshold for the narrowing query."""
+    """AllSyn >= each type, so max(minimums) is a sound narrowing threshold."""
     import neuclease.dvid.labelsz as ndsz
 
     seen = []
@@ -413,17 +366,12 @@ def test_a_per_type_minimum_raises_the_query_threshold(tmp_path, dvid_server,
     assert seen[0] == 50
 
 
-def test_the_labelsz_instance_is_found_from_the_annotation_instance(tmp_path,
-                                                                   dvid_server):
+@pytest.mark.parametrize("url", [URL, SZ_URL], ids=["via-annotation", "direct"])
+def test_the_labelsz_instance_is_found_or_named_directly(tmp_path, dvid_server, url):
     """`synapses` is the name people know; the index records what it syncs to."""
-    source = ops.open_counts_source(_src(URL))
+    source = ops.open_counts_source(_src(url))
     assert source["instance"] == "synapses_labelsz"
     assert source["indexes"] == ["synapses"]
-
-
-def test_a_labelsz_instance_can_be_named_directly(tmp_path, dvid_server):
-    source = ops.open_counts_source(_src(SZ_URL))
-    assert source["instance"] == "synapses_labelsz"
 
 
 def test_no_labelsz_for_the_instance_says_so(tmp_path, dvid_server, monkeypatch):
@@ -446,8 +394,7 @@ def test_an_ambiguous_labelsz_asks_which_one(tmp_path, dvid_server, monkeypatch)
 
 
 def test_an_empty_result_names_the_silent_unindexed_failure(tmp_path, dvid_server):
-    """DVID answers a labelsz element type it does not index with an EMPTY result rather
-    than an error, so an empty selection must not read as 'no large bodies'."""
+    """DVID answers an unindexed element type with an empty result, not an error."""
     with pytest.raises(ValueError, match="EMPTY result"):
         _select(tmp_path, dvid_server, min_synapses=10_000)
 
@@ -524,20 +471,17 @@ def test_cli_points_runs_and_expands_the_uuid_placeholder(tmp_path, dvid_server,
 
 def test_the_destination_is_named_after_the_node_actually_read(tmp_path, dvid_server,
                                                               capsys):
-    """Found live: with --dvid-locked the tables were read from the locked node while the
-    directory was named after HEAD, because the CLI expanded {uuid} before resolving. The
-    provenance said one node and the path said another — worse than no name, since the
-    path is what someone browsing a directory believes."""
+    """With --dvid-locked, {uuid} must expand to the locked node the tables were read from,
+    not HEAD."""
     from neu_mark.cli import main
     from neu_vol.location import read_json
 
     dst = str(tmp_path / "syn_{uuid:6}")
     main(["points", "--src", URL, "--out", dst, "--bodies", "1", "--dvid-locked"])
 
-    written = tmp_path / "syn_846e3a"                  # the LOCKED node, not HEAD
+    written = tmp_path / "syn_846e3a"
     assert written.exists(), sorted(p.name for p in tmp_path.iterdir())
     assert not (tmp_path / "syn_d38898").exists()
-    # and the two agree
     assert read_json(str(written), "provenance.json")["source"]["uuid"] == "846e3a"
 
 

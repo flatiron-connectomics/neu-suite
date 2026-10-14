@@ -1,25 +1,11 @@
-"""Put `tmp_path` on tmpfs when one is available.
+"""Put `tmp_path` on tmpfs when one is available, and stub DVID.
 
-These suites are dominated by **fsync latency, not computation**. The default temp root
-decides what that costs, and on a Flatiron workstation the default is the slow choice:
-`/tmp` is RAID-backed xfs at ~8 ms per fsync, against ~0.004 ms on `/dev/shm`.
-
-`PYTEST_DEBUG_TEMPROOT` is the knob rather than `--basetemp` on purpose: pytest reads it
-inside `getbasetemp()`, so numbered per-run directories, the retention policy and the
-sweep of old runs all keep working exactly as before — the tree just lands somewhere
-faster. `--basetemp`, by contrast, `rm -rf`s the path it is given at session start and
-retains nothing, so a failed run's artifacts are gone.
-
-Escape hatches, in the order they win: an explicit `--basetemp` (pytest ignores the
-temproot entirely), an inherited `PYTEST_DEBUG_TEMPROOT`, and `NEU_TESTS_TMPFS=0` to force
-the platform default.
-
-The *code* below is duplicated in all four em-* repos, which are separate git repos and
-must stay independently testable — a shared copy would mean a test-time import across the
-layering. Keep the copies in step.
-
-This suite writes little and needs no parallelism: it never talks to DVID (every test
-stubs the transport) and its tables are a few dozen rows.
+The suites are dominated by fsync latency, and `/tmp` is the slow choice on many machines
+(~8 ms per fsync on RAID-backed xfs against ~0.004 ms on `/dev/shm`). `PYTEST_DEBUG_TEMPROOT`
+is used rather than `--basetemp`, so pytest's numbered run directories and retention keep
+working. An explicit `--basetemp`, an inherited `PYTEST_DEBUG_TEMPROOT`, or
+`NEU_TESTS_TMPFS=0` (platform default) override it. Each package's conftest carries its own
+copy of this code, so each suite runs on its own; keep the copies in step.
 """
 
 import os
@@ -62,11 +48,8 @@ if _root is not None:
 
 
 # --------------------------------------------------------------------------- #
-# A stubbed DVID, shared by every test that reads one.
-#
-# Stubbed at the `neuclease.dvid.*` boundary rather than at this package's own functions,
-# so the code under test is the code that runs in production — the neu-vol lesson
-# that a test building its own spec by hand proves nothing about the path that runs.
+# A stubbed DVID, shared by every test that reads one. Stubbed at the `neuclease.dvid.*`
+# boundary, so the code under test is the code that runs in production.
 # --------------------------------------------------------------------------- #
 import pandas as pd
 import pytest

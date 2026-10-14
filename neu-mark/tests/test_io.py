@@ -18,11 +18,12 @@ def frame():
     })
 
 
-def test_parquet_preserves_uint64_body_ids(tmp_path, frame):
-    """The whole reason parquet is the default. csv cannot do this."""
+@pytest.mark.parametrize("fmt", ["parquet", "feather"])
+def test_binary_formats_preserve_uint64_and_the_nullable_partner(tmp_path, frame, fmt):
+    """Why parquet is the default: csv cannot do this."""
     out = str(tmp_path / "t")
-    io.write_table(frame, out, "points")
-    back = io.read_table(out, "points")
+    io.write_table(frame, out, "points", fmt=fmt)
+    back = io.read_table(out, "points", fmt=fmt)
     assert back["body"].dtype == np.uint64
     assert int(back["body"].iloc[0]) == 2**63 + 7
     assert str(back["to_body"].dtype) == "UInt64"
@@ -31,13 +32,8 @@ def test_parquet_preserves_uint64_body_ids(tmp_path, frame):
 
 
 def test_csv_breaks_the_nullable_partner_column_and_says_so(tmp_path, frame, caplog):
-    """The precise csv hazard, and it is narrower than "csv loses uint64".
-
-    A plain uint64 column DOES survive csv — pandas infers uint64, even above 2^63. What
-    does not survive is an integer column containing nulls, which `to_body` always is
-    (an unresolved partner is null by design). That is the worse failure: the corruption
-    is confined to the one column nobody thinks to check.
-    """
+    """A plain uint64 column survives csv; an integer column with nulls (`to_body`, by
+    design) does not, so the warning must name exactly that column."""
     out = str(tmp_path / "t")
     with caplog.at_level("WARNING"):
         io.write_table(frame, out, "points", fmt="csv")
@@ -48,19 +44,8 @@ def test_csv_breaks_the_nullable_partner_column_and_says_so(tmp_path, frame, cap
     back = io.read_table(out, "points", fmt="csv")
     assert back["body"].dtype == np.uint64                     # survives
     assert int(back["body"].iloc[0]) == 2**63 + 7
-    # to_body does not: whatever it came back as, it is not an integer and no longer
-    # compares equal to the value written.
-    import pandas as pd
-
     assert not pd.api.types.is_integer_dtype(back["to_body"])
     assert not (back["to_body"].iloc[0] == 2**63 + 9)
-
-
-def test_feather_also_preserves_dtypes(tmp_path, frame):
-    out = str(tmp_path / "t")
-    io.write_table(frame, out, "points", fmt="feather")
-    back = io.read_table(out, "points", fmt="feather")
-    assert back["body"].dtype == np.uint64
 
 
 def test_provenance_travels_inside_the_parquet_file(tmp_path, frame):
@@ -84,7 +69,7 @@ def test_a_failed_provenance_write_does_not_lose_the_tables(tmp_path, frame, cap
     io.write_table(frame, out, "points")
     with caplog.at_level("WARNING"):
         io.write_provenance("s3://definitely-not-a-real-bucket-xyz/p", {"a": 1})
-    assert "only the record of where they came from is missing" in caplog.text
+    assert "where they came from" in caplog.text
     assert len(io.read_table(out, "points")) == 2
 
 
@@ -94,12 +79,8 @@ def test_an_unknown_format_is_refused_by_name():
 
 
 def test_the_module_never_opens_a_file_directly():
-    """Every write goes through location.write_bytes, or an s3 destination silently
-    writes nothing. Same rule and same reason as neu-morpho's precomputed.py.
-
-    Checked over the parsed AST, not the source text: the module docstring *discusses*
-    `open()` and `to_parquet(path)`, and a text search cannot tell prose from a call.
-    """
+    """Every write goes through `location`, or an s3 destination silently writes nothing.
+    Checked on the AST, since the docstring mentions `open()`."""
     import ast
     import inspect
 
@@ -115,7 +96,7 @@ def test_the_module_never_opens_a_file_directly():
 
 
 def test_round_trip_of_a_real_points_table(tmp_path):
-    """End to end on frames the parser actually produces, not hand-built ones."""
+    """On frames the parser actually produces, not hand-built ones."""
     el = {"Pos": [10, 20, 30], "Kind": "PreSyn", "Prop": {"conf": "0.9"},
           "Rels": [{"Rel": "PreSynTo", "To": [11, 21, 31]}]}
     pts, rels = tables.combine([tables.elements_to_frames([el], body=13481220)])

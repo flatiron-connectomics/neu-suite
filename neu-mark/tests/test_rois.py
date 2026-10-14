@@ -14,33 +14,18 @@ def _src():
     return {"backend": "dvid", **parse_url(URL)}
 
 
-# Listing and validating the ROI set moved to neu-vol with the functions
-# (neu-vol/tests/test_dvid_roi.py).
-
-
 # --------------------------------------------------------------------------- #
 # overlap
 # --------------------------------------------------------------------------- #
 def test_overlap_proceeds_by_default_and_is_measured_in_synapses(dvid_server, caplog):
-    """Small intersections are expected here and there is no principled tie-break, so
-    refusing is the wrong default. What matters is how many of YOUR synapses are affected —
-    a voxel-overlap figure cannot answer "should I care"."""
+    """Refusing is the wrong default, since small intersections are expected. The ambiguous
+    count comes from labelling again with the ROI order reversed: in the stub, x=10 takes
+    the first ROI and x=11 the last, so both points change hands."""
     pts, _ = nb.points(_open(), [1, 2])
     with caplog.at_level("WARNING"):
         out = ad.label_point_rois(_open(), pts, ["ME(L)", "OL(L)"])
     assert out["overlapping"]
-    assert "attributed by ROI ORDER alone" in caplog.text
-    assert "ambiguous" in out
-
-
-def test_the_ambiguous_count_comes_from_reversing_the_priority(dvid_server):
-    """The measurement: unpack again with the order reversed and see which points change
-    hands. Nearly free, because fetching the ROIs is the expensive half and is not repeated.
-
-    In the stub, x=10 takes the FIRST roi and x=11 the LAST, so reversing swaps both — two
-    points change and the competing pair is named."""
-    pts, _ = nb.points(_open(), [1, 2])
-    out = ad.label_point_rois(_open(), pts, ["ME(L)", "OL(L)"])
+    assert "attributed by ROI ORDER" in caplog.text
     assert out["ambiguous"] == 2
     assert out["ambiguous_pairs"] == {"ME(L) | OL(L)": 1, "OL(L) | ME(L)": 1}
 
@@ -84,12 +69,14 @@ def test_cli_reports_the_ambiguity_by_default(tmp_path, dvid_server, capsys):
 # --------------------------------------------------------------------------- #
 # the roi column
 # --------------------------------------------------------------------------- #
-def test_the_points_frame_gains_a_roi_column(dvid_server):
-    pts, _ = nb.points(_open(), [1, 2], rois=["ME(L)", "LO(L)"])
-    assert "roi" in pts.columns
-    # body 1's element is at x=10 -> the first ROI; body 2's at x=11 -> the last
-    by_body = pts.set_index("body")["roi"]
+def test_the_points_frame_gains_a_roi_column_and_relationships_do_not(dvid_server):
+    """The label index means nothing without the ROI list, so it is dropped. Relationships
+    span two points that may be in different neuropils, so they get no column."""
+    pts, rels = nb.points(_open(), [1, 2], rois=["ME(L)", "LO(L)"])
+    by_body = pts.set_index("body")["roi"]          # x=10 -> the first ROI, x=11 -> the last
     assert by_body.loc[1] == "ME(L)" and by_body.loc[2] == "LO(L)"
+    assert "roi_label" not in pts.columns
+    assert "roi" not in rels.columns
 
 
 def test_a_point_in_no_roi_is_null_not_a_region_called_unspecified(dvid_server):
@@ -101,24 +88,12 @@ def test_a_point_in_no_roi_is_null_not_a_region_called_unspecified(dvid_server):
     assert out["unlabeled"] == len(pts) and out["labeled"] == 0
 
 
-def test_the_roi_label_index_is_not_kept(dvid_server):
-    """It is a position in the ROI list and meaningless without it; the list goes into the
-    provenance record instead."""
-    pts, _ = nb.points(_open(), [1, 2], rois=["ME(L)"])
-    assert "roi_label" not in pts.columns
-
-
-def test_the_callers_frame_is_not_mutated(dvid_server):
-    """determine_point_rois works in place; that must not reach the caller's frame."""
+def test_counts_are_reported_and_the_callers_frame_is_not_mutated(dvid_server):
+    """neuclease labels in place; that must not reach the caller's frame."""
     pts, _ = nb.points(_open(), [1, 2])
     before = list(pts.columns)
-    ad.label_point_rois(_open(), pts, ["ME(L)"])
-    assert list(pts.columns) == before
-
-
-def test_counts_and_totals_are_reported(dvid_server):
-    pts, _ = nb.points(_open(), [1, 2])
     out = ad.label_point_rois(_open(), pts, ["ME(L)", "LO(L)"])
+    assert list(pts.columns) == before
     assert out["labeled"] + out["unlabeled"] == len(pts)
     assert out["counts"] == {"ME(L)": 1, "LO(L)": 1}
     assert out["rois"] == ["ME(L)", "LO(L)"]
@@ -128,13 +103,6 @@ def test_an_empty_points_frame_is_handled(dvid_server):
     pts, _ = nb.points(_open(), [999999])
     out = ad.label_point_rois(_open(), pts, ["ME(L)"])
     assert out["labeled"] == 0 and "roi" in out["points"].columns
-
-
-def test_relationships_get_no_roi_column(dvid_server):
-    """A relationship spans two points that may be in different neuropils, so one column
-    would have to pick one; the join back to `points` answers either side."""
-    _pts, rels = nb.points(_open(), [1, 2], rois=["ME(L)", "LO(L)"])
-    assert "roi" not in rels.columns
 
 
 # --------------------------------------------------------------------------- #

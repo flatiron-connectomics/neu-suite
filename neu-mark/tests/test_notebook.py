@@ -1,5 +1,6 @@
 """The interactive API: same fetches as `ops`, returning DataFrames and writing nothing."""
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,16 +19,13 @@ def test_select_bodies_returns_a_frame_and_writes_nothing(tmp_path, dvid_server,
     assert list(tmp_path.iterdir()) == []
 
 
-def test_points_returns_two_frames(dvid_server, tmp_path, monkeypatch):
+def test_points_returns_frames_and_writes_nothing(dvid_server, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pts, rels = nb.points(URL, [1, 2])
     assert len(pts) == 2 and len(rels) == 3
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_points_can_also_return_connections(dvid_server):
-    pts, rels, conns = nb.points(URL, [1, 2], connections=True)
+    _pts, _rels, conns = nb.points(URL, [1, 2], connections=True)
     assert len(conns) == 2
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_body_annotations_returns_one_row_per_body(dvid_server):
@@ -52,13 +50,14 @@ def test_a_dataframe_is_looked_up_by_column(dvid_server):
     assert nb.body_ids(sel.head(2)) == [1, 2]
 
 
-def test_series_lists_and_arrays_all_work():
-    import numpy as np
-
-    assert nb.body_ids(pd.Series([3, 1])) == [3, 1]
-    assert nb.body_ids([2, 1]) == [2, 1]
-    assert nb.body_ids(np.array([5, 6], dtype="uint64")) == [5, 6]
-    assert nb.body_ids((7,)) == [7]
+@pytest.mark.parametrize("given, expected", [
+    (pd.Series([3, 1]), [3, 1]),
+    ([2, 1], [2, 1]),
+    (np.array([5, 6], dtype="uint64"), [5, 6]),
+    ((7,), [7]),
+])
+def test_series_lists_and_arrays_all_work(given, expected):
+    assert nb.body_ids(given) == expected
 
 
 def test_a_frame_with_no_body_column_says_what_it_has():
@@ -80,18 +79,12 @@ def test_body_annotations_without_a_list_explains_why(dvid_server):
 # --------------------------------------------------------------------------- #
 # sources
 # --------------------------------------------------------------------------- #
-def test_source_pins_the_node_once(dvid_server):
-    """So every later call in a notebook reads the same version rather than following a
-    branch that moves under you."""
+def test_a_source_pins_the_node_once_and_is_reused_not_reresolved(dvid_server):
+    """So every later call reads the same version, not a branch that moves under you."""
     src = nb.source(URL, locked=True)
     assert src["uuid"] == "846e3a" and src["node"]["locked"] is True
-
-
-def test_an_opened_source_is_reused_not_reresolved(dvid_server):
-    src = nb.source(URL, locked=True)
     pts, _ = nb.points(src, [1])
     assert len(pts) == 1
-    # `locked` is not passed again, yet the locked node is still the one used
     assert nb.source(src, locked=False)["uuid"] == "846e3a"
 
 
@@ -100,9 +93,6 @@ def test_the_kind_selects_which_validation_applies(dvid_server):
     assert nb.source(URL, kind="counts")["instance"] == "synapses_labelsz"
     with pytest.raises(ValueError, match="expected annotation"):
         nb.source(KV_URL, kind="points")
-
-
-def test_an_unknown_kind_lists_the_valid_ones(dvid_server):
     with pytest.raises(ValueError, match="kind must be one of"):
         nb.source(URL, kind="sideways")
 
@@ -141,8 +131,7 @@ def test_the_notebook_names_are_importable_from_the_package_root():
 
 
 def test_importing_the_package_does_not_pull_pandas():
-    """`cli` reads __version__ from __init__, so an eager import here would make
-    `neu-mark --help` pay for pandas and neu-vol."""
+    """`neu-mark --help` reads __version__ from here, so it must not pay for pandas."""
     import subprocess
     import sys
 

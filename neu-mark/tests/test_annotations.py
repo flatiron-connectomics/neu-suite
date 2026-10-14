@@ -1,14 +1,9 @@
 """Encoding neuroglancer_annotations_v1 LINE annotations.
 
-The layout numbers here are not read off the spec. They were established by decoding a
-published synapse source that neuroglancer demonstrably renders, and by re-encoding one of
-its annotations byte for byte with this module — which matched. That validation was done
-once, interactively; what is kept here is the *arithmetic* it confirmed, checked offline.
-
-Nothing in this suite contacts an external service, and no third-party data or schema is
-reproduced. The property mix below is synthetic; only its shape (four 4-byte, two more
-4-byte, a 2-byte signed, a 2-byte unsigned, nine 1-byte → 37 bytes → a 64-byte stride)
-carries over, because that is what pins the padding rule and the ordering rule.
+The layout numbers were established by decoding a published synapse source that
+neuroglancer renders and re-encoding one annotation byte for byte; what is pinned here is
+the arithmetic that check confirmed. The property mix is synthetic, chosen to have the same
+byte layout (37 property bytes, padded to a 64-byte stride).
 """
 
 import struct
@@ -37,8 +32,7 @@ def test_record_size_reproduces_the_validated_stride():
 
 
 def test_a_group_blob_reproduces_the_validated_size_exactly():
-    """8 + 10000*64 + 10000*8 = 720,008, which is what a real level-0 blob of this shape
-    measured — the check that first confirmed the group encoding."""
+    """8 + 10000*64 + 10000*8, the size a real level-0 blob of this shape measured."""
     n = 10_000
     geometry = np.zeros((n, 6), "<f4")
     values = {p["id"]: np.zeros(n) for p in REFERENCE_PROPERTIES}
@@ -66,23 +60,16 @@ def test_padding_bytes_are_zero():
 # --------------------------------------------------------------------------- #
 # property order is a correctness rule
 # --------------------------------------------------------------------------- #
-def test_properties_are_sorted_descending_by_size():
-    """A reader infers each offset from the declared order, so declaring uint8 before float32
-    and writing in that order parses into garbage with no error anywhere."""
-    mixed = [{"id": "small", "type": "uint8"}, {"id": "big", "type": "float32"},
-             {"id": "mid", "type": "int16"}]
-    assert [p["id"] for p in ann.sort_properties(mixed)] == ["big", "mid", "small"]
-
-
-def test_sorting_is_stable_within_a_size_class():
-    same = [{"id": "b", "type": "float32"}, {"id": "a", "type": "uint32"}]
-    assert [p["id"] for p in ann.sort_properties(same)] == ["b", "a"]
-
-
-def test_a_correctly_ordered_list_is_left_alone():
-    """Descending-size input is already valid, so sorting must be a no-op on it."""
-    assert ([p["id"] for p in ann.sort_properties(REFERENCE_PROPERTIES)]
-            == [p["id"] for p in REFERENCE_PROPERTIES])
+@pytest.mark.parametrize("props, expected", [
+    ([{"id": "small", "type": "uint8"}, {"id": "big", "type": "float32"},
+      {"id": "mid", "type": "int16"}], ["big", "mid", "small"]),
+    ([{"id": "b", "type": "float32"}, {"id": "a", "type": "uint32"}], ["b", "a"]),   # stable
+    (REFERENCE_PROPERTIES, [p["id"] for p in REFERENCE_PROPERTIES]),                 # no-op
+], ids=["mixed", "stable", "already-sorted"])
+def test_properties_are_sorted_descending_by_size(props, expected):
+    """Readers infer each offset from the declared order, so a wrong order parses into
+    garbage with no error anywhere."""
+    assert [p["id"] for p in ann.sort_properties(props)] == expected
 
 
 def test_uint64_is_refused_and_says_what_to_do_instead():
@@ -140,9 +127,7 @@ def test_a_single_annotation_round_trips_including_its_relationships():
 
 
 def test_the_decoder_agrees_with_the_hand_written_one():
-    """`decode_group` is used to read a written source back, so it must not be the encoder's
-    mirror image — the two tests above read the bytes independently, and this pins the decoder
-    to that same reading rather than to `encode_group`'s internals."""
+    """Pinned to the same values as the hand-written decoder above, not to the encoder."""
     props = [{"id": "conf", "type": "float32"}, {"id": "roi", "type": "int16"},
              {"id": "kind", "type": "uint8"}]
     geometry = np.arange(3 * 6, dtype="<f4").reshape(3, 6)
@@ -169,16 +154,14 @@ def test_a_single_record_decodes_back_to_its_relationships():
 
 
 def test_an_empty_relationship_decodes_as_an_empty_list():
-    """A line with one endpoint's body unknown declares a zero-length relationship, and the
-    difference between that and 'no relationship member' is the whole record's shape."""
+    """A line with one unknown endpoint body declares a zero-length relationship."""
     got = ann.decode_single(
         ann.encode_single([0] * 6, relationships=[[7], []]), n_relationships=2)
     assert got["relationships"] == [[7], []]
 
 
 def test_decoding_with_the_wrong_property_list_is_refused_not_misread():
-    """The stride comes from the property list, so decoding with the wrong one would silently
-    reinterpret every field. The length check is what turns that into an error."""
+    """The stride comes from the property list; the length check catches a wrong one."""
     blob = ann.encode_group(np.zeros((4, 6), "<f4"), [1, 2, 3, 4],
                             properties=[{"id": "c", "type": "float32"}],
                             values={"c": np.zeros(4)})
@@ -214,31 +197,20 @@ def test_a_property_column_of_the_wrong_length_is_refused():
 # info
 # --------------------------------------------------------------------------- #
 def test_info_declares_every_required_member():
+    """Dimensions are metres in xyz order, which fixes the geometry's order."""
     info = ann.build_info(lower_bound=[0, 0, 0], upper_bound=[10, 10, 10],
                           voxel_size_xyz=[8, 8, 8])
     for member in ("@type", "dimensions", "lower_bound", "upper_bound",
                    "annotation_type", "properties", "relationships", "by_id", "spatial"):
         assert member in info, member
     assert info["@type"] == "neuroglancer_annotations_v1"
-
-
-def test_dimensions_are_metres_and_ordered_xyz():
-    """8 nm is 8e-9 m, and the axis order fixes the geometry's order."""
-    info = ann.build_info(lower_bound=[0, 0, 0], upper_bound=[1, 1, 1],
-                          voxel_size_xyz=[8, 8, 8])
+    assert info["annotation_type"] == "line"
     assert list(info["dimensions"]) == ["x", "y", "z"]
     assert info["dimensions"]["x"] == [8e-09, "m"]
 
 
-def test_annotation_type_is_lowercase():
-    info = ann.build_info(lower_bound=[0, 0, 0], upper_bound=[1, 1, 1],
-                          voxel_size_xyz=[8, 8, 8])
-    assert info["annotation_type"] == "line"
-
-
 def test_an_enum_property_carries_parallel_values_and_labels():
-    """enum_labels is required exactly when enum_values is given. Index 0 meaning "none"
-    is the established convention, which a shader tests for."""
+    """Index 0 means "none", which shaders test for."""
     p = ann.enum_property("roi", ["<unspecified>", "ME(L)", "LO(R)"])
     assert p["enum_values"] == [0, 1, 2]
     assert len(p["enum_labels"]) == len(p["enum_values"])

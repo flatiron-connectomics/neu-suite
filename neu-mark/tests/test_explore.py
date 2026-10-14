@@ -1,8 +1,5 @@
-"""The notebook-facing inspection functions.
-
-The strings here are real ones from dvid.example.org, including the dirty ones: a trailing '?'
-expressing doubt, trailing whitespace, and a body with no instance at all.
-"""
+"""The notebook-facing inspection functions, on realistic dirty strings: a trailing '?'
+expressing doubt, trailing whitespace, and a body with no instance at all."""
 
 import pandas as pd
 import pytest
@@ -18,12 +15,15 @@ BODIES = pd.DataFrame({
 })
 
 
-def test_normalize_strips_whitespace_and_doubt_marks():
-    assert ex.normalize(" Tm(R)_truncated? ") == "Tm(R)_truncated"
-    assert ex.normalize("irrelevant ") == "irrelevant"
-    assert ex.normalize(None) is None
-    assert ex.normalize("   ") is None
-    assert ex.normalize(float("nan")) is None
+@pytest.mark.parametrize("raw, expected", [
+    (" Tm(R)_truncated? ", "Tm(R)_truncated"),
+    ("irrelevant ", "irrelevant"),
+    (None, None),
+    ("   ", None),
+    (float("nan"), None),
+])
+def test_normalize_strips_whitespace_and_doubt_marks(raw, expected):
+    assert ex.normalize(raw) == expected
 
 
 def test_instances_counts_bodies_and_drops_missing():
@@ -41,8 +41,7 @@ def test_tokens_trailing_finds_the_suffix_vocabulary():
 
 
 def test_dropping_the_side_stops_it_burying_the_suffixes():
-    """Parens separate tokens, so a parenthesized side is the TRAILING token of any string
-    ending in one — which puts L and R at the top of the histogram and hides the rest."""
+    """A parenthesized side is the trailing token of any string ending in one."""
     with_side = ex.tokens(BODIES).set_index("token")["bodies"].to_dict()
     assert with_side.get("L") == 1                       # 'Tm2_A2(L)' ends with (L)
     without = ex.tokens(BODIES, drop=r"\((L|R)\)").set_index("token")["bodies"].to_dict()
@@ -74,8 +73,7 @@ def test_a_missing_column_names_what_is_there():
 
 
 def test_variants_shows_what_normalization_repaired():
-    """These vanish from every other view, which is why they get their own report: the
-    token histogram shows a clean 'truncated' and `near` then finds nothing to fix."""
+    """These vanish from every other view, so they get their own report."""
     out = ex.variants(BODIES)
     pairs = dict(zip(out["raw"], out["normalized"]))
     assert pairs["Tm(R)_truncated?"] == "Tm(R)_truncated"
@@ -84,17 +82,14 @@ def test_variants_shows_what_normalization_repaired():
     assert "Tm2_A2(L)" not in pairs
 
 
-def test_near_finds_a_semantic_misspelling_normalization_cannot():
+def test_near_finds_a_misspelling_and_excludes_the_exact_token_unless_asked():
     frame = pd.DataFrame({"instance": ["X_fragmnet", "Y_fragment", "Z_fragment"]})
     out = ex.near(ex.tokens(frame), "fragment")
-    assert out["token"].tolist() == ["fragmnet"]
-    assert out["bodies"].tolist() == [1]
+    assert out["token"].tolist() == ["fragmnet"] and out["bodies"].tolist() == [1]
 
-
-def test_near_excludes_the_exact_token_unless_asked():
-    frame = pd.DataFrame({"instance": ["Y_fragment"]})
-    assert ex.near(ex.tokens(frame), "fragment").empty
-    assert not ex.near(ex.tokens(frame), "fragment", include_exact=True).empty
+    exact = pd.DataFrame({"instance": ["Y_fragment"]})
+    assert ex.near(ex.tokens(exact), "fragment").empty
+    assert not ex.near(ex.tokens(exact), "fragment", include_exact=True).empty
 
 
 # --------------------------------------------------------------------------- #
@@ -114,16 +109,13 @@ def test_a_rule_may_return_a_scalar_a_sequence_or_none():
 
 
 def test_multi_valued_facets_are_first_class():
-    """Column labels genuinely are multi-valued — a central complex neuron can innervate
-    more than one, and neuroglancer's `tags` property is a list per segment anyway."""
     out = ex.coverage(BODIES, {"col": lambda r: ["D2", "E3"]})
     assert out.loc[0, "multi_valued"] == len(BODIES)
     assert out.loc[0, "values"] == 2 * len(BODIES)
 
 
 def test_missing_values_reach_a_rule_as_none_not_pd_na():
-    """`pd.NA or ''` RAISES rather than being falsey, so the obvious rule body would blow
-    up on the one body with no instance. Every rule author would hit it."""
+    """`pd.NA or ''` raises, so the obvious rule body would fail on a body with no instance."""
     seen = []
 
     def rule(r):
@@ -159,11 +151,7 @@ def test_unparsed_ranks_what_to_fix_next_by_body_count():
     rules = {"side": lambda r: ("L" if "(L)" in str(r["instance"] or "") else None)}
     out = ex.unparsed(frame, rules, "side")
     assert out.iloc[0]["instance"] == "AGNG" and out.iloc[0]["bodies"] == 5
-
-
-def test_unparsed_of_a_rule_that_always_fires_is_empty():
-    out = ex.unparsed(BODIES, {"all": lambda r: "x"}, "all")
-    assert out.empty
+    assert ex.unparsed(BODIES, {"all": lambda r: "x"}, "all").empty
 
 
 def test_unparsed_names_the_rules_it_has():
@@ -175,9 +163,8 @@ def test_unparsed_names_the_rules_it_has():
 # comparing a curated field against a parse
 # --------------------------------------------------------------------------- #
 def test_compare_classifies_the_relation_without_judging_it():
-    """`type` being coarser than the parse is a difference of GRAIN, not an error — on
-    dvid.example.org `type='LMC'` against `instance='L1/L3_D4(R)'` is deliberate. This reports
-    the relation and leaves the decision to whoever knows the dataset."""
+    """A `type` coarser than the parse is a difference of grain, not an error, so the
+    relation is reported and the judgment left to whoever knows the dataset."""
     core = lambda r: str(r["instance"] or "").split("(")[0] or None
     out = ex.compare(BODIES, "type", core)
     rel = dict(zip(out["body"], out["relation"]))

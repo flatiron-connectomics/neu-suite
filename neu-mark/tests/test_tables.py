@@ -1,7 +1,5 @@
-"""The table model: parsing, axis order, and the partner join.
-
-Nothing here touches DVID. The element JSON shape is copied from real dvid.example.org
-responses, including the string-typed `conf` and the ragged `Prop` keys.
+"""The table model: parsing, axis order, and the partner join. Nothing here touches DVID;
+the element JSON has DVID's real shape, including string-typed `conf` and ragged `Prop` keys.
 """
 
 import numpy as np
@@ -36,15 +34,10 @@ def test_dvid_xyz_becomes_named_zyx_columns():
     assert list(pts.columns[:4]) == ["body", "z", "y", "x"]
 
 
-def test_positions_helpers_are_the_only_order_decision():
+def test_positions_helpers_are_exact_reverses_and_take_a_prefix():
     pts, _ = tables.elements_to_frames([TBAR, PSD], body=7)
     assert tables.positions_zyx(pts).tolist() == [[30, 20, 10], [31, 21, 11]]
     assert tables.positions_xyz(pts).tolist() == [[10, 20, 30], [11, 21, 31]]
-    # and they are exact reverses of one another, which is the property that matters
-    assert (tables.positions_zyx(pts) == tables.positions_xyz(pts)[:, ::-1]).all()
-
-
-def test_positions_helpers_work_on_prefixed_columns():
     _, rels = tables.elements_to_frames([PSD], body=7)
     assert tables.positions_xyz(rels, "to_").tolist() == [[10, 20, 30]]
 
@@ -119,16 +112,12 @@ def test_partner_bodies_resolve_by_position_without_a_labelmap_lookup():
     assert post["from_body"].iloc[0] == 2 and post["to_body"].iloc[0] == 1
 
 
-def test_an_unfetched_partner_leaves_to_body_null_not_zero():
-    """A missing partner must be distinguishable from body 0."""
+def test_an_unfetched_partner_is_null_in_a_nullable_uint64_column():
+    """Null, so it is distinguishable from body 0; UInt64, because a body id that has been
+    through float64 may have been rounded."""
     _, rels = _two_bodies()
     outside = rels[rels["to_x"] == 99]
     assert len(outside) == 1 and pd.isna(outside["to_body"].iloc[0])
-
-
-def test_to_body_is_nullable_uint64_never_float():
-    """A body id that has been through float64 may have been rounded."""
-    _, rels = _two_bodies()
     assert str(rels["to_body"].dtype) == "UInt64"
 
 
@@ -142,13 +131,17 @@ def test_duplicate_positions_are_refused_because_they_make_the_join_ambiguous():
 # --------------------------------------------------------------------------- #
 # connections: both directions, de-duplicated
 # --------------------------------------------------------------------------- #
-def test_connections_dedupes_a_pair_seen_from_both_ends():
-    """The tbar->psd edge appears as PreSynTo from body 1 and PostSynTo from body 2."""
+def test_connections_dedupes_a_pair_seen_from_both_ends_and_orients_by_rel_name():
+    """The edge appears as PreSynTo from body 1 and PostSynTo from body 2. PostSynTo means
+    the element is the PSD, whatever its Kind claims."""
     _, rels = _two_bodies()
     conns = tables.connections(rels)
     matched = conns[conns["post_x"] == 11]
     assert len(matched) == 1
     assert (matched["pre_body"].iloc[0], matched["post_body"].iloc[0]) == (1, 2)
+    row = matched.iloc[0]
+    assert (row["pre_z"], row["pre_y"], row["pre_x"]) == (30, 20, 10)
+    assert (row["post_z"], row["post_y"], row["post_x"]) == (31, 21, 11)
 
 
 def test_connections_keeps_edges_anchored_at_only_one_end():
@@ -161,16 +154,6 @@ def test_connections_keeps_edges_anchored_at_only_one_end():
     assert outside["pre_body"].iloc[0] == 1 and pd.isna(outside["post_body"].iloc[0])
 
 
-def test_connections_orientation_comes_from_the_rel_name():
-    """PostSynTo means the element is the PSD, whatever its Kind claims."""
-    _, rels = _two_bodies()
-    conns = tables.connections(rels)
-    row = conns[conns["post_x"] == 11].iloc[0]
-    # tbar is at xyz (10,20,30) -> pre_*, psd at (11,21,31) -> post_*
-    assert (row["pre_z"], row["pre_y"], row["pre_x"]) == (30, 20, 10)
-    assert (row["post_z"], row["post_y"], row["post_x"]) == (31, 21, 11)
-
-
 def test_non_synaptic_relationships_are_ignored_by_connections_but_kept_raw():
     grouped = el((1, 1, 1), "Note", rels=[("GroupedWith", (2, 2, 2))])
     pts, rels = tables.combine([tables.elements_to_frames([grouped], body=5)])
@@ -178,16 +161,12 @@ def test_non_synaptic_relationships_are_ignored_by_connections_but_kept_raw():
     assert len(tables.connections(rels)) == 0
 
 
-def test_match_rate_reports_coverage_not_data_quality():
+def test_match_rate_reports_coverage_and_none_for_nothing():
     _, rels = _two_bodies()
     m = tables.match_rate(tables.connections(rels))
-    assert m["pairs"] == 2 and m["both_ends"] == 1 and m["one_end"] == 1
-    assert m["fraction"] == 0.5
-
-
-def test_match_rate_of_nothing_is_none_not_zero():
-    m = tables.match_rate(tables.connections(tables._empty_rels()))
-    assert m["pairs"] == 0 and m["fraction"] is None
+    assert (m["pairs"], m["both_ends"], m["one_end"], m["fraction"]) == (2, 1, 1, 0.5)
+    empty = tables.match_rate(tables.connections(tables._empty_rels()))
+    assert empty["pairs"] == 0 and empty["fraction"] is None
 
 
 # --------------------------------------------------------------------------- #
@@ -201,16 +180,15 @@ RAGGED = {
 
 
 def test_ragged_body_records_normalise_to_the_union_of_fields():
+    """`instance` keeps its name, so joins against neuclease and neuprint output work; the
+    raw record is kept for pushing edits back."""
     df = tables.keyvalues_to_frame(RAGGED)
     assert len(df) == 2
     assert set(["body", "status", "instance", "user", "json"]) <= set(df.columns)
-    assert pd.isna(df.set_index("body").loc[18126428, "user"])
-
-
-def test_instance_keeps_its_name_even_though_it_means_neuron_name():
-    """Renaming it would break every join against neuclease and neuprint output."""
-    df = tables.keyvalues_to_frame(RAGGED)
-    assert df.set_index("body").loc[13481220, "instance"] == "CAm(L)"
+    by_body = df.set_index("body")
+    assert pd.isna(by_body.loc[18126428, "user"])
+    assert by_body.loc[13481220, "instance"] == "CAm(L)"
+    assert df["json"].iloc[0] == RAGGED["13481220"]
 
 
 def test_status_stays_a_string_so_an_unknown_value_cannot_fail_the_fetch():
@@ -228,11 +206,6 @@ def test_non_body_keys_are_skipped():
 def test_a_record_disagreeing_with_its_key_is_an_error():
     with pytest.raises(ValueError, match="says bodyid"):
         tables.keyvalues_to_frame({"5": {"bodyid": 6, "status": "Traced"}})
-
-
-def test_the_raw_json_is_preserved_for_pushing_edits_back():
-    df = tables.keyvalues_to_frame(RAGGED)
-    assert df["json"].iloc[0] == RAGGED["13481220"]
 
 
 def test_bodies_frame_is_sorted_by_body():

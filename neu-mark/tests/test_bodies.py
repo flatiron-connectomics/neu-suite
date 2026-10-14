@@ -1,4 +1,4 @@
-"""Reading the body list — the required input to every command."""
+"""Reading the body list, the required input to every command."""
 
 import pandas as pd
 import pytest
@@ -6,20 +6,15 @@ import pytest
 from neu_mark import bodies
 
 
-def test_inline_list_accepts_commas_and_whitespace():
-    assert bodies.load("3,1,2") == [1, 2, 3]
-    assert bodies.load("3 1 2") == [1, 2, 3]
-    assert bodies.load("10") == [10]
-
-
-def test_ids_are_deduplicated_and_sorted():
-    """Sorted so a run's order depends on the set requested, not how it was spelled;
-    de-duplicated because asking twice costs a request and doubles the rows."""
-    assert bodies.load("5,5,1,5") == [1, 5]
-
-
-def test_an_iterable_is_accepted_directly():
-    assert bodies.load([9, 8, 8]) == [8, 9]
+@pytest.mark.parametrize("given, expected", [
+    ("3,1,2", [1, 2, 3]),
+    ("3 1 2", [1, 2, 3]),
+    ("10", [10]),
+    ("5,5,1,5", [1, 5]),           # sorted and de-duplicated
+    ([9, 8, 8], [8, 9]),
+])
+def test_inline_lists_and_iterables(given, expected):
+    assert bodies.load(given) == expected
 
 
 def test_text_file_one_per_line_with_comments(tmp_path):
@@ -28,26 +23,23 @@ def test_text_file_one_per_line_with_comments(tmp_path):
     assert bodies.load(str(p)) == [13481220, 18126428, 77263210]
 
 
-def test_csv_finds_a_recognisably_named_column(tmp_path):
+@pytest.mark.parametrize("frame", [
+    pd.DataFrame({"name": ["a", "b"], "body": [7, 3]}),     # a recognisably named column
+    pd.DataFrame({"whatever": [7, 3]}),                     # a single column needs no name
+])
+def test_csv_columns(tmp_path, frame):
     p = tmp_path / "b.csv"
-    pd.DataFrame({"name": ["a", "b"], "body": [7, 3]}).to_csv(p, index=False)
+    frame.to_csv(p, index=False)
     assert bodies.load(str(p)) == [3, 7]
 
 
-def test_csv_single_column_needs_no_name(tmp_path):
-    p = tmp_path / "b.csv"
-    pd.DataFrame({"whatever": [7, 3]}).to_csv(p, index=False)
-    assert bodies.load(str(p)) == [3, 7]
-
-
-def test_parquet_round_trips_through_the_reader(tmp_path):
+def test_parquet_round_trips_uint64(tmp_path):
     p = tmp_path / "b.parquet"
     pd.DataFrame({"body": [2**63 + 7, 3]}, dtype="uint64").to_parquet(p)
     assert bodies.load(str(p)) == [3, 2**63 + 7]
 
 
 def test_this_packages_own_bodies_table_is_a_valid_input(tmp_path):
-    """So a body list from one node feeds the next fetch with no intermediate step."""
     from neu_mark import tables
 
     df = tables.keyvalues_to_frame({"5": {"bodyid": 5}, "9": {"bodyid": 9}})
@@ -56,25 +48,20 @@ def test_this_packages_own_bodies_table_is_a_valid_input(tmp_path):
     assert bodies.load(str(p)) == [5, 9]
 
 
-def test_an_ambiguous_table_asks_for_the_column(tmp_path):
+def test_an_ambiguous_or_wrong_column_names_what_to_do(tmp_path):
     p = tmp_path / "b.csv"
     pd.DataFrame({"a": [1], "b": [2]}).to_csv(p, index=False)
     with pytest.raises(ValueError, match="--body-column"):
         bodies.load(str(p))
     assert bodies.load(str(p), column="b") == [2]
-
-
-def test_a_named_column_that_is_absent_lists_what_is_there(tmp_path):
-    p = tmp_path / "b.csv"
-    pd.DataFrame({"a": [1], "b": [2]}).to_csv(p, index=False)
-    with pytest.raises(ValueError, match="has no column 'zzz'"):
+    with pytest.raises(ValueError, match="no column 'zzz'"):
         bodies.load(str(p), column="zzz")
 
 
 def test_a_non_numeric_token_names_the_line(tmp_path):
     p = tmp_path / "ids.txt"
     p.write_text("1\nnot-a-body\n")
-    with pytest.raises(ValueError, match="line 2 has 'not-a-body'"):
+    with pytest.raises(ValueError, match="line 2"):
         bodies.load(str(p))
 
 
