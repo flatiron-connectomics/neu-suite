@@ -1,49 +1,18 @@
-"""Buttons above a rendered view, in a notebook. ipywidgets, not an in-canvas UI.
+"""Buttons above a rendered view in a notebook, as ipywidgets.
 
-Nine actions: **centre** the camera on what is visible, **reset** to the view the figure
-opened with, **refresh** from a scene edited in a cell, **save** a viewpoint and go back to
-it (**restore**) or to wherever the **last** closed figure was, **capture** a PNG, SVG or
-PDF, **animate** an orbit to frames, and **close** the figure — replacing the live canvas
-with the image it last showed, so the notebook keeps a picture where the widget was.
-Capture and Animate each read a collapsed options panel below the path box.
+The buttons: **Center** the camera on what is visible, **Reset** to the opening view,
+**Refresh** after editing the scene in a cell, **Save** a viewpoint and **Restore** it, go
+to where the **Last** closed figure was, **Capture** a PNG, SVG or PDF, **Animate** an
+orbit, and **Close** the figure, leaving its last image in place of the canvas. Capture
+and Animate read collapsible options panels.
 
-**Two viewpoint slots, two buttons.** They answer different questions — "the angle I chose"
-against "wherever I happened to be" — and a single button picking between them would leave
-it unclear which you got. `Close` writes the `last` slot on the way out (in `View.close`, so
-a `view.close()` from a cell counts too), which is what makes re-running a cell and pressing
-`Last` reproduce the angle. `show(scene, viewpoint="last")` does it without the button.
+Save/Restore and Last are separate slots on purpose ("the angle I chose" against "where I
+was"). ``View.close`` writes the ``last`` slot, so re-running a cell and pressing Last, or
+``show(scene, viewpoint="last")``, brings the angle back.
 
-## Why ipywidgets and not imgui
-
-The predecessor drew its toolbar *inside* the canvas with imgui, because fastplotlib
-already had an imgui render pass and a docked-subplot layout manager to hang it off.
-Neither exists here, and reproducing them would be the larger part of the work. Against
-that:
-
-* **A dead widget cannot host its own replacement.** "Close the figure and leave the
-  snapshot behind" needs somewhere outside the canvas to put the image; the predecessor
-  had to reach for a matplotlib figure to have a container at all. An ipywidgets ``VBox``
-  *is* that container, so the swap is one assignment and needs no plotting library.
-* **Text entry in an in-canvas UI is a browser bug away from unusable.** The
-  predecessor's save dialog needed a runtime string-patch of jupyter_rfb's frontend
-  JavaScript, because its ``input`` handler named an attribute that does not exist and
-  threw before dispatching typed characters — backspace worked, typing did not. A real
-  ``Text`` widget has no such problem.
-* It costs nothing when absent: ipywidgets is a notebook dependency, and outside a
-  notebook there is no toolbar to want.
-
-What is given up is that the buttons are **not part of the rendered image** — which is
-right for buttons, and would be wrong for a legend. The legend is therefore drawn in the
-canvas (see :mod:`neu_draw.backends.legend`), and the two live in different layers on
-purpose.
-
-## The one piece of remembered state
-
-:data:`last_prefix`. Capturing a figure is something you do a dozen times in a row while
-adjusting it, and typing the name each time is the friction that stops people doing it.
-So the path box is pre-filled with ``<prefix>_<timestamp>.png``, and the prefix is
-whatever you last typed — with a trailing timestamp stripped off first, or every capture
-would grow another one.
+The buttons sit outside the canvas, so they are not part of the rendered image; the
+legend is drawn inside it (:mod:`neu_draw.backends.legend`). The capture path is
+pre-filled as ``<prefix>_<timestamp>.png``, the prefix being the last one used.
 """
 
 from __future__ import annotations
@@ -53,39 +22,33 @@ from typing import Any, Optional
 
 from .viewstate import LAST, SAVED
 
-#: ``strftime`` pattern for the generated part of a capture filename. Sorts
-#: lexicographically, which is the only real requirement.
+#: ``strftime`` pattern for the timestamp in a capture filename; sorts lexicographically.
 TS_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 DEFAULT_PREFIX = "snapshot"
 
-#: What Capture can write, keyed by extension — the path's extension decides.
+#: What Capture can write, keyed by extension; the path's extension decides.
 FORMATS = {
     "png": "PNG image",
     "svg": "SVG — layered, for Illustrator",
     "pdf": "PDF — layered, for Acrobat",
 }
 
-#: The stem of the last path captured through a toolbar, for the next one's default.
-#: Module-level rather than per-toolbar: it is a preference about naming files, and it
-#: should survive the view it was expressed in.
+#: The stem of the last path captured through any toolbar, for the next default.
 last_prefix: Optional[str] = None
 #: …and its extension, so capturing one ``.svg`` keeps the next default an ``.svg``.
 last_suffix: str = ".png"
 
 
 def default_path(prefix: Optional[str] = None) -> str:
-    """``<prefix>_<timestamp>.png`` (or the last extension used) — the pre-filled path."""
+    """The pre-filled path, ``<prefix>_<timestamp>.png`` (or the last extension used)."""
     stem = prefix or last_prefix or DEFAULT_PREFIX
     return f"{stem}_{datetime.now().strftime(TS_FORMAT)}{last_suffix}"
 
 
 def remember_prefix(path: str) -> str:
-    """Record ``path``'s stem as the next default, dropping a trailing timestamp.
-
-    Without the strip, capturing ``cell_2026-08-26_11-00-00.png`` would seed the next
-    default with that whole string and produce ``cell_2026-08-26_11-00-00_2026-08-26_11-00-42.png``.
-    """
+    """Record ``path``'s stem as the next default, dropping a trailing timestamp so they do
+    not accumulate."""
     global last_prefix, last_suffix
     base = path.rsplit("/", 1)[-1]
     stem = base.rsplit(".", 1)[0]
@@ -106,14 +69,10 @@ def remember_prefix(path: str) -> str:
 class Toolbar:
     """The button bar and the canvas, as one widget.
 
-    ``view`` is a rendered view — anything with ``canvas``, ``center()``, ``save_view()``,
-    ``restore_view()``, ``save()``, ``snapshot()``, ``logical_size()`` and ``close()``.
-    Duck-typed rather than importing the backend, so this module stays free of pygfx and
-    a test can drive it without a GPU.
-
-    Raises ``TypeError`` if the canvas is not an ipywidget — an offscreen or desktop
-    canvas has nothing to compose with, and silently returning a toolbar that displays
-    nothing would be worse than saying so.
+    ``view`` is anything with ``canvas``, ``center()``, ``save_view()``,
+    ``restore_view()``, ``save()``, ``snapshot()``, ``logical_size()`` and ``close()``, so
+    this module needs no pygfx. Raises ``TypeError`` if the canvas is not an ipywidget
+    (an offscreen or desktop canvas).
     """
 
     def __init__(self, view: Any, *, path: Optional[str] = None):
@@ -174,13 +133,8 @@ class Toolbar:
         self.animation = self._animation_options()
 
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
-        # Replacing a child of the outer VBox would work too, but this keeps the bar's
-        # position fixed and the swap a single-element assignment.
         self._stage = widgets.Box([canvas])
-        # Eight buttons no longer fit beside a path box, so the path moved to its own row
-        # with the status line. `row wrap` because a narrow canvas should stack the buttons
-        # rather than clip the last two — and it is the last two, Capture and Close, that
-        # you would most notice missing.
+        # Buttons wrap rather than clip on a narrow canvas; the path box has its own row.
         self.widget = widgets.VBox([
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
@@ -196,13 +150,8 @@ class Toolbar:
     # -- construction helpers --------------------------------------------------
 
     def _button(self, label: str, icon: str, tooltip: str, handler) -> Any:
-        """A button carrying **both** a word and an icon.
-
-        The icon names are Font Awesome, which is a font the notebook front-end supplies
-        rather than something this package can guarantee — so an icon-only bar is five
-        blank squares wherever it is missing, with no way to tell that from a broken
-        toolbar. The word always renders.
-        """
+        """A button with a word as well as an icon: the Font Awesome icons depend on the
+        notebook front end, and may not render."""
         widgets = self._widgets
         button = widgets.Button(description=label, icon=icon, tooltip=tooltip,
                                 layout=widgets.Layout(width="98px", flex="0 0 auto"))
@@ -212,14 +161,11 @@ class Toolbar:
     def _capture_options(self) -> dict:
         """The collapsed "Capture options" panel: format, resolution, size, legend.
 
-        **The path's extension is the single source of truth for the format**, and the
-        dropdown is a way of editing it: choosing ``svg`` rewrites the extension in the
-        box, and typing ``fig.pdf`` moves the dropdown. Two settings that could disagree
-        would leave "which one wins" to be discovered.
-
-        ``resolution`` is pixels per logical pixel — a PNG's supersampling, a vector
-        file's mesh images. ``width``/``height`` start at the canvas size; changing them
-        reframes nothing, it renders the same camera into a different frame.
+        The path's extension decides the format, and the dropdown edits it: choosing
+        ``svg`` rewrites the extension, and typing ``fig.pdf`` moves the dropdown.
+        ``resolution`` is pixels per logical pixel (a PNG's supersampling, or a vector
+        file's mesh images). ``width`` and ``height`` start at the canvas size; changing
+        them renders the same camera into a different frame.
         """
         widgets = self._widgets
         width, height = self.view.logical_size()
@@ -285,11 +231,8 @@ class Toolbar:
     def _animation_options(self) -> dict:
         """The collapsed "Animation options" panel, read by the Animate button.
 
-        Size and legend are **shared with Capture options** rather than repeated here: a
-        figure and its video are usually the same frame, and two width boxes that could
-        disagree would be a question nobody wants to answer. The frames folder defaults
-        to the capture path's stem plus ``_orbit``, so a figure and its animation land
-        side by side.
+        Size and legend come from Capture options. The frames folder defaults to the
+        capture path's stem plus ``_orbit``, so a figure and its animation sit together.
         """
         from .backends.animation import LIGHTS
         from .orbit import DATA_AXES, EASES, SCREEN_AXES
@@ -361,15 +304,9 @@ class Toolbar:
     def _opacity_sliders(self) -> dict:
         """One opacity slider per kind of drawable the scene holds, keyed by kind.
 
-        **Per kind, not per row**: the reason to reach for one is almost always "the
-        surfaces are hiding the synapses", which is a statement about every mesh at once,
-        and a slider per legend row would be a second legend. A single row's opacity is
-        ``view.set_alpha(a, names=[...])`` from a cell.
-
-        A slider **sets** each drawable's alpha rather than scaling it, so it starts at the
-        value the drawables share, or the largest where they differ — moving it then puts
-        them all on the one value, which is what the slider reads. Absent for a view that
-        cannot set opacity, so a test double without ``set_alpha`` still gets its buttons.
+        A slider sets every drawable of its kind to one alpha; it starts at the largest
+        current alpha. For one row, call ``view.set_alpha(a, names=[...])``. No sliders
+        for a view without ``set_alpha``.
         """
         scene = getattr(self.view, "scene_data", None)
         if scene is None or not hasattr(self.view, "set_alpha"):
@@ -395,12 +332,8 @@ class Toolbar:
         return sliders
 
     def _guarded(self, handler) -> None:
-        """Run a handler, putting any failure in the status line.
-
-        A button callback's traceback goes to the kernel log, not the cell — so an
-        unguarded failure is a button that visibly does nothing, which is the hardest
-        kind of bug to report.
-        """
+        """Run a handler, showing any failure in the status line (a button callback's
+        traceback otherwise goes to the kernel log, not the cell)."""
         try:
             handler()
         except Exception as exc:                                # noqa: BLE001
@@ -410,7 +343,7 @@ class Toolbar:
         color = "#b00" if error else "#666"
         self.status.value = f"<span style='color:{color}'>{text}</span>"
 
-    # -- the five actions ------------------------------------------------------
+    # -- the actions -----------------------------------------------------------
 
     def _center(self) -> None:
         self.view.center()
@@ -422,12 +355,8 @@ class Toolbar:
                   "(colours are left as you set them)")
 
     def _refresh(self) -> None:
-        """Rarely needed, and worth a button anyway.
-
-        The scene's own methods schedule a repaint, and every frame re-reads the scene — so
-        `scene.relabel(...)` already lands instantly. What this covers is a field set
-        directly on a drawable, which a plain dataclass cannot report.
-        """
+        """Re-read the scene. The scene's methods repaint on their own; this covers a field
+        set directly on a drawable."""
         self.view.refresh()
         self._say(f"re-read the scene: {len(self.view.legend or ())} legend row(s)"
                   if self.view.legend is not None else "re-read the scene")
@@ -444,12 +373,7 @@ class Toolbar:
             self._say("restored the saved viewpoint")
 
     def _restore_last(self) -> None:
-        """The other half of what 'Close' records, and the reason 'Close' records it.
-
-        Kept as a **second button** rather than folded into 'Restore' with a fallback: the
-        two slots answer different questions ("the angle I chose" against "wherever I was"),
-        and one button silently picking between them would make it unclear which you got.
-        """
+        """Go to the viewpoint 'Close' recorded for the last closed figure."""
         if self.view.restore_view(LAST) is None:
             self._say("no closed figure to go back to yet — 'Close' records one",
                       error=True)
@@ -471,11 +395,8 @@ class Toolbar:
         self._say(f"wrote {written}")
 
     def _animate(self) -> None:
-        """Render the orbit the Animation options describe, reporting progress here.
-
-        The kernel is busy for the length of the render, so the status line is the only
-        sign of life; it is updated per frame, which ipywidgets sends as it goes.
-        """
+        """Render the orbit the Animation options describe, with per-frame progress in the
+        status line (the kernel is busy throughout)."""
         a, c = self.animation, self.options
         folder = self._frames_folder()
 
@@ -509,10 +430,8 @@ class Toolbar:
     def _close(self) -> None:
         """Close the canvas and leave the image it last showed in its place.
 
-        ``View.close`` records the viewpoint into :data:`~neu_draw.viewstate.LAST` on its
-        way out, so the next figure's 'Last' button — or ``show(scene,
-        viewpoint="last")`` — reopens on this angle. That is the reason to press this
-        rather than deleting the cell.
+        ``View.close`` records the viewpoint in :data:`~neu_draw.viewstate.LAST`, so the
+        next figure's 'Last' button, or ``show(scene, viewpoint="last")``, reopens on it.
         """
         if self._closed:
             self._say("already closed")
@@ -524,10 +443,7 @@ class Toolbar:
         self._closed = True
 
         self._stage.children = (self._still(image, size),)
-        # Every button off, including 'restore': there is no canvas left to draw the
-        # restored angle on, and a control that responds by doing nothing visible is
-        # worse than one that is plainly spent. The viewpoint is in the store for the
-        # NEXT figure, which is what the status line says.
+        # Every control off: there is no canvas left to act on.
         for button in self._buttons.values():
             button.disabled = True
         for slider in self.sliders.values():
@@ -543,10 +459,8 @@ class Toolbar:
     def _still(self, image, size: tuple[int, int]) -> Any:
         """The snapshot as an ``Image`` widget, or a note saying why not.
 
-        Scaled back to the canvas's logical size: a snapshot is ``pixel_ratio`` times
-        bigger than the view was asked for (that is where the antialiasing comes from),
-        so shown at its natural size it would jump to two or three times the width the
-        figure just occupied.
+        Shown at the canvas's logical size, since the snapshot is ``pixel_ratio`` times
+        larger.
         """
         widgets = self._widgets
         try:
@@ -568,9 +482,8 @@ class Toolbar:
 def attach(view: Any, *, required: bool = True) -> Optional[Toolbar]:
     """A :class:`Toolbar` for ``view``, or ``None`` when one cannot exist.
 
-    ``required=False`` is the ``toolbar="auto"`` path: no ipywidgets, or a canvas that is
-    not a widget, means no toolbar rather than an error — the view still draws, which is
-    the thing that matters. An explicit request gets the exception.
+    With ``required=False`` (``toolbar="auto"``), missing ipywidgets or a canvas that is
+    not a widget returns ``None``; otherwise it raises.
     """
     try:
         return Toolbar(view)

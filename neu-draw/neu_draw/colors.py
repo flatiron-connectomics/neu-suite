@@ -1,16 +1,9 @@
-"""Colour normalisation and assignment. Pure — no matplotlib, no cmap, no renderer.
+"""Colour normalisation and assignment, as RGBA tuples. No plotting or colormap library
+is required.
 
-The predecessor reached into matplotlib for its palette (``plt.get_cmap('tab10')``) and
-into ``cmap`` for every single colour, which meant assigning colours to a scene pulled a
-plotting library and a colormap library into the import graph of code that does no
-plotting. A palette is *data*; the sixteen values below are written out, and everything
-here is arithmetic on RGBA tuples.
-
-Names resolve from a small table covering matplotlib's single-letter shorthands and the
-tab10 names — which is what the old call sites actually used (``'r'``, ``'b'``). Anything
-unrecognised is handed to the ``cmap`` library **if it happens to be installed**, so the
-full CSS vocabulary works in a rendering environment without being required in a headless
-one.
+Names resolve from a small table: matplotlib's single-letter shorthands, basic names and
+the ``tab:`` colours. Any other name is passed to the ``cmap`` library if it is installed,
+which knows the full CSS vocabulary.
 """
 
 from __future__ import annotations
@@ -20,8 +13,8 @@ from typing import Any, Hashable, Iterable, Mapping, Optional, Sequence
 
 RGBA = tuple[float, float, float, float]
 
-#: tab10 followed by Dark2, the pairing the predecessor used. Qualitative, and ordered so
-#: the first few are maximally distinct — a scene usually shows two or three bodies.
+#: tab10 followed by Dark2: qualitative, with the most distinct colours first, since a scene
+#: usually shows only a few bodies.
 QUALITATIVE: tuple[RGBA, ...] = (
     (0.1216, 0.4667, 0.7059, 1.0),   # tab:blue
     (1.0000, 0.4980, 0.0549, 1.0),   # tab:orange
@@ -42,7 +35,7 @@ QUALITATIVE: tuple[RGBA, ...] = (
 )
 
 _NAMED: dict[str, RGBA] = {
-    # matplotlib single-letter shorthands, which is what the old call sites passed
+    # matplotlib single-letter shorthands
     "b": (0.0, 0.0, 1.0, 1.0), "g": (0.0, 0.5, 0.0, 1.0), "r": (1.0, 0.0, 0.0, 1.0),
     "c": (0.0, 0.75, 0.75, 1.0), "m": (0.75, 0.0, 0.75, 1.0),
     "y": (0.75, 0.75, 0.0, 1.0), "k": (0.0, 0.0, 0.0, 1.0), "w": (1.0, 1.0, 1.0, 1.0),
@@ -77,9 +70,8 @@ def _resolve(color: Any) -> RGBA:
             return _NAMED[key]
         if key.startswith("#"):
             return _from_hex(key)
-        # Optional, and only for the long tail. The error is raised HERE either way:
-        # whether `cmap` happens to be installed decides which names work, and it must
-        # not also decide what a caller has to catch.
+        # Other names go to `cmap` if installed. The error is raised here either way, so
+        # the exception a caller sees does not depend on what is installed.
         try:
             import cmap as cmap_lib
         except ImportError:
@@ -128,13 +120,8 @@ def assign_colors(names: Iterable[Hashable],
     """One colour per name: explicit where given, otherwise cycling the palette.
 
     ``explicit`` may be a mapping, a single colour for everything, or a sequence to use
-    as the palette instead. This replaces the branching the predecessor grew in
-    ``render_bodies_rois_3d``, where the same three cases were disentangled inline
-    against a ``colors`` argument that could be any of them.
-
-    **Palette position depends only on the names that are not explicit.** Fixing one
-    body's colour therefore does not shift every other body's, which is what makes a
-    figure reproducible while you iterate on it.
+    as the palette. Palette position depends only on the names without an explicit
+    colour, so fixing one body's colour does not change the others'.
     """
     names = list(dict.fromkeys(names))          # de-duplicate, keep order
     fixed: dict[Hashable, RGBA] = {}

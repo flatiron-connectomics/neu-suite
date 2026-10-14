@@ -1,47 +1,24 @@
-"""Figure export: meshes as one transparent image layer each, everything else as vectors.
+"""Figure export: each mesh as a transparent image layer, everything else as vectors.
 
-pygfx rasterises on the GPU and has no vector output, so this does the projection itself,
-from the same camera, and builds a :class:`neu_draw.vectorfile.Group` tree that
-:mod:`neu_draw.vectorfile` writes as SVG or PDF. What is vector is what you would restyle
-in a figure: synapse points, skeleton lines and the legend (as real text). **Meshes stay
-raster**, because as vectors they are tens of thousands of depth-sorted triangles that
-open slowly, stack their own translucency and show seams — so each mesh is rendered
-**alone** into an RGBA image with a transparent background and placed as its own group.
+pygfx has no vector output, so this projects with the view's camera and builds a
+:class:`~neu_draw.vectorfile.Group` tree, written as SVG or PDF. Points, skeleton lines
+and the legend (as text) are vectors. Meshes stay raster, each rendered alone with a
+transparent background: as vectors they would be tens of thousands of depth-sorted
+triangles, slow to open and showing seams.
 
-## The group tree
-
-``background``, ``meshes``, ``skeletons``, ``points``, ``legend``. Under each of the three
-drawable groups, every drawable is a group of its own, optionally nested deeper by a
-``groups`` function — ``drawable -> path`` — so a figure can say *points by cell, then by
-input type*::
+Top-level groups are ``background``, ``meshes``, ``skeletons``, ``points`` and ``legend``.
+Each drawable is its own group, optionally nested deeper by a ``groups`` function::
 
     view.save("fig.svg", groups=lambda d: (d.name.split(" : ")[0],))
 
-The legend splits into its ``panel``, the declared ``group rows``, and the ``rows``, which
-are nested by kind and by the same function applied to each row's first member, so a
-cell's legend rows sit together the way its drawables do. Every row is a group of its
-plate, glyph and text.
+The legend splits into ``panel``, ``group rows`` and ``rows``, the rows nested by kind and
+by the same function applied to each row's first member.
 
-## What is given up, and why that is the right trade
-
-**Occlusion between groups.** Each mesh is rendered on its own, so it no longer hides
-another mesh, a skeleton or a point behind it. Meshes are stacked back to front by their
-centres' depth, and every vector sits above every mesh. With the faint meshes this is
-meant for, that reads correctly; an opaque mesh in front of synapses will show them
-through it. What is exact is everything *within* a group, including a translucent mesh
-over itself.
-
-## Two details that are easy to get wrong
-
-- **The snapshot is PREMULTIPLIED in linear light, and editors composite in sRGB.** Red at
-  alpha 0.5 comes back as (187, 0, 0, 127) — 187 being sRGB(0.5), not 255 — and even the
-  physically correct un-premultiplied colour composites far too dark in an editor,
-  because the GPU blended in linear light and the editor blends in sRGB (a 0.2-alpha mesh
-  came out barely visible). :func:`layer_pixels` instead solves for the colour that
-  reproduces the canvas's pixel over the figure's own background; see there.
-- **Vector colours are read off the built MATERIALS, not the drawables**, so the export
-  shows what the canvas shows: a highlighted body is exported highlighted, and alpha is
-  the drawable's own times its colour's, which ``display_color`` already folded in.
+**Occlusion between groups is lost.** Meshes are stacked back to front by centre depth and
+every vector sits above every mesh, so points behind an opaque mesh show through it; this
+reads correctly for the faint meshes it is meant for. Colours are read from the built
+materials, so the export matches the canvas, highlights included. Mesh pixels go through
+:func:`layer_pixels` so they composite in an editor as they do on the canvas.
 """
 
 from __future__ import annotations
@@ -86,7 +63,7 @@ def project(xyz: np.ndarray, matrix: np.ndarray, rect: Sequence[float]
 
 
 def _transform(obj: pygfx.WorldObject, xyz: np.ndarray) -> np.ndarray:
-    """An object's local positions in world space — its offset is its transform."""
+    """An object's local positions in world space (its offset is its transform)."""
     matrix = np.asarray(obj.world.matrix, dtype=np.float64)
     return (np.c_[xyz, np.ones(len(xyz))] @ matrix.T)[:, :3]
 
@@ -103,22 +80,18 @@ def _srgb_encode(linear: np.ndarray) -> np.ndarray:
 def layer_pixels(rgba: np.ndarray, background: Sequence[float]) -> np.ndarray:
     """A mesh render as a straight-alpha PNG that composites like the canvas does.
 
-    Two corrections, both measured (see the module docstring):
-
-    - pygfx hands back colour **premultiplied in linear light**, sRGB-encoded; and
-    - an SVG viewer composites **in sRGB**, where the GPU composited in linear light.
-
-    So even the physically right straight colour, ``srgb(linear(v) / alpha)``, composites
-    too dark: at alpha 0.2 a mid-grey came out at 0.16 against the canvas's 0.38. Instead
-    this solves for the colour ``S`` that, blended the way SVG blends, reproduces the pixel
-    the canvas would show over ``background`` (sRGB, 0-1)::
+    pygfx returns colour premultiplied in linear light, sRGB-encoded (red at alpha 0.5
+    comes back as (187, 0, 0, 127)), and an editor composites in sRGB, where the GPU
+    composited in linear light. So even the physically correct straight colour,
+    ``srgb(linear(v) / alpha)``, composites too dark: at alpha 0.2 a mid-grey came out at
+    0.16 against the canvas's 0.38. Instead this solves for the colour ``S`` that, blended
+    as an SVG viewer blends, reproduces the canvas pixel over ``background`` (sRGB, 0-1)::
 
         S * a + bg * (1 - a)  ==  srgb(linear(v) + linear(bg) * (1 - a))
 
-    Exact for one layer over the figure's own background, whatever that background is —
-    with the alpha raised where the colour alone cannot get there (see the body). Where
-    layers stack, or the background is changed afterwards, it is close rather than exact:
-    no single straight colour is right over every backdrop.
+    Exact for one layer over the figure's own background, with alpha raised where the
+    colour alone cannot reach the target. Over stacked layers or a changed background it
+    is close rather than exact.
     """
     rgba = np.asarray(rgba)
     v = rgba[..., :3].astype(np.float64) / 255.0
@@ -126,11 +99,9 @@ def layer_pixels(rgba: np.ndarray, background: Sequence[float]) -> np.ndarray:
     bg = np.asarray(background, dtype=np.float64)[:3]
     target = _srgb_encode(_srgb_decode(v) + _srgb_decode(bg) * (1.0 - alpha))
 
-    # The solved colour can leave [0, 1]: a light 0.2-alpha mesh over black shows as
-    # srgb(0.2 * linear) ~ 0.45, which an sRGB blend at alpha 0.2 can reach only with a
-    # colour of 2.2. So the alpha is RAISED, per pixel, to the least that keeps every
-    # channel in range — still exact over this background. A channel above the background
-    # needs alpha >= (T - bg) / (1 - bg); one below it needs alpha >= (bg - T) / bg.
+    # The solved colour can leave [0, 1] (a light 0.2-alpha mesh over black would need a
+    # colour of 2.2), so raise alpha per pixel to the least that keeps every channel in
+    # range: alpha >= (T - bg) / (1 - bg) above the background, (bg - T) / bg below it.
     with np.errstate(divide="ignore", invalid="ignore"):
         above = np.where(target > bg, (target - bg) / np.where(bg < 1, 1 - bg, 1), 0.0)
         below = np.where(target < bg, (bg - target) / np.where(bg > 0, bg, 1), 0.0)
@@ -196,9 +167,9 @@ def _render_alone(view, index: int, camera, size: tuple[int, int],
                   pixel_ratio: float) -> np.ndarray:
     """RGBA of ``view.group.children[index]`` alone, lights on, no background.
 
-    Visibility is flipped on the view's own scene and put back in a ``finally``, rather
-    than the object being moved to a scene of its own: a pygfx object has one parent, and
-    the backend pairs drawables with objects by position in ``view.group``.
+    Toggles visibility in the view's own scene and restores it afterwards; the object is
+    not moved, since the backend pairs drawables with objects by position in
+    ``view.group``.
     """
     from rendercanvas.offscreen import RenderCanvas as Offscreen
 
@@ -223,8 +194,8 @@ def _mesh(view, index: int, camera, rect, pixel_ratio: float,
           background: Sequence[float]) -> Optional[Image]:
     """The mesh as a cropped, straight-alpha image, placed where it sits in the frame.
 
-    Cropped to its own pixels, so a small body in a large frame costs a small image —
-    and an editor's bounding box for it is the body rather than the whole canvas.
+    Cropped to its own pixels, so an editor's bounding box for it is the body, not the
+    canvas.
     """
     x0, y0, width, height = rect
     rgba = _render_alone(view, index, camera, (int(width), int(height)), pixel_ratio)
@@ -247,9 +218,9 @@ def _legend(legend, size: Sequence[float], strip: Sequence[float],
             path_of: Callable[[Any], Sequence[str]]) -> Optional[Group]:
     """The strip as rects, glyphs and text, in the canvas's own layout.
 
-    Positions come from the entries' laid-out transforms and the same fit-to-strip scale
-    ``LegendOverlay._aim`` uses, and colours from their materials — so hidden rows are
-    dimmed and lit rows tinted exactly as on screen.
+    Positions come from the entries' laid-out transforms and the fit-to-strip scale
+    ``LegendOverlay._aim`` uses, and colours from their materials, so dimmed and
+    highlighted rows look as they do on screen.
     """
     sx, sy, sw, sh = (float(v) for v in strip)
     if sw <= 0 or sh <= 0 or not legend.entries:
@@ -312,11 +283,10 @@ def figure(view, *, pixel_ratio: float = 2.0, legend: bool = True,
            ) -> tuple[Group, int, int]:
     """``(tree, width, height)`` for the view. See the module docstring for the tree.
 
-    ``pixel_ratio`` sets the mesh images' resolution (2 = twice the logical size, which
-    is what the canvas renders at too). ``size`` defaults to the view's logical size.
-    ``groups`` nests drawables deeper, ``drawable -> tuple of group names``; it defaults
-    to the scene's ``export_groups``. Only **visible** drawables are exported; the legend
-    keeps every row, as on screen.
+    ``pixel_ratio`` sets the mesh images' resolution (2, the default, is twice the logical
+    size, as the canvas renders). ``size`` defaults to the view's logical size. ``groups``
+    maps a drawable to a tuple of group names to nest it under; it defaults to the scene's
+    ``export_groups``. Only visible drawables are exported; the legend keeps every row.
     """
     width, height = (int(v) for v in (size or view.logical_size()))
     if view.legend is not None and legend:
@@ -368,6 +338,6 @@ def figure(view, *, pixel_ratio: float = 2.0, legend: bool = True,
 
 
 def save(view, path: str, **kwargs) -> str:
-    """Write the figure to ``path`` — ``.svg`` or ``.pdf``, by extension."""
+    """Write the figure to ``path``, ``.svg`` or ``.pdf`` by extension."""
     tree, width, height = figure(view, **kwargs)
     return write(tree, width, height, path)

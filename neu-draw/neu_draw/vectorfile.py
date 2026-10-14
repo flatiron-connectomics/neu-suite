@@ -1,24 +1,16 @@
 """A vector figure as a tree of named groups, and its two writers: SVG and PDF.
 
-No renderer and no dependency beyond numpy and the standard library (plus imageio, only
-to encode an SVG's embedded PNGs). :mod:`neu_draw.backends.vector` builds the tree from a
-live view; everything here is about writing it down, so the two formats cannot drift — a
-group is a group in both, and a shape means the same thing in both.
+Needs only numpy and the standard library (and imageio, to encode an SVG's embedded
+PNGs); :mod:`neu_draw.backends.vector` builds the tree from a live view. Coordinates are
+logical pixels, y down, one pixel per point. Colours are RGBA floats in 0-1, and both
+formats composite opacity in sRGB.
 
-Coordinates are **logical pixels, y down**, as on the canvas, and one pixel is written as
-one point. Colours are RGBA floats in 0-1; an alpha below 1 is a real opacity in both
-formats, and both composite in sRGB, which is what the mesh images are solved against.
-
-## Which format for which editor
-
-**Illustrator keeps named groups from the SVG and not from the PDF.** A PDF's layers
-(optional content groups) are Acrobat's; Illustrator opens a PDF it did not write onto a
-single layer. So the SVG is written for Illustrator's importer in particular — SVG 1.1,
-``xlink:href`` on images (a bare SVG 2 ``href`` leaves them blank), no ``clipPath`` wrapper
-(it would become a clip group around everything), a baseline offset instead of
-``dominant-baseline``, and group ids in Illustrator's own ``_xHH_`` escaping, which it
-decodes back into the layer name. The PDF carries the same hierarchy as nested optional
-content, which Acrobat shows as a layer tree.
+**Illustrator keeps named groups from the SVG, not the PDF**: it opens a PDF it did not
+write onto a single layer, while Acrobat shows the PDF's nested optional content as a
+layer tree. The SVG is therefore written for Illustrator's importer: SVG 1.1,
+``xlink:href`` on images (a bare ``href`` leaves them blank), no ``clipPath`` wrapper, a
+baseline offset instead of ``dominant-baseline``, and group ids in Illustrator's ``_xHH_``
+escaping, which it decodes back into layer names.
 """
 
 from __future__ import annotations
@@ -36,7 +28,7 @@ RGBA = tuple
 #: The PDF writes Helvetica (one of the 14 standard fonts, so nothing is embedded);
 #: the SVG names what the canvas actually uses first.
 FONT_FAMILY = "'Noto Sans', Helvetica, Arial, sans-serif"
-#: Where a text baseline sits below the vertical centre of its line, in ems — what
+#: Where a text baseline sits below the vertical centre of its line, in ems: what
 #: ``dominant-baseline: central`` would do, which Illustrator ignores.
 BASELINE = 0.35
 #: Bezier handle length for a quarter circle.
@@ -58,7 +50,7 @@ class Rect:
 
 @dataclass
 class Markers:
-    """Many point markers of one shape and style — one drawable's synapse set."""
+    """Many point markers of one shape and style, e.g. one drawable's synapse set."""
     shape: str
     xy: np.ndarray                    # (N, 2)
     size: float                       # diameter, px
@@ -69,7 +61,7 @@ class Markers:
 
 @dataclass
 class Segments:
-    """Independent line segments, one stroked path — a skeleton."""
+    """Independent line segments as one stroked path, e.g. a skeleton."""
     segments: np.ndarray              # (N, 2, 2): start and end, xy
     stroke: RGBA
     width: float

@@ -9,31 +9,16 @@ that works. So a perfectly successful read prints things like::
     E0820 08:36:34 AuthCredentialsProvider:6146] Failed to resolve either region, role
         arn or token file path during sts web identity provider initialization.
 
-**These are not failures.** The marker of a real problem is ``PERMISSION_DENIED`` or
-``AccessDenied``; without one of those, the read worked. No environment variable turns
-them off — ``TENSORSTORE_VERBOSE_LOGGING``, ``ABSL_MIN_LOG_LEVEL``, ``AWS_CRT_LOG_LEVEL``
-and ``GLOG_minloglevel`` were all checked — because they come from C++ writing straight
-to file descriptor 2, where ``contextlib.redirect_stderr`` cannot see them.
+These are not failures: a real problem says ``PERMISSION_DENIED`` or ``AccessDenied``.
+No environment variable turns them off, and they are written by C++ straight to file
+descriptor 2, where ``contextlib.redirect_stderr`` cannot reach them. There are about two
+per store prefix, the first time it is opened.
 
-Volume is bounded rather than per-read: ``neu_vol.location`` caches an opened
-store per prefix, so it is roughly two lines the first time a prefix is touched and
-nothing after. A notebook still accumulates them across cells, hence this.
-
-**Reads are quiet by default**, via :func:`quiet_reads` around each ``sources`` entry
-point. neu-vol's own guidance is that only entry points should touch process-wide
-stderr — and from a notebook's point of view ``sources.body_skeletons`` *is* the entry
-point. Expecting a user to remember an incantation before their output is legible is the
-worse trade, especially since forgetting it looks exactly like the filter being broken.
-
-Three things keep that defensible. The filter is a **deny-list of specific known strings,
-not a severity filter**, so an unrecognised message always passes through and anything
-mentioning denied access or a failure status prints even when it also matches a noise
-pattern. It is **scoped** to the read rather than installed for the session. And it is
-**defeatable**: set ``neu_draw.logs.enabled = False`` to see everything.
-
-Only the calling thread ever touches fd 2 — a depth counter makes nested and concurrent
-reads no-ops, because two threads racing ``dup2`` on the same descriptor is a genuine
-way to lose output rather than merely filter it.
+Reads through ``sources`` are filtered by default (:func:`quiet_reads`). The filter drops
+only specific known lines, so anything unrecognised, or mentioning denied access, still
+prints. It applies for the duration of a read, not the session. Set
+``neu_draw.logs.enabled = False`` to see everything. Nested and concurrent reads share one
+filter, so only one thread swaps fd 2.
 """
 
 from __future__ import annotations
@@ -53,12 +38,9 @@ _lock = threading.RLock()
 
 @contextlib.contextmanager
 def quiet_reads():
-    """Filter benign store logging for one read. Used by every ``sources`` entry point.
-
-    A no-op when :data:`enabled` is false, when a session-wide filter is already
-    installed, or when an outer read is already filtering — so nesting is free and the
-    fd is only ever swapped by the thread that got there first.
-    """
+    """Filter benign store logging for one read; used by every ``sources`` entry point.
+    A no-op when :data:`enabled` is false, a session-wide filter is installed, or an outer
+    read is already filtering."""
     global _depth, _scoped
     if not enabled or _installed is not None:
         yield
@@ -99,16 +81,10 @@ def installed() -> bool:
 
 
 def install_quiet_stores() -> Callable[[], None]:
-    """Filter benign store logging for the whole session. Returns an undo.
+    """Filter benign store logging for the whole session; returns an undo.
 
-    Rarely needed now that reads filter themselves — this is for covering store access
-    that does not go through ``sources`` (a direct ``neu_vol`` call, say).
-    Idempotent: calling it twice does not stack two filters, which would leave fd 2
-    pointing at a pipe nobody drains.
-
-    **Per-process state, so a kernel restart clears it.** That is precisely why reads no
-    longer depend on it: "never ran" and "ran but broken" look identical in the output,
-    and the first is far more likely.
+    For store access outside ``sources``, such as a direct ``neu_vol`` call. Idempotent.
+    It is per-process state, so a kernel restart clears it.
     """
     global _installed
     if _installed is None:

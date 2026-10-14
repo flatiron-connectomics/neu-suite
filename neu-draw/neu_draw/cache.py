@@ -1,12 +1,7 @@
-"""A cache is three methods, so anything can be one.
+"""Caching for ``sources`` reads, which take seconds each from an object store.
 
-Reading a body's mesh from S3 takes seconds — measured on sample3, 1.2 s for a skeleton
-and 2.2 s for a mesh — so a notebook that redraws a scene wants the second read to be
-free. What it does *not* want is a caching library baked into the import graph.
-
-Hence a :class:`Cache` protocol with three dunder methods, an in-memory default, and an
-adapter for ``yes3`` when a persistent one is wanted. Anything satisfying the protocol
-works: a plain ``dict`` does.
+A :class:`Cache` is anything with ``in``, ``[]`` and ``[]=``, so a plain ``dict`` works.
+:class:`MemoryCache` is the in-memory default and :class:`Yes3Cache` a persistent one.
 """
 
 from __future__ import annotations
@@ -16,7 +11,7 @@ from typing import Any, Hashable, Optional, Protocol, runtime_checkable
 
 @runtime_checkable
 class Cache(Protocol):
-    """``key in cache``, ``cache[key]``, ``cache[key] = value``. That is the whole thing."""
+    """``key in cache``, ``cache[key]``, ``cache[key] = value``."""
 
     def __contains__(self, key: Hashable) -> bool: ...
     def __getitem__(self, key: Hashable) -> Any: ...
@@ -40,15 +35,12 @@ class NullCache:
 
 
 class MemoryCache(dict):
-    """A ``dict``. Named so that passing one reads as an intent rather than an accident."""
+    """A ``dict``, named for readability at the call site."""
 
 
 class Yes3Cache:
-    """Adapter for a ``yes3`` path-backed cache, so results survive the kernel.
-
-    Kept behind an adapter rather than depended on: ``yes3`` is a separate project, and
-    the point of the protocol is that this file is the only thing that knows about it.
-    """
+    """Adapter for a ``yes3`` path-backed cache, so results survive a kernel restart
+    (needs the ``cache`` extra)."""
 
     def __init__(self, location: Any):
         from yes3.caching import setup_cache

@@ -1,29 +1,14 @@
-"""Arranging a set of objects: boxes in, offsets out.
+"""Arranging a set of objects: boxes (:class:`~neu_lib.BBox`) in, offsets
+(:class:`~neu_lib.Vec3`) out. Knows nothing about drawables or renderers.
 
-Every layout here is the same operation — **assign each object's anchor a target point** —
-and the two functions differ only in how those points are generated. :func:`superimpose_offsets`
-sends every anchor to one point; :func:`arrange_offsets` sends them to a lattice.
-
-Nothing in this module knows what a drawable is, let alone a renderer. It takes
-:class:`~neu_lib.BBox` and returns :class:`~neu_lib.Vec3`, which is what lets the arithmetic
-be tested without building a scene — the same seam the rest of the package rests on.
-
-## They compose, and that is the point
+:func:`superimpose_offsets` sends every object's anchor to one point;
+:func:`arrange_offsets` lays them out on a row or grid. Both act only on the axes asked
+for, so they compose without discarding coordinates that carry meaning, such as depth::
 
     scene.superimpose(axes="z").arrange(along="x")
 
-Align on depth, spread horizontally. **A layout that regularises all three axes throws away
-whatever the axes meant** — if soma depth or layer position carries information, tiling in
-every direction destroys it. So ``superimpose`` takes an axis subset and ``arrange`` only
-touches the axes it lays out, which is what lets one axis stay honest while the objects are
-separated for viewing.
-
-## Two spacing policies, because they answer different questions
-
-- **packed** (``spacing=None``, the default) uses each box's real extent, so objects of
-  different sizes do not overlap and a big one simply takes more room.
-- **fixed pitch** (``spacing=<nm>``) puts them on a regular lattice. What a figure with
-  labels or a scale bar wants, where irregular spacing would read as meaningful.
+Spacing is either packed by each box's real extent (``spacing=None``, the default) or a
+fixed pitch in nm, for figures where uneven spacing would look meaningful.
 """
 
 from __future__ import annotations
@@ -32,17 +17,14 @@ from typing import Any, Iterable, Sequence
 
 from neu_lib import BBox, Vec3
 
-#: Axis letters, in the package's zyx order. Indices are accepted too, but a letter is what
-#: a caller means — ``along="x"`` rather than ``along=2``.
+#: Axis letters, zyx. Indices are accepted too.
 AXES = {"z": 0, "y": 1, "x": 2}
 
-#: Where on a box a layout measures from. Kept in step with ``scene.ANCHORS``, which is the
-#: same vocabulary applied to one object rather than a set.
+#: Where on a box a layout measures from. Matches ``scene.ANCHORS``.
 ANCHORS = ("center", "min", "max")
 
-#: Gap between packed boxes, as a fraction of the step. A fraction rather than nm because
-#: the objects here are cells whose size varies by an order of magnitude between datasets,
-#: and an absolute default would be either invisible or enormous.
+#: Gap between packed boxes, as a fraction of the mean extent rather than nm, since cell
+#: sizes vary by an order of magnitude between datasets.
 DEFAULT_GAP = 0.1
 
 
@@ -79,8 +61,7 @@ def _axis_set(axes: Any) -> tuple[int, ...]:
 
 
 def _masked(delta: Vec3, axes: tuple[int, ...]) -> Vec3:
-    """``delta`` with every axis outside ``axes`` zeroed — the opt-out that keeps an axis
-    at its true coordinates while the others are laid out."""
+    """``delta`` with every axis outside ``axes`` zeroed."""
     return Vec3.of([delta[i] if i in axes else 0.0 for i in range(3)])
 
 
@@ -88,13 +69,9 @@ def superimpose_offsets(boxes: Sequence[BBox], *, anchor: str = "center",
                         axes: Any = None, at: Any = None) -> list[Vec3]:
     """Offsets putting every box's ``anchor`` on the same point.
 
-    ``at`` defaults to the **first** box's anchor rather than the origin or the mean: the
-    usual reason to superimpose is "show the others against this one", and moving the
-    reference object as well makes the result harder to relate to anything. Pass ``at`` to
-    say otherwise.
-
-    ``axes`` restricts which axes move, so ``axes="z"`` aligns depth and leaves the rest
-    where the data put them.
+    The point is ``at``, by default the first box's anchor, so the first object stays put
+    and the others move onto it. ``axes`` restricts which axes move: ``axes="z"`` aligns
+    depth and leaves the rest where the data put them.
     """
     if not boxes:
         return []
@@ -109,17 +86,13 @@ def arrange_offsets(boxes: Sequence[BBox], *, along: Any = "x", anchor: str = "c
                     origin: Any = None, align_cross: bool = True) -> list[Vec3]:
     """Offsets laying the boxes out along ``along``, wrapping to ``down`` every ``wrap``.
 
-    ``spacing`` is a fixed pitch in nm; left ``None`` the boxes are **packed** by their own
-    extents with ``gap`` between them as a fraction of the step, so unequal sizes do not
-    overlap. ``wrap`` turns the row into a grid.
+    ``spacing`` is a fixed pitch in nm. Left ``None``, the boxes are packed by their own
+    extents with ``gap`` between them (a fraction of the mean extent), so unequal sizes do
+    not overlap. ``wrap`` turns the row into a grid.
 
-    ``align_cross`` puts every anchor on the layout line — which is what makes a row read as
-    a row. Objects from different datasets have unrelated coordinates on the axes not being
-    laid out, so leaving those alone scatters them; ``align_cross=False`` does that
-    deliberately, for when an untouched axis is the point.
-
-    ``origin`` is where the first anchor lands, defaulting to the first box's anchor so that
-    an arrangement starts where the objects already are rather than jumping to nm zero.
+    ``align_cross=True`` also lines the anchors up on the other axes, so a row reads as a
+    row even for objects from different datasets; ``False`` leaves those axes untouched.
+    ``origin`` is where the first anchor lands, by default where it already is.
     """
     if not boxes:
         return []
@@ -173,11 +146,8 @@ def arrange_offsets(boxes: Sequence[BBox], *, along: Any = "x", anchor: str = "c
 
 
 def _gap_of(shapes: Sequence[Sequence[int]], gap: float, axis: int) -> float:
-    """The gap in nm: a fraction of the **mean** extent on that axis.
-
-    The mean rather than each box's own size, so the spacing of a row is uniform — a gap
-    that grew beside the big cells would read as grouping.
-    """
+    """The gap in nm: a fraction of the mean extent on that axis, so gaps are uniform
+    along a row."""
     if not shapes:
         return 0.0
     return gap * (sum(float(s[axis]) for s in shapes) / len(shapes))

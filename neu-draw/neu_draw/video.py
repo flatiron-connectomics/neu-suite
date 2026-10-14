@@ -1,11 +1,9 @@
-"""Finding ffmpeg, encoding frames with it, and the result of an orbit. Standard library only.
+"""Finding ffmpeg, encoding frames with it, and the result of an orbit. Standard library
+only, so it works and is tested without a renderer.
 
-Kept apart from :mod:`neu_draw.backends.animation`, which renders, so that everything about
-video *files* is importable — and tested — where there is no renderer, which is CI.
-
-**Nothing site-specific lives here.** How a machine provides ffmpeg — a module system, a
-store path, a conda package — is the user's environment's business: put it on ``PATH``, or
-name it with ``$NEU_DRAW_FFMPEG``. The printed fallback is a plain ``ffmpeg`` line.
+ffmpeg is never declared as a dependency: put one on ``PATH`` or name it with
+``$NEU_DRAW_FFMPEG``. Without one, the frames are kept and a plain ``ffmpeg`` command is
+printed.
 """
 
 from __future__ import annotations
@@ -21,8 +19,8 @@ from typing import Optional
 FRAME_PATTERN = "frame_%05d.png"
 #: Names an ffmpeg executable to use, ahead of anything on ``PATH``.
 FFMPEG_ENV = "NEU_DRAW_FFMPEG"
-#: What an encode is handed after the input, in order. H.264 at a visually lossless CRF,
-#: in the one pixel format every player accepts.
+#: Encode arguments after the input: H.264 at a visually lossless CRF, in ``yuv420p``,
+#: the pixel format every player accepts.
 ENCODE_ARGS = ("-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18")
 ENCODE_MODES = ("auto", True, False)
 
@@ -30,17 +28,13 @@ ENCODE_MODES = ("auto", True, False)
 def find_ffmpeg(explicit: Optional[str] = None) -> Optional[str]:
     """The ffmpeg to encode with, or ``None``. First match wins:
 
-    1. ``explicit`` — the caller's own path, or a name to look up on ``PATH``;
-    2. ``$NEU_DRAW_FFMPEG`` — the same, from the environment (a shell profile, a
-       notebook's first cell);
-    3. ``ffmpeg`` on ``PATH`` — which is what loading a site's ffmpeg into the shell
-       that started Jupyter gives you;
-    4. ``imageio-ffmpeg``'s bundled binary, if that package happens to be installed.
-       Opportunistic, never a dependency.
+    1. ``explicit``: a path, or a name to look up on ``PATH``;
+    2. ``$NEU_DRAW_FFMPEG``, the same from the environment;
+    3. ``ffmpeg`` on ``PATH`` (e.g. a site module loaded before starting Jupyter);
+    4. ``imageio-ffmpeg``'s bundled binary, if the user has installed that package.
 
-    **An explicit choice that is not usable RAISES** rather than falling through to the
-    next — the same rule as neu-mark's ``$NEU_MARK_CONFIG``. Silently encoding with a
-    different binary than the one named is how "I set it and nothing changed" happens.
+    An explicit choice (1 or 2) that is not executable raises rather than falling through,
+    so the binary used is never a different one from the one named.
     """
     for source, value in (("ffmpeg=", explicit), (f"${FFMPEG_ENV}", os.environ.get(FFMPEG_ENV))):
         if value:
@@ -64,7 +58,7 @@ def find_ffmpeg(explicit: Optional[str] = None) -> Optional[str]:
 
 
 def encode_args(ffmpeg: str, directory: str, fps: float, output: str) -> list[str]:
-    """The argv for an encode — a list, run without a shell, so no path needs quoting."""
+    """The argv for an encode, run without a shell, so no path needs quoting."""
     return [ffmpeg, "-y", "-loglevel", "error", "-framerate", f"{float(fps):g}",
             "-i", os.path.join(directory, FRAME_PATTERN), *ENCODE_ARGS, output]
 

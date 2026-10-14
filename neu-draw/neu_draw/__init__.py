@@ -1,30 +1,19 @@
 """neu-draw: interactive 3D rendering of EM segment morphology in Jupyter.
 
-Meshes, skeletons and synapse points — plus ROI meshes — drawn locally with pygfx. The
-sibling neu-glance builds neuroglancer states for a *remote* viewer; the axis that separates
-the two is where the rendering happens, not what is rendered.
+Meshes, skeletons, synapse points and ROI meshes, drawn locally with pygfx. neu-glance,
+by contrast, builds states for a remote neuroglancer viewer.
 
-Layout, and the reason for it:
+* ``neu_lib`` types (``BBox``, ``Frame``, ``Mesh``, ``Skeleton``): re-exported here on
+  purpose, as the same objects, so a notebook can write ``neu_draw.Skeleton``.
+* ``scene``: drawables, colours and camera intent. Pure.
+* ``layout``: placing several objects side by side, as boxes in and offsets out. Pure.
+* ``sources``: the only module that reads data.
+* ``viewstate``: saved camera viewpoints, which outlive any one view. Pure.
+* ``backends``: the pygfx renderer and the legend drawn inside the canvas.
+* ``toolbar``: ipywidgets buttons above the canvas, loaded only when a view is shown.
 
-* ``neu_lib`` — ``BBox``, ``Frame``, ``Mesh``, ``Skeleton``: nm, zyx, arrays, no I/O
-  and no renderer. Shared with the rest of the suite, and re-exported here because a
-  notebook wants ``neu_draw.Skeleton``. Aliases, never a fork — a test pins that.
-* ``scene`` — drawables, colours and camera intent. Pure.
-* ``layout`` — where a set of objects is placed, as boxes in and offsets out. Pure, and
-  independent of ``scene`` on purpose: the arithmetic of a row or a grid is testable
-  without building one.
-* ``sources`` — the only module that reads anything.
-* ``viewstate`` — saved camera viewpoints, kept outside any one view so they outlive it.
-  Pure.
-* ``backends`` — pygfx. The renderer seam, plus the clickable legend, which is drawn
-  **in** the canvas so that it is part of every snapshot.
-* ``toolbar`` — ipywidgets buttons above the canvas. Reached only when a view is shown,
-  so nothing here pays for a notebook front end.
-
-The geometry types import eagerly: they cost a numpy import and nothing else. The
-**backend does not**, and must not — importing a renderer needs a canvas backend, and on
-a headless machine that fails outright rather than degrading. So `import neu_draw` stays
-safe in a terminal, in CI, and on a worker.
+The renderer is imported only by :func:`show`, never at package import: it needs a canvas
+backend, which fails outright on a headless machine. ``import neu_draw`` is safe anywhere.
 """
 
 __version__ = "0.1.0"
@@ -46,9 +35,8 @@ from .sources import (body_mesh, body_meshes, body_skeleton, body_skeletons,
 def show(scene: Scene, *, backend: str = "pygfx", **kwargs) -> Any:
     """Render a :class:`~neu_draw.scene.Scene` and return the backend's view.
 
-    A **function**, not a re-export, so the renderer is imported only when something is
-    actually drawn — see the module docstring. In a notebook the returned view displays
-    itself; elsewhere it renders offscreen and ``.snapshot()`` gives you the pixels.
+    The renderer is imported here, on first use. In a notebook the returned view displays
+    itself; elsewhere it renders offscreen and ``.snapshot()`` returns the pixels.
     """
     from .backends import get_backend
 

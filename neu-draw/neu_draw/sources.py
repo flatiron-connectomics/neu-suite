@@ -1,21 +1,12 @@
-"""The only module that reads anything. Everything else takes arrays.
+"""The only module that reads data; everything else takes arrays.
 
-Reads meshes and skeletons out of a neuroglancer-precomputed volume, resolves a pyramid
-level to a :class:`~neu_lib.Frame`, and turns a synapse table into point arrays. The
-region predicates and the tube builder are pure geometry and live in ``neu_lib``.
+Reads meshes and skeletons from a neuroglancer-precomputed volume, resolves a pyramid
+level to a :class:`~neu_lib.Frame`, and turns a synapse table into point arrays.
 
-Two things it refuses to guess.
-
-**Subresource directory names come from the volume's own ``info``.** The precomputed
-spec has the volume name its subdirectories, and the names are *not* fixed — sample3's
-info reads ``{"mesh": "mesh", "skeletons": "skeleton"}``, where the key is plural and the
-directory singular. Hardcoding ``"skeletons"`` finds nothing, and finding nothing is
-indistinguishable from a body having no skeleton.
-
-**A scale index is resolved through real per-axis voxel sizes**, never ``2 ** level``
-(invariant 1). Meshes and skeletons need no frame at all — the format stores them in nm
-already, and both of sample3's subresources declare an identity ``transform`` — but
-anything coming from the voxel grid does.
+Subdirectory names come from the volume's own ``info``, never assumed: they vary (one
+volume declares ``{"mesh": "mesh", "skeletons": "skeleton"}``), and a wrong guess reads
+back as every body having no skeleton. A level's voxel size comes from the metadata,
+never ``2 ** level``. Meshes and skeletons are stored in nm and need no frame.
 """
 
 from __future__ import annotations
@@ -30,19 +21,13 @@ from . import cache as _cache
 from .logs import quiet_reads
 from neu_lib import BBox, Frame, Mesh, Skeleton
 
-#: Threads, not processes: the work is IO-bound, and tensorstore's S3 credential
-#: bootstrap is per-process (invariant 8), which a thread pool inherits for free.
+#: Threads, not processes: the work is IO-bound, and tensorstore's S3 credentials are set
+#: up per process, which threads share.
 DEFAULT_THREADS = 8
 
 
 def _quiet(fn):
-    """Filter benign store logging for the duration of a read.
-
-    Attached to every entry point here rather than left to the caller. The sibling CLIs
-    do the same thing by wrapping `main()` (with `--store-logs` to opt out); neu-draw has
-    no CLI, so its entry points are these functions. `neu_draw.logs.enabled = False` is
-    the opt-out, and the filter is a deny-list — a real failure still prints.
-    """
+    """Filter benign store logging during a read (see :mod:`neu_draw.logs`)."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         with quiet_reads():
@@ -55,23 +40,11 @@ class MissingSubresource(RuntimeError):
 
 
 def _structural_errors():
-    """Exception types that mean the SOURCE is wrong, not that a body is absent.
+    """Exceptions meaning the source or the call is wrong, not that a body is absent.
 
-    ``skip_missing`` exists to tolerate bodies a volume happens not to hold. It must not
-    also absorb "this volume's meshes are in a format the reader cannot decode" or "the
-    volume declares no meshes at all", because those produce exactly the same outcome —
-    every body reported missing, an empty dict, no error — while meaning something
-    completely different and needing a fix rather than a shrug. That conflation is what
-    made a sharded source look like a volume with no meshes.
-
-    ``TypeError`` is in the set for a related reason: it means the CALL is wrong, not the
-    data. Every body in a batch is fetched with the same arguments, so a bad keyword fails
-    identically for all of them and produces an empty dict that reads as "this volume holds
-    nothing". That is how ``body_skeletons(..., require_radii=False)`` looked before
-    ``body_skeleton`` accepted the argument — a silent empty result for a source whose
-    skeletons were all present and readable.
-
-    Imported lazily so a neu-draw import does not pull in neu-morpho.
+    ``skip_missing`` must not swallow these: a volume with no meshes declared, a format
+    the reader cannot decode, or a bad keyword (``TypeError``, identical for every body in
+    a batch) would otherwise return an empty dict that looks like a clean answer.
     """
     from neu_morpho.readback import UnsupportedSubresource
 
@@ -93,8 +66,8 @@ def volume_info(volume: str) -> dict:
 def subresource_dir(volume: str, kind: str, info: Optional[Mapping] = None) -> str:
     """The subdirectory holding ``kind`` (``"mesh"`` or ``"skeletons"``), from ``info``.
 
-    Raises rather than defaulting. A default that happens to be wrong reads back as
-    "this body has no mesh" for every body, which looks like missing data.
+    Raises rather than guessing, since a wrong name would read back as every body
+    having no mesh.
     """
     if kind not in ("mesh", "skeletons"):
         raise ValueError(f"kind must be 'mesh' or 'skeletons', got {kind!r}")
@@ -107,19 +80,14 @@ def subresource_dir(volume: str, kind: str, info: Optional[Mapping] = None) -> s
     return str(name)
 
 
-#: Pyramid metadata per volume. A volume's scales cannot change under a live session,
-#: and `volume_frame(v, 0)`, `(v, 1)`, `(v, 2)` would otherwise re-read `info` each time.
+#: Pyramid metadata per volume, read once per session.
 _SCALES: dict[str, list] = {}
 
 
 @_quiet
 def scales(volume: str, *, refresh: bool = False) -> list:
-    """Every pyramid level, finest first, each with its own real voxel size. Memoized.
-
-    From ``neu_vol``, which is where volume metadata belongs. It used to come from
-    ``neu_morpho.scales``, i.e. this package imported a *meshing* library to learn a
-    voxel size — one of the three reasons neu-draw depended on neu-morpho at all.
-    """
+    """Every pyramid level, finest first, each with its own voxel size
+    (``neu_vol.read_scales``). Memoized; ``refresh=True`` re-reads."""
     if refresh or volume not in _SCALES:
         from neu_vol import read_scales
 
@@ -129,16 +97,8 @@ def scales(volume: str, *, refresh: bool = False) -> list:
 
 @_quiet
 def volume_frame(volume: str, level: int = 0) -> Frame:
-    """The :class:`~neu_lib.Frame` of one pyramid level.
-
-    The level **carries** its frame, so this only picks one out; it no longer rebuilds
-    a frame from a bare voxel size, which is what used to silently drop the level's
-    origin and place everything as though the volume started at nm zero.
-
-    The voxel size is always the level's own. **Never ``2 ** level``** — real pyramids
-    are anisotropic, and the factor that looks right for sample3 (which is isotropic) is
-    wrong for the common ``(1, 2, 2)`` shape.
-    """
+    """The :class:`~neu_lib.Frame` (voxel size and origin) of one pyramid level, from the
+    volume's metadata."""
     levels = scales(volume)
     for scale in levels:
         if scale.index == level:
@@ -158,12 +118,8 @@ def body_skeleton(volume: str, body_id: int, *, cache: Any = None,
                   require_radii: bool = True) -> Optional[Skeleton]:
     """One body's skeleton, or ``None`` if the volume holds none for it.
 
-    Vertices arrive xyz (the order the format stores) and are flipped to zyx once, by
-    :meth:`Skeleton.from_precomputed`.
-
-    ``require_radii=False`` accepts a source that publishes **centrelines only**, where
-    every radius is the ``-1`` sentinel — FlyEM's male-CNS is one, so this is needed to
-    read it at all rather than being an obscure corner.
+    ``require_radii=False`` accepts a source that publishes centrelines only, with every
+    radius the ``-1`` sentinel (FlyEM's male-CNS does).
     """
     store = _cache.resolve(cache)
     key = ("skeleton", volume, int(body_id), require_radii)
@@ -188,8 +144,8 @@ def body_mesh(volume: str, body_id: int, *, lod: Optional[int] = None, cache: An
               info: Optional[Mapping] = None) -> Optional[Mesh]:
     """One body's mesh at one LOD, or ``None`` if the volume holds none for it.
 
-    ``lod`` defaults to the **coarsest** present, which is the cheapest to draw and is
-    usually what a whole-neuron view wants; pass 0 for full detail.
+    ``lod`` defaults to the coarsest present, the cheapest to draw; pass 0 for full
+    detail.
     """
     store = _cache.resolve(cache)
     key = ("mesh", volume, int(body_id), lod)
@@ -215,9 +171,8 @@ def body_skeletons(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                    **kwargs) -> dict[int, Skeleton]:
     """Skeletons for many bodies, fetched concurrently. Missing bodies are omitted.
 
-    ``skip_missing`` covers bodies the volume does not hold, and **only** that: a volume
-    declaring no skeletons, or holding them in a format this reader cannot decode, raises
-    either way. Both would otherwise return an empty dict and look like a clean answer.
+    ``skip_missing`` covers only bodies the volume does not hold. A volume declaring no
+    skeletons, or storing them in a format the reader cannot decode, raises either way.
     """
     return _fetch_many(body_skeleton, "skeleton", volume, body_ids, cache=cache,
                        names=names, threads=threads, skip_missing=skip_missing, **kwargs)
@@ -230,9 +185,8 @@ def body_meshes(volume: str, body_ids: Iterable[int], *, cache: Any = None,
                 **kwargs) -> dict[int, Mesh]:
     """Meshes for many bodies, fetched concurrently. Missing bodies are omitted.
 
-    ``skip_missing`` covers bodies the volume does not hold, and **only** that: a volume
-    declaring no meshes, or holding them in a format this reader cannot decode, raises
-    either way. Both would otherwise return an empty dict and look like a clean answer.
+    ``skip_missing`` covers only bodies the volume does not hold. A volume declaring no
+    meshes, or storing them in a format the reader cannot decode, raises either way.
     """
     return _fetch_many(body_mesh, "mesh", volume, body_ids, cache=cache, names=names,
                        threads=threads, skip_missing=skip_missing, **kwargs)
@@ -245,8 +199,7 @@ def _fetch_many(fetch: Callable, kind: str, volume: str, body_ids: Iterable[int]
     if not ids:
         return {}
     store = _cache.resolve(cache, default=_cache.MemoryCache())
-    # Read `info` ONCE and pass it down. Otherwise every body re-reads it — one S3
-    # round trip per body, for a file that cannot have changed during the call.
+    # Read `info` once for the batch rather than once per body.
     shared = dict(kwargs)
     shared.setdefault("info", volume_info(volume))
 
@@ -287,10 +240,6 @@ def _named(obj, name: Optional[str], body_id: int):
 
 
 # --------------------------------------------------------------------------- #
-# derived geometry
-# --------------------------------------------------------------------------- #
-
-# --------------------------------------------------------------------------- #
 # points
 # --------------------------------------------------------------------------- #
 
@@ -299,13 +248,9 @@ def points_from_table(table: Any, *, frame: Optional[Frame] = None,
                       prefix: str = "") -> np.ndarray:
     """An ``(N, 3)`` zyx nm array from a table with named coordinate columns.
 
-    ``columns`` is read **in the order given**, so the default is already zyx and
-    neu-mark's tables need no reordering. Pass ``frame`` when the table holds voxel
-    indices rather than nm — DVID's do; a precomputed annotation source's do not.
-
-    Coordinates are always named columns, never a positional array: that is the one
-    place the axis order is decided, and a mirrored synapse is a valid synapse in the
-    wrong place.
+    ``columns`` are read in the order given, so the default yields zyx from neu-mark's
+    tables. Pass ``frame`` when the table holds voxel indices (DVID's do) rather than nm.
+    Columns are looked up by name, never by position, so the axis order is explicit.
     """
     names = [f"{prefix}{c}" for c in columns]
     missing = [n for n in names if not _has_column(table, n)]
@@ -322,9 +267,8 @@ def synapse_points(table: Any, *, frame: Optional[Frame] = None,
                    prefix: str = "") -> dict[str, np.ndarray]:
     """Split a synapse table by kind into ``{kind: (N, 3) zyx nm}``.
 
-    Keys are whatever the column holds — DVID's are ``PreSyn`` and ``PostSyn``. A table
-    with no kind column becomes a single ``"points"`` entry, so a plain coordinate list
-    still works.
+    Keys are the column's values (DVID's are ``PreSyn`` and ``PostSyn``). A table with no
+    kind column becomes a single ``"points"`` entry.
     """
     coords = points_from_table(table, frame=frame, columns=columns, prefix=prefix)
     if not _has_column(table, kind_column):
@@ -334,7 +278,7 @@ def synapse_points(table: Any, *, frame: Optional[Frame] = None,
 
 
 # --------------------------------------------------------------------------- #
-# region predicates
+# helpers
 # --------------------------------------------------------------------------- #
 
 def _has_column(table: Any, column: str) -> bool:

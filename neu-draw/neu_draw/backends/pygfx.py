@@ -1,10 +1,7 @@
 """Turn a :class:`~neu_draw.scene.Scene` into pygfx objects and draw them.
 
-The whole renderer-specific surface of this package. Everything above it — geometry,
-colours, scene assembly — is arrays and dataclasses, which is what lets the interesting
-parts be tested without a GPU.
-
-Three primitives cover segment morphology:
+The only renderer-specific module apart from the legend and the exporters. Three
+primitives cover segment morphology:
 
 ============  =========================================================
 drawable      pygfx
@@ -14,12 +11,8 @@ skeleton      ``Line`` + ``LineSegmentMaterial``, fed the edge list
 points        ``Points`` + ``PointsMarkerMaterial``
 ============  =========================================================
 
-``LineSegmentMaterial`` is the one that shapes the design: it "renders line segments
-between each two subsequent points", so a skeleton's edge list draws directly, as **one
-object per body** whatever its topology. A renderer wanting a list of polylines instead
-would need one graphic per branch — hundreds or thousands for a fragmented body.
-
-Volume drawables are not implemented; see :class:`~neu_draw.scene.VolumeDrawable`.
+``LineSegmentMaterial`` draws a line between each consecutive pair of points, so a
+skeleton's edge list is one object per body whatever its topology.
 """
 
 from __future__ import annotations
@@ -33,33 +26,25 @@ from neu_lib import to_xyz
 from ..scene import LinesDrawable, MeshDrawable, PointsDrawable, Scene
 from ..viewstate import LAST, SAVED, ViewState, views
 
-#: Nothing in a scene is at the origin — a body sits wherever it sits in the volume, tens
-#: of microns out — so the camera must be framed from the data, never left at a default.
+#: Canvas size in logical pixels when none is given.
 DEFAULT_SIZE = (900, 700)
 
 
 def build(scene: Scene) -> pygfx.Group:
     """Scene → a pygfx object graph. No canvas, no renderer, no draw.
 
-    Separate from :func:`show` so the translation can be asserted on: what got built,
-    with which colours and how many vertices, is a question about this function and not
-    about a GPU.
+    Separate from :func:`show`, so what is built can be tested without a GPU.
     """
     group = pygfx.Group()
     for drawable in scene:
         obj = _build_one(drawable)
-        # A hidden drawable is BUILT and switched off, not skipped. It used to be skipped,
-        # which is cheaper and was fine while nothing could change its mind — but a legend
-        # whose rows toggle visibility needs an object to toggle, and an entry with nothing
-        # behind it is one nobody can turn back on. `frame()` filters on `visible` for the
-        # same reason: `get_bounding_box` does not.
+        # A hidden drawable is built and switched off, not skipped, so the legend can turn
+        # it back on.
         obj.visible = bool(drawable.visible)
         if drawable.name is not None:
             obj.name = str(drawable.name)
-        # The drawable's offset becomes the object's own transform rather than being added
-        # to its vertices: the geometry keeps saying where the tissue is, and re-placing a
-        # large mesh costs nothing. `.local.position` is **xyz**, like every other
-        # coordinate handed to pygfx.
+        # The drawable's offset becomes the object's transform; vertices are not moved.
+        # `.local.position` is xyz, like every coordinate handed to pygfx.
         offset = getattr(drawable, "offset_zyx_nm", None)
         if offset is not None and tuple(offset) != (0.0, 0.0, 0.0):
             obj.local.position = offset.xyz
@@ -83,8 +68,8 @@ def _mesh(drawable: MeshDrawable) -> pygfx.Mesh:
         "positions": to_xyz(mesh.vertices_zyx_nm),
         "indices": np.ascontiguousarray(mesh.faces, dtype=np.uint32),
     }
-    # In the CONSTRUCTOR: assigning `geometry.normals` afterwards stores the bare
-    # ndarray rather than wrapping it in a `Buffer`, so it never reaches the GPU.
+    # Normals go in the constructor: assigned afterwards, `geometry.normals` stays a bare
+    # ndarray rather than a `Buffer`, and never reaches the GPU.
     if mesh.normals_zyx is not None:
         fields["normals"] = to_xyz(mesh.normals_zyx)
     return pygfx.Mesh(pygfx.Geometry(**fields),
@@ -94,8 +79,7 @@ def _mesh(drawable: MeshDrawable) -> pygfx.Mesh:
 def _lines(drawable: LinesDrawable) -> pygfx.Line:
     positions = to_xyz(drawable.skeleton.segments())
     if not len(positions):
-        # An empty buffer is a wgpu error, not an empty picture. A body whose skeleton
-        # cropped away to nothing is ordinary, so it becomes a degenerate line instead.
+        # An empty buffer is a wgpu error, so an empty skeleton becomes a degenerate line.
         positions = np.zeros((2, 3), dtype=np.float32)
     return pygfx.Line(
         pygfx.Geometry(positions=positions),
@@ -118,14 +102,9 @@ def _points(drawable: PointsDrawable) -> pygfx.Points:
 def display_color(drawable: Any, override: Optional[tuple] = None) -> tuple:
     """The colour a drawable's material carries: its own, times its ``alpha``.
 
-    ``alpha`` multiplies whatever the colour already carried rather than replacing it,
-    so a per-drawable alpha and an ``#rrggbbaa`` colour compose instead of one silently
-    winning.
-
-    ``override`` substitutes a different **hue** while keeping that arithmetic — which is
-    what the legend's highlight needs, and the reason this is a named function rather than
-    two lines inline. A highlight that also reset the alpha would turn a translucent
-    surface opaque, and the surface being translucent is often why you cannot find it.
+    ``alpha`` multiplies the colour's own alpha, so the two compose. ``override``
+    substitutes another colour (the legend's highlight) but keeps the drawable's alpha, so
+    a highlighted translucent surface stays translucent.
     """
     r, g, b, a = drawable.color if override is None else override
     return (r, g, b, a * float(drawable.alpha))
@@ -140,9 +119,8 @@ def _material_kwargs(drawable: Any) -> dict:
 class View:
     """A rendered scene: canvas, renderer, camera and controller, kept together.
 
-    Displays itself in Jupyter. Held as an object rather than returned as a tuple
-    because the canvas must outlive the call — a garbage-collected canvas is a blank
-    output cell, which reads as a rendering bug.
+    Displays itself in Jupyter. Keep a reference: a garbage-collected canvas leaves a
+    blank output cell.
     """
 
     def __init__(self, scene: Scene, size: tuple[int, int] = DEFAULT_SIZE,
@@ -155,9 +133,8 @@ class View:
         self.legend = None
         self._closed = False
         self._size = tuple(size)
-        # What "reset" goes back to. Captured before anything can be toggled, because
-        # `Scene` is mutable and a scene may deliberately arrive with something hidden —
-        # so "everything visible" is not the same thing as "how this opened".
+        # What `reset()` restores: the visibility the scene opened with, which may already
+        # hide something.
         self._initial_visible = [bool(d.visible) for d in scene.drawables]
         self._pixel_ratio = pixel_ratio
         self.canvas = (_make_canvas(size, canvas) if isinstance(canvas, (str, type(None)))
@@ -172,8 +149,7 @@ class View:
             self.scene.add(pygfx.Background(
                 None, pygfx.BackgroundMaterial(tuple(bg))))
 
-        # A phong surface is black without light. Ambient alone flattens a mesh to a
-        # silhouette, which is the failure that reads as "my mesh did not load".
+        # Phong surfaces need light; ambient alone flattens a mesh to a silhouette.
         self.scene.add(pygfx.AmbientLight(intensity=0.6))
         directional = pygfx.DirectionalLight(intensity=2.5)
         directional.local.position = (-1, -1, 1)
@@ -186,18 +162,15 @@ class View:
         self._install_legend(legend)
 
         self.camera = pygfx.PerspectiveCamera(50)
-        # Registered on the **main viewport**, not the renderer, when there is a legend:
-        # a controller starts a drag only for events inside the viewport it was given, so
-        # this is the whole of what keeps a click on a legend row from also spinning the
-        # camera. See `backends/legend.py` for why a pointer handler could not do it.
+        # With a legend, the controller listens on the main viewport only, so a click on
+        # the legend does not also rotate the camera (see `backends/legend.py`).
         self.controller = pygfx.TrackballController(
             self.camera,
             register_events=self.legend.main if self.legend else self.renderer)
         self.frame()
         if viewpoint is not None:
             self.restore_view(viewpoint)
-        # The viewpoint `reset()` returns to — after the fit and after any `viewpoint`, so
-        # it is what the figure actually opened showing rather than what it would have.
+        # The camera `reset()` returns to: after the fit and any `viewpoint`.
         self._opening = ViewState(camera=dict(self.camera.get_state()),
                                   size=self.logical_size())
 
@@ -205,10 +178,7 @@ class View:
             self.scene.add(pygfx.AxesHelper(size=_extent(scene) * 0.2 or 1.0))
 
         self.canvas.request_draw(self._draw)
-        # Ask to be woken when the scene changes, so `scene.relabel(...)` in a cell repaints
-        # without anyone calling anything. The notification carries nothing: it schedules a
-        # frame, and the frame re-reads the scene (`LegendOverlay.sync`). That split is what
-        # keeps `scene.py` free of any notion of a renderer.
+        # Repaint when the scene's methods change it; each frame re-reads the scene.
         scene.on_change(self.request_draw)
         self._install_toolbar(toolbar)
 
@@ -217,21 +187,10 @@ class View:
     def frame(self) -> "View":
         """Fit the camera to what is **visible**, honouring the scene's ``Camera``.
 
-        Always a bounding **sphere** ``(x, y, z, radius)``, computed from the built
-        objects' *world* bounding boxes — so the fit follows their transforms rather than
-        the scene's nm boxes, which is what an offset drawable needs, and it can be
-        computed for a case ``show_object`` cannot take at all (an empty scene has no
-        bounding sphere and would raise).
-
-        **Hidden objects are excluded, and this is the part that is easy to get wrong.**
-        ``get_bounding_box`` walks every child regardless of ``visible``, so handing
-        ``show_object`` the whole group would frame a body the legend has just switched
-        off — the camera pulls back for something nobody can see. That used not to matter
-        because a hidden drawable was never built.
-
-        The fit is **conservative**: pygfx frames the bounding sphere, so a long thin
-        neurite leaves slack around its short axes. That is the safe direction to err —
-        nothing is ever cropped out — and ``Camera.zoom`` is the way in.
+        Fits a bounding sphere over the built objects' world bounding boxes, so offsets are
+        followed. Hidden objects are excluded (pygfx's ``get_bounding_box`` would include
+        them). Framing a sphere leaves slack around a long thin neurite but never crops;
+        use ``Camera.zoom`` to tighten it.
         """
         intent = self.scene_data.camera
         if intent.target is not None:
@@ -241,10 +200,7 @@ class View:
             if target is None:
                 target = _bounding_sphere(self.scene_data.bbox)
 
-        # The scene renders into the rect left over beside the legend, and a perspective
-        # camera's fit depends on that rect's aspect. Setting it first means the very
-        # first frame is framed for where it will actually be drawn, rather than for the
-        # whole canvas and then corrected.
+        # Fit for the rect beside the legend, whose aspect the perspective fit depends on.
         width, height = self._main_size()
         if width > 0 and height > 0:
             self.camera.set_view_size(width, height)
@@ -261,14 +217,8 @@ class View:
         return float(main[2]), float(main[3])
 
     def center(self) -> "View":
-        """Re-fit the camera and redraw — :meth:`frame` plus the repaint.
-
-        The one action a "centre view" button needs, and the reason it is separate is
-        that :meth:`frame` runs during construction, before there is a draw to request.
-
-        Note this fits **what is visible now**, so after hiding half the bodies it frames
-        the remainder. :meth:`reset` is the one that goes back to the opening picture.
-        """
+        """Re-fit the camera to what is visible now, and redraw. :meth:`reset` returns to
+        the opening view instead."""
         self.frame()
         self.request_draw()
         return self
@@ -276,14 +226,8 @@ class View:
     def reset(self) -> "View":
         """Back to the view this figure opened with.
 
-        Un-hides whatever was hidden, drops every highlight, and returns to the camera the
-        figure opened at — which is not necessarily a fit, since ``viewpoint=`` may have
-        placed it somewhere else.
-
-        **Colours are deliberately left alone.** Visibility and highlights are transient
-        exploration, so undoing them is a convenience; ``legend.recolor`` is an authored
-        change to the scene, and a button that silently reverted it would be destroying
-        work rather than tidying up.
+        Restores the opening visibility, clears highlights, and returns to the opening
+        camera. Colours and opacity changes are kept, since they are edits to the scene.
         """
         for drawable, visible in zip(self.scene_data.drawables, self._initial_visible):
             drawable.visible = visible
@@ -297,10 +241,9 @@ class View:
     def _sync_objects(self) -> None:
         """Push each drawable's colour and visibility onto the object built for it.
 
-        Index correspondence, because :func:`build` makes exactly one object per drawable
-        in order — **including the unnamed and unlabelled ones**, which are on no legend row
-        and so would be missed by going through the legend. Any highlight override is
-        re-applied afterwards by ``legend.refresh()``, which runs second for that reason.
+        Paired by index (:func:`build` makes one object per drawable, in order), so
+        drawables on no legend row are covered too. Highlights are re-applied afterwards
+        by the legend.
         """
         for drawable, obj in zip(self.scene_data.drawables, self.group.children):
             obj.material.color = display_color(drawable)
@@ -308,7 +251,7 @@ class View:
         self._looks_at = self._looks()
 
     def _looks(self) -> tuple:
-        """Each drawable's visibility, colour and opacity — what `_sync_objects` pushes."""
+        """Each drawable's visibility, colour and opacity, as `_sync_objects` pushes them."""
         return tuple((bool(d.visible), tuple(d.color), float(d.alpha))
                      for d in self.scene_data.drawables)
 
@@ -329,10 +272,8 @@ class View:
     def logical_size(self) -> tuple[int, int]:
         """The canvas size in logical pixels, falling back to the size asked for.
 
-        **A Jupyter canvas reports (1, 1) until the browser has laid the widget out**, so
-        the live value is a placeholder in a freshly executed notebook — the same trap
-        :meth:`snapshot` documents. Anything below a few pixels is therefore treated as
-        "not yet known" rather than believed.
+        A Jupyter canvas reports (1, 1) until the browser lays the widget out, so a size
+        below a few pixels is treated as unknown.
         """
         try:
             width, height = self.canvas.get_logical_size()
@@ -343,8 +284,7 @@ class View:
     def save_view(self, name: str = SAVED) -> ViewState:
         """Record this camera into :data:`neu_draw.views`, and return what was stored.
 
-        The store outlives the view (see :mod:`neu_draw.viewstate`), so the saved angle
-        is available to the next figure — which is the whole reason to save one.
+        The store outlives the view, so the next figure can restore it.
         """
         state = ViewState(camera=dict(self.camera.get_state()), size=self.logical_size())
         views[name] = state
@@ -352,19 +292,11 @@ class View:
 
     def restore_view(self, name: Union[str, ViewState] = SAVED, *,
                      size: bool = True) -> Optional[ViewState]:
-        """Apply a saved viewpoint. ``None`` — not an error — if that slot is empty.
+        """Apply a saved viewpoint; returns ``None``, not an error, if the slot is empty.
 
-        An empty slot is the ordinary state of a fresh session, and a button that raises
-        the first time it is pressed is worse than one that says nothing was saved. It is
-        also why ``show(scene, viewpoint="last")`` is safe on the first cell of a session:
-        no ``last`` yet just means the figure keeps its own framing.
-
-        ``name`` may be a :class:`~neu_draw.viewstate.ViewState` outright, so a viewpoint
-        can be held in an ordinary variable rather than a named slot.
-
-        ``size`` also restores the canvas size, because the aspect ratio is part of what
-        a viewpoint means; pass ``size=False`` to keep the canvas as it is and accept a
-        differently framed version of the same angle.
+        So ``show(scene, viewpoint="last")`` is safe in a fresh session. ``name`` may also
+        be a :class:`~neu_draw.viewstate.ViewState`. ``size`` restores the canvas size too,
+        since the aspect ratio changes the framing; ``size=False`` keeps the canvas.
         """
         state = name if isinstance(name, ViewState) else views.get(name)
         if state is None:
@@ -380,23 +312,16 @@ class View:
     def request_draw(self) -> None:
         """Ask the canvas to repaint, using the draw function already installed.
 
-        A no-op once closed. Worth guarding rather than letting it raise: this is a
-        scene-change listener, and a scene outlives the views built from it — so editing a
-        scene after closing its figure is ordinary, not a mistake.
+        A no-op once closed, since a scene can be edited after its view is closed.
         """
         if self._closed:
             return
         self.canvas.request_draw()
 
     def refresh(self) -> "View":
-        """Re-read the scene and repaint. The "catch up now" button.
-
-        Rarely needed: the mutating methods on :class:`~neu_draw.scene.Scene` schedule a
-        repaint themselves, and every frame re-reads the scene anyway. What it is for is the
-        route neither of those catches at the moment you want it — a field set directly
-        (``scene.get("a").label = "Tm2"``, ``.visible = False``) in a context where nothing
-        else is going to draw a frame.
-        """
+        """Re-read the scene and repaint, for a field set directly
+        (``scene.get("a").label = "Tm2"``) when nothing else will draw a frame. The
+        :class:`~neu_draw.scene.Scene` methods repaint on their own."""
         self._sync_objects()
         if self.legend is not None:
             self.legend.refresh()
@@ -409,17 +334,11 @@ class View:
     def _paint(self, renderer: Any, camera: Any, legend: bool = True) -> None:
         """One frame: the scene, then the legend strip beside it.
 
-        Two ``render`` calls into two rects, with only the second flushing. pygfx clears
-        on the **first** render since a flush and not afterwards, so the pair composes
-        without either half knowing about the other.
-
-        ``renderer`` is a parameter because ``_offscreen_snapshot`` builds one of its own
-        at an exact size, and the legend has to go through that pass too — a saved figure
-        without its legend is not the figure.
+        Two ``render`` calls into two rects, only the second flushing (pygfx clears on the
+        first render after a flush). ``renderer`` may be an offscreen one, so snapshots
+        include the legend.
         """
-        # A field set directly (`drawable.alpha = 0.2`) reaches the objects on the next
-        # frame even with no legend to notice it — the legend's own per-frame check covers
-        # only the drawables on its rows, and a figure need not have a legend at all.
+        # Pick up fields set directly (`drawable.alpha = 0.2`), legend or not.
         if self._looks() != self._looks_at:
             self._sync_objects()
         if self.legend is None or not legend:
@@ -431,26 +350,20 @@ class View:
 
     @property
     def pixel_ratio(self) -> float:
-        """Internal pixels per logical pixel. ``>= 2`` by default — see the constructor."""
+        """Internal pixels per logical pixel; at least 2 by default."""
         return float(self.renderer.pixel_ratio)
 
     def snapshot(self, size: Optional[tuple[int, int]] = None, *,
                  pixel_ratio: Optional[float] = None, legend: bool = True) -> np.ndarray:
         """Render once and return the pixels as ``(h, w, 4)`` uint8.
 
-        **On a Jupyter canvas this renders through a separate offscreen pass**, at the
-        size the view was asked for, rather than reading the live framebuffer. That
-        framebuffer is sized by whatever the *browser* reported, so before the widget
-        has been displayed and laid out it is a placeholder — measured, a view created
-        at ``(900, 700)`` snapshots as **2x2** in a freshly executed notebook, and
-        ``save()`` writes that 2x2 image without complaint. Saving a figure should not
-        depend on a browser having painted it.
+        On a Jupyter canvas this renders a separate offscreen pass at the view's requested
+        size: the live framebuffer is sized by the browser and is a 2x2 placeholder until
+        the widget is laid out.
 
-        **The result is `pixel_ratio` times the requested size**, not the requested size:
-        that is pygfx's supersampled internal texture, and it is where the antialiasing
-        comes from. Construct the view with ``pixel_ratio=1.0`` — or pass one here — for
-        pixel-exact output. ``legend=False`` leaves the strip out and gives the scene the
-        whole frame.
+        The result is ``pixel_ratio`` times the requested size (pygfx's supersampling,
+        which antialiases); use ``pixel_ratio=1.0`` for pixel-exact output.
+        ``legend=False`` omits the strip.
         """
         if (size is None and pixel_ratio is None and legend
                 and _is_offscreen(self.canvas)):
@@ -478,11 +391,9 @@ class View:
              groups: Optional[Any] = None) -> str:
         """Write the figure to ``path``: PNG, or by extension ``.svg`` / ``.pdf``.
 
-        One call for every format, which is what lets the toolbar's Capture box write
-        any of them. ``pixel_ratio`` is the PNG's supersampling — or the mesh images'
-        resolution in a vector file (default 2) — and ``legend=False`` drops the strip.
-        ``groups`` only means something for a vector file; see :meth:`save_svg`.
-        Alpha is dropped from a PNG: a figure wants a flat image.
+        ``pixel_ratio`` is the PNG's supersampling, or the mesh images' resolution in a
+        vector file (default 2). ``legend=False`` drops the strip. ``groups`` applies to
+        vector files only (see :meth:`save_svg`). PNGs are written without alpha.
         """
         if str(path).lower().endswith((".svg", ".pdf")):
             from .vector import save as save_vector
@@ -502,14 +413,12 @@ class View:
         return path
 
     def save_svg(self, path: str, **kwargs) -> str:
-        """Write the view as SVG — laid out for **Illustrator**, which keeps its named
-        groups (it does not keep a PDF's). Each mesh is its own transparent image;
-        points, skeletons and the legend are vectors.
+        """Write the view as SVG, laid out so Illustrator keeps the named groups. Each mesh
+        is a transparent image; points, skeletons and the legend are vectors.
 
-        ``groups`` nests drawables deeper: ``drawable -> tuple of group names``, e.g.
-        ``lambda d: (d.name.split(" : ")[0],)`` puts every synapse set under its cell.
-        Defaults to ``scene.export_groups``. See :mod:`neu_draw.backends.vector` for what
-        the format trades away (occlusion *between* groups).
+        ``groups`` maps a drawable to a tuple of group names to nest it under, e.g.
+        ``lambda d: (d.name.split(" : ")[0],)``; defaults to ``scene.export_groups``. See
+        :mod:`neu_draw.backends.vector` for what is lost (occlusion between groups).
         """
         if not str(path).lower().endswith(".svg"):
             raise ValueError(f"save_svg writes .svg, not {path!r}")
@@ -530,10 +439,10 @@ class View:
         also ``right``/``view``, data ``x``/``y``/``z``, or an xyz vector), ``light``
         (``"camera"`` turns the lights with it, ``"fixed"`` does not), ``ease``
         (``linear``/``in-out``), ``size``, ``supersample`` (2), ``legend``, ``overwrite``,
-        and ``encode`` (``"auto"``: write an mp4 if an ffmpeg is found — ``ffmpeg=``,
-        ``$NEU_DRAW_FFMPEG``, then ``PATH``), ``output`` (the mp4's path). Returns an
-        :class:`~neu_draw.backends.animation.Orbit`: the video, or the line that would
-        make it. The view's own camera is not moved.
+        and ``encode`` (``"auto"``: write an mp4 if an ffmpeg is found via ``ffmpeg=``,
+        ``$NEU_DRAW_FFMPEG`` or ``PATH``), ``output`` (the mp4's path). Returns an
+        :class:`~neu_draw.video.Orbit` with the video, or the command that would make it.
+        The view's own camera is not moved.
         """
         from .animation import orbit
 
@@ -542,13 +451,8 @@ class View:
     def close(self) -> None:
         """Close the canvas, recording where the camera was into ``views["last"]``.
 
-        **Here rather than in the toolbar**, so that `view.close()` from a notebook counts
-        too — the slot is only useful if it is reliably populated, and "I closed the figure
-        and now want that angle back" does not depend on which route closed it.
-
-        The record happens first: after the canvas is gone there is nothing to ask. It is
-        also guarded, because a `close()` that raises on the way out is worse than a lost
-        viewpoint — this runs in every test's `finally`.
+        Done here, not in the toolbar, so ``view.close()`` from a cell records it too. A
+        failure to record is ignored rather than raised.
         """
         try:
             self.save_view(LAST)
@@ -562,16 +466,8 @@ class View:
     def _install_legend(self, legend: Optional[bool]) -> None:
         """Build the legend strip, unless it is turned off or there is nothing to label.
 
-        ``None`` — the default — follows the scene's own
-        :class:`~neu_draw.scene.Legend`, whose ``visible`` has defaulted to ``True`` since
-        the field existed; the backend ignored it until there was a legend to draw. So a
-        scene from :func:`~neu_draw.scene.build_scene` gets one without asking, which is
-        the same argument as the toolbar's default: a legend you have to remember to
-        request is one that is usually missing.
-
-        **A scene with nothing to label gets no strip**, rather than an empty one taking
-        45% of the canvas. "Nothing to label" is no *labels* rather than no names, since a
-        drawable may carry a label and no name.
+        ``None`` (the default) follows the scene's :class:`~neu_draw.scene.Legend`, which
+        is visible by default. A scene with no labels gets no strip.
         """
         spec = self.scene_data.legend
         if legend is False or spec is None or not spec.visible:
@@ -587,16 +483,8 @@ class View:
     def _install_toolbar(self, toolbar: Any) -> None:
         """Attach a :class:`~neu_draw.toolbar.Toolbar`, if one is wanted and possible.
 
-        ``"auto"`` — the default — means **a toolbar wherever one can exist**, so a
-        notebook gets the buttons without anyone having to ask for them, and an offscreen
-        render is unaffected. That follows the package's existing rule for store logging:
-        a user should not have to invoke anything to get the usable behaviour, because
-        forgetting the call after a kernel restart looks exactly like the feature being
-        broken. Pass ``toolbar=False`` for the bare canvas, or ``True`` to insist and get
-        the exception if ipywidgets is missing.
-
-        Imported here rather than at module scope: ipywidgets is a notebook dependency,
-        and the backend already loads on a worker with no front-end at all.
+        ``"auto"`` (the default) adds one wherever possible, i.e. in a notebook.
+        ``False`` gives the bare canvas; ``True`` raises if ipywidgets is missing.
         """
         if not toolbar:
             return
@@ -607,14 +495,9 @@ class View:
     def _repr_mimebundle_(self, *args, **kwargs):
         """Let Jupyter display the view when it is the cell's value.
 
-        The **toolbar's** widget where there is one, and the bare canvas otherwise — so
-        wrapping the canvas in a button bar changes nothing about how a view is shown.
-
-        Positional arguments are **dropped**: IPython passes ``include``/``exclude`` as
-        keywords, but the Jupyter canvas accepts ``**kwargs`` only, so forwarding
-        anything positional is a ``TypeError`` in the one place it matters — the cell
-        that was supposed to show the figure. An offscreen canvas has no bundle at all,
-        which is why this degrades to a repr rather than raising.
+        Shows the toolbar's widget if there is one, else the canvas, else a text repr (an
+        offscreen canvas). Positional arguments are dropped, since the Jupyter canvas
+        accepts keywords only.
         """
         widget = getattr(self.ui, "widget", None)
         bundle = getattr(widget if widget is not None else self.canvas,
@@ -637,7 +520,7 @@ def _is_offscreen(canvas: Any) -> bool:
 
 
 def in_notebook() -> bool:
-    """True inside an IPython **kernel** — a notebook — and not a terminal REPL."""
+    """True inside an IPython kernel (a notebook), not a terminal REPL."""
     try:
         from IPython import get_ipython
     except ImportError:
@@ -649,13 +532,9 @@ def in_notebook() -> bool:
 def _make_canvas(size: tuple[int, int], kind: str = "auto") -> Any:
     """Pick a canvas: ``auto``, ``jupyter``, ``offscreen``, or ``gui``.
 
-    ``auto`` means **jupyter in a notebook, offscreen everywhere else** — deliberately
-    not ``rendercanvas.auto``, which prefers a desktop toolkit. On this workstation that
-    picks Qt and opens real windows, which is wrong twice over: a test run should not
-    spawn windows, and a desktop window renders at the display's device pixel ratio
-    (2.5 here), so ``snapshot()`` comes back at a size the caller never asked for.
-
-    Pass ``kind="gui"`` to ask for a desktop window on purpose.
+    ``auto`` is jupyter in a notebook and offscreen elsewhere; not ``rendercanvas.auto``,
+    which would open desktop windows and render at the display's pixel ratio. Pass
+    ``kind="gui"`` for a desktop window.
     """
     if kind == "auto":
         kind = "jupyter" if in_notebook() else "offscreen"
@@ -681,10 +560,8 @@ def _extent(scene: Scene) -> float:
 def _visible_sphere(group: pygfx.Group) -> Optional[tuple[float, float, float, float]]:
     """A bounding sphere over the group's **visible** children, in world xyz.
 
-    ``WorldObject.get_bounding_box`` deliberately ignores ``visible`` — it answers "how
-    much space could this take up", not "what is on screen" — so this is the filter, and
-    it is the only thing standing between a legend toggle and a camera that pulls back
-    for a body that is switched off. ``None`` when nothing is showing.
+    Needed because ``get_bounding_box`` ignores ``visible``. ``None`` when nothing is
+    showing.
     """
     boxes = [child.get_world_bounding_box() for child in group.children if child.visible]
     boxes = [box for box in boxes if box is not None]
@@ -700,8 +577,7 @@ def _visible_sphere(group: pygfx.Group) -> Optional[tuple[float, float, float, f
 def _bounding_sphere(box) -> tuple[float, float, float, float]:
     """A zyx :class:`~neu_lib.BBox` as the ``(x, y, z, radius)`` pygfx wants.
 
-    An empty box becomes a unit sphere at the origin, so a scene with nothing in it
-    still opens on something rather than raising.
+    An empty box becomes a unit sphere at the origin.
     """
     if box.is_empty():
         return (0.0, 0.0, 0.0, 1.0)
