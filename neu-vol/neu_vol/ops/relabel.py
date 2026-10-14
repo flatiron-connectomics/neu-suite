@@ -39,8 +39,8 @@ from typing import Any, Sequence
 import numpy as np
 
 from ..backends.base import open_backend
-from ..source_metadata import (detect_backend, existing_levels, level_spec,
-                               require_chunked_volume)
+from ..detect import detect_backend, require_chunked_volume
+from ..source_metadata import existing_levels, level_spec
 from .annotate import labeled_regions
 
 # A whole region is read at once so its ids can be collected in one pass. 8 GiB is far

@@ -10,11 +10,10 @@ import os
 import numpy as np
 import pytest
 
-from neu_vol.source_metadata import (SINGLE_LEVEL_FORMATS, describe,
-                                     detect_backend, detect_file_backend,
-                                     existing_levels, level_spec, location_spec,
-                                     read_level_voxel_sizes, read_source_metadata,
-                                     require_chunked_volume)
+from neu_vol.detect import (SINGLE_LEVEL_FORMATS, detect_backend, detect_file_backend,
+                            require_chunked_volume)
+from neu_vol.source_metadata import (describe, existing_levels, level_spec, location_spec,
+                                     read_level_voxel_sizes, read_source_metadata)
 
 h5py = pytest.importorskip("h5py")
 

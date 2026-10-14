@@ -2,7 +2,7 @@
 
 DVID is not a kvstore, so this backend is addressed by ``server``/``uuid``/``instance``
 rather than by a path — see ``neu_vol.dvid.parse_url`` for the URL form and
-``source_metadata.detect_backend`` for where it is recognised.
+``detect.detect_backend`` for where it is recognised.
 
 **Addressing and version resolution live in** ``neu_vol/dvid.py``, not here: they
 are the same for every instance type, and consumers above this package need them without

@@ -440,7 +440,8 @@ def _src_spec(args, src: str | None = None):
 
     Returns ``(spec, fmt)``; ``fmt`` is None when nothing at the location is a volume.
     """
-    from neu_vol.source_metadata import detect_backend, location_spec
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import location_spec
 
     src = args.src if src is None else src
     fmt = detect_backend(src)
@@ -468,8 +469,8 @@ def _level0_factor(src: str, scale: int, per_level=None, args=None) -> tuple[int
     can keep calling with a bare path; where it is given the source options travel with
     it, so a DVID peek resolves the same node the run will use.
     """
-    from neu_vol.source_metadata import (detect_backend, location_spec,
-                                                 read_level_voxel_sizes)
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import location_spec, read_level_voxel_sizes
 
     if per_level is None:
         if args is not None:
@@ -800,7 +801,7 @@ def cmd_copy(args) -> int:
     # a copy, and an unwritten source scale otherwise reports a perfectly plausible
     # 10.1 TiB of level 0 that would all read as the fill value. `convert` guards again
     # for callers that never come through here.
-    from neu_vol.source_metadata import require_populated_scale
+    from neu_vol.detect import require_populated_scale
 
     if meta.get("data_spec"):
         try:
@@ -913,7 +914,7 @@ def _downsample_plan(args):
     anything is written.
     """
     from neu_vol.pyramid import downsample_schedule
-    from neu_vol.source_metadata import require_chunked_volume
+    from neu_vol.detect import require_chunked_volume
 
     d = _describe(args.volume)
     # Before the schedule, not after: this command plans in the CLI and only then calls
@@ -1386,8 +1387,7 @@ def cmd_progress(args) -> int:
     note in CLAUDE.md.
     """
     from neu_vol.location import default_progress_path
-    from neu_vol.source_metadata import (PRECOMPUTED_GZ, detect_backend,
-                                         require_chunked_volume)
+    from neu_vol.detect import PRECOMPUTED_GZ, detect_backend, require_chunked_volume
 
     volume = args.volume.rstrip("/")
     manifest_path = args.progress_path or default_progress_path(volume)

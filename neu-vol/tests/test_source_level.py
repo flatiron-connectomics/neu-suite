@@ -15,9 +15,9 @@ import pytest
 from neu_vol import convert
 from neu_vol.backends.tensorstore import TensorStoreBackend
 from neu_vol.profiles import zarr3_create_spec
-from neu_vol.source_metadata import (describe, finest_populated_scale,
-                                     read_source_metadata,
-                                     require_populated_scale, scale_stores_chunks)
+from neu_vol.detect import (finest_populated_scale, require_populated_scale,
+                            scale_stores_chunks)
+from neu_vol.source_metadata import describe, read_source_metadata
 
 
 def _precomputed(tmp_path, name="vol", shape=(32, 32, 32)):
@@ -75,7 +75,7 @@ def test_the_finest_populated_scale_is_found(tmp_path):
 def test_an_unwritten_scale_is_distinguished_from_a_sparse_one(tmp_path):
     """Both lack an origin chunk; only one is actually empty."""
     from neu_vol.location import read_json
-    from neu_vol.source_metadata import _first_chunk_key, scale_is_empty
+    from neu_vol.detect import _first_chunk_key, scale_is_empty
 
     dst = _precomputed(tmp_path, "pair")
     scales = read_json(dst, "info")["scales"]
@@ -90,7 +90,7 @@ def test_an_unwritten_scale_is_distinguished_from_a_sparse_one(tmp_path):
 def test_a_volume_sparse_at_the_origin_of_every_scale_is_still_resolved(tmp_path):
     """No origin chunk at any scale: the listing tier must still find the written one."""
     from neu_vol.location import read_json
-    from neu_vol.source_metadata import _first_chunk_key
+    from neu_vol.detect import _first_chunk_key
 
     dst = _precomputed(tmp_path, "no_origin_anywhere")
     fine, _coarse = _strip_finest(dst)                    # 8_8_8 declared but unwritten
@@ -196,7 +196,7 @@ def test_convert_refuses_before_it_writes_anything(tmp_path):
 
 def test_a_sparse_scale_with_no_origin_chunk_is_allowed(tmp_path):
     """A sparse volume elides background chunks, so a missing origin chunk proves nothing."""
-    from neu_vol.source_metadata import _first_chunk_key
+    from neu_vol.detect import _first_chunk_key
 
     dst = _precomputed(tmp_path, "sparse")
     with open(os.path.join(dst, "info")) as fh:

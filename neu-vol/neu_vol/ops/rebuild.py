@@ -21,8 +21,8 @@ import logging
 from typing import Any, Sequence
 
 from ..backends.base import open_backend
-from ..source_metadata import (detect_backend, read_source_metadata,
-                               require_chunked_volume)
+from ..detect import detect_backend, require_chunked_volume
+from ..source_metadata import read_source_metadata
 from ..location import default_progress_path
 from ..profiles import PROFILES
 from ._multiscale import materialize_multiscale

@@ -32,8 +32,8 @@ from typing import Any, Sequence
 import numpy as np
 
 from ..location import list_keys
-from ..source_metadata import (PRECOMPUTED_GZ, detect_backend, existing_levels,
-                               level_spec, require_chunked_volume)
+from ..detect import PRECOMPUTED_GZ, detect_backend, require_chunked_volume
+from ..source_metadata import existing_levels, level_spec
 
 #: Documents that sit beside a zarr array's chunks and are not chunks. v3 writes
 #: ``zarr.json``; the v2 names appear on volumes read through the same driver.

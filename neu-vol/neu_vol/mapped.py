@@ -145,7 +145,7 @@ def clear_cache() -> None:
 
 def location_spec(path: str) -> dict:
     """The ``mapped`` spec for a descriptor: the source's own spec, wrapped."""
-    from .source_metadata import detect_backend
+    from .detect import detect_backend
     from .source_metadata import location_spec as _location_spec
 
     d = read_descriptor(path)

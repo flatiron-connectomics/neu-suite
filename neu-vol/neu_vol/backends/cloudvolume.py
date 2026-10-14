@@ -7,8 +7,8 @@ key, finds nothing, and returns the fill value. **The volume reads as all zeros 
 nothing raises** — a 1.9 M-block conversion was lost to it before detection existed.
 
 So this backend exists to read those volumes with the library that wrote them.
-``source_metadata.detect_backend`` returns
-:data:`~neu_vol.source_metadata.PRECOMPUTED_GZ` for them, which routes here.
+``detect.detect_backend`` returns
+:data:`~neu_vol.detect.PRECOMPUTED_GZ` for them, which routes here.
 
 **cloud-volume is an optional dependency and deliberately not in the main env.** It
 pins ``DracoPy<2``, and installing it alongside neu-morpho would downgrade

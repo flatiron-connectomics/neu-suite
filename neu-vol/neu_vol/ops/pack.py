@@ -48,7 +48,7 @@ import numpy as np
 from blockrun import iter_blocks
 
 from ..backends.base import open_backend
-from ..source_metadata import PRECOMPUTED_GZ
+from ..detect import PRECOMPUTED_GZ
 from .write import source_spec
 
 logger = logging.getLogger(__name__)
@@ -110,8 +110,9 @@ def resolve_source(src: str | dict, src_format: str | None = None, level: int = 
       is asked: repacking a file that already carries a ``voxel_size`` should not make
       anyone retype it.
     """
-    from ..source_metadata import (detect_backend, existing_levels, level_spec,
-                                   read_level_voxel_sizes, read_source_metadata)
+    from ..detect import detect_backend
+    from ..source_metadata import (existing_levels, level_spec, read_level_voxel_sizes,
+                                   read_source_metadata)
 
     fmt = None if isinstance(src, dict) else (src_format or detect_backend(str(src)))
     if fmt not in ("zarr3", "neuroglancer_precomputed", PRECOMPUTED_GZ):

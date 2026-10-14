@@ -15,6 +15,7 @@ import urllib.parse
 import numpy as np
 import pytest
 
+from neu_vol import detect
 from neu_vol import source_metadata as sm
 from neu_vol import webknossos as wk
 from neu_vol.backends import webknossos as wkb
@@ -166,9 +167,9 @@ def test_detect_backend_answers_from_the_scheme_without_touching_a_store(monkeyp
     def explode(*a, **k):
         raise AssertionError("a wk:// URL reached to_kvstore")
 
-    monkeypatch.setattr(sm, "to_kvstore", explode)
-    assert sm.detect_backend("wk://specimen/segmentation") == "webknossos"
-    assert sm.other_format_markers("wk://specimen/segmentation", "webknossos") == []
+    monkeypatch.setattr(detect, "to_kvstore", explode)
+    assert detect.detect_backend("wk://specimen/segmentation") == "webknossos"
+    assert detect.other_format_markers("wk://specimen/segmentation", "webknossos") == []
 
 
 def test_level_spec_selects_a_mag_by_index():
@@ -631,7 +632,8 @@ def view(server, sv_volume, tmp_path):
 
 def test_a_descriptor_is_a_volume_everywhere_a_location_is_taken(server, view, sv_volume):
     from neu_vol import read_piece
-    from neu_vol.source_metadata import describe, detect_backend
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import describe
 
     assert detect_backend(view) == "mapped"
     d = describe(view)

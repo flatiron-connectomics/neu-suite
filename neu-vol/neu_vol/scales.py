@@ -97,7 +97,7 @@ def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
 def _read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
     from .location import as_directory, spec_kvstore
     from .mapped import TAG as MAPPED, is_descriptor, read_descriptor
-    from .source_metadata import detect_backend
+    from .detect import detect_backend
 
     # A mapped view relabels its source and changes nothing else, so its levels are
     # the source's.
@@ -159,7 +159,7 @@ def scale_spec(spec: str | Mapping[str, Any], scale_index: int) -> dict:
     place, failing as empty data rather than an error.
     """
     from .location import as_directory, join, spec_kvstore
-    from .source_metadata import detect_backend
+    from .detect import detect_backend
 
     spec = {"path": spec} if isinstance(spec, str) else dict(spec)
     kv = as_directory(spec_kvstore(spec))

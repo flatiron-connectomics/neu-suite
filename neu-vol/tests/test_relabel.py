@@ -227,7 +227,7 @@ def test_dry_run_writes_nothing_but_still_reports_the_ranges(tmp_path):
     result = relabel(src, out=out, dry_run=True, map_path=str(tmp_path / "m.json"))
     assert result["dry_run"] and result["n_labels_out"] == 5
     assert result["regions"][1]["new_id_range"] == [3, 5]
-    from neu_vol.source_metadata import detect_backend
+    from neu_vol.detect import detect_backend
     assert detect_backend(out) is None, "dry run created the destination"
     assert not (tmp_path / "m.json").exists(), "dry run wrote the mapping file"
 

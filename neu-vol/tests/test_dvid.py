@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from neu_vol import dvid as canonical_dvid
+from neu_vol import detect
 from neu_vol import source_metadata as sm
 from neu_vol.backends import dvid
 
@@ -71,8 +72,8 @@ def test_detect_backend_answers_from_the_scheme_without_touching_a_store(monkeyp
     def explode(*a, **k):
         raise AssertionError("detect_backend touched a store for a DVID URL")
 
-    monkeypatch.setattr(sm, "to_kvstore", explode)
-    assert sm.detect_backend(URL) == "dvid"
+    monkeypatch.setattr(detect, "to_kvstore", explode)
+    assert detect.detect_backend(URL) == "dvid"
 
 
 def test_location_spec_builds_the_three_forms():
@@ -90,7 +91,7 @@ def test_level_spec_selects_a_dvid_scale_by_index():
 
 def test_no_format_can_shadow_a_dvid_instance():
     """`other_format_markers` would otherwise read `dvid://...` as a local path."""
-    assert sm.other_format_markers(URL, "dvid") == []
+    assert detect.other_format_markers(URL, "dvid") == []
 
 
 # --------------------------------------------------------------------------- #

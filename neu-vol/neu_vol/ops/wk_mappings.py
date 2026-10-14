@@ -63,7 +63,7 @@ def fetch_mapping_tables(src: str, out: str, *, volume: str | None = None,
         raise ValueError(f"{src} has no agglomerate view {', '.join(unknown)}. "
                          f"Available: {', '.join(available) or 'none'}")
     if volume is not None:
-        from ..source_metadata import detect_backend
+        from ..detect import detect_backend
 
         if detect_backend(volume) is None:
             raise FileNotFoundError(f"--volume {volume} is not a volume")

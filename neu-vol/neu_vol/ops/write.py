@@ -34,9 +34,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from ..backends.base import Region, open_backend
-from ..source_metadata import (detect_backend, existing_levels, level_spec,
-                               location_spec, read_level_voxel_sizes,
-                               require_chunked_volume)
+from ..detect import detect_backend, require_chunked_volume
+from ..source_metadata import (existing_levels, level_spec, location_spec,
+                               read_level_voxel_sizes)
 from ._multiscale import DEFAULT_TASK_BYTES, _elapsed, plan_task_shape
 
 logger = logging.getLogger(__name__)

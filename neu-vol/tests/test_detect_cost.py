@@ -8,9 +8,8 @@ import pytest
 from neu_vol import convert
 from neu_vol.backends.tensorstore import TensorStoreBackend
 from neu_vol.profiles import zarr3_create_spec
-from neu_vol.source_metadata import (PRECOMPUTED_GZ, _first_chunk_key,
-                                            detect_backend,
-                                            precomputed_chunks_are_gzipped)
+from neu_vol.detect import (PRECOMPUTED_GZ, _first_chunk_key, detect_backend,
+                            precomputed_chunks_are_gzipped)
 
 
 def _precomputed(tmp_path, name="vol", shape=(32, 32, 32)):
@@ -133,7 +132,7 @@ def test_gz_is_detected_when_no_scale_has_an_origin_chunk(tmp_path):
     import shutil
 
     from neu_vol.location import read_json
-    from neu_vol.source_metadata import _first_chunk_key
+    from neu_vol.detect import _first_chunk_key
 
     dst = _precomputed(tmp_path, "no_origin_gz")
     scales = read_json(dst, "info")["scales"]

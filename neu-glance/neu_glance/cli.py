@@ -121,7 +121,8 @@ def _volume_frame(volume: str | None, voxel_size: str | None):
     if not volume:
         return voxel, ("nm" if voxel else None), None
 
-    from neu_vol.source_metadata import detect_backend, read_source_metadata
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import read_source_metadata
 
     from .sources import volume_extent
 
@@ -140,8 +141,8 @@ def _level0_factor(volume: str, scale: int) -> tuple[int, ...]:
 
     From each level's recorded voxel size, never ``2**scale``: pyramids may be anisotropic.
     """
-    from neu_vol.source_metadata import (detect_backend, location_spec,
-                                                 read_level_voxel_sizes)
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import location_spec, read_level_voxel_sizes
 
     fmt = detect_backend(volume.rstrip("/"))
     if fmt is None:

@@ -22,7 +22,7 @@ from .base import Region, register_backend
 TAG = "image_stack"
 
 #: Slice extensions this reader accepts. Public because it is also the *detection*
-#: vocabulary: ``source_metadata.detect_file_backend`` asks whether a directory holds
+#: vocabulary: ``detect.detect_file_backend`` asks whether a directory holds
 #: any of these, and the two must not drift — a directory detected as a stack whose
 #: files this reader then filters out would fail with "no image files matched".
 IMAGE_EXTENSIONS = (".tif", ".tiff", ".png")

@@ -6,7 +6,7 @@ The only module in this package that reads a store, so :mod:`neu_glance.state` a
 Two choices here fail silently if made wrong:
 
 - **The source scheme** (``precomputed://`` or ``zarr://``) comes from
-  :func:`~neu_vol.source_metadata.detect_backend`, not from the path.
+  :func:`~neu_vol.detect.detect_backend`, not from the path.
 - **Volume or annotation source.** Both are ``precomputed://`` with an ``info`` at the
   root, and an annotation layer pointed at a volume loads and draws nothing. Only the
   ``@type`` tells them apart, so :func:`read_annotation_info` checks it.
@@ -22,7 +22,7 @@ from .shaders import SPLIT_CONTROLS, ShaderProblem, pick_shader
 #: How neuroglancer addresses each backend: the classic ``scheme://`` form, which older
 #: viewers read too, rather than the newer ``kvstore|adapter:`` syntax.
 def _scheme_map() -> dict[str, str]:
-    from neu_vol.source_metadata import PRECOMPUTED_GZ
+    from neu_vol.detect import PRECOMPUTED_GZ
 
     return {"neuroglancer_precomputed": "precomputed",
             PRECOMPUTED_GZ: "precomputed",
@@ -94,7 +94,8 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
     ``kind`` (``"image"`` or ``"segmentation"``) overrides what the volume records; without
     it the recorded kind decides, defaulting to image.
     """
-    from neu_vol.source_metadata import detect_backend, read_source_metadata
+    from neu_vol.detect import detect_backend
+    from neu_vol.source_metadata import read_source_metadata
 
     volume = volume.rstrip("/")
     fmt = detect_backend(volume)

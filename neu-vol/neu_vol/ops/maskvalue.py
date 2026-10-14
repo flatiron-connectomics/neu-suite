@@ -42,8 +42,8 @@ import numpy as np
 from blockrun import iter_blocks
 
 from ..backends.base import open_backend
-from ..source_metadata import (detect_backend, existing_levels, level_spec,
-                               require_chunked_volume)
+from ..detect import detect_backend, require_chunked_volume
+from ..source_metadata import existing_levels, level_spec
 from .annotate import labeled_regions
 
 logger = logging.getLogger(__name__)

@@ -40,8 +40,8 @@ from ..ngff import (build_dataset, build_multiscales_attrs, ome_unit,
 from ..profiles import (StorageProfile, get_profile, precomputed_create_spec,
                         zarr3_create_spec)
 from ..pyramid import downsample_schedule, level_scale_translation
-from ..source_metadata import (describe, existing_levels, other_format_markers,
-                               require_one_array)
+from ..detect import other_format_markers
+from ..source_metadata import describe, existing_levels, require_one_array
 
 logger = logging.getLogger(__name__)
 

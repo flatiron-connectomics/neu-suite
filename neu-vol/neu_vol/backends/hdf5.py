@@ -34,7 +34,7 @@ TAG = "hdf5"
 
 #: Extensions that name an HDF5 container. Public because it is the *detection*
 #: vocabulary too: HDF5 has no marker object to probe for — the format signature is
-#: inside the file — so ``source_metadata.detect_file_backend`` goes by the name, and the
+#: inside the file — so ``detect.detect_file_backend`` goes by the name, and the
 #: two lists must not drift.
 HDF5_EXTENSIONS = (".h5", ".hdf5", ".hdf", ".he5")
 

@@ -8,7 +8,8 @@ from neu_vol import convert
 from neu_vol.backends.base import open_backend
 from neu_vol.backends.tensorstore import TensorStoreBackend
 from neu_vol.profiles import precomputed_create_spec, zarr3_create_spec
-from neu_vol.source_metadata import PRECOMPUTED_GZ, detect_backend, read_source_metadata
+from neu_vol.detect import PRECOMPUTED_GZ, detect_backend
+from neu_vol.source_metadata import read_source_metadata
 
 
 def _zarr3(path):
