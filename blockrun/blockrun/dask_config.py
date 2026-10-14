@@ -1,26 +1,15 @@
 """Dask cluster config: bundled templates, layered overrides, key validation.
 
-This lives here rather than in each consumer because :func:`start_dask` lives here.
-Both neu-vol and neu-morpho previously carried their own copy of "resolve
-a config name to a path", which is the kind of duplication that drifts silently.
+- **Bundled templates:** ``--config dask-local`` resolves through
+  ``importlib.resources``, so it works from any directory, including for an installed
+  command.
+- **Layering:** ``--config`` is repeatable and deep-merged left to right, so a site config
+  holds only the keys that differ from a template::
 
-Three things it provides:
+      --config dask-slurm-example --config configs/my-site.yaml
 
-**Bundled templates.** ``--config dask-local`` resolves through
-``importlib.resources``, so it works from any directory. A repo-relative default like
-``configs/dask-local.yaml`` only resolves with the current directory set to a source
-checkout — fine for a script, useless for an installed command.
-
-**Layering.** ``--config`` is repeatable and deep-merged left to right, so a site
-config is the handful of keys that actually differ rather than a full fork of the
-template that drifts from it:
-
-    --config dask-slurm-example --config configs/my-site.yaml
-
-**Validation.** An unknown key in an overlay would otherwise deep-merge silently and
-do nothing — the same "fails as wrong behaviour, never as an error" class as a
-mistyped array spec key. See :func:`unknown_keys` for what it validates against, and
-why that is *not* the base config.
+- **Validation:** an unknown key would otherwise merge silently and do nothing, so each
+  file is checked against dask's own config tree (:func:`unknown_keys`).
 """
 
 from __future__ import annotations
@@ -99,13 +88,8 @@ def deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict:
 # validation
 # --------------------------------------------------------------------------- #
 def _reference_tree() -> dict:
-    """dask's own known-key tree: dask + dask-jobqueue defaults.
-
-    **Not our own templates.** Validating against those would reject
-    ``job-extra-directives`` — the key our SLURM template documents (commented out)
-    as the way to pin a node type, and therefore deliberately absent from it. Same
-    for the many legitimate dask-jobqueue keys the template does not bother shipping.
-    """
+    """dask's own known-key tree (dask and dask-jobqueue defaults). Not the bundled
+    templates, which omit many valid keys, such as ``job-extra-directives``."""
     import dask.config
 
     try:
@@ -121,15 +105,9 @@ def unknown_keys(doc: Mapping[str, Any], reference: Mapping[str, Any] | None = N
                  _prefix: tuple[str, ...] = ()) -> list[str]:
     """Dotted paths in ``doc`` that dask's config tree does not define.
 
-    Key names are canonicalised, because dask treats ``log_directory`` and
-    ``log-directory`` as the same key — a naive check rejects the underscore spelling
-    dask happily accepts.
-
-    Recursion stops at a reference node that is an **empty dict**: dask ships ``{}``
-    for free-form mappings (``jobqueue.slurm.scheduler-options``,
-    ``distributed.worker.resources``) where arbitrary user keys are the whole point,
-    so descending there would reject valid config. Also stops where the reference
-    value is a scalar or list, since there is no schema below it to check.
+    Names are canonicalised as dask does (``log_directory`` is ``log-directory``).
+    Checking stops below an empty-dict default, which dask uses for free-form mappings
+    such as ``distributed.worker.resources``, and below scalar or list defaults.
     """
     from dask.config import canonical_name
 
@@ -153,9 +131,8 @@ def load_config(sources: str | Sequence[str], *,
                 validate: bool = True) -> tuple[dict, list[str]]:
     """Resolve, load, validate and merge one or more ``--config`` values.
 
-    Returns ``(merged, resolved_paths)``. Each file is validated **on its own** before
-    merging, so an unrecognised key can be attributed to the file that introduced it
-    — with a merge chain, "which overlay did this come from" is the actual question.
+    Returns ``(merged, resolved_paths)``. Each file is validated on its own before
+    merging, so an error names the file that introduced the key.
     """
     if isinstance(sources, str):
         sources = [sources]
@@ -188,9 +165,8 @@ def write_effective_config(dest: str, merged: Mapping[str, Any],
                            sources: Iterable[str]) -> str:
     """Record the config dask actually received. Returns the path written.
 
-    ``dest`` may be a directory (the file is named ``dask-config.effective.yaml``) or
-    a full path. Worth keeping with the run: with layered overrides, "what did this
-    run use" is otherwise only answerable by replaying the merge by hand.
+    ``dest`` is a directory (the file is named ``dask-config.effective.yaml``) or a full
+    path. Kept with a run, it records what layered overrides produced.
     """
     path = (os.path.join(dest, "dask-config.effective.yaml")
             if os.path.isdir(dest) else dest)

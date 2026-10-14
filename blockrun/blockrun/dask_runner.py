@@ -45,24 +45,16 @@ def start_dask(
 ) -> Iterator[Client]:
     """Start a Dask cluster from one or more YAML configs; yield a connected Client.
 
-    ``config_path`` is a bundled name (see :func:`bundled_configs`) or a path, or a
-    **sequence of either**, deep-merged left to right — so a site config carries only
-    the keys that differ from a template. Unrecognised keys raise rather than merging
-    silently; see :mod:`blockrun.dask_config`.
-
-    The default is the bundled ``dask-local``, so ``start_dask(4)`` works from any
-    directory. It used to be the relative path ``"dask-config.yaml"``, which resolved
-    only from whichever directory happened to contain such a file.
+    ``config_path`` is a bundled name (see :func:`bundled_configs`), a path, or a sequence
+    of either, deep-merged left to right; unrecognised keys raise (see
+    :mod:`blockrun.dask_config`). The default, ``dask-local``, works from any directory.
 
     The config's first ``jobqueue`` key selects the cluster type:
       - ``"local"``: a LocalCluster with ``num_workers`` single-threaded workers.
       - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs.
 
-    Tears the cluster (and SLURM jobs) down on exit.
-
-    ``effective_config_path`` (a directory or file) records the merged result. Worth
-    passing from a run directory: with layered overrides, "what config did this run
-    actually use" is otherwise only answerable by replaying the merge by hand.
+    Tears the cluster (and its SLURM jobs) down on exit. ``effective_config_path`` (a
+    directory or file) records the merged config, worth keeping with a run.
     """
     logger = logger or logging.getLogger(__name__)
     config, sources = load_config(config_path)
@@ -73,17 +65,13 @@ def start_dask(
             f"type ('local' or 'slurm')")
     cluster_type = next(iter(config["jobqueue"]))
 
-    # Default the job name to the caller's label, so `squeue` and the per-job worker
-    # logs say WHICH command submitted them. dask-jobqueue's own default is the
-    # uninformative "dask-worker", and `name` drives two things: `#SBATCH -J` and the
-    # `<log-directory>/<name>-<jobid>.{err,out}` filenames. Deriving it from the
-    # command means it does not have to be edited into every site config — and a
-    # config that DOES set it still wins.
+    # Name the SLURM jobs after the caller's label (unless the config sets `name`), so
+    # `squeue` and the `<name>-<jobid>` worker logs say which command submitted them.
     section = config["jobqueue"].get(cluster_type) or {}
     if "name" not in section:
         config = deep_merge(config, {"jobqueue": {cluster_type: {"name": label}}})
 
-    # Dump AFTER the injection, so the record matches what dask actually received.
+    # Written after the name is set, so it records what dask actually receives.
     if effective_config_path:
         written = write_effective_config(effective_config_path, config, sources)
         logger.info("dask config: %s -> %s", " + ".join(sources), written)

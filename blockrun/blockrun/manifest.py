@@ -1,24 +1,16 @@
-"""Driver-side, single-writer completion manifest.
+"""A completion log for resumable runs, written only by the driver.
 
-The driver is the only writer, so there is no concurrency to coordinate: as
-per-task results stream back it appends one JSON line per task recording its
-status. On resume it reads the manifest and callers filter out already-done tasks
-before dispatch — no per-object existence scan.
+As task results stream back, the driver appends one JSON line per task; on resume,
+callers read it and skip finished tasks before dispatch, with no per-object existence
+scan. Each line has:
 
-Keys are generic:
-  - ``group``: any JSON-serializable group id (e.g. a pyramid level int, or a
-    single 0 when there's only one group).
-  - ``key``:   any JSON-serializable task identity — a scalar (e.g. a segment id)
-    or a sequence (e.g. a block-grid index tuple).
-  - ``status``: an opaque string. neu-vol uses ``written`` / ``empty`` /
-    ``skipped``; other consumers can use their own (e.g. ``failed``).
+  - ``group``: a JSON-serialisable group id (a pyramid level, or 0 if there is one group);
+  - ``key``: the task's identity, a scalar (a segment id) or a sequence (a block index);
+  - ``status``: any string (neu-vol writes ``written``, ``empty``, ``skipped``).
 
-A second kind of line records facts **about** a group rather than a task within
-it — ``{"group": g, "meta": {...}}``, written by :meth:`Manifest.record_meta`.
-Its purpose is the denominator: only the driver knows how many tasks a group has,
-and without it a reader can only guess, which is how ``neu-vol progress`` came to
-divide a count of tasks by a count of chunks. A line carrying no ``status`` is
-never a task, so old readers skip it and old files simply have no meta.
+A line with ``meta`` and no ``status`` records facts about a group, most usefully its
+task ``total`` (:meth:`Manifest.record_meta`), since only the driver knows it. Anything
+reading the file directly must skip lines without a ``status``.
 """
 
 from __future__ import annotations
@@ -78,6 +70,8 @@ class Manifest:
         return {key for (g, key) in self._done if g == group}
 
     def is_done(self, group: Any, key: Any) -> bool:
+        """Whether any status is recorded for the task, **including** ``"failed"``. To
+        retry failures, filter on :meth:`status` instead."""
         return (group, _norm(key)) in self._done
 
     def status(self, group: Any, key: Any) -> str | None:
@@ -113,12 +107,8 @@ class Manifest:
             self._fh = open(self.path, "a")
 
     def record_meta(self, group: Any, **fields: Any) -> None:
-        """Record facts *about* ``group`` — most usefully its task ``total``.
-
-        Write this **before dispatching** the group's tasks: a reader watching a
-        live run needs the denominator from the start, and a run that dies
-        halfway should still leave behind what it was trying to do.
-        """
+        """Record facts about ``group``, most usefully its task ``total``. Call it before
+        dispatching the group, so progress readers have the total from the start."""
         if not fields:
             return
         if self.path:

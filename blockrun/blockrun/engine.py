@@ -1,13 +1,9 @@
 """Block-map engine.
 
-Volume operations are expressed as a map over **output chunks**: tile the output
-grid into :class:`Block`s, and run a per-block function that reads the input
-region it needs, transforms it, and writes its output chunk. Blocks are the
-``items`` for the map pattern in docs/dask-slurm.md.
-
-Design rules: tasks are idempotent (skip already-written
-blocks -> resume-by-relaunch), workers write to the store and return small status
-tuples (never large arrays through the scheduler).
+A job is a map over **output chunks**: tile the output grid into blocks (:class:`Block`),
+and run a per-block function that reads the input it needs, transforms it, and writes its
+chunk. Tasks should be idempotent, so a relaunch resumes, and should return small status
+values rather than arrays: outputs go to the store, not through the scheduler.
 """
 
 from __future__ import annotations
@@ -68,14 +64,13 @@ def block_map(
     ``fn`` must be top-level / picklable and should return a *small* status value
     (write big outputs to the store, not back through the scheduler).
 
-    ``on_result``, if given, is called with each completed group's results as they
-    arrive — used to persist progress to a manifest incrementally so a mid-run
-    death still leaves an accurate record.
+    ``on_result``, if given, is called with each batch's results as they arrive, e.g.
+    to record them in a :class:`~blockrun.manifest.Manifest` so a run that dies midway
+    leaves an accurate record.
 
-    If ``client`` is ``None``, runs serially in-process (ideal for smoke tests).
-    Otherwise batches blocks and dispatches via ``client.map`` + ``as_completed``
-    under the active distributed client, so results stream back for durable
-    progress (rather than the all-or-nothing of ``bag.compute()``).
+    With ``client=None`` it runs serially in-process. Otherwise blocks are split
+    round-robin into ``npartitions`` batches (default ``min(len(blocks), 512)``), one
+    task each, and results stream back through ``as_completed``.
     """
     blocks = list(blocks)
     if not blocks:
@@ -115,8 +110,8 @@ def idempotent(
 ) -> Callable[[Block], Any]:
     """Wrap ``fn`` so blocks that are already done are skipped.
 
-    Enables resume-by-relaunch. ``is_done`` runs on the worker, so keep it cheap
-    (e.g. a store existence/metadata check).
+    ``is_done`` runs on the worker, so keep it cheap (a store existence or metadata
+    check).
     """
 
     def wrapped(block: Block) -> Any:
