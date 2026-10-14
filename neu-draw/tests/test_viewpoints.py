@@ -50,8 +50,7 @@ def _view(**kwargs):
 # --------------------------------------------------------------------------- #
 
 def test_a_saved_viewpoint_outlives_the_view_that_saved_it(has_gpu):
-    """The whole reason the store is a module-level dict: you save an angle in order to
-    use it in the *next* figure, by which time the first one is closed."""
+    """The store is module-level, so an angle carries to the next figure."""
     first = _view()
     saved = first.save_view()
     first.close()
@@ -64,8 +63,7 @@ def test_a_saved_viewpoint_outlives_the_view_that_saved_it(has_gpu):
 
 
 def test_restoring_an_empty_slot_returns_none_rather_than_raising(has_gpu):
-    """A fresh session has nothing saved, and that is the state a button is most likely
-    pressed in. Raising there would put a traceback where the figure is."""
+    """The likely state when a button is first pressed."""
     view = _view()
     try:
         assert view.restore_view() is None
@@ -75,8 +73,7 @@ def test_restoring_an_empty_slot_returns_none_rather_than_raising(has_gpu):
 
 
 def test_a_viewpoint_records_the_size_it_was_framed_for(has_gpu):
-    """A perspective camera's horizontal field of view follows the rect's aspect, so the
-    same camera state in a differently shaped canvas is a different picture."""
+    """The same camera state in a different aspect is a different picture."""
     view = _view(size=(200, 100))
     try:
         assert view.save_view().size == (200, 100)
@@ -130,9 +127,7 @@ def test_restoring_can_leave_the_canvas_size_alone(has_gpu):
 
 
 def test_closing_records_where_the_camera_was(has_gpu):
-    """In `View.close`, not in the toolbar, so a `view.close()` from a cell counts too —
-    the slot is only useful if it is reliably populated, and "I closed the figure and want
-    that angle back" should not depend on which route closed it."""
+    """In `View.close`, so a `view.close()` from a cell counts as well as the button."""
     view = _view()
     view.camera.local.position = (1234.0, 5678.0, 9012.0)
     view.close()
@@ -143,7 +138,6 @@ def test_closing_records_where_the_camera_was(has_gpu):
 
 
 def test_the_last_slot_is_what_the_next_figure_reopens_on(has_gpu):
-    """The gap this closes: `Close` wrote `views["last"]` and nothing consumed it."""
     first = _view()
     first.camera.local.position = (4321.0, 8765.0, 2109.0)
     first.close()
@@ -213,8 +207,7 @@ def test_reset_unhides_and_unhighlights(has_gpu):
 
 
 def test_reset_respects_a_drawable_that_was_hidden_from_the_start(has_gpu):
-    """"Everything visible" is not the same as "how this opened": a scene may deliberately
-    arrive with something switched off, and reset must not turn it on."""
+    """Reset restores how the figure opened, not "everything visible"."""
     scene = Scene().add_mesh(_mesh("shown")).add_mesh(_mesh("hidden"))
     scene.get("hidden").visible = False
     view = backend.show(scene, size=(80, 60), canvas="offscreen")
@@ -228,8 +221,7 @@ def test_reset_respects_a_drawable_that_was_hidden_from_the_start(has_gpu):
 
 
 def test_reset_leaves_colours_alone(has_gpu):
-    """Visibility and highlights are transient exploration; a recolour is an authored
-    change to the scene, and reverting it would be destroying work rather than tidying."""
+    """A recolour is an authored change, not transient exploration."""
     view = _view()
     try:
         view.legend.recolor("body", "tab:pink")
@@ -241,8 +233,7 @@ def test_reset_leaves_colours_alone(has_gpu):
 
 
 def test_reset_returns_to_a_restored_viewpoint_not_to_a_fit(has_gpu):
-    """The opening view is recorded AFTER `viewpoint=` is applied, so "reset" means what
-    this figure opened showing rather than what it would have opened showing."""
+    """The opening view is recorded after `viewpoint=` is applied."""
     first = _view()
     first.camera.local.position = (1.0, 2.0, 3.0)
     state = first.save_view("angle")
@@ -271,9 +262,7 @@ def test_center_refits_a_camera_that_has_been_dragged_away(has_gpu):
 
 
 def test_logical_size_does_not_believe_a_browsers_placeholder(has_gpu):
-    """A Jupyter canvas reports (1, 1) until the widget has been laid out, which is the
-    same trap that made `snapshot()` write a 2x2 PNG. A viewpoint saved in a freshly
-    executed notebook must not record that as its framing."""
+    """A Jupyter canvas reports (1, 1) before layout; a saved viewpoint must not record that."""
     view = _view(size=(300, 200))
     try:
         view.canvas.set_logical_size(1, 1)

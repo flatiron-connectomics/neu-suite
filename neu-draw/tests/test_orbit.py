@@ -18,8 +18,7 @@ REAL_FFMPEG = os.environ.get("NEU_DRAW_FFMPEG") or shutil.which("ffmpeg")
 
 @pytest.fixture(autouse=True)
 def no_ffmpeg(monkeypatch):
-    """Hermetic: no ffmpeg from this machine's PATH, environment or imageio-ffmpeg, so a
-    test sees only the ones it installs itself."""
+    """Hide any ffmpeg on PATH, in the environment or from imageio-ffmpeg."""
     monkeypatch.delenv("NEU_DRAW_FFMPEG", raising=False)
     monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
     keep = [d for d in os.environ.get("PATH", "").split(os.pathsep)
@@ -46,12 +45,12 @@ def _fake_ffmpeg(directory, name="ffmpeg", fail=False):
 # pure
 # --------------------------------------------------------------------------- #
 
-def test_a_whole_turn_leaves_out_its_endpoint_so_the_video_loops():
-    assert np.degrees(orbit.angles(360, 4)).tolist() == pytest.approx([0, 90, 180, 270])
-
-
-def test_a_partial_sweep_ends_exactly_where_it_was_asked_to():
-    assert np.degrees(orbit.angles(90, 4)).tolist() == pytest.approx([0, 30, 60, 90])
+@pytest.mark.parametrize("degrees, expected", [
+    (360, [0, 90, 180, 270]),        # a whole turn leaves out its endpoint, so it loops
+    (90, [0, 30, 60, 90]),           # a partial sweep ends where it was asked to
+])
+def test_the_angle_schedule(degrees, expected):
+    assert np.degrees(orbit.angles(degrees, 4)).tolist() == pytest.approx(expected)
 
 
 def test_easing_keeps_the_ends_and_moves_the_middle():
@@ -84,8 +83,7 @@ def test_an_axis_that_means_nothing_fails_before_any_frame():
 
 
 def test_the_pivot_is_on_the_view_ray_not_at_the_scene_centre():
-    """After a pan the scene's centre is off to one side; orbiting it would swing the view
-    away from what is on screen."""
+    """After a pan, orbiting the scene centre would swing the view off screen."""
     pivot = orbit.pivot((0, 0, 10), (0, 0, 0, 1), (3, 0, 0))
     assert pivot == pytest.approx([0, 0, 0])
 

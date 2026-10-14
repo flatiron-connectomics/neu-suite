@@ -1,10 +1,7 @@
-"""The notebook toolbar: what it is made of, and what each button does.
+"""The notebook toolbar: its widgets, and what each button does.
 
-Driven against a **real** Jupyter canvas rather than a stub. `rendercanvas.jupyter`
-constructs perfectly well outside a notebook — it is an ipywidget either way, and the
-browser is only needed to *paint* it — so the widget tree, the button handlers and the
-close-and-leave-the-image swap are all exercisable here. The handlers are called
-directly; `Button.on_click` is ipywidgets' own dispatch and needs a front end.
+Uses a real `rendercanvas.jupyter` canvas, which constructs without a browser. Button
+handlers are called directly, since `Button.on_click` dispatch needs a front end.
 """
 
 import numpy as np
@@ -60,22 +57,20 @@ def test_the_default_capture_name_carries_a_sortable_timestamp():
 
 
 def test_the_remembered_prefix_does_not_accumulate_timestamps():
-    """The failure this exists to prevent: capture once, and the next default would be
-    `cell_<ts>_<ts>.png`, then three, then four."""
+    """Otherwise each capture would add another timestamp to the next default name."""
     first = toolbar_mod.default_path("cell")
     toolbar_mod.remember_prefix(first)
     assert toolbar_mod.last_prefix == "cell"
     assert toolbar_mod.default_path().count("_") == first.count("_")
 
 
-def test_a_prefix_with_underscores_of_its_own_survives():
-    toolbar_mod.remember_prefix("figures/left_optic_lobe_2026-08-26_11-00-00.png")
-    assert toolbar_mod.last_prefix == "left_optic_lobe"
-
-
-def test_a_name_that_is_not_timestamped_is_kept_whole():
-    toolbar_mod.remember_prefix("/tmp/final_figure.png")
-    assert toolbar_mod.last_prefix == "final_figure"
+@pytest.mark.parametrize("path, prefix", [
+    ("figures/left_optic_lobe_2026-08-26_11-00-00.png", "left_optic_lobe"),
+    ("/tmp/final_figure.png", "final_figure"),          # not timestamped: kept whole
+])
+def test_the_remembered_prefix_strips_only_the_timestamp(path, prefix):
+    toolbar_mod.remember_prefix(path)
+    assert toolbar_mod.last_prefix == prefix
 
 
 # --------------------------------------------------------------------------- #
@@ -83,9 +78,7 @@ def test_a_name_that_is_not_timestamped_is_kept_whole():
 # --------------------------------------------------------------------------- #
 
 def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
-    """`toolbar="auto"` is the default, for the same reason the store-log filter is
-    automatic: a feature you have to remember to switch on looks identical to a broken
-    one after a kernel restart."""
+    """`toolbar="auto"` is the default."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
     bar, entry, panels, opacity, stage = view.ui.widget.children
     assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"])
@@ -98,8 +91,7 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
 
 
 def test_an_offscreen_view_quietly_has_no_toolbar(has_gpu):
-    """Nothing to sit above, and nothing that wanted buttons. It must not raise: this is
-    the path every test and every headless render takes."""
+    """The headless path must not raise."""
     view = backend.show(Scene(), size=(32, 32), canvas="offscreen")
     try:
         assert view.ui is None
@@ -122,8 +114,6 @@ def test_the_toolbar_can_be_declined(has_gpu):
 
 
 def test_the_mimebundle_shows_the_toolbar_when_there_is_one(view):
-    """What Jupyter calls to display the cell. Wrapping the canvas must not change how a
-    view is shown, only what it is shown inside."""
     bundle = view._repr_mimebundle_(include=None, exclude=None)
     assert "application/vnd.jupyter.widget-view+json" in bundle
 
@@ -144,8 +134,7 @@ def test_save_and_restore_report_through_the_status_line(view):
 
 
 def test_last_and_restore_are_separate_buttons_on_separate_slots(view):
-    """They answer different questions — "the angle I chose" against "wherever I happened
-    to be" — and one button choosing between them would leave it unclear which you got."""
+    """"The angle I saved" and "where the last figure was closed" are different slots."""
     view.ui._save_view()
     view.ui._restore_last()
     assert "no closed figure" in view.ui.status.value
@@ -243,8 +232,7 @@ def test_an_empty_path_is_refused_rather_than_guessed_at(view):
 
 
 def test_a_failing_button_reports_instead_of_vanishing(view):
-    """A button callback's traceback goes to the kernel log, not the cell, so an
-    unguarded failure is a control that visibly does nothing."""
+    """A callback's traceback goes to the kernel log, so errors are shown in the status line."""
     view.ui._guarded(lambda: 1 / 0)
     assert "ZeroDivisionError" in view.ui.status.value
 
@@ -257,12 +245,11 @@ def test_closing_leaves_the_last_image_where_the_canvas_was(view):
     assert isinstance(still, widgets.Image) and still.value[:4] == b"\x89PNG"
     assert still.layout.width == "120px"       # scaled back from the supersampled shot
     assert all(button.disabled for button in view.ui._buttons.values())
+    assert all(s.disabled for s in view.ui.sliders.values())
 
 
 def test_closing_records_the_viewpoint_it_is_about_to_lose(view):
-    """The reason to press it rather than delete the cell: the angle survives, so the
-    next figure can open where this one left off — via 'Last' or `viewpoint="last"`, both
-    of which the status line names."""
+    """So the next figure can reopen there, via 'Last' or `viewpoint="last"`."""
     pytest.importorskip("imageio")
     view.ui._close()
     assert viewstate.LAST in viewstate.views
@@ -274,7 +261,7 @@ def test_closing_records_the_viewpoint_it_is_about_to_lose(view):
 # --------------------------------------------------------------------------- #
 
 def test_there_is_one_slider_per_kind_the_scene_holds(has_gpu):
-    """Per kind, not per row: "the surfaces hide the synapses" is about every mesh."""
+    """Per kind, not per row."""
     from neu_lib import Skeleton
 
     skel = Skeleton(np.array([[0.0, 0, 0], [50.0, 50, 50]]), np.array([[0, 1]]),
@@ -299,12 +286,6 @@ def test_a_slider_starts_at_the_largest_alpha_and_moving_it_sets_them_all(has_gp
             pytest.approx(0.2)] * 2
     finally:
         view.close()
-
-
-def test_closing_disables_the_sliders_too(view):
-    pytest.importorskip("imageio")
-    view.ui._close()
-    assert all(s.disabled for s in view.ui.sliders.values())
 
 
 def test_closing_twice_is_harmless(view):

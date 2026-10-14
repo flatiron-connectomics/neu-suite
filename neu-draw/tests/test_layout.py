@@ -1,11 +1,7 @@
-"""Arranging a set: the offsets, and the Scene methods that apply them.
+"""Arranging a set: the layout offsets, and the Scene methods that apply them.
 
-The layout functions take boxes and return offsets, so most of this needs no drawable and
-no renderer — which is the point of putting the arithmetic in its own module.
-
-Boxes are given deliberately **unequal sizes and unrelated origins**, because that is what
-two datasets look like, and because a layout tested on identical boxes at the origin passes
-whatever the packing does.
+The boxes have unequal sizes and unrelated origins, like two datasets; identical boxes at
+the origin would pass whatever the packing did.
 """
 
 import numpy as np
@@ -46,8 +42,6 @@ def _scene():
 # axes and anchors
 # --------------------------------------------------------------------------- #
 def test_axes_are_named_in_the_packages_zyx_order():
-    """A letter is what a caller means. Getting the order wrong lays a row out along the
-    wrong axis, which looks like a layout bug rather than a convention one."""
     assert (layout.axis_index("z"), layout.axis_index("y"),
             layout.axis_index("x")) == (0, 1, 2)
     assert layout.axis_index(2) == 2
@@ -58,7 +52,6 @@ def test_axes_are_named_in_the_packages_zyx_order():
 
 
 def test_the_anchor_vocabulary_matches_the_one_used_for_a_single_object():
-    """Same word must mean the same thing whether placing one drawable or laying out a set."""
     from neu_draw.scene import ANCHORS, anchor_of
 
     assert layout.ANCHORS == ANCHORS
@@ -77,17 +70,13 @@ def test_superimpose_puts_every_anchor_on_the_same_point():
 
 
 def test_superimpose_defaults_to_the_first_box_not_the_origin():
-    """The usual reason to superimpose is "show the others against this one", and moving
-    the reference too makes the result harder to relate to anything."""
     offsets = layout.superimpose_offsets(BOXES)
     assert offsets[0] == Vec3.zero()
     assert _moved(BOXES, offsets)[0] == BOXES[0]
 
 
 def test_superimpose_can_be_told_where_instead():
-    """Within a nanometre, because a box of odd extent has a fractional centre and a
-    half-open integer box cannot sit exactly on it. The OFFSET is exact — only asking for
-    the drawn box quantises, and the renderer uses the float."""
+    """The offset is exact; the drawn integer box is within a nanometre of the point."""
     offsets = layout.superimpose_offsets(BOXES, at=(0, 0, 0))
     assert offsets[0] == Vec3(-50.5, -50.5, -50.5)
     for box in _moved(BOXES, offsets):
@@ -100,8 +89,6 @@ def test_superimpose_on_a_corner_rather_than_the_centre():
 
 
 def test_an_axis_subset_leaves_the_other_axes_at_their_true_coordinates():
-    """The parameter that keeps a meaningful axis meaningful. Aligning depth should not
-    quietly also collapse the two axes that were telling you where the cells came from."""
     moved = _moved(BOXES, layout.superimpose_offsets(BOXES, axes="z"))
     assert len({b.center[0] for b in moved}) == 1          # z aligned
     assert [b.lo[1] for b in moved] == [b.lo[1] for b in BOXES]   # y untouched
@@ -118,14 +105,12 @@ def test_an_axis_subset_accepts_a_string_a_sequence_or_indices():
 # arrange: packing
 # --------------------------------------------------------------------------- #
 def test_packed_boxes_do_not_overlap_however_their_sizes_differ():
-    """The reason packing uses each box's own extent rather than a single pitch."""
     moved = _moved(BOXES, layout.arrange_offsets(BOXES, along="x"))
     spans = sorted((b.lo[2], b.hi[2]) for b in moved)
     assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
 
 
 def test_the_gap_is_a_fraction_of_the_MEAN_extent_so_spacing_is_uniform():
-    """A gap that grew beside the big cells would read as grouping."""
     moved = _moved(BOXES, layout.arrange_offsets(BOXES, along="x", gap=0.1))
     spans = sorted((b.lo[2], b.hi[2]) for b in moved)
     gaps = [b[0] - a[1] for a, b in zip(spans, spans[1:])]
@@ -134,7 +119,6 @@ def test_the_gap_is_a_fraction_of_the_MEAN_extent_so_spacing_is_uniform():
 
 
 def test_a_fixed_pitch_puts_the_anchors_on_a_regular_lattice():
-    """What a figure with labels wants, where uneven spacing would read as meaningful."""
     moved = _moved(BOXES, layout.arrange_offsets(BOXES, along="x", spacing=1000))
     centres = sorted(b.center[2] for b in moved)
     assert [b - a for a, b in zip(centres, centres[1:])] == pytest.approx([1000, 1000])
@@ -147,16 +131,14 @@ def test_zero_gap_puts_them_edge_to_edge():
 
 
 def test_the_first_box_does_not_move_by_default():
-    """An arrangement starts where the objects already are rather than jumping to nm zero."""
     assert layout.arrange_offsets(BOXES, along="x")[0] == Vec3.zero()
+    assert layout.arrange_offsets(BOXES[:1]) == [Vec3.zero()]
 
 
 # --------------------------------------------------------------------------- #
 # arrange: the cross axes, and grids
 # --------------------------------------------------------------------------- #
 def test_the_cross_axes_are_aligned_so_a_row_reads_as_a_row():
-    """Objects from different datasets have unrelated coordinates on the axes not being
-    laid out; leaving those alone scatters them and the row stops looking like one."""
     moved = _moved(BOXES, layout.arrange_offsets(BOXES, along="x"))
     assert len({b.center[0] for b in moved}) == 1
     assert len({b.center[1] for b in moved}) == 1
@@ -196,26 +178,16 @@ def test_laying_out_nothing_is_not_an_error():
     assert layout.superimpose_offsets([]) == []
 
 
-def test_one_box_is_left_where_it_is():
-    assert layout.arrange_offsets(BOXES[:1]) == [Vec3.zero()]
-
-
 # --------------------------------------------------------------------------- #
 # through a Scene
 # --------------------------------------------------------------------------- #
 def test_a_scene_lays_itself_out_and_keeps_the_geometry_untouched():
-    """The invariant that survives every placement operation: the data still says where the
-    tissue is, whatever the arrangement on screen."""
+    """The geometry still says where the tissue is; the original scene is not modified."""
     scene = _scene()
     laid = scene.arrange(along="x")
     assert [tuple(d.mesh.bbox.lo) for d in laid.drawables] == [
         tuple(d.mesh.bbox.lo) for d in scene.drawables]
     assert len({d.bbox.center[2] for d in laid.drawables}) == 3
-
-
-def test_laying_out_returns_a_copy():
-    scene = _scene()
-    scene.arrange(along="x")
     assert all(d.offset_zyx_nm == Vec3.zero() for d in scene.drawables)
 
 
@@ -231,8 +203,7 @@ def test_the_composition_is_the_point():
 
 
 def test_a_hidden_drawable_reserves_no_slot():
-    """Matching `bbox`, which also ignores them — a gap in a row for something nobody can
-    see reads as a missing object."""
+    """Like `bbox`, layout ignores hidden drawables."""
     scene = Scene(drawables=[
         MeshDrawable(_cube((0, 0, 0), 100, "a"), name="a"),
         MeshDrawable(_cube((0, 0, 0), 100, "h"), name="h", visible=False),
@@ -244,7 +215,7 @@ def test_a_hidden_drawable_reserves_no_slot():
 
 
 def test_key_orders_the_layout_without_reordering_the_scene():
-    """So a legend built from `scene.names` still matches, however the figure is arranged."""
+    """`scene.names` (and so the legend) keeps its order."""
     scene = _scene()
     laid = scene.arrange(along="x", key=lambda d: -d.bbox.size)
     assert laid.names == scene.names

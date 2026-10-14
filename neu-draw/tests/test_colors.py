@@ -5,37 +5,29 @@ import pytest
 from neu_draw.colors import QUALITATIVE, assign_colors, to_rgba
 
 
-def test_the_shorthands_the_old_call_sites_used_still_work():
-    """`presyn_color='r'` / `postsyn_color='b'` were the real arguments in use."""
-    assert to_rgba("r") == (1.0, 0.0, 0.0, 1.0)
-    assert to_rgba("b") == (0.0, 0.0, 1.0, 1.0)
-
-
-@pytest.mark.parametrize("text, expected", [
-    ("#f00", (1.0, 0.0, 0.0, 1.0)),
+@pytest.mark.parametrize("value, expected", [
+    ("r", (1.0, 0.0, 0.0, 1.0)),                    # matplotlib shorthands
+    ("b", (0.0, 0.0, 1.0, 1.0)),
+    ("#f00", (1.0, 0.0, 0.0, 1.0)),                 # hex in all three lengths
     ("#ff0000", (1.0, 0.0, 0.0, 1.0)),
     ("#00ff0080", (0.0, 1.0, 0.0, 128 / 255)),
+    ((0.2, 0.4, 0.6), (0.2, 0.4, 0.6, 1.0)),        # an RGB triple gains opaque alpha
 ])
-def test_hex_in_all_three_lengths(text, expected):
-    assert to_rgba(text) == pytest.approx(expected)
-
-
-def test_a_three_sequence_gains_an_opaque_alpha():
-    assert to_rgba((0.2, 0.4, 0.6)) == (0.2, 0.4, 0.6, 1.0)
+def test_accepted_colour_forms(value, expected):
+    assert to_rgba(value) == pytest.approx(expected)
 
 
 def test_alpha_overrides_whatever_the_colour_carried():
     assert to_rgba("#ff0000ff", alpha=0.25) == (1.0, 0.0, 0.0, 0.25)
 
 
-def test_out_of_range_components_are_rejected():
-    with pytest.raises(ValueError, match=r"\[0, 1\]"):
-        to_rgba((255, 0, 0))
-
-
-def test_an_unknown_name_names_the_alternatives():
-    with pytest.raises(ValueError, match="unknown colour"):
-        to_rgba("chartreuse-ish")
+@pytest.mark.parametrize("value, match", [
+    ((255, 0, 0), r"\[0, 1\]"),                  # out-of-range components
+    ("chartreuse-ish", "unknown colour"),
+])
+def test_invalid_colours_are_rejected(value, match):
+    with pytest.raises(ValueError, match=match):
+        to_rgba(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -54,29 +46,24 @@ def test_the_palette_wraps_when_there_are_more_names_than_colours():
 
 
 def test_fixing_one_colour_does_not_shift_the_others():
-    """The property that makes a figure reproducible while you iterate: pinning one
-    body's colour must not renumber everyone else's."""
+    """Pinning one body's colour must not renumber everyone else's."""
     free = assign_colors(["a", "b", "c"])
     pinned = assign_colors(["a", "b", "c"], explicit={"b": "r"})
     assert pinned["b"] == (1.0, 0.0, 0.0, 1.0)
     assert pinned["a"] == free["a"] and pinned["c"] == free["b"]
 
 
-def test_a_single_colour_applies_to_everything():
-    out = assign_colors(["a", "b"], explicit="k")
-    assert set(out.values()) == {(0.0, 0.0, 0.0, 1.0)}
+RED, BLUE = (1.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 1.0)
 
 
-def test_a_bare_rgb_sequence_is_one_colour_not_a_palette_of_numbers():
-    """The ambiguity the predecessor resolved with `np.asarray(...).ndim` checks."""
-    out = assign_colors(["a", "b"], explicit=(0.1, 0.2, 0.3))
-    assert set(out.values()) == {(0.1, 0.2, 0.3, 1.0)}
-
-
-def test_a_list_of_colours_is_used_as_the_palette():
-    out = assign_colors(["a", "b", "c"], explicit=["r", "b"])
-    assert [out[k] for k in "abc"] == [(1.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 1.0),
-                                       (1.0, 0.0, 0.0, 1.0)]
+@pytest.mark.parametrize("explicit, expected", [
+    ("k", [(0.0, 0.0, 0.0, 1.0)] * 3),                  # one colour for everything
+    ((0.1, 0.2, 0.3), [(0.1, 0.2, 0.3, 1.0)] * 3),      # an RGB triple is one colour
+    (["r", "b"], [RED, BLUE, RED]),                     # a list is the palette
+])
+def test_explicit_colour_forms(explicit, expected):
+    out = assign_colors(["a", "b", "c"], explicit=explicit)
+    assert [out[k] for k in "abc"] == expected
 
 
 def test_duplicate_names_collapse_to_one_entry():

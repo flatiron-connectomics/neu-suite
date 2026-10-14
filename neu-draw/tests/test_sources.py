@@ -1,12 +1,8 @@
-"""Reading a real precomputed volume, built by the production writers.
+"""Reading a real precomputed volume written by neu-morpho's production writers.
 
-The fixture writes its skeletons with `neu_morpho.precomputed.write_body_skeleton`
-and its `info` with `write_skeleton_info` — the same code that produces the volumes this
-reads in anger. Hand-rolling the bytes would prove the reader agrees with the test's
-idea of the format, which is the mistake neu-suite invariant 9 is about.
-
-The fixture pyramid is deliberately **anisotropic** (`(1, 2, 2)` — halve x and y, leave
-z), because an isotropic one cannot tell a real voxel size from `2 ** level`.
+Hand-written bytes would only prove the reader agrees with the test's idea of the format.
+The pyramid is anisotropic (x and y halve, z does not), so a voxel size derived from
+`2 ** level` would be caught.
 """
 
 import json
@@ -72,9 +68,7 @@ def volume(tmp_path):
 # --------------------------------------------------------------------------- #
 
 def test_the_subresource_directory_comes_from_info_not_a_default():
-    """sample3's info reads `{"skeletons": "skeleton"}` — plural key, singular
-    directory. A hardcoded "skeletons" finds nothing, and finding nothing is
-    indistinguishable from a body simply having no skeleton."""
+    """Real volumes use `{"skeletons": "skeleton"}`; a hardcoded directory would find nothing."""
     assert sources.subresource_dir("x", "skeletons",
                                    info={"skeletons": "skeleton"}) == "skeleton"
     assert sources.subresource_dir("x", "mesh", info={"mesh": "mesh"}) == "mesh"
@@ -86,9 +80,7 @@ def test_a_volume_declaring_no_skeletons_says_so():
 
 
 def test_volume_frame_uses_real_voxel_sizes_not_two_to_the_level(volume):
-    """The invariant. Level 1 of this pyramid is (40, 16, 16) nm in zyx — z did not
-    change — whereas `2 ** 1` would say (16, 16, 16) and put everything at the wrong
-    depth."""
+    """Level 1 is (40, 16, 16) nm zyx; `2 ** 1` would give the wrong z."""
     assert sources.volume_frame(volume, 0).voxel_size_nm == (40.0, 8.0, 8.0)
     assert sources.volume_frame(volume, 1).voxel_size_nm == (40.0, 16.0, 16.0)
 
@@ -102,17 +94,12 @@ def test_asking_for_a_level_that_is_not_there_says_which_are(volume):
 # skeletons
 # --------------------------------------------------------------------------- #
 
-def test_a_skeleton_reads_back_through_the_real_writer(volume):
+def test_a_skeleton_reads_back_through_the_real_writer_in_zyx(volume):
+    """The writer flips to xyz and the reader back; a one-sided flip mirrors the skeleton."""
     skel = sources.body_skeleton(volume, BODIES[0])
     assert isinstance(skel, Skeleton)
     assert len(skel.vertices_zyx_nm) == 3 and len(skel.edges) == 2
     assert skel.radii_nm.tolist() == [10.0, 20.0, 30.0]
-
-
-def test_vertices_come_back_zyx(volume):
-    """The writer flips zyx->xyz, the reader flips back. If either side changed, the
-    skeleton would be mirrored through the z=x diagonal and still look like a neuron."""
-    skel = sources.body_skeleton(volume, BODIES[0])
     assert skel.vertices_zyx_nm[2].tolist() == [0.0, 80.0, 100.0]
 
 
@@ -128,13 +115,14 @@ def test_many_bodies_come_back_keyed_by_id(volume):
 
 def test_missing_bodies_are_skipped_by_default_and_can_raise(volume):
     assert set(sources.body_skeletons(volume, [*BODIES, 999])) == set(BODIES)
+    assert sources.body_skeletons(volume, [998, 999], skip_missing=True) == {}
+    assert sources.body_skeletons(volume, []) == {}
     with pytest.raises(KeyError, match="999"):
         sources.body_skeletons(volume, [*BODIES, 999], skip_missing=False)
 
 
 def test_names_label_the_result_without_touching_the_cache(volume):
-    """A cached object is shared, so labelling one caller's copy must not rename
-    everyone else's."""
+    """Cached objects are shared, so a caller's name must not rename everyone's copy."""
     store = cache_mod.MemoryCache()
     first = sources.body_skeleton(volume, BODIES[0], cache=store, name="KC-1")
     second = sources.body_skeleton(volume, BODIES[0], cache=store)
@@ -156,18 +144,13 @@ def test_a_second_read_comes_from_the_cache(volume, monkeypatch):
 
 
 def test_the_info_is_read_once_for_a_whole_batch(volume, monkeypatch):
-    """Otherwise every body costs an extra round trip for a file that cannot have
-    changed mid-call — which on S3 is the difference between one request and N."""
+    """One request per batch, not one per body."""
     calls = []
     real = sources.volume_info
     monkeypatch.setattr(sources, "volume_info",
                         lambda v: (calls.append(v), real(v))[1])
     sources.body_skeletons(volume, BODIES)
     assert len(calls) == 1
-
-
-def test_fetching_nothing_is_an_empty_dict(volume):
-    assert sources.body_skeletons(volume, []) == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -204,8 +187,7 @@ def test_a_mesh_reads_back_through_the_real_writer(volume_with_mesh):
 
 
 def test_the_mesh_lands_in_the_same_frame_as_the_skeleton(volume_with_mesh):
-    """The cross-check that catches a one-sided flip: both come from the same volume in
-    nm, so their boxes must overlap. Mirrored, they would not."""
+    """Both are in nm from one volume, so their boxes overlap; a one-sided flip would not."""
     mesh = sources.body_mesh(volume_with_mesh, BODIES[0])
     skel = sources.body_skeleton(volume_with_mesh, BODIES[0])
     assert not mesh.bbox.intersect(skel.bbox).is_empty()
@@ -216,8 +198,8 @@ def test_an_absent_mesh_is_none(volume_with_mesh):
 
 
 def test_a_volume_with_no_mesh_key_raises_rather_than_returning_none(volume):
-    """`None` means "this body has none"; a missing declaration is a different thing,
-    and conflating them hides a misconfigured volume behind empty output."""
+    """`None` means "this body has none"; an undeclared mesh is a misconfigured volume, and
+    `skip_missing` (about bodies) must not turn it into an empty batch."""
     import json as _json
     import pathlib
 
@@ -227,6 +209,8 @@ def test_a_volume_with_no_mesh_key_raises_rather_than_returning_none(volume):
     (root / "info").write_text(_json.dumps(info))
     with pytest.raises(sources.MissingSubresource):
         sources.body_mesh(volume, BODIES[0])
+    with pytest.raises(sources.MissingSubresource):
+        sources.body_meshes(volume, BODIES, skip_missing=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -251,8 +235,7 @@ def test_columns_are_read_in_the_order_named():
 
 
 def test_a_voxel_table_is_scaled_by_the_frame():
-    """DVID's coordinates are voxel indices; a precomputed annotation source's are nm.
-    Which one you have is the caller's to say, so `frame` is explicit."""
+    """DVID tables are in voxels; `frame` converts them to nm."""
     table = {"z": [1], "y": [1], "x": [1]}
     out = sources.points_from_table(table, frame=Frame((40.0, 8.0, 8.0)))
     assert out.tolist() == [[40.0, 8.0, 8.0]]
@@ -300,31 +283,9 @@ def test_something_that_is_not_a_cache_says_what_is_missing():
 # skip_missing must not absorb a structural failure
 # --------------------------------------------------------------------------- #
 
-def test_a_batch_still_raises_when_the_volume_declares_no_meshes(volume):
-    """The whole point of the distinction: `skip_missing` is about BODIES. A volume that
-    declares no meshes returns `{}` under the old behaviour, which reads as a clean answer
-    and is why a sharded source looked like a volume holding nothing."""
-    import json as _json
-    import pathlib
-
-    root = pathlib.Path(volume)
-    info = _json.loads((root / "info").read_text())
-    del info["mesh"]
-    (root / "info").write_text(_json.dumps(info))
-
-    with pytest.raises(sources.MissingSubresource):
-        sources.body_meshes(volume, BODIES, skip_missing=True)
-
-
 def test_a_batch_still_raises_on_a_mesh_format_it_cannot_decode(volume_with_mesh):
-    """An unreadable format fails exactly like an empty volume — every body absent — so it
-    has to be refused rather than counted as missing bodies.
-
-    The stand-in is deliberately a made-up ``@type``. It used to be
-    ``neuroglancer_legacy_mesh``, which readback now DECODES, so the test passed for a reason
-    that had stopped being true; what is being checked is that a *declared and unrecognised*
-    format is refused, whatever that format happens to be this year.
-    """
+    """An unrecognised format must raise, not read as every body missing. The ``@type`` is
+    made up so the test does not depend on which formats readback decodes."""
     import json as _json
     import pathlib
 
@@ -356,24 +317,14 @@ def test_a_batch_still_raises_on_a_skeleton_format_it_cannot_decode(volume):
         sources.body_skeletons(volume, BODIES, skip_missing=True)
 
 
-def test_genuinely_absent_bodies_are_still_skipped(volume):
-    """The behaviour that must NOT change: narrowing skip_missing to exclude structural
-    failures has to leave ordinary missing bodies alone."""
-    got = sources.body_skeletons(volume, [*BODIES, 999_999], skip_missing=True)
-    assert set(got) == set(BODIES)
-    assert sources.body_skeletons(volume, [999_998, 999_999], skip_missing=True) == {}
-
-
 def test_require_radii_reaches_the_reader_through_a_batch(volume):
-    """A centreline-only source needs this flag to be readable at all, so it has to
-    survive the batch wrapper — it used to be rejected as an unexpected keyword."""
+    """A centreline-only source needs the flag, so it must pass through the batch call."""
     got = sources.body_skeletons(volume, BODIES, require_radii=False)
     assert set(got) == set(BODIES)
     assert sources.body_skeleton(volume, BODIES[0], require_radii=False) is not None
 
 
 def test_a_bad_keyword_raises_instead_of_returning_an_empty_dict(volume):
-    """Same arguments for every body, so a bad one is never about a missing body — it
-    produced `{}` for a volume whose skeletons were all present and readable."""
+    """Every body gets the same arguments, so a bad one is never a missing body."""
     with pytest.raises(TypeError):
         sources.body_skeletons(volume, BODIES, skip_missing=True, no_such_option=1)

@@ -1,9 +1,5 @@
-"""SVG export: pure arithmetic first, then checks against what the GPU actually drew.
-
-The two ways this goes wrong silently are both checked against a real render, not
-against the formulas: vectors projected to somewhere other than where pygfx put them,
-and mesh layers that composite to a different colour than the canvas showed.
-"""
+"""SVG/PDF export: the arithmetic, then checks against a real render that points land where
+pygfx drew them and mesh layers composite to the colour the canvas showed."""
 
 import base64
 import xml.etree.ElementTree as ET
@@ -68,9 +64,7 @@ def test_a_point_behind_the_camera_is_flagged_rather_than_mirrored():
 
 @pytest.mark.parametrize("background", [(0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (0.2, 0.3, 0.5)])
 def test_a_layer_pixel_composited_in_srgb_is_the_canvas_pixel(background):
-    """Including the bright-and-faint case, whose colour alone would have to exceed 1:
-    over black the canvas shows the premultiplied value, 90, and at alpha 51 an sRGB
-    blend can reach only 51 — so the alpha must be raised, not the colour clipped."""
+    """Bright, faint pixels need their alpha raised rather than their colour clipped."""
     rng = np.random.default_rng(0)
     alpha = rng.integers(1, 256, (64, 1))
     linear = rng.random((64, 3)) * alpha / 255.0          # premultiplied, linear
@@ -92,8 +86,7 @@ def test_a_transparent_pixel_stays_transparent():
 
 
 def test_group_ids_use_illustrators_own_escaping():
-    """Illustrator writes a layer name into an id this way and decodes it on import, so
-    the layer panel reads the name rather than an id mangled to underscores."""
+    """So Illustrator's layer panel shows the names, not ids mangled to underscores."""
     assert vectorfile.illustrator_id("T4a 78044864 : Mi1 (17)") == (
         "T4a_x20_78044864_x20__x3A__x20_Mi1_x20__x28_17_x29_")
     assert vectorfile.illustrator_id("78044864") == "_x37_8044864"
@@ -131,8 +124,7 @@ def test_a_projected_point_lands_where_pygfx_drew_it(has_gpu):
                                         (0.2, 0.3, 0.5, 1.0)])
 def test_a_mesh_layer_composited_like_an_svg_viewer_matches_the_canvas(has_gpu,
                                                                         background):
-    """The measured failure: straight alpha done 'correctly' came out far too dark in an
-    editor, because the GPU blends in linear light and SVG viewers blend in sRGB."""
+    """The GPU blends in linear light and SVG viewers in sRGB."""
     scene = build_scene(meshes=[_mesh()], colors={"body": (0.8, 0.7, 0.9)}, alpha=0.25,
                         background=background)
     view = backend.show(scene, size=(160, 120), canvas="offscreen", legend=False,
@@ -239,8 +231,8 @@ def test_an_explicit_groups_function_overrides_the_scenes(cells):
 
 
 def test_the_svg_is_what_illustrators_importer_reads(cells):
-    """SVG 1.1, images by xlink:href (a bare href imports blank), no clip path (it would
-    wrap everything in a clip group), no dominant-baseline (ignored, text lands high)."""
+    """SVG 1.1, images by xlink:href, no clipPath and no dominant-baseline (Illustrator
+    imports a bare href blank, wraps a clip path around everything and ignores the baseline)."""
     text = vectorfile.to_svg(*vector.figure(cells))
     assert 'version="1.1"' in text and "xlink:href=" in text
     assert " href=" not in text.replace("xlink:href=", "")

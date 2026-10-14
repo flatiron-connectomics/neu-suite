@@ -1,9 +1,4 @@
-"""Silencing benign store noise, without silencing anything else.
-
-The risk in a filter that reassigns fd 2 is not that it fails loudly — it is that it
-swallows the one message that mattered. So the tests that matter here are the ones
-asserting things still get through.
-"""
+"""Filtering benign store noise from fd 2 without swallowing real errors."""
 
 import os
 import re
@@ -45,45 +40,25 @@ def _through_filter(lines, use_context=True):
     return out
 
 
-def test_the_credential_provider_noise_is_dropped():
-    assert _through_filter([BENIGN]) == b""
+UNKNOWN = b"E0820 08:36:34.115913 3896997 Something:1] a brand new complaint\n"
 
 
-def test_a_permission_error_is_never_dropped():
-    """The whole point. These lines look exactly like the noise — same severity, same
-    absl prefix — and one of them is the only sign that a read actually failed."""
-    assert b"PERMISSION_DENIED" in _through_filter([REAL])
-
-
-def test_output_that_is_not_absl_formatted_is_never_examined():
-    assert _through_filter([ORDINARY]) == ORDINARY
-
-
-def test_the_filter_is_a_deny_list_not_a_severity_filter():
-    """An unrecognised error must survive, or the next new failure mode is invisible."""
-    unknown = b"E0820 08:36:34.115913 3896997 Something:1] a brand new complaint\n"
-    assert unknown in _through_filter([unknown])
-
-
-def test_a_mixed_stream_keeps_exactly_the_signal():
-    out = _through_filter([BENIGN, ORDINARY, BENIGN, REAL, BENIGN])
-    assert out == ORDINARY + REAL
+@pytest.mark.parametrize("lines, survives", [
+    ([BENIGN], b""),                                    # the credential-provider noise
+    ([REAL], REAL),                                     # same format, but a real failure
+    ([ORDINARY], ORDINARY),                             # not absl-formatted: untouched
+    ([UNKNOWN], UNKNOWN),                               # a deny list, not a severity filter
+    ([BENIGN, ORDINARY, BENIGN, REAL, BENIGN], ORDINARY + REAL),
+])
+def test_only_known_noise_is_dropped(lines, survives):
+    assert _through_filter(lines) == survives
 
 
 def test_disabling_it_passes_everything_through():
-    read_fd, write_fd = os.pipe()
-    saved = os.dup(2)
-    os.dup2(write_fd, 2)
-    os.close(write_fd)
-    try:
+    def noisy():
         with logs.quiet_stores(enabled=False):
             os.write(2, BENIGN)
-    finally:
-        os.dup2(saved, 2)
-        os.close(saved)
-    out = os.read(read_fd, 1 << 20)
-    os.close(read_fd)
-    assert out == BENIGN
+    assert _noise_through(noisy) == BENIGN
 
 
 # --------------------------------------------------------------------------- #
@@ -95,8 +70,7 @@ def test_the_session_wide_install_filters_and_undoes():
 
 
 def test_installing_twice_does_not_stack_two_filters():
-    """Stacking would leave fd 2 pointing at a pipe whose pump nobody joins, so the
-    second uninstall would restore the *filter's* pipe rather than the real stderr."""
+    """Stacking would make the uninstall restore the filter's pipe, not the real stderr."""
     try:
         first = logs.install_quiet_stores()
         second = logs.install_quiet_stores()
@@ -132,8 +106,7 @@ def _noise_through(fn):
 
 
 def test_every_reading_entry_point_filters_itself():
-    """The user should not have to know this exists. The sibling CLIs wrap `main()`;
-    neu-draw has no CLI, so its entry points are these functions."""
+    """neu-draw has no CLI to wrap, so each reading function filters itself."""
     from neu_draw import sources
 
     for name in ("volume_info", "scales", "volume_frame", "body_skeleton",
@@ -142,14 +115,7 @@ def test_every_reading_entry_point_filters_itself():
         assert getattr(fn, "__wrapped__", None) is not None, f"{name} is not wrapped"
 
 
-def test_a_read_drops_the_noise_it_provokes():
-    def noisy():
-        with logs.quiet_reads():
-            os.write(2, BENIGN)
-    assert _noise_through(noisy) == b""
-
-
-def test_a_read_still_reports_a_real_failure():
+def test_a_read_drops_its_noise_but_reports_a_real_failure():
     def noisy():
         with logs.quiet_reads():
             os.write(2, BENIGN)
@@ -158,8 +124,8 @@ def test_a_read_still_reports_a_real_failure():
 
 
 def test_nesting_is_free_and_only_the_outermost_swaps_the_fd():
-    """`body_skeletons` filters, then calls `body_skeleton` which filters too. If the
-    inner one swapped fd 2 again its exit would restore the outer *filter's* pipe."""
+    """`body_skeletons` calls `body_skeleton`, and both filter; the inner one must not
+    swap fd 2 again."""
     def nested():
         with logs.quiet_reads():
             depth_outer = logs._depth
@@ -172,8 +138,7 @@ def test_nesting_is_free_and_only_the_outermost_swaps_the_fd():
 
 
 def test_concurrent_reads_do_not_race_the_descriptor():
-    """Worker threads must never each dup2 fd 2 — that loses output rather than
-    filtering it. The depth counter is what keeps it to one swap."""
+    """Threads share one fd swap (a depth counter); each dup2-ing fd 2 would lose output."""
     import threading
 
     def worker():
@@ -193,7 +158,7 @@ def test_concurrent_reads_do_not_race_the_descriptor():
 
 
 def test_the_escape_hatch_shows_everything():
-    """For debugging a store problem, where the benign lines are the diagnosis."""
+    """`logs.enabled = False`, for debugging a store problem."""
     logs.enabled = False
     try:
         def noisy():

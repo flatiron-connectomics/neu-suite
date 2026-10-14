@@ -1,8 +1,4 @@
-"""The scene is a value, so everything a figure would contain is assertable here.
-
-This is the whole point of the seam: the predecessor could only answer "what will this
-draw?" by drawing it on a GPU.
-"""
+"""The scene is a plain value: everything a figure would contain is assertable without a GPU."""
 
 import numpy as np
 import pytest
@@ -37,20 +33,14 @@ def test_the_bbox_is_the_union_over_visible_drawables():
 
 
 def test_a_hidden_drawable_does_not_drag_the_camera():
-    """Framing follows what is shown. A hidden layer stretching the box would zoom the
-    view out for something nobody can see."""
+    """Framing follows what is shown."""
     scene = Scene().add_mesh(_mesh())
     scene.add_points(np.array([[0.0, 0, 10_000.0]]), name="far", visible=False)
     assert scene.bbox == BBox((0, 0, 0), (11, 11, 11))
 
 
-def test_an_empty_scene_has_an_empty_box_rather_than_raising():
-    assert Scene().bbox.is_empty()
-
-
 def test_a_duplicate_name_is_a_collision_not_a_second_layer():
-    """A name is identity — every later reference resolves through it — so two sharing one
-    is an error. Sharing a legend ROW is a different thing and is what `label` is for."""
+    """Names are identities; sharing a legend row is what `label` is for."""
     scene = Scene().add_mesh(_mesh("a"))
     with pytest.raises(ValueError, match="already here"):
         scene.add_mesh(_mesh("a"))
@@ -61,12 +51,8 @@ def test_rename_makes_room_instead_of_raising():
     assert scene.names == ["a", "a (2)"]
 
 
-def test_geometry_names_carry_into_the_scene_by_default():
-    assert Scene().add_mesh(_mesh("KC-7")).names == ["KC-7"]
-
-
 def test_an_unknown_marker_is_caught_when_the_scene_is_built():
-    """pygfx would reject it at draw time, by which point the scene already exists."""
+    """Caught here rather than by pygfx at draw time."""
     with pytest.raises(ValueError, match="unknown marker"):
         PointsDrawable(np.zeros((1, 3)), marker="hexagram")
 
@@ -81,8 +67,7 @@ def test_the_volume_slot_is_reserved_and_says_so():
 # --------------------------------------------------------------------------- #
 
 def test_recolor_assigns_over_the_whole_set_at_once():
-    """Assigning on `add` cannot know what is coming, so it cannot guarantee distinct
-    neighbours. Colouring the finished set can."""
+    """Colouring the finished set can guarantee distinct neighbours; `add` cannot."""
     scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("b")).recolor()
     assert scene.get("a").color != scene.get("b").color
 
@@ -104,9 +89,7 @@ def test_a_colour_passed_to_add_is_normalised_immediately():
 
 
 def test_set_color_changes_one_drawable_and_no_other():
-    """The difference from `recolor`, and the reason both exist. `recolor` chooses over
-    the whole set, so one explicit colour re-draws every other name from the top of the
-    palette — right when assigning a scene, wrong when adjusting one entry of a figure."""
+    """Unlike `recolor`, which re-assigns the whole set from the palette."""
     scene = Scene().add_mesh(_mesh("a")).add_mesh(_mesh("b")).recolor()
     others = scene.get("b").color
 
@@ -115,10 +98,11 @@ def test_set_color_changes_one_drawable_and_no_other():
     assert scene.get("b").color == others
 
 
-def test_set_color_normalises_and_reports_an_unknown_name():
-    scene = Scene().add_mesh(_mesh("a"))
+@pytest.mark.parametrize("call", [lambda s: s.set_color("b", "r"),
+                                  lambda s: s.rename("z", "y")])
+def test_an_unknown_name_says_what_there_is(call):
     with pytest.raises(KeyError, match="no drawable named"):
-        scene.set_color("b", "r")
+        call(Scene().add_mesh(_mesh("a")))
 
 
 # --------------------------------------------------------------------------- #
@@ -126,9 +110,7 @@ def test_set_color_normalises_and_reports_an_unknown_name():
 # --------------------------------------------------------------------------- #
 
 def test_rename_changes_the_name_a_caller_refers_to_the_layer_by():
-    """Renaming is for identity, not for the legend's text: it changes what `get` and
-    `set_color` answer to, and only moves the row along with it for a drawable that has no
-    label of its own. `relabel` is the one that changes what a row says."""
+    """`rename` changes identity (what `get` answers to); `relabel` changes a row's text."""
     scene = Scene().add_mesh(_mesh("1401")).add_mesh(_mesh("1402"))
     scene.rename("1401", "MeCN-01 (L)")
     assert scene.names == ["MeCN-01 (L)", "1402"]
@@ -142,16 +124,9 @@ def test_renaming_onto_a_name_in_use_is_a_collision():
 
 
 def test_renaming_a_drawable_to_its_own_name_is_allowed():
-    """Otherwise the collision check would refuse a no-op, and a caller writing
-    `rename(old, new)` in a loop would have to special-case it."""
+    """A no-op, not a collision."""
     scene = Scene().add_mesh(_mesh("a"))
     assert scene.rename("a", "a").names == ["a"]
-
-
-def test_renaming_something_that_is_not_there_says_what_is():
-    scene = Scene().add_mesh(_mesh("a"))
-    with pytest.raises(KeyError, match="no drawable named"):
-        scene.rename("z", "y")
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +134,6 @@ def test_renaming_something_that_is_not_there_says_what_is():
 # --------------------------------------------------------------------------- #
 
 def test_a_legend_is_wanted_by_default():
-    """The field has defaulted to visible since it existed; the backend simply ignored it
-    until there was a legend to draw. So an existing scene gets one without asking."""
     assert Scene().legend.visible is True
 
 
@@ -184,7 +157,7 @@ def test_a_nonsense_font_size_is_refused_where_it_is_written():
 # --------------------------------------------------------------------------- #
 
 def test_build_scene_makes_one_body_opaque_and_several_translucent():
-    """The predecessor's rule, kept: overlapping opaque surfaces hide each other."""
+    """Overlapping opaque surfaces would hide each other."""
     assert build_scene(meshes=[_mesh("a")]).get("a").alpha == 1.0
     several = build_scene(meshes=[_mesh("a"), _mesh("b", 5.0)])
     assert several.get("a").alpha == 0.8
@@ -203,23 +176,16 @@ def test_build_scene_takes_named_point_sets():
     assert scene.bbox == BBox((0, 0, 0), (1, 1, 51))
 
 
-def test_build_scene_of_nothing_is_an_empty_scene():
+def test_an_empty_scene_has_an_empty_box_rather_than_raising():
     scene = build_scene()
     assert len(scene) == 0 and scene.bbox.is_empty()
+    assert Scene().bbox.is_empty()
 
 
 def test_a_bodys_mesh_and_skeleton_are_labelled_by_representation():
-    """The most ordinary request there is, and both are named after the body — so they
-    collide. Found against the real sample3 volume, not in a test."""
+    """Both are suffixed, so neither name depends on the order they were added."""
     scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")])
     assert scene.names == ["1401 mesh", "1401 skeleton"]
-
-
-def test_the_suffix_goes_on_BOTH_so_a_name_does_not_depend_on_ordering():
-    """Suffixing only the second would make "1401" mean the mesh here and the skeleton
-    in a scene assembled the other way round."""
-    scene = build_scene(meshes=[_mesh("1401")], skeletons=[_skeleton("1401")])
-    assert "1401" not in scene.names
 
 
 def test_an_unshared_name_is_left_alone():

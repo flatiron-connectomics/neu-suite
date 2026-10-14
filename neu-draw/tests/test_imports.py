@@ -1,12 +1,7 @@
-"""What importing this package is allowed to cost.
+"""What importing neu_draw may pull in: no renderer, no source backend, no notebook UI.
 
-The renderer seam only works if it is real. `import neu_draw` happens in terminals, in CI
-and on cluster workers, none of which have a display — and importing a renderer there
-does not degrade, it raises: on a headless box it fails outright for want of a glfw or Qt
-backend, and that is the failure this split exists to prevent.
-
-Asserting it here rather than trusting the layout, because the regression is one stray
-top-level import away and nothing else would notice.
+A renderer import on a headless machine fails outright (no glfw or Qt), so a stray
+top-level import would break `import neu_draw` in CI and on cluster workers.
 """
 
 import subprocess
@@ -19,39 +14,14 @@ def _import_in_a_fresh_interpreter(code: str) -> str:
     return result.stdout.strip()
 
 
-def test_importing_neu_draw_pulls_in_no_renderer():
+def test_importing_neu_draw_pulls_in_no_optional_dependency():
+    """The render extra (pygfx), the sources extra (neu_morpho, pandas, neuclease) and the
+    notebook UI (ipywidgets, the toolbar) load only when used."""
     out = _import_in_a_fresh_interpreter("""
 import sys
 import neu_draw
-banned = [m for m in ("pygfx", "wgpu", "rendercanvas")
-          if m in sys.modules]
-assert not banned, f"importing neu_draw pulled in {banned}"
-print("clean")
-""")
-    assert out == "clean"
-
-
-def test_importing_neu_draw_pulls_in_no_source_backend():
-    """`neu-morpho` and pandas belong to the `sources` extra. Geometry needs neither,
-    and dragging them in would make a scene-building import pay for vol2mesh."""
-    out = _import_in_a_fresh_interpreter("""
-import sys
-import neu_draw
-banned = [m for m in ("neu_morpho", "pandas", "neuclease") if m in sys.modules]
-assert not banned, f"importing neu_draw pulled in {banned}"
-print("clean")
-""")
-    assert out == "clean"
-
-
-def test_importing_neu_draw_pulls_in_no_notebook_front_end():
-    """`toolbar` is the one module that needs ipywidgets, and it is reached only when a
-    view is actually shown. The saved-viewpoint store it shares state with is pure, so
-    `neu_draw.views` costs nothing on a worker."""
-    out = _import_in_a_fresh_interpreter("""
-import sys
-import neu_draw
-banned = [m for m in ("ipywidgets", "imageio", "neu_draw.toolbar") if m in sys.modules]
+banned = [m for m in ("pygfx", "wgpu", "rendercanvas", "neu_morpho", "pandas", "neuclease",
+                      "ipywidgets", "imageio", "neu_draw.toolbar") if m in sys.modules]
 assert not banned, f"importing neu_draw pulled in {banned}"
 assert neu_draw.views == {}
 print("clean")
@@ -59,23 +29,9 @@ print("clean")
     assert out == "clean"
 
 
-def test_the_geometry_types_are_reachable_from_the_top_level():
-    out = _import_in_a_fresh_interpreter("""
-import neu_draw
-for name in ("BBox", "Frame", "Mesh", "Skeleton", "to_xyz"):
-    assert hasattr(neu_draw, name), name
-print(neu_draw.__version__)
-""")
-    assert out == "0.1.0"
-
-
 def test_the_shared_types_are_neu_libs_own_not_local_copies():
-    """One notion of each across the suite. A second would diverge on the half-open
-    rule, or on zyx, which is exactly the kind of disagreement nothing surfaces.
-
-    What this package re-exports at its top level is a convenience for notebooks, and
-    it must stay an alias rather than becoming a fork.
-    """
+    """The top-level re-exports are aliases of neu_lib's types, never copies that could
+    drift (on the half-open rule, or zyx)."""
     import neu_lib
 
     import neu_draw

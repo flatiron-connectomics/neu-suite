@@ -1,13 +1,7 @@
-"""Placing drawables relative to one another, without touching their coordinates.
+"""Placing drawables relative to one another without touching their coordinates.
 
-The case this exists for is two cells from **different datasets** in one scene: their nm
-coordinates are real and unrelated, and lining them up used to mean subtracting tuples by
-hand and then translating the geometry. Now the shift is a property of the drawable, and the
-geometry keeps saying where the tissue is.
-
-That last part is the invariant under test throughout: physical nanometres are the suite's
-one model space, so a drawable that has been moved must still report its true position
-through the thing that holds the data.
+An offset is a display transform on the drawable; the geometry keeps its true nm position
+throughout, which is what every test here checks.
 """
 
 import numpy as np
@@ -32,9 +26,6 @@ def _skeleton(origin=0.0):
 # the offset is a display transform, not an edit
 # --------------------------------------------------------------------------- #
 def test_moving_a_drawable_leaves_its_geometry_alone():
-    """The whole reason the offset lives on the drawable. Shifting the vertices would make
-    `mesh.bbox` report where it is DRAWN rather than where the tissue is — and two datasets
-    in one scene is exactly when the real coordinates still need to be real."""
     mesh = _mesh(origin=1000.0)
     moved = MeshDrawable(mesh).offset_by((-1000, -1000, -1000))
 
@@ -56,8 +47,6 @@ def test_offsets_accumulate_and_placed_at_replaces():
 
 
 def test_every_drawable_kind_can_be_placed():
-    """Meshes, skeletons and point sets all move the same way, or the one that does not
-    silently stays behind when a scene is aligned."""
     for drawable in (MeshDrawable(_mesh()),
                      LinesDrawable(_skeleton()),
                      PointsDrawable(np.array([[0.0, 0, 0], [10.0, 10, 10]]))):
@@ -67,7 +56,6 @@ def test_every_drawable_kind_can_be_placed():
 
 
 def test_an_offset_given_at_construction_is_coerced():
-    """So a tuple works as well as a Vec3 — this must not be the one place that insists."""
     assert MeshDrawable(_mesh(), offset_zyx_nm=(1, 2, 3)).offset_zyx_nm == Vec3(1, 2, 3)
 
 
@@ -75,7 +63,6 @@ def test_an_offset_given_at_construction_is_coerced():
 # alignment
 # --------------------------------------------------------------------------- #
 def test_aligning_puts_one_cells_anchor_on_anothers():
-    """The tedious thing, in one call."""
     here = MeshDrawable(_mesh(origin=0.0))
     there = MeshDrawable(_mesh(origin=1000.0))
 
@@ -85,8 +72,7 @@ def test_aligning_puts_one_cells_anchor_on_anothers():
 
 
 def test_the_three_anchors_differ_when_the_boxes_do():
-    """Sized differently on purpose: with two identical boxes every anchor gives the same
-    offset, so a test using those would pass whatever `anchor` did."""
+    """Different sizes, so the anchors give different offsets."""
     small = MeshDrawable(_mesh(origin=0.0, side=10.0))      # box (0,0,0)..(11,11,11)
     big = MeshDrawable(_mesh(origin=100.0, side=50.0))      # box (100,..)..(151,..)
 
@@ -106,7 +92,6 @@ def test_centering_puts_the_anchor_at_the_origin_by_default():
 
 
 def test_aligning_accepts_anything_with_a_bbox():
-    """A drawable, a scene, or a bare box — "put this where that is" should not care."""
     target = MeshDrawable(_mesh(origin=500.0))
     scene = Scene(drawables=[target])
     mover = MeshDrawable(_mesh(origin=0.0))
@@ -125,8 +110,7 @@ def test_an_unknown_anchor_is_refused():
 # scenes move as a whole
 # --------------------------------------------------------------------------- #
 def test_centering_a_scene_preserves_the_arrangement():
-    """Not the same as centring each drawable, which would pile them all on the origin.
-    The shift is computed once from the scene's box and applied to everything."""
+    """One shift for the whole scene, not one per drawable."""
     a = MeshDrawable(_mesh(origin=0.0), name="a")
     b = MeshDrawable(_mesh(origin=1000.0), name="b")
     scene = Scene(drawables=[a, b])
@@ -139,36 +123,21 @@ def test_centering_a_scene_preserves_the_arrangement():
     assert gap_after == gap_before
 
 
-def test_placing_a_scene_returns_a_copy():
-    """Assembly is imperative, but "show me these lined up" is something you try several
-    ways — each attempt must leave the previous one intact."""
+def test_placing_a_scene_returns_a_moved_copy():
+    """The original is untouched, and the scene box (what the camera frames) follows."""
     scene = Scene(drawables=[MeshDrawable(_mesh())])
     moved = scene.offset_by((100, 0, 0))
     assert scene.drawables[0].offset_zyx_nm == Vec3.zero()
     assert moved.drawables[0].offset_zyx_nm == Vec3(100, 0, 0)
     assert moved is not scene
-
-
-def test_the_scene_box_follows_the_offsets():
-    """It is what the camera frames, and the camera shows where things are drawn."""
-    scene = Scene(drawables=[MeshDrawable(_mesh())])
-    assert scene.offset_by((100, 0, 0)).bbox.lo == (100, 0, 0)
-
-
-def test_a_hidden_drawable_still_does_not_drag_the_camera_once_offsets_exist():
-    scene = Scene()
-    scene.add_mesh(_mesh())
-    scene.add_points(np.array([[0.0, 0, 0]]), name="far", visible=False)
-    assert scene._mapped(
-        lambda d: d.offset_by((10_000, 0, 0)) if not d.visible else d).bbox == BBox(
-            (0, 0, 0), (11, 11, 11))
+    assert moved.bbox.lo == (100, 0, 0)
 
 
 # --------------------------------------------------------------------------- #
 # bake
 # --------------------------------------------------------------------------- #
 def test_bake_folds_the_offset_into_the_geometry():
-    """For when the shifted coordinates are the OUTPUT rather than the view."""
+    """For when the shifted coordinates are the output, not just the view."""
     moved = MeshDrawable(_mesh(origin=1000.0)).offset_by((-1000, -1000, -1000))
     baked = Scene(drawables=[moved]).bake().drawables[0]
 

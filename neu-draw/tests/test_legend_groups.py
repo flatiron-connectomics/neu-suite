@@ -1,9 +1,6 @@
-"""Legend GROUP rows, and opacity by kind.
+"""Legend group rows (one click for many drawables, each keeping its own row) and opacity by kind.
 
-A group row sits on top of the per-label rows: one click for many drawables, while each
-member keeps a row of its own. The interesting failures are all about the overlap — one
-drawable on two rows — so most of these put a drawable on both and check that neither row
-lies about it.
+Most tests put a drawable on two rows and check that neither row misreports it.
 """
 
 import numpy as np
@@ -164,8 +161,7 @@ def test_hiding_one_member_from_its_own_row_leaves_the_group_partly_shown(view):
 
 
 def test_a_member_lit_by_its_own_row_stays_lit_when_its_group_is_dropped(view):
-    """The overlap bug groups invite: each row painting its members from its own flag, so
-    whichever refreshed last wins and un-lights a body another row had lit."""
+    """Each row painting members from its own flag would un-light a body another row lit."""
     white = pytest.approx(Legend().highlight_color[:3], abs=1e-3)
     view.legend.highlight("A : Mi1")
     view.legend.highlight("Mi1")
@@ -196,18 +192,14 @@ def test_a_group_added_after_show_appears_on_the_next_frame(view):
     assert "Mi2" in view.legend.labels
 
 
-def test_a_group_naming_a_missing_drawable_refuses_to_show(has_gpu):
+@pytest.mark.parametrize("groups, match", [
+    ({"Mi1": ["A : Mi1", "nope"]}, "not in the scene"),
+    ({"A mesh": ["A skeleton"]}, "also a label row"),      # row text must be unique
+])
+def test_an_invalid_group_refuses_to_show(has_gpu, groups, match):
     scene = _cells()
-    scene.legend = Legend(groups={"Mi1": ["A : Mi1", "nope"]})
-    with pytest.raises(ValueError, match="not in the scene"):
-        backend.show(scene, size=(300, 200), canvas="offscreen")
-
-
-def test_a_group_whose_text_is_also_a_label_refuses_to_show(has_gpu):
-    """Every legend method is keyed on row text, so two rows sharing one is ambiguous."""
-    scene = _cells()
-    scene.legend = Legend(groups={"A mesh": ["A skeleton"]})
-    with pytest.raises(ValueError, match="also a label row"):
+    scene.legend = Legend(groups=groups)
+    with pytest.raises(ValueError, match=match):
         backend.show(scene, size=(300, 200), canvas="offscreen")
 
 
