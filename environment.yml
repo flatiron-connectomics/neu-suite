@@ -77,8 +77,7 @@ dependencies:
   # Not on conda-forge in usable versions. Each ships self-contained wheels, so they do
   # not link against the conda libraries above.
   - pip:
-      # neu-morpho skeletons and Draco meshes
-      - kimimaro
+      # neu-morpho skeleton I/O and Draco meshes (the tracers are in neu-skel)
       - osteoid>=0.7.3    # below 0.7.3, Skeleton.consolidate promotes edges to int64
       - DracoPy
       # neu-proc

@@ -36,6 +36,7 @@ def _source(tmp_path):
     ({"roi_scale": 0}, "no effect without roi"),
     ({"stages": ["index"], "metrics_db": False}, "incompatible with the index stage"),
     ({"stages": ["nope"]}, "unknown stage"),
+    ({"extra_stages": {"mesh": 0}}, "shadow built-in stages"),
 ])
 def test_plan_refuses_contradictory_arguments(tmp_path, kwargs, match):
     with pytest.raises(ValueError, match=match):
@@ -50,30 +51,27 @@ def test_a_remote_destination_needs_a_work_dir():
 def test_plan_resolves_scales_and_counts_blocks(tmp_path):
     src = _source(tmp_path)
     p = pipeline.plan(src, str(tmp_path / "out" / "seg"), index_scale=0, mesh_scale=0,
-                      skel_scale=1, block=(32, 32, 32), occupancy_scale=-1,
+                      extra_stages={"extra": 1}, block=(32, 32, 32), occupancy_scale=-1,
                       roi=(0, 0, 0, 32, 32, 32), roi_scale=1)
     assert p.work_dir == str(tmp_path / "out")
-    assert p.scales["skel"].voxel_size == (16.0, 16.0, 16.0)
+    assert p.scales["extra"].voxel_size == (16.0, 16.0, 16.0)
     assert p.rois["mesh"] == (0, 0, 0, 64, 64, 64)       # the same box, in level-0 voxels
-    assert p.planned_blocks == {"index": 8, "mesh": 8, "skel": 1}
+    assert p.planned_blocks == {"index": 8, "mesh": 8, "extra": 1}
     assert not os.path.exists(p.work_dir)                 # planning writes nothing
 
 
 def test_run_produces_one_linked_volume(tmp_path):
     pytest.importorskip("vol2mesh")
-    pytest.importorskip("kimimaro")
     src = _source(tmp_path)
     work = tmp_path / "out"
-    p = pipeline.plan(src, str(work / "seg"), stages=("seg", "index", "mesh", "skel"),
-                      index_scale=0, mesh_scale=0, skel_scale=0, block=(32, 32, 32),
-                      occupancy_scale=-1)
+    p = pipeline.plan(src, str(work / "seg"), stages=("seg", "index", "mesh"),
+                      index_scale=0, mesh_scale=0, block=(32, 32, 32), occupancy_scale=-1)
     summary = pipeline.run(p, command="test")
 
     assert summary["n_failed_bodies"] == 0
-    assert set(summary["stages"]) == {"seg", "index", "mesh", "skel"}
-    assert set(summary["linked_subresources"]) == {"mesh", "skeletons"}
-    info = json.loads((work / "seg" / "info").read_text())
-    assert "mesh" in info and "skeletons" in info
+    assert set(summary["stages"]) == {"seg", "index", "mesh"}
+    assert set(summary["linked_subresources"]) == {"mesh"}
+    assert "mesh" in json.loads((work / "seg" / "info").read_text())
     assert json.loads((work / "run_summary.json").read_text())["command"] == "test"
     assert json.loads((work / "run_plan.json").read_text())["planned_blocks"]["mesh"] == 8
 
@@ -83,3 +81,26 @@ def test_run_produces_one_linked_volume(tmp_path):
     bodies = dict(db.con.execute("SELECT body_id, voxel_count FROM bodies"))
     db.close()
     assert bodies == {7: 56 * 36, 9: 12 * 144}
+
+
+def test_an_extra_stage_runs_after_the_built_in_ones_on_the_same_plan(tmp_path):
+    """How neu-skel adds its stage: planned like a built-in one, run by its runner."""
+    src = _source(tmp_path)
+    seen = {}
+
+    def runner(p, client, allow):
+        seen.update(scale=p.scales["extra"].index, roi=p.rois["extra"], client=client,
+                    index_done=os.path.exists(p.db_path))
+        return {"failed_bodies": [3]}
+
+    p = pipeline.plan(src, str(tmp_path / "out" / "seg"), stages=("index", "extra"),
+                      index_scale=0, mesh_scale=0, extra_stages={"extra": 1}, block=(32, 32, 32),
+                      occupancy_scale=-1, extra={"tool": "x"})
+    summary = pipeline.run(p, runners={"extra": runner})
+    assert seen == {"scale": 1, "roi": None, "client": None, "index_done": True}
+    assert summary["stages"]["extra"] == {"failed_bodies": [3]}
+    assert summary["n_failed_bodies"] == 1                  # its failures count too
+    assert json.loads((tmp_path / "out" / "run_plan.json").read_text())["tool"] == "x"
+    with pytest.raises(ValueError, match="no runner for extra stage"):
+        pipeline.run(p)
+

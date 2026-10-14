@@ -5,10 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "neu-morpho"
 version = "0.1.0"
-description = "Segment morphology: multi-resolution Draco meshes and skeletons from segmentation volumes, into neuroglancer-precomputed."
+description = "Segment morphology: multi-resolution Draco meshes from segmentation volumes, into neuroglancer-precomputed, and measurement of meshes and skeletons."
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 # vol2mesh and dvidutils are only built for py312 on flyem-forge (no py313
 # build), which pins this package and the whole shared env to 3.12.
 requires-python = ">=3.12,<3.13"
@@ -25,11 +25,8 @@ dependencies = [
     "numpy>=2",
     "scipy",
     "tensorstore>=0.1.70",
-    "kimimaro",        # TEASAR skeletonization (voxel mask)
-    # Skeleton class, split out of kimimaro. >=0.7.3 for the dtype: earlier
-    # `consolidate` promoted edges to int64, and kimimaro's compiled remove_ticks
-    # declares a uint32_t buffer, so stock postprocess raised at any non-zero tick
-    # threshold. See tests/test_skeletonize_e2e.py.
+    # Skeleton class (BSD-3) for the skeleton fragment store and the precomputed
+    # skeleton writer and reader. >=0.7.3: earlier `consolidate` promoted edges to int64.
     "osteoid>=0.7.3",
     "DracoPy",         # Draco codec binding used by vol2mesh.multires
     "trimesh",         # vol2mesh.multires LOD slicing (trim_mesh_to_box)

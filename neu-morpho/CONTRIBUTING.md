@@ -19,7 +19,6 @@ and it does not let anyone revoke a license already granted for a published vers
 
 - Run the test suite before opening a PR (`pytest -q`). CI runs it on every push and
   pull request, and it must be green to merge.
-- Note this package is **GPL-3.0-or-later** and cannot practically be relicensed to a
-  permissive license: it imports `kimimaro` and `dijkstra3d` (both GPL-3.0-or-later),
-  which makes it a combined work. The relicensing clause above still applies to the
-  Foundation's own choices among GPL-compatible Permitted Licenses.
+- Nothing here may import a GPL-licensed package, such as the `kimimaro` and
+  `dijkstra3d` skeleton tracers: those live in `neu-skel`, which depends on this package
+  and never the other way round.

@@ -1,8 +1,8 @@
 # neu-morpho
 
 Segment **morphology** from segmentation volumes: multi-resolution Draco-encoded
-**meshes** (via [`vol2mesh`]) and **skeletons** (TEASAR), written in
-neuroglancer-precomputed format.
+**meshes** (via [`vol2mesh`]), written in neuroglancer-precomputed format, and
+measurement of published meshes and **skeletons**.
 
 - **Orchestration** across segments: [`blockrun`](../blockrun) (dask
   local/SLURM + resumable manifest).
@@ -10,11 +10,11 @@ neuroglancer-precomputed format.
   precomputed / zarr / … regions and crop views).
 - **Meshes**: `vol2mesh` (marching cubes → simplify → Draco → multi-resolution
   neuroglancer mesh).
-- **Skeletons**: `neu_morpho.neutu_trace` by default — a reimplementation of
-  NeuTu's TEASAR that matches it to sub-voxel centreline agreement with ~2.6×
-  fewer nodes than [`kimimaro`], which remains available as
-  `--tracer kimimaro` and is **required for anisotropic voxels**. Why each
-  constant is what it is: [`docs/skeletonization.md`](docs/skeletonization.md).
+- **Skeletons** are made by [`neu-skel`], a separate package: GPL-licensed, because
+  its tracers build on [`kimimaro`] and `dijkstra3d`. `neu-skel run` is this package's
+  `run` with a `skel` stage added, writing skeletons into the same volume, metrics DB
+  and run summary. Everything that reads or measures skeletons — `readback`,
+  `neu-morpho measure skeletons`, path distances — is here and needs no GPL code.
 
 Large segments — whose binary mask over a big bounding box would OOM (the failure
 mode this package is designed around) — are meshed **chunked and stitched**
@@ -55,17 +55,16 @@ neu-morpho help [COMMAND]           # what --help prints, as a subcommand
 ### The stages
 
 `--stages` takes a comma-separated subset, run in this order. The default is
-`index,mesh,skel`.
+`index,mesh`; `neu-skel run` adds a `skel` stage after `mesh`.
 
 | stage | what it does |
 | --- | --- |
-| `seg` | Copies the ROI's labels out as a precomputed volume, so the meshes and skeletons can be viewed against the segmentation they came from. **Off by default** — it is pure I/O and usually the most expensive stage of the four. |
+| `seg` | Copies the ROI's labels out as a precomputed volume, so the meshes and skeletons can be viewed against the segmentation they came from. **Off by default** — it is pure I/O and usually the most expensive stage. |
 | `index` | Scans the volume once and records **every body's bounding box and voxel count** in a SQLite metrics DB. |
 | `mesh` | Multi-resolution Draco meshes, one per body. |
-| `skel` | Skeletons, one per body. |
 
-**`index` is required before `mesh` or `skel`, and it is the stage whose purpose is
-least obvious.** Meshing and skeletonization each crop a body out of the volume by its
+**`index` is required before `mesh` (and `neu-skel`'s `skel`), and it is the stage whose
+purpose is least obvious.** Meshing and skeletonization each crop a body out of the volume by its
 bounding box, and there is nowhere to ask for that box: a label's extent is only knowable
 by looking at every block it might appear in, which is exactly the scan `index`
 performs. The voxel counts it records are the other half — the size filter that builds
@@ -73,7 +72,7 @@ the allowlist reads them, so without the DB there is no way to say "only bodies 
 voxels". It writes no volume data, which is why it is easy to mistake for optional.
 
 Once the DB exists you can re-run the later stages without it: `--stages mesh` is the
-normal way to redo meshing after a parameter change. `mesh` and `skel` each run in two
+normal way to redo meshing after a parameter change. `mesh` runs in two
 phases — fragments per (body, block), then one output assembled per body — so a re-run
 of only stage 2 reuses the fragments already on disk instead of recomputing them.
 
@@ -84,13 +83,13 @@ neu-morpho run --src /path/to/seg --describe
 # 1. one small cube, in-process — the fastest way to see it work end to end
 neu-morpho run --src ... \
     --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \
-    --serial --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
+    --serial --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh
 
 # 2. the same cube on SLURM, surviving logout, publishing to s3
 nohup env PYTHONUNBUFFERED=1 neu-morpho run --src ... \
     --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \
     --config dask-slurm-example --config ~/my-site.yaml --workers 48 \
-    --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
+    --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh > run.log 2>&1 &
 squeue -u "$USER"
 
 # 3. widen or drop --roi for the whole volume; step 2's work is reused
@@ -237,13 +236,17 @@ area without checking the bias against `decimation_fraction=1.0` on a sample.
 
 [`vol2mesh`]: https://github.com/janelia-flyem/vol2mesh
 [`kimimaro`]: https://github.com/seung-lab/kimimaro
+[`neu-skel`]: https://github.com/flatiron-connectomics/neu-skel
 
 ## License
 
 ©2026 The Simons Foundation, Inc.
 
-Licensed under the [GNU General Public License v3.0 or later](LICENSE). GPL rather
-than a permissive licence because this package imports `kimimaro` and `dijkstra3d`,
-both GPL-3.0-or-later, which makes it a combined work — see the Licence note in
-`neu_morpho/neutu_trace.py`. See [CONTRIBUTING.md](CONTRIBUTING.md) for how
-contributions are licensed.
+Licensed under the [Apache License, Version 2.0](LICENSE). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how contributions are licensed.
+
+The skeleton tracers are in [`neu-skel`], under GPL-3.0-or-later, because they import
+`kimimaro` and `dijkstra3d`. `neu-skel` depends on this package, never the reverse, so
+nothing here loads GPL code. A later option is for `neu-morpho run` to discover an
+installed `neu-skel` and offer the `skel` stage itself; it is not done, because that would
+load GPL code into this package's process.

@@ -1,4 +1,4 @@
-"""The ``neu-morpho run`` pipeline as a library call: seg -> index -> allowlist -> mesh -> skel.
+"""The ``neu-morpho run`` pipeline as a library call: seg -> index -> allowlist -> mesh.
 
 :func:`plan` validates the arguments against the source's own pyramid and counts the
 blocks each stage will process; :func:`run` executes a plan, on a dask ``client`` or
@@ -11,6 +11,15 @@ dry run never starts one::
 ``dst`` is the published volume (labels, with meshes and skeletons inside it) and may
 be an object store; ``work_dir`` is a filesystem path for the fragments, the metrics DB
 and the manifests.
+
+**Extra stages.** Another package can add a stage that runs after ``mesh`` on the same
+plan: name it in ``plan(extra_stages={name: scale_index})``, so its scale, ROI and block
+count are planned like the built-in ones, and pass ``run(runners={name: fn})``. This is
+how ``neu-skel`` provides skeletons, which are not built here because the tracers are
+GPL-licensed; ``neu-skel run`` is ``neu-morpho run`` with a ``skel`` stage. Discovering
+an installed ``neu-skel`` from ``neu-morpho run`` itself (an entry point) is a possible
+later addition, deliberately not made: it would load GPL code into this package's
+process.
 """
 
 from __future__ import annotations
@@ -23,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 log = logging.getLogger("neu-morpho")
 
@@ -43,11 +52,12 @@ STAGE_DOC = {
     "mesh": "multi-resolution Draco meshes, per body. Two phases — fragments per "
             "(body, block), then one mesh assembled per body — so a re-run with only "
             "this stage reuses the fragments already on disk.",
-    "skel": "skeletons, per body (the neutu tracer by default), in the same two phases "
-            "and with its own manifest. Reads bounding boxes from the metrics DB.",
 }
 STAGES = tuple(STAGE_DOC)
-DEFAULT_STAGES = ("index", "mesh", "skel")
+DEFAULT_STAGES = ("index", "mesh")
+
+#: ``fn(plan, client, allowlist_path_or_None) -> summary dict`` for an extra stage.
+StageRunner = Callable[["Plan", Any, "str | None"], dict]
 
 
 @dataclass
@@ -59,7 +69,7 @@ class Plan:
     work_dir: str
     stages: tuple[str, ...]
     block: tuple[int, int, int]
-    scales: dict[str, Any]                  #: ``index`` / ``mesh`` / ``skel`` -> ScaleInfo
+    scales: dict[str, Any]                  #: stage -> ScaleInfo, extra stages included
     finest: Any                             #: the source's level 0
     rois: dict[str, tuple | None]           #: each stage's ROI in its own scale's voxels
     roi: tuple | None
@@ -74,11 +84,10 @@ class Plan:
     min_voxels: int
     limit_bodies: int | None
     metrics_db: bool
-    tracer: str
-    neutu_cost: str
     seg_encoding: str
     max_consecutive_failures: int
     resume: bool
+    extra: dict                             #: recorded in run_plan.json as-is
 
     @property
     def db_path(self) -> str | None:
@@ -118,15 +127,16 @@ def _blocks_in(shape, block, roi, voxel_size=None, occ=None) -> int:
 def plan(src: str, dst: str, *, work_dir: str | None = None,
          stages: Sequence[str] = DEFAULT_STAGES,
          block: Sequence[int] = (256, 256, 256),
-         index_scale: int = 2, mesh_scale: int = 2, skel_scale: int = 2,
+         index_scale: int = 2, mesh_scale: int = 2,
+         extra_stages: Mapping[str, int] | None = None,
          roi: Sequence[int] | None = None, roi_scale: int | None = None,
          seg_scales: Sequence[int] | None = None,
          occupancy_scale: int | None = 5, occupancy_dilate: int = 1,
          allowlist: str | None = None, min_voxels: int = 0,
          limit_bodies: int | None = None, metrics_db: bool = True,
-         tracer: str | None = None, neutu_cost: str | None = None,
          seg_encoding: str = "compressed_segmentation",
-         max_consecutive_failures: int = 10, resume: bool = True) -> Plan:
+         max_consecutive_failures: int = 10, resume: bool = True,
+         extra: Mapping[str, Any] | None = None) -> Plan:
     """Resolve and check a run against ``src``'s pyramid; logs the plan. Writes nothing.
 
     ``roi`` is ``(z0, y0, x0, z1, y1, x1)`` in the voxels of ``roi_scale``, which is
@@ -134,14 +144,14 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     are pyramid indices, their voxel sizes read from the source. ``occupancy_scale``
     ``None`` or negative disables the empty-block prefilter; keep ``occupancy_dilate``
     at 1 or more, since a coarse scale misses sparse blocks. ``seg_scales`` ``None``
-    copies every scale in the seg stage. ``tracer`` / ``neutu_cost`` default to
-    :class:`~neu_morpho.config.SkeletonConfig`'s.
+    copies every scale in the seg stage. ``extra_stages`` names stages another package
+    runs (see the module docstring), each with its scale index; ``extra`` is recorded
+    in ``run_plan.json``.
 
     Raises ``ValueError`` for an argument the source or the other arguments rule out.
     """
     from neu_vol import describe_scales, is_local, read_scales, scale_spec
 
-    from .config import SkeletonConfig
     from .roi import scale_roi
 
     dst = dst.rstrip("/")
@@ -158,10 +168,15 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     if not is_local(work):
         raise ValueError(f"work_dir must be a filesystem path, got {work}")
 
+    extra_stages = dict(extra_stages or {})
+    clash = set(extra_stages) & set(STAGES)
+    if clash:
+        raise ValueError(f"extra stage(s) {sorted(clash)} shadow built-in stages")
+    known = [*STAGES, *extra_stages]
     stages = tuple(stages)
-    unknown = set(stages) - set(STAGES)
+    unknown = set(stages) - set(known)
     if unknown:
-        raise ValueError(f"unknown stage(s) {sorted(unknown)}; pick from {list(STAGES)}")
+        raise ValueError(f"unknown stage(s) {sorted(unknown)}; pick from {known}")
     if "index" in stages and not metrics_db:
         raise ValueError("metrics_db=False is incompatible with the index stage, whose "
                          "only output is that DB")
@@ -172,12 +187,12 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
         raise ValueError("roi_scale has no effect without roi")
 
     scales = read_scales(src)
-    for name, idx in (("index", index_scale), ("mesh", mesh_scale), ("skel", skel_scale),
-                      ("roi", roi_scale)):
+    for name, idx in (("index", index_scale), ("mesh", mesh_scale), ("roi", roi_scale),
+                      *extra_stages.items()):
         if idx is not None and not 0 <= idx < len(scales):
             raise ValueError(f"{name}_scale {idx} out of range (source has {len(scales)})")
     by_stage = {"index": scales[index_scale], "mesh": scales[mesh_scale],
-                "skel": scales[skel_scale]}
+                **{name: scales[idx] for name, idx in extra_stages.items()}}
 
     # One physical box everywhere: the ROI converted into each stage's own voxels.
     roi = tuple(int(v) for v in roi) if roi is not None else None
@@ -207,7 +222,6 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     block = tuple(int(v) for v in block)
     planned = {name: _blocks_in(s.shape, block, rois[name], s.voxel_size, occ)
                for name, s in by_stage.items()}
-    defaults = SkeletonConfig()
     p = Plan(src=src, dst=dst, work_dir=work, stages=stages, block=block,
              scales=by_stage, finest=scales[0], rois=rois, roi=roi, roi_scale=roi_scale,
              seg_scales=list(seg_scales) if seg_scales is not None else None,
@@ -215,9 +229,8 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
              occupancy_scale=occupancy_scale, occupancy_dilate=occupancy_dilate,
              planned_blocks=planned, allowlist=allowlist, min_voxels=min_voxels,
              limit_bodies=limit_bodies, metrics_db=metrics_db,
-             tracer=tracer or defaults.tracer, neutu_cost=neutu_cost or defaults.neutu_cost,
              seg_encoding=seg_encoding, max_consecutive_failures=max_consecutive_failures,
-             resume=resume)
+             resume=resume, extra=dict(extra or {}))
 
     log.info("source pyramid:\n%s", describe_scales(src))
     for name, s in by_stage.items():
@@ -225,10 +238,8 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
                  name, s.index, s.voxel_size, s.shape, planned[name])
     log.info("stages=%s roi=%s occupancy=%s", list(stages), roi,
              f"scale {occupancy_scale} dilate {occupancy_dilate}" if occ else "off")
-    # The tracer decides what the skeletons are, so it belongs in the log too.
-    if "skel" in stages:
-        log.info("tracer        = %s%s", p.tracer,
-                 f" (cost={p.neutu_cost})" if p.tracer == "neutu" else "")
+    for key, value in p.extra.items():
+        log.info("%-13s = %s", key, value)
     log.info("dst (volume)  = %s", dst)
     log.info("work dir      = %s", work)
     return p
@@ -252,30 +263,36 @@ def _write_run_plan(p: Plan, command: str) -> None:
             "roi": list(p.roi) if p.roi else None,
             "roi_scale": p.roi_scale,                 # the ROI is meaningless without it
             "scales": {k: s.index for k, s in p.scales.items()},
-            "tracer": p.tracer, "neutu_cost": p.neutu_cost,
+            **p.extra,
             "planned_blocks": p.planned_blocks, "seg_scales": seg,
         }, f, indent=2)
 
 
-def run(p: Plan, *, client: Any = None, command: str | None = None) -> dict:
+def run(p: Plan, *, client: Any = None, command: str | None = None,
+        runners: Mapping[str, StageRunner] | None = None) -> dict:
     """Execute ``p``'s stages; returns the run summary, also written to ``run_summary.json``.
 
-    ``client`` is a dask client, or ``None`` to run serially in this process. Per-body
+    ``client`` is a dask client, or ``None`` to run serially in this process.
+    ``runners`` runs each extra stage the plan names, after ``mesh``. Per-body
     failures do not stop a stage; they are counted in ``n_failed_bodies`` and retried by
     the next run. Afterwards the volume's ``info`` is pointed at whichever of the mesh and
     skeleton subresources exist, so one neuroglancer layer carries all three.
     """
     from neu_vol import exists, scale_spec
 
-    from .config import MeshConfig, OutputConfig, SkeletonConfig
+    from .config import MeshConfig, OutputConfig
     from .metrics_db import MetricsDB
-    from .ops import export_roi_seg, index_segments, meshify, skeletonize_segments
+    from .ops import export_roi_seg, index_segments, meshify
     from .ops.export_roi_seg import scale_cost
     from .precomputed import link_subresources
 
     command = command if command is not None else " ".join(sys.argv)
     work, src, stages = p.work_dir, p.src, p.stages
-    idx_s, mesh_s, skel_s = p.scales["index"], p.scales["mesh"], p.scales["skel"]
+    runners = dict(runners or {})
+    missing = [s for s in stages if s not in STAGES and s not in runners]
+    if missing:
+        raise ValueError(f"no runner for extra stage(s) {missing}")
+    idx_s, mesh_s = p.scales["index"], p.scales["mesh"]
     db_path, allowlist_path = p.db_path, p.allowlist_path
     out = OutputConfig(dst=p.dst, work_dir=work)
 
@@ -283,9 +300,6 @@ def run(p: Plan, *, client: Any = None, command: str | None = None) -> dict:
     _write_run_plan(p, command)
     t_start = time.time()
     mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block)
-    skel_cfg = SkeletonConfig(skeleton_scale=skel_s.index, block_shape=p.block,
-                              anisotropy=skel_s.voxel_size,
-                              tracer=p.tracer, neutu_cost=p.neutu_cost)
     occupancy = dict(occupancy_spec=p.occupancy_spec,
                      occupancy_voxel_size=p.occupancy_voxel_size,
                      occupancy_dilate=p.occupancy_dilate)
@@ -332,8 +346,8 @@ def run(p: Plan, *, client: Any = None, command: str | None = None) -> dict:
         db.close()
         log.info("allowlist: %d bodies -> %s", n, allowlist_path)
     allow = allowlist_path if os.path.exists(allowlist_path) else None
-    if allow is None and db_path and os.path.exists(db_path) and (
-            "mesh" in stages or "skel" in stages):
+    if allow is None and db_path and os.path.exists(db_path) and any(
+            s != "seg" and s != "index" for s in stages):
         db = MetricsDB(db_path)
         n_all = db.con.execute("SELECT COUNT(*) FROM bodies").fetchone()[0]
         db.close()
@@ -354,16 +368,11 @@ def run(p: Plan, *, client: Any = None, command: str | None = None) -> dict:
         timing["mesh"] = (time.time() - t) / 60
         log.info("mesh: %s  (%.1f min)", summaries["mesh"], timing["mesh"])
 
-    if "skel" in stages:
+    for name in (s for s in stages if s not in STAGES):
         t = time.time()
-        summaries["skel"] = skeletonize_segments(
-            scale_spec(src, skel_s.index), out, skel_cfg,
-            allowlist=allow, roi=p.rois["skel"], db_path=db_path,
-            fusion_stats_path=f"{work}/fusion_stats.jsonl",
-            max_consecutive_failures=p.max_consecutive_failures,
-            client=client, resume=p.resume, **occupancy)
-        timing["skel"] = (time.time() - t) / 60
-        log.info("skel: %s  (%.1f min)", summaries["skel"], timing["skel"])
+        summaries[name] = runners[name](p, client, allow)
+        timing[name] = (time.time() - t) / 60
+        log.info("%s: %s  (%.1f min)", name, summaries[name], timing[name])
 
     # After the stages, because the seg stage rewrites info. A subresource is there when
     # its own info is, probed through the kvstore since the volume may be remote.

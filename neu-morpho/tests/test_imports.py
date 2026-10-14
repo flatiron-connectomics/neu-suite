@@ -3,10 +3,37 @@
 
 def test_package_modules_import():
     import neu_morpho
-    from neu_morpho import config, mesh, precomputed, skeleton, occupancy, fragments, allowlist
+    from neu_morpho import config, mesh, precomputed, occupancy, fragments, allowlist
     from neu_morpho.ops import meshify
     assert neu_morpho.__version__
     assert callable(meshify)
+
+
+def test_no_module_loads_a_gpl_package():
+    """The package is Apache-2.0: importing any of it must not load the GPL tracers'
+    dependencies, which live in neu-skel. Checked in a fresh interpreter, with both
+    blocked so that even a lazy import inside a module body would fail."""
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-c", """
+import importlib, pkgutil, sys
+sys.modules['kimimaro'] = None
+sys.modules['dijkstra3d'] = None
+import neu_morpho
+bad = []
+for m in pkgutil.walk_packages(neu_morpho.__path__, 'neu_morpho.'):
+    if m.name.endswith('__main__'):
+        continue
+    try:
+        importlib.import_module(m.name)
+    except ImportError as e:
+        if 'kimimaro' in str(e) or 'dijkstra3d' in str(e):
+            bad.append(m.name)
+print(bad)
+"""], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "[]"
 
 
 def test_measure_does_not_cost_pandas_at_import():

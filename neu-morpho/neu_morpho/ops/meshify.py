@@ -29,7 +29,7 @@ from ..occupancy import occupied_blocks
 from ..precomputed import check_quantization, write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._manifest import (FAILED, FailureBreaker, check_manifest_matches_output,
+from .manifest import (FAILED, FailureBreaker, check_manifest_matches_output,
                         group_counts, guarded, is_complete, write_failures)
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def _assemble_body(body_id: int, *, chunked_dir: str, out_dir: str, mesh_cfg: Me
 
     Metrics are taken from the assembled LOD-0 mesh, before
     ``write_body_multires`` decimates it in place for the coarser LODs.
-    Exceptions become ``failed`` via ``_manifest.guarded``.
+    Exceptions become ``failed`` via ``manifest.guarded``.
     """
     frags = _frag.read_body_fragments(chunked_dir, body_id, mesh_cfg.fragment_format)
     if not frags:
@@ -101,7 +101,7 @@ def meshify(
     then describe whatever was meshed: under an ROI, that is the truncated body.
 
     Stage-2 failures are isolated per body (stage 1 is not — see
-    ``ops/_manifest.py``). ``max_consecutive_failures`` stops the stage when the
+    ``ops/manifest.py``). ``max_consecutive_failures`` stops the stage when the
     failures stop looking incidental; 0 disables it. A systemic error
     (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
@@ -154,12 +154,12 @@ def meshify(
     if db_path is not None:
         from ..metrics_db import MetricsDB
         db = MetricsDB(db_path)
-    failures: list[dict] = []           # isolated stage-2 failures (see _manifest.py)
+    failures: list[dict] = []           # isolated stage-2 failures (see manifest.py)
     failures_path = None
     breaker = FailureBreaker(max_consecutive_failures)
     try:
         if "chunk" in stages:
-            # Stage 1 is deliberately NOT fault-isolated: see ops/_manifest.py.
+            # Stage 1 is deliberately NOT fault-isolated: see ops/manifest.py.
             todo = [b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
             worker = functools.partial(_chunk_block, seg_spec=seg_spec, chunked_dir=chunked_dir,
                                        mesh_cfg=mesh_cfg, allow=allow,

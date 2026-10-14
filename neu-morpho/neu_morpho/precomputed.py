@@ -7,7 +7,7 @@ Meshes — thin wrappers over ``vol2mesh.multires``:
     (``multires.split_mesh_for_lod``) + ``multires.write_object_mesh``.
 
 Skeletons — the ``neuroglancer_skeletons`` format written directly (via osteoid's
-``Skeleton.to_precomputed``, which kimimaro already depends on, so no CloudVolume):
+``Skeleton.to_precomputed``, so no CloudVolume):
 
   - :func:`write_skeleton_info` -> the skeleton ``info``, once.
   - :func:`write_body_skeleton` -> one binary blob per body.

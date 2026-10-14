@@ -42,7 +42,6 @@ INCLUDED = [
     ("blockrun/docs/dask-slurm.md", "dask-slurm.md"),
     ("neu-vol/README.md", "neu-vol-readme.md"),
     ("neu-morpho/README.md", "neu-morpho-readme.md"),
-    ("neu-morpho/docs/skeletonization.md", "neu-morpho-skeletonization.md"),
     ("neu-mark/README.md", "neu-mark-readme.md"),
     ("neu-glance/README.md", "neu-glance-readme.md"),
     ("neu-draw/README.md", "neu-draw-readme.md"),
@@ -390,7 +389,7 @@ GITHUB = "https://github.com/flatiron-connectomics/neu-suite"
 def _absolutize(text: str, repo: str, from_dir: str) -> str:
     """Point an included file's relative links at the file on GitHub.
 
-    Links like `LICENSE`, `docs/skeletonization.md` or `../blockrun` resolve against the
+    Links like `LICENSE`, `docs/dask-slurm.md` or `../blockrun` resolve against the
     file's own directory, not against this site, so left alone they warn on every build
     and 404 for the reader.
     """

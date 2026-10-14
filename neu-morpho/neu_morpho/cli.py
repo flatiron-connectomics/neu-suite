@@ -1,4 +1,4 @@
-"""neu-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
+"""neu-morpho: index -> allowlist -> meshes, locally or on SLURM.
 
 The command-line entry point for this package.
 
@@ -19,13 +19,13 @@ so re-running the same command resumes.
     neu-morpho run --src ... \\
         --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \\
         --config dask-local --workers 4 \\
-        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
+        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh
 
     # 2. the same ROI on SLURM, surviving logout, publishing to s3
     nohup env PYTHONUNBUFFERED=1 neu-morpho run --src ... \\
         --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \\
         --config dask-slurm-example --config ~/my-site.yaml --workers 48 \\
-        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
+        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
 
 ``python -m neu_morpho`` is equivalent to ``neu-morpho``. ``PYTHONUNBUFFERED=1`` is
@@ -56,9 +56,12 @@ processes the wrong region rather than failing. It filters blocks on the *global
 grid, so widening it later re-uses everything already done rather than redoing it
 (see neu_morpho/roi.py). Drop --roi for the whole volume.
 
-Scales are integers (--mesh-scale / --skel-scale / --index-scale); the voxel size
+Scales are integers (--mesh-scale / --index-scale); the voxel size
 of each is read from the source metadata, never assumed to be 2**scale — that
 assumption is what misaligns meshes against skeletons on non-standard pyramids.
+
+Skeletons come from **neu-skel**, a separate GPL-licensed package: ``neu-skel run``
+takes every argument below plus a ``skel`` stage and its tracer options.
 """
 
 from __future__ import annotations
@@ -80,7 +83,7 @@ log = logging.getLogger("neu-morpho")
 from neu_morpho.pipeline import STAGE_DOC, STAGES  # noqa: E402  (re-exported for the docs)
 
 
-def stages_help(indent: str = "  ", width: int = 79) -> str:
+def stages_help(indent: str = "  ", width: int = 79, stage_doc=None) -> str:
     """The stage list as ``--help`` prints it: one wrapped paragraph per stage.
 
     This goes in the ``run`` subparser's *description*, not in ``--stages``' own help
@@ -92,9 +95,10 @@ def stages_help(indent: str = "  ", width: int = 79) -> str:
     """
     import textwrap
 
-    label = max(len(name) for name in STAGE_DOC) + 2
+    stage_doc = STAGE_DOC if stage_doc is None else stage_doc
+    label = max(len(name) for name in stage_doc) + 2
     out = ["Stages, in the order they run (--stages):", ""]
-    for name, doc in STAGE_DOC.items():
+    for name, doc in stage_doc.items():
         lines = textwrap.wrap(doc, width=width - len(indent) - label)
         out.append(f"{indent}{name:<{label}}{lines[0]}")
         out += [f"{indent}{'':<{label}}{line}" for line in lines[1:]]
@@ -112,23 +116,8 @@ def _configs(args) -> list[str]:
     return args.config or ["dask-local"]
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """The full ``neu-morpho`` parser, built but not run.
-
-    Separate from :func:`_parse_args` so the documentation can render it: the CLI
-    reference is generated from *this* object by ``sphinx-argparse``, which is what
-    stops the published usage from drifting away from ``--help``.
-    """
-    top = argparse.ArgumentParser(
-        prog="neu-morpho", description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = top.add_subparsers(dest="command", required=True)
-
-    p = sub.add_parser(
-        "run", help="index -> allowlist -> meshes -> skeletons",
-        description=f"{__doc__}\n{stages_help()}",
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.set_defaults(func=_main)
+def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
+    """Every ``run`` argument, on parser ``p``. ``neu-skel run`` adds its own to these."""
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
                                  "meshes/skeletons inside it. Local path or s3://... "
@@ -142,11 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
-    p.add_argument("--stages", default="index,mesh,skel", metavar="LIST",
-                   help=f"comma-separated subset of {','.join(STAGES)}, described under "
+    p.add_argument("--stages", default=default_stages, metavar="LIST",
+                   help=f"comma-separated subset of {','.join(stages)}, described under "
                         f"'Stages' above. They run in that order, and each is idempotent "
                         f"and resumable, so re-running a subset continues rather than "
-                        f"redoing it (default: index,mesh,skel)")
+                        f"redoing it (default: {default_stages})")
     p.add_argument("--seg-encoding", default="compressed_segmentation",
                    help="encoding for the exported segmentation (or 'raw')")
     p.add_argument("--seg-scales", default="all",
@@ -161,23 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
     p.add_argument("--mesh-scale", type=int, default=2)
-    p.add_argument("--skel-scale", type=int, default=2)
-    p.add_argument("--tracer", default="neutu", choices=("kimimaro", "neutu"),
-                   help="stage-1 skeletonizer (default neutu). 'neutu' is "
-                        "neu_morpho.neutu_trace, which reproduces NeuTu's skeletons "
-                        "with fewer vertices and requires isotropic voxels; 'kimimaro' "
-                        "is the older tracer, and the one to use on an anisotropic "
-                        "pyramid (see docs/skeletonization.md)")
-    p.add_argument("--neutu-cost", default="edge", choices=("voxel", "edge"),
-                   help="--tracer neutu only (default edge). 'edge' is NeuTu's own "
-                        "symmetric cost and matches it more closely. 'voxel' is "
-                        "cheaper in memory, which matters only if a component exceeds "
-                        "SkeletonConfig.neutu_edge_max_gb (see "
-                        "docs/skeletonization.md)")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,
-                   help="only mesh/skeletonize bodies with at least this many voxels")
+                   help="only process bodies with at least this many voxels")
     p.add_argument("--limit-bodies", type=int, default=None,
                    help="cap the allowlist to the N largest bodies")
     p.add_argument("--allowlist", help="explicit body-id file (overrides --min-voxels)")
@@ -209,6 +185,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store-logs", action="store_true",
                    help="keep TensorStore's benign S3 credential-chain logging "
                         "(suppressed by default; real errors are never suppressed)")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The full ``neu-morpho`` parser, built but not run.
+
+    Separate from :func:`_parse_args` so the documentation can render it: the CLI
+    reference is generated from *this* object by ``sphinx-argparse``, which is what
+    stops the published usage from drifting away from ``--help``.
+    """
+    top = argparse.ArgumentParser(
+        prog="neu-morpho", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = top.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser(
+        "run", help="index -> allowlist -> meshes",
+        description=f"{__doc__}\n{stages_help()}",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.set_defaults(func=_main)
+    add_run_args(p)
     # --- progress -----------------------------------------------------------
     q = sub.add_parser("progress", help="live progress of a run, from its work dir",
                        description="Per-stage task counts against the plan, for a run "
@@ -369,11 +365,14 @@ def cmd_help(args) -> int:
 
 def _parse_args(argv=None):
     top = build_parser()
-    p = getattr(top, "_run_parser", top)
     args = top.parse_args(argv)
-    if args.command != "run":
-        return args
+    if args.command == "run":
+        check_run_args(top._run_parser, args)
+    return args
 
+
+def check_run_args(p, args) -> None:
+    """The ``run`` checks argparse cannot express, reported as errors of parser ``p``."""
     # --roi-scale used to default to --mesh-scale. That is a silent default on a
     # number that changes what gets processed: the same six values name a box 4x
     # smaller per level, so an ROI meant for scale 0 read as scale 2 quietly
@@ -393,7 +392,6 @@ def _parse_args(argv=None):
     # seconds of network before telling you about a typo.
     if not args.serial:
         load_config(_configs(args))
-    return args
 
 
 def _cmd_progress(args) -> int:
@@ -709,6 +707,16 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
+    return run_main(args)
+
+
+def run_main(args, *, extra_stages=None, runners=None, extra=None,
+             label: str = "neu-morpho") -> int:
+    """``run`` from parsed arguments: plan, then run on a cluster or serially.
+
+    ``extra_stages`` / ``runners`` / ``extra`` pass through to :mod:`neu_morpho.pipeline`
+    for a stage another package provides.
+    """
     from neu_morpho import pipeline
 
     if args.describe:
@@ -730,14 +738,13 @@ def _main(args) -> int:
             stages=[s.strip() for s in args.stages.split(",") if s.strip()],
             block=tuple(int(v) for v in args.block.split(",")),
             index_scale=args.index_scale, mesh_scale=args.mesh_scale,
-            skel_scale=args.skel_scale, roi=parse_roi(args.roi), roi_scale=args.roi_scale,
+            extra_stages=extra_stages, roi=parse_roi(args.roi), roi_scale=args.roi_scale,
             seg_scales=seg_scales, occupancy_scale=args.occupancy_scale,
             occupancy_dilate=args.occupancy_dilate, allowlist=args.allowlist,
             min_voxels=args.min_voxels, limit_bodies=args.limit_bodies,
-            metrics_db=not args.no_metrics_db, tracer=args.tracer,
-            neutu_cost=args.neutu_cost, seg_encoding=args.seg_encoding,
+            metrics_db=not args.no_metrics_db, seg_encoding=args.seg_encoding,
             max_consecutive_failures=args.max_consecutive_failures,
-            resume=not args.no_resume)
+            resume=not args.no_resume, extra=extra)
     except ValueError as e:
         raise SystemExit(str(e)) from None
     if args.dry_run:
@@ -746,15 +753,15 @@ def _main(args) -> int:
 
     if args.serial:
         log.info("serial mode: no dask client")
-        summary = pipeline.run(plan)
+        summary = pipeline.run(plan, runners=runners)
     else:
         # Imported here: it pulls in dask.distributed (~1 s), which `progress` and
         # `run-report` never need.
         from blockrun import start_dask
 
-        with start_dask(args.workers, _configs(args), label="neu-morpho",
+        with start_dask(args.workers, _configs(args), label=label,
                         effective_config_path=plan.work_dir) as client:
-            summary = pipeline.run(plan, client=client)
+            summary = pipeline.run(plan, client=client, runners=runners)
     # Isolated per-body failures do not stop the run; exit non-zero so a scripted
     # pipeline does not treat a partial result as clean.
     return 1 if summary["n_failed_bodies"] else 0

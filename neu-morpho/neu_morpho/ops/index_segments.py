@@ -7,7 +7,7 @@ covers all bodies, and resumes correctly.
 
 **Who actually consumes this, as of now** — the docstring used to say "skeletonization
 reads bboxes from the DB", and that consumer is gone: `meshify` and
-`skeletonize_segments` are both block-based and read no bbox. What remains is
+neu-skel's skeleton stage are both block-based and read no bbox. What remains is
 
 - ``voxel_count``, for ``MetricsDB.write_allowlist`` (the ``--min-voxels`` /
   ``--limit-bodies`` size filter). Counts only; no bbox needed.

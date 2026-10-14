@@ -12,7 +12,7 @@ the cheat sheet if you just need to remember a flag.
 | [neu-lib](neu-lib/) | the shared vocabulary: boxes, grid arithmetic, frames, meshes, skeletons. **numpy only.** Library, no command. |
 | [blockrun](blockrun/) | dask/SLURM substrate. No EM knowledge. Library only, no command. |
 | [neu-vol](neu-vol/) | volume I/O and the `neu-vol` command |
-| [neu-morpho](neu-morpho/) | meshes and skeletons, and the `neu-morpho` command |
+| [neu-morpho](neu-morpho/) | meshes, skeleton readback and measurement, and the `neu-morpho` command (the tracers are in [neu-skel]) |
 | [neu-mark](neu-mark/) | DVID annotations into tables and precomputed sources, and the `neu-mark` command |
 | [neu-glance](neu-glance/) | neuroglancer states, layers and links, and the `neu-glance` command |
 | [neu-proc](neu-proc/) | array processing: filters, label tools, distance transforms. Library only, no command. |
@@ -109,6 +109,9 @@ Pages from `main` once every package's tests pass.
 
 ## License
 
-neu-morpho is **GPL-3.0-or-later**, because its skeletonization uses `kimimaro` and
-`dijkstra3d`. Every other package is **Apache-2.0**. Each package directory carries its
-own `LICENSE`.
+Every package here is **Apache-2.0**; each package directory carries its own `LICENSE`.
+The skeleton tracers are a separate repository, [neu-skel], under GPL-3.0-or-later
+because they build on `kimimaro` and `dijkstra3d`. neu-skel depends on neu-morpho and
+nothing here imports it.
+
+[neu-skel]: https://github.com/flatiron-connectomics/neu-skel

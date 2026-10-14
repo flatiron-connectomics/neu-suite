@@ -46,14 +46,25 @@ DEFAULT_THREADS = 8
 _COLUMNS = ("cable_length_nm", "n_branches", "n_tips", "max_radius_nm")
 
 
+def skeleton_columns(skeleton) -> dict:
+    """The four per-body skeleton columns of the metrics DB, from a :class:`neu_lib.Skeleton`.
+
+    The one definition, shared by this pass over published skeletons and by whatever
+    writes skeletons into a run (``neu-skel``). ``max_radius_nm`` is NaN without radii.
+    """
+    from .metrics import cable_length_nm, max_radius_nm, topology
+
+    top = topology(skeleton)
+    return {"cable_length_nm": cable_length_nm(skeleton), "n_branches": top["n_branches"],
+            "n_tips": top["n_tips"], "max_radius_nm": max_radius_nm(skeleton)}
+
+
 def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
                  require_radii: bool) -> tuple:
     """``(body_id, status, payload)`` for one body. Never raises."""
     from neu_lib import Skeleton
 
     from ..readback import read_body_skeleton
-    from .metrics import cable_length_nm, max_radius_nm, topology
-
     try:
         got = read_body_skeleton(volume, body_id, skeleton_dir,
                                  require_radii=require_radii)
@@ -67,10 +78,7 @@ def _measure_one(body_id: int, *, volume: str, skeleton_dir: str,
         # and silent if omitted. It cost a debugging round earlier today.
         skel = Skeleton(vertices_zyx_nm=np.asarray(verts_xyz, dtype=float)[:, ::-1],
                         edges=edges, radii_nm=radii, name=str(body_id))
-        row = {"cable_length_nm": cable_length_nm(skel),
-               "max_radius_nm": max_radius_nm(skel)}
-        row.update(topology(skel))
-        return (body_id, "written", {k: row[k] for k in _COLUMNS if k in row})
+        return (body_id, "written", skeleton_columns(skel))
     except Exception as exc:                                   # noqa: BLE001 - isolated
         return (body_id, "failed", f"{type(exc).__name__}: {exc}"[:400])
 

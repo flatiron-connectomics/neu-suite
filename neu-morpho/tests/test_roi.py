@@ -91,82 +91,6 @@ def _two_body_volume():
     return vol
 
 
-def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
-    """Widening the ROI later reuses the first run's blocks."""
-    from neu_morpho.config import OutputConfig, SkeletonConfig
-    from neu_morpho.ops.skeletonize_segments import skeletonize_segments
-
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    cfg = SkeletonConfig(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
-                         const=30.0, dust_threshold=0,
-                         postprocess_dust_nm=0.0, postprocess_tick_nm=0.0)
-
-    # grid is 4x2x2 = 16 blocks; the ROI covers z-blocks 0-1 -> 2*2*2 = 8
-    first = skeletonize_segments(src, out, cfg, roi="0,0,0,32,32,32", client=None)
-    assert first["num_blocks"] == 8
-    import os
-    assert os.path.exists(os.path.join(first["out_dir"], "7"))
-    assert not os.path.exists(os.path.join(first["out_dir"], "9"))
-
-    # widen to the whole volume: the first 8 blocks are already done, 8 remain
-    done_after_first = set(first["chunk_counts"])
-    assert sum(first["chunk_counts"].values()) == 8
-    second = skeletonize_segments(src, out, cfg, client=None)
-    assert second["num_blocks"] == 16
-    assert sum(second["chunk_counts"].values()) == 16     # 8 reused + 8 new
-    assert os.path.exists(os.path.join(second["out_dir"], "9"))
-
-
-def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_path):
-    """Manifests live in the work dir, not in dst, so clearing dst leaves a manifest that
-    claims everything is done. Resuming must refuse rather than write nothing."""
-    import os
-    import shutil
-
-    import pytest
-
-    from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-    from neu_morpho.ops._manifest import StaleManifest
-    from neu_morpho.ops.meshify import meshify
-    from neu_morpho.ops.skeletonize_segments import skeletonize_segments
-
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
-    work = str(tmp_path / "out")
-    dst = str(tmp_path / "out" / "segmentation")
-    out = OutputConfig(dst=dst, work_dir=work)
-    mcfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2,
-                      decimation_fraction=1.0)
-    scfg = SkeletonConfig(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
-                          const=30.0, dust_threshold=0,
-                          postprocess_dust_nm=0.0, postprocess_tick_nm=0.0)
-
-    m1 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
-    s1 = skeletonize_segments(src, out, scfg, client=None)
-    # manifests live in the work dir, never in the served volume
-    for path in (m1["progress_path"], s1["progress_path"]):
-        assert os.path.commonpath([os.path.abspath(path), os.path.abspath(work)]) == \
-            os.path.abspath(work), f"{path} is not inside {work}"
-        assert not os.path.abspath(path).startswith(os.path.abspath(dst) + os.sep), \
-            f"{path} is inside the served volume {dst}"
-    assert os.path.exists(os.path.join(m1["out_dir"], "7"))
-    assert os.path.exists(os.path.join(s1["out_dir"], "7"))
-
-    # The data is cleared but the manifest in work_dir survives.
-    shutil.rmtree(dst)
-    for op in (lambda: meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None),
-               lambda: skeletonize_segments(src, out, scfg, client=None)):
-        with pytest.raises(StaleManifest, match="no 'info' at"):
-            op()
-
-    # resume=False is an explicit fresh start, so it proceeds and rewrites.
-    m2 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None, resume=False)
-    s2 = skeletonize_segments(src, out, scfg, client=None, resume=False)
-    assert m2["num_bodies_assembled"] > 0 and s2["num_bodies_fused"] > 0
-    assert os.path.exists(os.path.join(m2["out_dir"], "7"))
-    assert os.path.exists(os.path.join(s2["out_dir"], "7"))
-
-
 def test_guard_allows_a_first_run_and_an_ordinary_resume(tmp_path):
     """The stale-manifest guard stays silent on a first run and on an ordinary resume."""
     import os
@@ -199,3 +123,62 @@ def test_roi_restricts_index_scan(tmp_path):
     bodies = {r[0] for r in db.con.execute("SELECT body_id FROM bodies")}
     db.close()
     assert bodies == {7}
+
+
+def _mesh_cfg():
+    from neu_morpho.config import MeshConfig
+
+    return MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2,
+                      decimation_fraction=1.0)
+
+
+def test_roi_restricts_meshing_then_extends_on_resume(tmp_path):
+    """Widening the ROI later reuses the first run's blocks."""
+    import os
+
+    from neu_morpho.config import OutputConfig
+    from neu_morpho.ops.meshify import meshify
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
+
+    # grid is 4x2x2 = 16 blocks; the ROI covers z-blocks 0-1 -> 2*2*2 = 8
+    first = meshify(src, out, _mesh_cfg(), mesh_voxel_size=(8, 8, 8),
+                    roi="0,0,0,32,32,32", client=None)
+    assert first["num_blocks"] == 8 and sum(first["chunk_counts"].values()) == 8
+    assert os.path.exists(os.path.join(first["out_dir"], "7"))
+    assert not os.path.exists(os.path.join(first["out_dir"], "9"))
+
+    second = meshify(src, out, _mesh_cfg(), mesh_voxel_size=(8, 8, 8), client=None)
+    assert second["num_blocks"] == 16
+    assert sum(second["chunk_counts"].values()) == 16     # 8 reused + 8 new
+    assert os.path.exists(os.path.join(second["out_dir"], "9"))
+
+
+def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_path):
+    """Manifests live in the work dir, not in dst, so clearing dst leaves a manifest that
+    claims everything is done. Resuming must refuse rather than write nothing."""
+    import os
+    import shutil
+
+    from neu_morpho.config import OutputConfig
+    from neu_morpho.ops.manifest import StaleManifest
+    from neu_morpho.ops.meshify import meshify
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
+    work, dst = str(tmp_path / "out"), str(tmp_path / "out" / "segmentation")
+    out = OutputConfig(dst=dst, work_dir=work)
+
+    m1 = meshify(src, out, _mesh_cfg(), mesh_voxel_size=(8, 8, 8), client=None)
+    path = os.path.abspath(m1["progress_path"])
+    assert os.path.commonpath([path, os.path.abspath(work)]) == os.path.abspath(work)
+    assert not path.startswith(os.path.abspath(dst) + os.sep), "manifest inside the volume"
+
+    shutil.rmtree(dst)                        # the data is cleared; the manifest survives
+    with pytest.raises(StaleManifest, match="no 'info' at"):
+        meshify(src, out, _mesh_cfg(), mesh_voxel_size=(8, 8, 8), client=None)
+
+    # resume=False is an explicit fresh start, so it proceeds and rewrites
+    m2 = meshify(src, out, _mesh_cfg(), mesh_voxel_size=(8, 8, 8), client=None, resume=False)
+    assert m2["num_bodies_assembled"] > 0
+    assert os.path.exists(os.path.join(m2["out_dir"], "7"))

@@ -51,9 +51,9 @@ report = ["pandas", "pyarrow"]
 # annotations list and step. Optional because the table is the contract: `neu-glance
 # annotate` reads it from disk and needs no import here.
 link = ["neu-glance"]
-# Skeleton metrics (expected run length). Two of the three reference sources are conda-only
-# — `neu_morpho.readback` for a published precomputed skeleton source, kimimaro for a pass
-# over a dense crop — so this is an extra, resolved inside the function, exactly as
+# Skeleton metrics (expected run length), when they land. The reference skeletons are read
+# from a published precomputed source through `neu_morpho.readback` (made with neu-skel if
+# none exists), so this is an extra, resolved inside the function, exactly as
 # `neu-glance[framing]` and `neu-draw[sources]` resolve the same reader.
 erl = ["neu-morpho"]
 

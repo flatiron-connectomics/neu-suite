@@ -2,7 +2,6 @@
 
 import numpy as np
 
-from neu_morpho.config import SkeletonConfig
 from neu_morpho.coords import crop_origin_nm, physical_box, skeleton_to_physical
 
 
@@ -30,31 +29,3 @@ def test_mesh_vertices_land_in_nm():
     assert np.allclose(lo, 32, atol=1.0) and np.allclose(hi, 96, atol=1.0)
 
 
-def test_mesh_and_skeleton_coincide():
-    """A body at a global offset: its skeleton lies inside its mesh bbox. Dropping the
-    crop origin would leave the skeleton at local coordinates."""
-    import kimimaro
-    from vol2mesh import Mesh
-
-    vs = (8, 8, 8)
-    origin_vox = (10, 10, 10)                                  # crop starts at global voxel 10
-    crop = np.zeros((16, 6, 6), np.uint64)
-    crop[:, 2:5, 2:5] = 7                                      # 3x3 rod along z
-
-    # mesh: region is the crop's global extent -> nm box
-    region = (slice(10, 26), slice(10, 16), slice(10, 16))
-    box = physical_box(region, vs)                            # z:[80,208] y,x:[80,128]
-    mesh = Mesh.from_label_volume(crop, box, labels=[7], ensure_halo=True, progress=False)[7]
-    m_lo, m_hi = mesh.vertices_zyx.min(0), mesh.vertices_zyx.max(0)
-
-    # skeleton: crop-local, then shifted to global nm by the crop origin
-    skels = kimimaro.skeletonize(crop, anisotropy=vs, object_ids=[7],
-                                 teasar_params={"scale": 1.5, "const": 30, "pdrf_scale": 100000,
-                                                "pdrf_exponent": 4}, dust_threshold=0, progress=False)
-    sv = skeleton_to_physical(skels[7].vertices, crop_origin_nm(origin_vox, vs))
-    s_lo, s_hi = sv.min(0), sv.max(0)
-
-    # skeleton lies within the mesh bbox (a small margin for surface vs centerline)
-    assert (s_lo >= m_lo - 8).all() and (s_hi <= m_hi + 8).all(), (m_lo, m_hi, s_lo, s_hi)
-    # z extent is the global rod (~80..208), not the local one (~0..128)
-    assert s_lo[0] >= 72 and s_hi[0] > 180

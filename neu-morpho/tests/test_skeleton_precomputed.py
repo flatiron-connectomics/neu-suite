@@ -68,36 +68,6 @@ def test_write_body_skeleton_roundtrip(tmp_path):
     assert not os.path.exists(os.path.join(out, "43"))
 
 
-def test_mesh_and_skeleton_agree_after_encoding():
-    """After encoding to stored xyz, a skeleton still lands inside its mesh bbox."""
-    import kimimaro
-    from vol2mesh import Mesh
-    from osteoid import Skeleton
-
-    from neu_morpho.coords import physical_box
-    from neu_morpho.config import SkeletonConfig
-    from neu_morpho.skeleton import skeletonize_block
-
-    vs = (8.0, 8.0, 8.0)
-    # asymmetric placement, so a z<->x swap cannot pass by accident
-    block = np.zeros((24, 16, 40), np.uint64)
-    block[4:20, 6:10, 30:34] = 7
-
-    box = physical_box((slice(0, 24), slice(0, 16), slice(0, 40)), vs)
-    mesh = Mesh.from_label_volume(block, box, labels=[7], ensure_halo=True, progress=False)[7]
-    m_lo_xyz = mesh.vertices_zyx.min(0)[::-1]
-    m_hi_xyz = mesh.vertices_zyx.max(0)[::-1]
-
-    cfg = SkeletonConfig(anisotropy=vs, const=30.0, dust_threshold=0)
-    skel = skeletonize_block(block, (0, 0, 0), cfg)[7]
-    sv = Skeleton.from_precomputed(encode_skeleton(skel)).vertices
-
-    assert (sv.min(0) >= m_lo_xyz - 8).all() and (sv.max(0) <= m_hi_xyz + 8).all(), \
-        (m_lo_xyz, m_hi_xyz, sv.min(0), sv.max(0))
-    # x is the narrow axis (~240..272 nm) and z the long one (~32..160): a flip bug swaps them
-    assert sv[:, 0].min() > 200 and sv[:, 2].max() < 200
-
-
 # --------------------------------------------------------------------------- #
 # Destination-agnostic writes
 # --------------------------------------------------------------------------- #

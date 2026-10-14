@@ -23,7 +23,7 @@ from .compartments import (joint_counts, semantic_label_names,
                            somatic_labels, sweep_compartments,
                            verify_compartments)
 from .driver import resolve_keep, sweep_volumes
-from .skeletons import sweep_skeletons
+from .skeletons import skeleton_columns, sweep_skeletons
 from .paths import (attach_points, bridge_gaps, compartment_graph, dvid_roi_region,
                     near_points_region,
                     path_distances, synapse_distance_table, synapse_distances,
@@ -61,6 +61,7 @@ __all__ = [
     # the block-mapped driver (the only part that opens a store)
     "resolve_keep",
     "sweep_volumes",
+    "skeleton_columns",
     "sweep_skeletons",
     "sweep_compartments",
     "verify_compartments",

@@ -9,9 +9,9 @@ import os
 import numpy as np
 import pytest
 
-from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-from neu_morpho.ops import meshify, skeletonize_segments
-from neu_morpho.ops._manifest import FAILED, guarded, is_complete
+from neu_morpho.config import MeshConfig, OutputConfig
+from neu_morpho.ops import meshify
+from neu_morpho.ops.manifest import FAILED, guarded, is_complete
 
 
 def _write_seg_zarr(path, vol):
@@ -34,8 +34,6 @@ def _three_body_volume():
     return vol
 
 
-SKEL_CFG = dict(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16), const=30.0,
-                dust_threshold=0, postprocess_dust_nm=0.0, postprocess_tick_nm=0.0)
 MESH_CFG = dict(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2, decimation_fraction=1.0)
 
 
@@ -83,45 +81,6 @@ def test_guarded_converts_exceptions_and_passes_success_through():
 # --------------------------------------------------------------------------- #
 # Stage 2 isolates
 # --------------------------------------------------------------------------- #
-def test_skeleton_fuse_failure_is_isolated_and_retried(tmp_path, monkeypatch):
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    cfg = SkeletonConfig(**SKEL_CFG)
-
-    real = mod.fuse_body
-    calls = {"n": 0}
-
-    def flaky(fragments, cfg_, body_id=None, stats=None):
-        if body_id == 8:                       # one poisoned body
-            calls["n"] += 1
-            raise RuntimeError("synthetic fusion failure")
-        return real(fragments, cfg_, body_id=body_id, stats=stats)
-
-    monkeypatch.setattr(mod, "fuse_body", flaky)
-    s1 = skeletonize_segments(src, out, cfg, client=None)
-
-    # the run completed, the other bodies are on disk, the failure is recorded
-    assert s1["failed_bodies"] == [8]
-    assert s1["status_counts"].get(FAILED) == 1
-    assert s1["status_counts"].get("written") == 2
-    assert os.path.exists(os.path.join(s1["out_dir"], "7"))
-    assert os.path.exists(os.path.join(s1["out_dir"], "9"))
-    assert not os.path.exists(os.path.join(s1["out_dir"], "8"))
-
-    rows = [json.loads(ln) for ln in open(s1["failures_path"])]
-    assert rows[0]["body_id"] == 8 and "synthetic fusion failure" in rows[0]["error"]
-
-    # resume retries ONLY the failed body, and it succeeds once unpoisoned
-    monkeypatch.setattr(mod, "fuse_body", real)
-    s2 = skeletonize_segments(src, out, cfg, client=None)
-    assert s2["num_bodies_fused"] == 1                # not 3 — the others stayed done
-    assert s2["failed_bodies"] == []
-    assert os.path.exists(os.path.join(s2["out_dir"], "8"))
-    assert s2["status_counts"].get(FAILED) is None    # the record was superseded
-
-
 def test_mesh_assemble_failure_is_isolated_and_retried(tmp_path, monkeypatch):
     mod = importlib.import_module("neu_morpho.ops.meshify")
 
@@ -153,34 +112,13 @@ def test_mesh_assemble_failure_is_isolated_and_retried(tmp_path, monkeypatch):
     assert os.path.exists(os.path.join(m2["out_dir"], "8"))
 
 
-def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
-    """A failed body must not leave half-written metrics behind."""
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-    from neu_morpho.metrics_db import MetricsDB
-
-    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    db_path = str(tmp_path / "m.db")
-
-    def flaky(fragments, cfg_, body_id=None, stats=None):
-        raise RuntimeError("all bodies fail")
-
-    monkeypatch.setattr(mod, "fuse_body", flaky)
-    skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG), db_path=db_path, client=None)
-
-    db = MetricsDB(db_path)
-    rows = db.con.execute("SELECT COUNT(*) FROM bodies WHERE cable_length_nm IS NOT NULL")
-    assert rows.fetchone()[0] == 0
-    db.close()
-
-
 # --------------------------------------------------------------------------- #
 # The failure breaker
 # --------------------------------------------------------------------------- #
 def test_is_systemic_classification():
     import errno as E
 
-    from neu_morpho.ops._manifest import is_systemic
+    from neu_morpho.ops.manifest import is_systemic
 
     assert is_systemic(MemoryError())
     assert is_systemic(ImportError("no module"))
@@ -193,7 +131,7 @@ def test_is_systemic_classification():
 
 
 def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
-    from neu_morpho.ops._manifest import FailureBreaker, StageAborted
+    from neu_morpho.ops.manifest import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=3)
     for i in range(2):
@@ -211,7 +149,7 @@ def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
 
 
 def test_breaker_trips_immediately_on_systemic():
-    from neu_morpho.ops._manifest import FailureBreaker, StageAborted
+    from neu_morpho.ops.manifest import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=1000)
     b.failure(7, {"error": "MemoryError: ", "systemic": True})
@@ -220,7 +158,7 @@ def test_breaker_trips_immediately_on_systemic():
 
 
 def test_breaker_can_be_disabled():
-    from neu_morpho.ops._manifest import FailureBreaker
+    from neu_morpho.ops.manifest import FailureBreaker
 
     b = FailureBreaker(max_consecutive=0)
     for i in range(50):
@@ -229,118 +167,125 @@ def test_breaker_can_be_disabled():
     assert b.total == 50
 
 
+# --------------------------------------------------------------------------- #
+# Stage 1 does NOT isolate — the asymmetry is the point
+# --------------------------------------------------------------------------- #
+
+
+def _out(tmp_path):
+    return OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
+
+
+def _meshify(src, out, **kw):
+    return meshify(src, out, MeshConfig(**MESH_CFG), mesh_voxel_size=(8, 8, 8), client=None, **kw)
+
+
+def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
+    """A failed body must not leave half-written metrics behind."""
+    from neu_morpho.metrics_db import MetricsDB
+
+    mod = importlib.import_module("neu_morpho.ops.meshify")
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
+    db_path = str(tmp_path / "m.db")
+    monkeypatch.setattr(mod, "assemble_body", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("all bodies fail")))
+    _meshify(src, _out(tmp_path), db_path=db_path)
+
+    db = MetricsDB(db_path)
+    rows = db.con.execute("SELECT COUNT(*) FROM bodies WHERE mesh_area_nm2 IS NOT NULL")
+    assert rows.fetchone()[0] == 0
+    db.close()
+
+
 def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path, monkeypatch):
     """An abort still leaves the failure records, and they stay retryable."""
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-    from neu_morpho.ops._manifest import StageAborted
+    from blockrun import Manifest
 
+    from neu_morpho.ops.manifest import StageAborted
+
+    mod = importlib.import_module("neu_morpho.ops.meshify")
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def always_fail(*a, **k):
         raise ValueError("everything is broken")
 
-    monkeypatch.setattr(mod, "fuse_body", always_fail)
+    monkeypatch.setattr(mod, "assemble_body", always_fail)
     with pytest.raises(StageAborted, match="2 consecutive"):
-        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),
-                             max_consecutive_failures=2, client=None)
+        _meshify(src, _out(tmp_path), max_consecutive_failures=2)
 
     # written in `finally`, so the abort still leaves the tracebacks behind
-    path = os.path.join(str(tmp_path / "out"), "failures.skel.jsonl")
-    rows = [json.loads(ln) for ln in open(path)]
+    rows = [json.loads(ln) for ln in open(tmp_path / "out" / "failures.mesh.jsonl")]
     assert len(rows) == 2 and "everything is broken" in rows[0]["error"]
-
-    # and the failures are recorded as retryable, not as done
-    from blockrun import Manifest
-    m = Manifest(os.path.join(str(tmp_path / "out"), "progress.skel.jsonl")).load()
-    assert not is_complete(m, "skel-fuse", rows[0]["body_id"])
+    m = Manifest(str(tmp_path / "out" / "progress.mesh.jsonl")).load()
+    assert not is_complete(m, "assemble", rows[0]["body_id"])
 
 
 def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-    from neu_morpho.ops._manifest import StageAborted
+    from neu_morpho.ops.manifest import StageAborted
 
+    mod = importlib.import_module("neu_morpho.ops.meshify")
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     seen = {"n": 0}
 
     def oom(*a, **k):
         seen["n"] += 1
         raise MemoryError()
 
-    monkeypatch.setattr(mod, "fuse_body", oom)
+    monkeypatch.setattr(mod, "assemble_body", oom)
     with pytest.raises(StageAborted, match="systemic"):
-        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),
-                             max_consecutive_failures=1000, client=None)
+        _meshify(src, _out(tmp_path), max_consecutive_failures=1000)
     assert seen["n"] == 1          # stopped at the first body, not all three
 
 
 def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monkeypatch):
-    """An abort leaves no skeleton on disk without its metrics in the DB."""
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
+    """An abort leaves no mesh on disk without its metrics in the DB."""
     from neu_morpho.metrics_db import MetricsDB
-    from neu_morpho.ops._manifest import StageAborted
+    from neu_morpho.ops.manifest import StageAborted
 
+    mod = importlib.import_module("neu_morpho.ops.meshify")
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    db_path = str(tmp_path / "m.db")
-    real = mod.fuse_body
+    out, db_path, real = _out(tmp_path), str(tmp_path / "m.db"), mod.assemble_body
+    seen = {"n": 0}
 
-    def fail_first(fragments, cfg_, body_id=None, stats=None):
-        if body_id == 7:
+    def fail_first(frags, cfg_):
+        seen["n"] += 1
+        if seen["n"] == 1:
             raise ValueError("first body fails")
-        return real(fragments, cfg_, body_id=body_id, stats=stats)
+        return real(frags, cfg_)
 
-    monkeypatch.setattr(mod, "fuse_body", fail_first)
-    # trips on the very first failure, but bodies 8 and 9 already succeeded
+    monkeypatch.setattr(mod, "assemble_body", fail_first)
     with pytest.raises(StageAborted):
-        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG), db_path=db_path,
-                             max_consecutive_failures=1, client=None)
+        _meshify(src, out, db_path=db_path, max_consecutive_failures=1)
 
     db = MetricsDB(db_path)
     written = {r[0] for r in db.con.execute(
-        "SELECT body_id FROM bodies WHERE cable_length_nm IS NOT NULL")}
+        "SELECT body_id FROM bodies WHERE mesh_area_nm2 IS NOT NULL")}
     db.close()
-    skel_dir = os.path.join(out.volume_dir(), out.skeleton_dir)   # inside the volume
-    on_disk = {int(f) for f in os.listdir(skel_dir) if f.isdigit()}
-    assert on_disk == written, "a skeleton on disk without metrics in the DB"
+    mesh_dir = os.path.join(out.volume_dir(), out.mesh_dir)
+    on_disk = {int(f) for f in os.listdir(mesh_dir) if f.isdigit()}
+    assert on_disk == written, "a mesh on disk without metrics in the DB"
 
 
 # --------------------------------------------------------------------------- #
 # Stage 1 does NOT isolate — the asymmetry is the point
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("op", ["skeleton", "mesh"])
-def test_stage1_block_failure_aborts(tmp_path, monkeypatch, op):
+def test_stage1_block_failure_aborts(tmp_path, monkeypatch):
     """A block failure is loud: a silently skipped block yields truncated bodies."""
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def boom(*a, **k):
         raise RuntimeError("block failure")
 
-    if op == "skeleton":
-        monkeypatch.setattr(importlib.import_module("neu_morpho.ops.skeletonize_segments"),
-                            "skeletonize_block", boom)
-        run = lambda: skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),  # noqa: E731
-                                           stages=("skel-chunk",), client=None)
-    else:
-        monkeypatch.setattr(importlib.import_module("neu_morpho.ops.meshify"),
-                            "mesh_block", boom)
-        run = lambda: meshify(src, out, MeshConfig(**MESH_CFG),  # noqa: E731
-                              mesh_voxel_size=(8, 8, 8), stages=("chunk",), client=None)
+    monkeypatch.setattr(importlib.import_module("neu_morpho.ops.meshify"), "mesh_block", boom)
     with pytest.raises(RuntimeError, match="block failure"):
-        run()
+        _meshify(src, _out(tmp_path), stages=("chunk",))
 
 
 def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
     """Blocks recorded before a crash are not redone on resume."""
-    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
-
+    mod = importlib.import_module("neu_morpho.ops.meshify")
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
-    cfg = SkeletonConfig(**SKEL_CFG)
-
-    real = mod.skeletonize_block
+    out, real = _out(tmp_path), mod.mesh_block
     seen = {"n": 0}
 
     def boom_after_three(*a, **k):
@@ -349,10 +294,9 @@ def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
             raise RuntimeError("dies partway")
         return real(*a, **k)
 
-    monkeypatch.setattr(mod, "skeletonize_block", boom_after_three)
+    monkeypatch.setattr(mod, "mesh_block", boom_after_three)
     with pytest.raises(RuntimeError):
-        skeletonize_segments(src, out, cfg, stages=("skel-chunk",), client=None)
-
+        _meshify(src, out, stages=("chunk",))
     assert seen["n"] == 4          # 3 succeeded and were recorded, the 4th raised
 
     retried = {"n": 0}
@@ -361,8 +305,7 @@ def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
         retried["n"] += 1
         return real(*a, **k)
 
-    monkeypatch.setattr(mod, "skeletonize_block", counting)
-    resumed = skeletonize_segments(src, out, cfg, stages=("skel-chunk",), client=None)
-    # 8 blocks total; the 3 recorded before the crash are not redone
-    assert retried["n"] == 5
+    monkeypatch.setattr(mod, "mesh_block", counting)
+    resumed = _meshify(src, out, stages=("chunk",))
+    assert retried["n"] == 5       # 8 blocks; the 3 recorded before the crash are not redone
     assert sum(resumed["chunk_counts"].values()) == 8
