@@ -1,46 +1,19 @@
 """Looking at annotation strings before writing rules to parse them.
 
-Every function here takes a DataFrame and returns a DataFrame. Nothing prints, nothing
-reads or writes, and nothing needs a DVID connection — so this is usable straight from a
-notebook, which is where the work actually happens: you look at the vocabulary, write a
-rule, see what it missed, and go round again.
+Every function takes a DataFrame and returns one; nothing prints, writes or needs DVID, so
+this is meant for a notebook: look at the vocabulary, write a rule, see what it missed,
+repeat. (Named ``explore`` so it does not shadow the standard library's ``inspect``.)
 
-Named ``explore`` rather than ``inspect`` to avoid shadowing the standard library module of
-that name inside this package.
+``rules`` is a ``{name: callable}`` mapping. Each callable takes one row, a pandas Series,
+and returns a scalar, a sequence (for multi-valued facets), or ``None`` / an empty sequence
+when it did not fire. Read columns as ``r["instance"]``, not ``r.instance``: a column named
+``name`` or ``size`` would return the Series attribute instead. A
+:class:`~neu_mark.rules.Rule` is such a callable, and :meth:`RuleSet.coverage
+<neu_mark.rules.RuleSet.coverage>` and :meth:`~neu_mark.rules.RuleSet.unparsed` wrap the
+functions here.
 
-A rule receives one row as a **pandas Series**, so both ``r["instance"]`` and ``r.instance``
-work. Prefer the subscript form: attribute access goes through the Series' own namespace, so
-a column called ``name``, ``size`` or ``dtype`` would silently return the Series attribute
-instead of the data.
-
-**Counts are by body, not by distinct string**, because the two disagree in ways that
-matter: ``irrelevant`` appears as 237 whole strings but 376 bodies once it is also counted
-as a trailing token. A vocabulary decision should be weighted by how much data it touches.
-
-## The rule contract these functions assume
-
-Everything here that takes ``rules`` wants a ``{name: callable}`` mapping, where each
-callable takes one row and returns:
-
-- a scalar (``"L"``, ``7``, ``True``) — one value for that body,
-- a **sequence** — several values, for facets that are genuinely multi-valued: a central
-  complex neuron may innervate more than one column, so ``column`` returns a list. This
-  costs nothing downstream because neuroglancer's ``tags`` property is already a list per
-  segment,
-- ``None`` or an empty sequence — did not fire, which is not an error and must stay visible.
-
-**This is the loose form on purpose.** A plain ``dict`` of functions works, so these
-functions are useful before anything is declared — which is the point, since you are here
-to find out what the rules should be. :mod:`neu_mark.rules` is the same contract with the
-declarations added (``needs``, ``multi``, ``prefix``, ``drop``, a docstring), and a
-:class:`~neu_mark.rules.RuleSet` is what anything that *writes* a source requires. Since a
-``Rule`` is itself a callable, every function here accepts either; ``RuleSet.as_mapping()``
-is the bridge, and :meth:`~neu_mark.rules.RuleSet.coverage` and
-:meth:`~neu_mark.rules.RuleSet.unparsed` are thin wrappers over :func:`coverage` and
-:func:`unparsed` that pass it for you and merge in what each rule declared.
-
-So: ``ex.coverage(bodies, {"side": my_function})`` while you are still guessing, and
-``ruleset.coverage(bodies)`` once the guesses have become a module.
+Counts are by body, not by distinct string, so a vocabulary decision is weighted by how
+much data it touches.
 """
 
 from __future__ import annotations
@@ -51,24 +24,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-#: Junk seen on real strings: trailing/leading whitespace and a trailing '?' expressing
-#: the annotator's doubt (`truncated?`). Removed before any vocabulary comparison, so that
-#: `truncated?` and `truncated ` do not each become their own token.
+#: A trailing '?' or '!' (an annotator's doubt, as in `truncated?`), removed with
+#: surrounding whitespace before any vocabulary comparison.
 _DOUBT = re.compile(r"[?!]+$")
 
-#: What separates tokens in an instance string. ``)`` counts because the side is
-#: parenthesized mid-string (`LN_C5(L)_NCL`), so ``)`` ends a token as surely as ``_``.
+#: Token separators in an instance string: ``_`` and parentheses (`LN_C5(L)_NCL`).
 _SPLIT = re.compile(r"[_)(]+")
 
 
 def normalize(value: Any) -> str | None:
-    """Strip whitespace and trailing doubt marks. ``None`` for anything missing.
-
-    The missing-value test goes through ``pd.isna``, not ``isinstance(value, float)``: a
-    ``string``-dtype column holds ``pd.NA``, which is neither ``None`` nor a float, so a
-    narrower check lets it through to ``str()`` and every report grows a literal ``"<NA>"``
-    row. Guarded by ``is_scalar`` because ``pd.isna`` of a list returns an array.
-    """
+    """Strip whitespace and trailing doubt marks; ``None`` for anything missing,
+    including ``pd.NA`` (which would otherwise become the string ``"<NA>"``)."""
     if value is None or (pd.api.types.is_scalar(value) and pd.isna(value)):
         return None
     text = _DOUBT.sub("", str(value).strip()).strip()
@@ -76,12 +42,8 @@ def normalize(value: Any) -> str | None:
 
 
 def split_tokens(value: Any) -> list[str]:
-    """One string's tokens, normalized. The row-level counterpart of :func:`tokens`.
-
-    Public because it is what a rule body wants: ``"LN_C5(L)_NCL"`` -> ``['LN', 'C5', 'L',
-    'NCL']``, with ``pd.NA`` and ``None`` yielding ``[]`` rather than ``['<NA>']``. Writing
-    the split by hand in each rule is how the two spellings of "separator" drift apart.
-    """
+    """One string's tokens, normalized, for use in rule bodies:
+    ``"LN_C5(L)_NCL"`` -> ``['LN', 'C5', 'L', 'NCL']``; missing values give ``[]``."""
     return [t for t in _SPLIT.split(normalize(value) or "") if t]
 
 
@@ -93,12 +55,8 @@ def _series(frame: pd.DataFrame, column: str) -> pd.Series:
 
 
 def instances(frame: pd.DataFrame, column: str = "instance") -> pd.DataFrame:
-    """Distinct strings and how many bodies carry each, most common first.
-
-    The first thing to look at. On dvid.example.org this is ~1,700 rows for 21k bodies — a
-    reviewable vocabulary rather than an open set, which is what makes rule-writing
-    tractable at all.
-    """
+    """Distinct strings and how many bodies carry each, most common first. The first
+    thing to look at: typically a few thousand strings, a reviewable vocabulary."""
     counts = _series(frame, column).value_counts(dropna=True)
     return (counts.rename("bodies").rename_axis(column).reset_index())
 
@@ -107,18 +65,14 @@ def tokens(frame: pd.DataFrame, column: str = "instance", *,
            position: str = "trailing", drop: str | None = None) -> pd.DataFrame:
     """Token frequency, for hunting controlled vocabulary and its misspellings.
 
-    ``position`` is ``"trailing"`` (the last token — where completeness markers, flags and
-    region suffixes live), ``"leading"``, or ``"all"``. A string with no separator yields
-    itself, so a bare ``AGNG`` shows up under ``trailing`` too; that is intentional, since
-    those placeholder names are part of the vocabulary being catalogued.
+    ``position`` is ``"trailing"`` (the last token, where completeness markers and flags
+    live), ``"leading"``, or ``"all"``. A string with no separator is its own token.
 
-    ``drop`` is a regex removed before tokenizing, for a facet you have already accounted
-    for and do not want in the histogram. Parentheses separate tokens, so a parenthesized
-    side makes ``L`` and ``R`` the *trailing* token of thousands of strings and buries the
-    actual suffixes — ``drop=r"\\((L|R)\\)"`` is the usual first move.
+    ``drop`` is a regex removed before tokenizing, for a facet already accounted for; since
+    a parenthesized side makes ``L``/``R`` the trailing token of most strings,
+    ``drop=r"\\((L|R)\\)"`` is the usual first move.
 
-    Returns ``token``, ``bodies``, ``strings`` — the second being how many *distinct*
-    strings the token appears in, which separates a widespread suffix from one long tail.
+    Returns ``token``, ``bodies`` and ``strings`` (how many distinct strings contain it).
     """
     if position not in ("trailing", "leading", "all"):
         raise ValueError(f"position must be trailing, leading or all; got {position!r}")
@@ -149,10 +103,7 @@ def near(token_frame: pd.DataFrame, target: str, *, cutoff: float = 0.72,
          include_exact: bool = False) -> pd.DataFrame:
     """Tokens close enough to ``target`` to be misspellings of it, with their weight.
 
-    The mechanism for the "catch the misspellings" problem. Fuzzy rather than exact
-    because the real variants are unguessable in advance — on our dataset this surfaces
-    ``truncated?`` (8 bodies) and a ``truncated`` carrying a trailing space (3) that a controlled
-    vocabulary would otherwise silently treat as unknown tokens.
+    Uses ``difflib`` similarity, since real misspellings cannot be listed in advance.
     """
     rows = []
     for token, bodies, strings in token_frame[["token", "bodies", "strings"]].itertuples(
@@ -170,12 +121,9 @@ def near(token_frame: pd.DataFrame, target: str, *, cutoff: float = 0.72,
 def variants(frame: pd.DataFrame, column: str = "instance") -> pd.DataFrame:
     """Raw strings that :func:`normalize` repaired, and what they became.
 
-    Separate from :func:`near` because the two catch different things and only one of them
-    is still visible afterwards. Whitespace and trailing ``?`` are *silently repaired* — so
-    ``truncated?`` never reaches a token histogram as its own entry, and asking ``near`` to
-    find it comes back empty. That repair is worth seeing: it is the annotator expressing
-    doubt, and if the count grows, the vocabulary is drifting. ``near`` remains the tool for
-    genuine misspellings (``fragmnet``), which normalization cannot fix.
+    Whitespace and trailing ``?`` are repaired before :func:`tokens` and :func:`near` see
+    a string, so this is where they show up. A trailing ``?`` is an annotator's doubt,
+    worth watching. :func:`near` finds genuine misspellings (``fragmnet``).
 
     Returns ``raw``, ``normalized``, ``bodies`` for every string that changed.
     """
@@ -191,13 +139,8 @@ def variants(frame: pd.DataFrame, column: str = "instance") -> pd.DataFrame:
 
 
 def _plain(row: pd.Series) -> pd.Series:
-    """A row with pandas' missing values replaced by ``None``.
-
-    Not a nicety. With a ``string`` dtype a missing cell is ``pd.NA``, and ``pd.NA or ""``
-    *raises* rather than being falsey — so the obvious rule body ``str(r["instance"] or "")``
-    blows up on the first body with no instance. Every rule author would hit that, so the
-    framework hands over rows where missing means ``None``.
-    """
+    """A row with pandas' missing values replaced by ``None``, so a rule can write
+    ``r["instance"] or ""`` (``pd.NA or ""`` raises)."""
     return row.where(row.notna(), None)
 
 
@@ -217,9 +160,8 @@ def apply_rules(frame: pd.DataFrame, rules: Mapping[str, Callable],
                 *, key: str = "body") -> pd.DataFrame:
     """Run every rule over every row. One column per rule, values as tuples.
 
-    Tuples rather than scalars because a facet may be multi-valued — column labels are,
-    since a central complex neuron can innervate several. An empty tuple means the rule did
-    not fire, which is distinct from a rule returning an empty string.
+    An empty tuple means the rule did not fire. A rule that raises is an error: it should
+    return ``None`` for a value it cannot parse.
     """
     rows = [_plain(row) for _index, row in frame.iterrows()]
     out = {}
@@ -241,10 +183,8 @@ def coverage(frame: pd.DataFrame, rules: Mapping[str, Callable],
              *, top: int = 3) -> pd.DataFrame:
     """Per-rule: how often it fired, how many distinct values, and the commonest.
 
-    The number to watch. A rule written against a dirty vocabulary under-fires silently,
-    and low coverage is indistinguishable from "the data does not have this" unless it is
-    put in front of you — the same failure class as the partner match rate in
-    :mod:`neu_mark.tables`.
+    A rule that under-fires on a messy vocabulary looks the same as data that lacks the
+    facet; coverage is how to tell.
     """
     applied = apply_rules(frame, rules)
     total = len(frame)
@@ -271,8 +211,7 @@ def unparsed(frame: pd.DataFrame, rules: Mapping[str, Callable], rule: str, *,
              column: str = "instance") -> pd.DataFrame:
     """The strings a given rule did not fire on, ranked by how many bodies they cover.
 
-    What you read between iterations: the top of this list is the next rule to write, or
-    the vocabulary entry that is missing.
+    The top of this list is the next rule to write, or the missing vocabulary entry.
     """
     if rule not in rules:
         raise KeyError(f"no rule named {rule!r}; have {', '.join(rules)}")
@@ -282,9 +221,8 @@ def unparsed(frame: pd.DataFrame, rules: Mapping[str, Callable], rule: str, *,
         columns=[column, "bodies"])
 
 
-#: How a candidate value relates to a curated field. Ordered from strongest agreement to
-#: outright conflict; `derived_is_longer` is the interesting one for column labels, since
-#: it means the parse found something the curated field does not carry.
+#: How a derived value relates to a curated field, from agreement to conflict.
+#: `derived_is_longer` means the parse found something the curated field lacks.
 RELATIONS = ("exact", "case_only", "derived_is_longer", "field_is_longer",
              "substring", "unrelated", "field_missing", "derived_missing")
 
@@ -313,12 +251,9 @@ def compare(frame: pd.DataFrame, field: str, against: Callable, *,
             key: str = "body", column: str = "instance") -> pd.DataFrame:
     """Row-by-row: how a curated field relates to what a rule derives.
 
-    Tidy output rather than a summary, so a notebook can do both — ``.relation
-    .value_counts()`` for the table, ``[df.relation == "unrelated"]`` for the cases worth
-    reading. Two fields disagreeing is not necessarily an error: on our dataset ``type``
-    is often the *coarser* label (``LMC`` against an instance of ``L1/L3_D4(R)``), which is
-    a difference of grain, not a mistake. Deciding which to trust is a judgement about the
-    dataset and this function exists to inform it, not to make it.
+    One row per body with a ``relation`` from :data:`RELATIONS`; summarise with
+    ``.relation.value_counts()``. A disagreement is not necessarily an error: ``type`` is
+    often the coarser label (``LMC`` for an instance of ``L1/L3_D4(R)``).
     """
     rows = []
     for _index, raw_row in frame.iterrows():

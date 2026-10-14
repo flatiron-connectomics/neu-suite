@@ -1,21 +1,15 @@
 """Reading the body list, which every command here requires.
 
-Not a convenience: DVID can tell you which elements are in a body, but it cannot cheaply
-tell you which bodies are worth asking about. Both routes that look like they can were
-measured and rejected — the label index is O(all bodies), and a whole-instance
-``labelsz`` threshold query returned nothing in five minutes on our dataset, where
-the great majority of label ids are single-voxel fragments. So the caller supplies the
-set, and it is normally a curated list of traced neurons.
+DVID can list the elements in a body but cannot cheaply say which bodies are worth
+asking about (most label ids are single-voxel fragments), so the caller supplies the set,
+normally a curated list of traced neurons. Accepted forms:
 
-Accepted forms, in the order they are tried:
+- an iterable of ints;
+- a path to ``.csv`` / ``.parquet`` / ``.feather``: a body-id column, or the only column;
+- a path to anything else: one id per line, ``#`` comments allowed;
+- otherwise an inline list, ``123,456,789``, comma or whitespace separated.
 
-- an iterable of ints, passed programmatically
-- ``123,456,789`` — inline, comma or whitespace separated
-- a path to ``.csv`` / ``.parquet`` / ``.feather`` — a named column, or the first column
-- a path to anything else — one id per line, ``#`` comments allowed
-
-The tables this package writes are themselves valid inputs, so a `bodies` table from one
-node feeds the next fetch without an intermediate step.
+The tables this package writes are valid inputs.
 """
 
 from __future__ import annotations
@@ -24,8 +18,7 @@ import os
 import re
 from typing import Iterable, Sequence
 
-#: Column names checked, in order, when a table does not say which column to use. These
-#: are what DVID, neuprint and this package's own outputs call it.
+#: Column names tried, in order, when no column is named (DVID's, neuprint's and ours).
 _BODY_COLUMNS = ("body", "bodyid", "body_id", "segment", "segment_id", "id")
 
 _SEPARATORS = re.compile(r"[,\s]+")
@@ -72,10 +65,8 @@ def _column(df, column: str | None, *, where: str):
 def load(source: str | Iterable[int], *, column: str | None = None) -> list[int]:
     """Resolve ``source`` to a de-duplicated, sorted list of body ids.
 
-    Sorted so that a run's task order — and therefore its output row order and its
-    progress reporting — is a function of the *set* requested, not of how the caller
-    happened to spell it. De-duplicated because asking DVID twice for one body costs a
-    request and would double its rows in the output.
+    Sorted, so output order depends only on the set requested; de-duplicated, so no body
+    is fetched or written twice.
     """
     if not isinstance(source, str):
         ids = [int(b) for b in source]
@@ -102,8 +93,7 @@ def load(source: str | Iterable[int], *, column: str | None = None) -> list[int]
             raise ValueError(f"{source} holds no body ids")
         return sorted(set(ids))
 
-    # Not a path: an inline list. A bare number is a legitimate one-body request, so this
-    # is only an error if it does not parse.
+    # Not a path: an inline list (a single number is a one-body list).
     if any(ch.isdigit() for ch in source):
         return sorted(set(_from_text(source, where="--bodies")))
     raise FileNotFoundError(

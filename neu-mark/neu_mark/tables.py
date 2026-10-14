@@ -1,46 +1,18 @@
 """The table model: elements and relationships as DataFrames.
 
-## Axis order
+**Coordinates are always named columns** (``z``, ``y``, ``x``, ``to_z``, ...). DVID stores
+positions as ``[x, y, z]``, the suite holds zyx in memory and precomputed stores xyz, and
+a mix-up mirrors positions through the z=x diagonal with no error. Named columns cannot be
+transposed silently; :func:`positions_zyx` and :func:`positions_xyz` are the only places
+an ``(N, 3)`` array is built from a table, and the caller states the order.
 
-DVID stores a position as ``Pos: [x, y, z]`` and neuclease's parsers hand back ``x``,
-``y``, ``z`` columns. neu-suite holds coordinates **zyx in memory** (CLAUDE.md
-invariant 2), and the precomputed annotation format stores **xyz on disk**. So there are
-three conventions in play and the mirroring bug they invite — a position reflected through
-the ``z=x`` diagonal — produces a *valid* annotation in the wrong place, which no shape,
-bounds or dtype check can see.
-
-What defuses it here is that **every coordinate in every table is a named column**:
-``z``, ``y``, ``x``, and ``to_z``/``to_y``/``to_x``. A named column cannot be silently
-transposed; only a positional array can. So the rule is narrow and enforceable:
-
-    :func:`positions_zyx` and :func:`positions_xyz` are the ONLY places a coordinate
-    array is built from a table, and the only places the order is decided.
-
-Anything needing an ``(N, 3)`` array — a labelmap read, an annotation encoder — goes
-through one of them and says which order it wanted. Column *order* within the frame is
-zyx to match the rest of the codebase, but nothing depends on it.
-
-## Why relationships are stored raw
-
-A DVID relationship points at a **coordinate, not a body**: ``{"Rel": "PostSynTo", "To":
-[x, y, z]}``. The partner's body is recovered by joining that coordinate against the
-elements table — which works precisely because elements were fetched *per body*, so every
-row already carries the body it came from.
-
-That join only resolves an edge when **both** endpoints were fetched, so its yield is a
-function of how much of the connectome the body list covers. Measured on our dataset,
-taking the top-N bodies by presynapse count: 20 bodies resolved 0.2% of pairs, 100 → 2.0%,
-400 → 4.6%. This is why :func:`match_rate` exists and why the CLI reports it as a headline
-number: a low rate means the body list is too small, and it looks exactly like a sparse
-connectome if nobody says so.
-
-Relationships are therefore kept **one row per relationship, unmodified**, with
-``from_body``/``to_body`` filled in where known. :func:`connections` derives the oriented,
-de-duplicated synapse view on top. Keeping the raw table lossless matters because the two
-relationship directions are *not* redundant: ``PostSynTo`` from a fetched PSD reaches a
-tbar outside the set, ``PreSynTo`` from a fetched tbar reaches PSDs outside it, and each
-direction is anchored on the body list at one end only. Taking one direction would
-discard half the edges.
+A DVID relationship points at a coordinate, not a body (``{"Rel": "PostSynTo", "To":
+[x, y, z]}``); the partner body is found by joining that coordinate against the fetched
+elements, so it resolves only when both ends' bodies were fetched. :func:`match_rate`
+reports how much resolved: a low rate means the body list is too small, and otherwise
+looks like a sparse connectome. Relationships are kept one row each, unmodified, and
+:func:`connections` derives the de-duplicated synapse view, using both directions since
+each is anchored on the body list at one end only.
 """
 
 from __future__ import annotations
@@ -56,19 +28,17 @@ AXES = ("z", "y", "x")
 #: DVID's own order, which is what ``Pos`` and ``To`` are in.
 DVID_AXES = ("x", "y", "z")
 
-#: Coordinate dtype. int32 spans ±2.1e9 voxels — ample for any EM volume, and half the
-#: width of int64 across tables that reach tens of millions of rows.
+#: Coordinate dtype; int32 spans ±2.1e9 voxels.
 COORD_DTYPE = np.int32
 
-#: Body ids are uint64 in DVID and must stay uint64 all the way to disk. See io.py: this
-#: is the single reason parquet rather than csv is the default output format.
+#: Body ids are uint64 in DVID and must stay uint64 on disk, which is why parquet is the
+#: default output format (see :mod:`neu_mark.io`).
 BODY_DTYPE = np.uint64
 
-#: Relationship names that describe a chemical synapse, and which endpoint each puts
-#: where. ``PostSynTo`` on an element means "this element is postsynaptic to the target",
-#: so the element is the PSD and the target is the tbar; ``PreSynTo`` is the reverse.
-#: Derived from the relationship name rather than the element's ``Kind`` so that a
-#: mislabelled element cannot silently invert an edge.
+#: Synaptic relationship names, and which end each makes the element: ``PostSynTo`` means
+#: the element is the PSD and the target the T-bar; ``PreSynTo`` the reverse. Taken from the
+#: relationship rather than the element's ``Kind``, so a mislabelled element cannot invert
+#: an edge.
 SYNAPTIC_RELS = {"PostSynTo": ("post", "pre"), "PreSynTo": ("pre", "post")}
 
 
@@ -94,11 +64,8 @@ def elements_to_frames(elements: Sequence[Mapping[str, Any]],
                        body: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One body's ``/label`` response -> (points, relationships).
 
-    Parsed here rather than through ``neuclease.load_elements_as_dataframe`` because that
-    returns relationships indexed by an xyz tuple and drops the element's body, and
-    because properties need to arrive as columns without a second normalize pass. The
-    element JSON shape is stable and simple: ``Pos``, ``Kind``, ``Tags``, ``Prop``,
-    ``Rels``.
+    Elements have ``Pos``, ``Kind``, ``Tags``, ``Prop`` and ``Rels``; every ``Prop`` key
+    becomes a column. (``neuclease.load_elements_as_dataframe`` drops the element's body.)
     """
     if not elements:
         return _empty_points(), _empty_rels()
@@ -110,26 +77,23 @@ def elements_to_frames(elements: Sequence[Mapping[str, Any]],
         if pos is None or len(pos) != 3:
             raise ValueError(
                 f"element in body {body} has Pos={pos!r}; expected three coordinates")
-        # The one xyz -> zyx transcription, by name.
+        # xyz -> zyx, by name.
         x, y, z = (int(v) for v in pos)
         row: dict[str, Any] = {"body": int(body), "z": z, "y": y, "x": x,
                                "kind": el.get("Kind")}
         tags = el.get("Tags") or []
-        # Kept as a delimited string: a list column cannot go to csv and round-trip, and
-        # tags are a handful of short flags in practice.
+        # A comma-joined string, since a list column does not round-trip through csv.
         row["tags"] = ",".join(str(t) for t in tags) if tags else ""
         for key, value in (el.get("Prop") or {}).items():
-            # `conf`/`user`/`annotation` are the ones seen in practice; anything else a
-            # tool writes comes through under its own name rather than being dropped.
+            # Usually `conf`, `user`, `annotation`; any other key is kept too.
             row[str(key)] = value
         rows.append(row)
 
         for rel in el.get("Rels") or []:
             to = rel.get("To")
             if to is None or len(to) != 3:
-                # DVID emits a relationship with a null target for a partner that was
-                # deleted. Recorded as a row with no target rather than dropped, so the
-                # count of dangling references stays visible.
+                # A deleted partner leaves a null target; kept as a row with no target, so
+                # dangling references can be counted.
                 tx = ty = tz = None
             else:
                 tx, ty, tz = (int(v) for v in to)
@@ -150,8 +114,7 @@ def _coerce_points(df: pd.DataFrame) -> pd.DataFrame:
     if "kind" in df:
         df["kind"] = df["kind"].astype("string")
     if "conf" in df:
-        # DVID stores confidence as a *string* in Prop; float32 is plenty and keeps a
-        # 4M-row table small.
+        # DVID stores confidence as a string; float32 is enough.
         df["conf"] = pd.to_numeric(df["conf"], errors="coerce").astype(np.float32)
     lead = ["body", *AXES, "kind", "tags"]
     rest = [c for c in df.columns if c not in lead]
@@ -177,8 +140,7 @@ def combine(frames: Iterable[tuple[pd.DataFrame, pd.DataFrame]]
 def position_index(points: pd.DataFrame) -> pd.Series:
     """``(z, y, x) -> body`` for every fetched element.
 
-    A position identifies at most one element within an instance, which is checked rather
-    than assumed: a duplicate would make the partner join ambiguous and silently pick one.
+    Raises if two elements share a position, which would make the partner join ambiguous.
     """
     if not len(points):
         return pd.Series(dtype=BODY_DTYPE)
@@ -194,9 +156,8 @@ def position_index(points: pd.DataFrame) -> pd.Series:
 def resolve_partner_bodies(points: pd.DataFrame, rels: pd.DataFrame) -> pd.DataFrame:
     """Fill ``to_body`` by joining each relationship's target against ``points``.
 
-    Left unset (``NA``) where the target was not fetched. Nullable ``UInt64`` rather than
-    float, because a body id that has been through float64 is a body id that may have
-    been rounded.
+    ``NA`` where the target was not fetched. Nullable ``UInt64``, never float, which would
+    round large body ids.
     """
     rels = rels.copy()
     if not len(rels):
@@ -226,9 +187,8 @@ def connections(rels: pd.DataFrame) -> pd.DataFrame:
     from. Columns ``pre_z/pre_y/pre_x``, ``post_z/post_y/post_x``, ``pre_body``,
     ``post_body``.
 
-    Both directions are used and then de-duplicated because each is anchored on the body
-    list at one end only — see the module docstring. Non-synaptic relationship types are
-    ignored here and remain in the raw table.
+    Both relationship directions are used, then de-duplicated. Non-synaptic relationships
+    are ignored here and stay in the raw table.
     """
     cols = {}
     frames = []
@@ -250,8 +210,7 @@ def connections(rels: pd.DataFrame) -> pd.DataFrame:
     out = pd.concat(frames, ignore_index=True)
     order = [f"pre_{a}" for a in AXES] + [f"post_{a}" for a in AXES]
     out = out[order + ["pre_body", "post_body"]]
-    # A pair seen from both ends appears twice; one of the two carries each body. Group so
-    # the surviving row keeps whichever endpoint bodies are known.
+    # A pair seen from both ends appears twice; keep whichever bodies each row knows.
     out = (out.groupby(order, dropna=False, as_index=False)
               .agg({"pre_body": "first", "post_body": "first"}))
     return out
@@ -261,16 +220,9 @@ def enrich_connections(conns: pd.DataFrame, points: pd.DataFrame,
                        columns: Sequence[str] = ("conf",)) -> pd.DataFrame:
     """Bring per-element columns onto a connections table as ``pre_<col>`` / ``post_<col>``.
 
-    :func:`connections` carries only geometry and the two body ids, because that is all a
-    relationship row knows. Anything recorded on the *element* — its confidence, the ROI it
-    sits in — has to be joined back from ``points`` on the coordinate, which is safe because a
-    position identifies at most one element (:func:`position_index` checks that).
-
-    **A missing value stays NaN rather than becoming 0.** For a half-resolved line the partner
-    element was never fetched, so its confidence is genuinely unknown; zero would claim the
-    annotator had no confidence in a real synapse. NaN also fails every shader comparison, so
-    ``if (prop_conf_post() < threshold) discard;`` leaves such a line visible — the permissive
-    reading, which is the right default for data whose partner simply was not requested.
+    Joined from ``points`` on the coordinate (confidence, ROI, ...). A value for a partner
+    that was not fetched stays NaN rather than 0, which would claim zero confidence; NaN
+    also fails shader comparisons, so a ``conf < threshold`` filter keeps such lines.
     """
     missing = [c for c in columns if c not in points.columns]
     if missing:
@@ -291,8 +243,7 @@ def enrich_connections(conns: pd.DataFrame, points: pd.DataFrame,
 def match_rate(conns: pd.DataFrame) -> dict[str, Any]:
     """How much of the connectivity the body list actually resolved.
 
-    Reported prominently because a low number is indistinguishable from a genuinely
-    sparse connectome once the tables are written.
+    A low fraction looks the same as a sparse connectome once the tables are written.
     """
     total = int(len(conns))
     if not total:
@@ -306,10 +257,8 @@ def match_rate(conns: pd.DataFrame) -> dict[str, Any]:
 def body_roi_counts(points: pd.DataFrame, *, kind_column: str = "kind") -> pd.DataFrame:
     """Per body and kind, how many synapses fall in each ROI. Long form, lossless.
 
-    Not written as a table by any command — it is a group-by over ``points`` and would go
-    stale beside it. Provided because it is the shape a tagging rule wants: "where are this
-    body's presynapses" is ``pivot`` away, and where a neuron's *output* sits is often what
-    identifies it.
+    A group-by over ``points``, in the shape a tagging rule wants: where a neuron's
+    outputs sit often identifies it.
     """
     if "roi" not in points.columns:
         raise KeyError(
@@ -325,21 +274,16 @@ def body_roi_counts(points: pd.DataFrame, *, kind_column: str = "kind") -> pd.Da
 def keyvalues_to_frame(values: Mapping[str, Any]) -> pd.DataFrame:
     """``{body_key: json}`` from a keyvalue instance -> one row per body.
 
-    The records are **ragged** — on our dataset some bodies carry ``user`` and
-    ``instance_user`` and others do not — so this normalizes to the union of keys, with
-    missing fields left null.
-
-    ``instance`` is kept under its own name even though it collides with DVID's *data
-    instance*: in a body annotation it is the neuron's name (``CAm(L)``), and renaming it
-    would break every join against neuclease and neuprint output. The raw record is kept
-    in a ``json`` column so an edit can be pushed back without reconstructing it.
+    Records are ragged, so columns are the union of keys, with missing fields null.
+    ``instance`` is the neuron's name (``CAm(L)``), not a DVID data instance; the name is
+    kept to match neuclease and neuprint. The raw record is kept in a ``json`` column.
     """
     rows = []
     for key, value in values.items():
         if value is None:
             continue
         if not str(key).isdigit():
-            # A keyvalue instance may hold non-body keys (schema documents, config).
+            # Skip non-body keys (schema documents, config).
             continue
         body = int(key)
         record = dict(value) if isinstance(value, Mapping) else {"value": value}
@@ -358,9 +302,7 @@ def keyvalues_to_frame(values: Mapping[str, Any]) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df["body"] = df["body"].astype(BODY_DTYPE)
-    # `status` is left as a plain string on purpose. neuclease's own reader makes it an
-    # ordered Categorical against a fixed Janelia vocabulary and *raises* on anything
-    # unrecognised — so one newly-typed status would fail the whole fetch.
+    # Plain strings, not a fixed categorical vocabulary that would reject a new status.
     for col in ("status", "instance", "user", "instance_user", "type"):
         if col in df.columns:
             df[col] = df[col].astype("string")
@@ -376,13 +318,11 @@ def keyvalues_to_frame(values: Mapping[str, Any]) -> pd.DataFrame:
 def positions_zyx(df: pd.DataFrame, prefix: str = "") -> np.ndarray:
     """``(N, 3)`` array of positions in **zyx** order.
 
-    With :func:`positions_xyz`, the only place a table's named coordinate columns become
-    a positional array. Everything that needs one calls one of these and thereby states
-    which order it meant.
+    With :func:`positions_xyz`, the only place named coordinate columns become an array.
     """
     return np.stack([df[f"{prefix}{a}"].to_numpy() for a in AXES], axis=-1)
 
 
 def positions_xyz(df: pd.DataFrame, prefix: str = "") -> np.ndarray:
-    """``(N, 3)`` array of positions in **xyz** order — DVID's and precomputed's."""
+    """``(N, 3)`` array of positions in **xyz** order, as DVID and precomputed store them."""
     return np.stack([df[f"{prefix}{a}"].to_numpy() for a in reversed(AXES)], axis=-1)

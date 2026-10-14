@@ -1,33 +1,14 @@
 """Writing tables out, and the provenance sidecar that makes them meaningful.
 
-## Why parquet is the default
+Parquet is the default because csv loses the type of a nullable integer column such as
+``relationships.to_body`` (null where the partner was not fetched): pandas reads it back
+as ``str`` or ``float64``, and float64 rounds ids above 2^53, so joins on it quietly find
+nothing. Parquet also carries the provenance record in its own metadata. csv remains for
+reading in a terminal and warns about such columns; feather is offered for fast local
+scratch.
 
-Because csv does not preserve a **nullable** integer column, and ``to_body`` is one: an
-unresolved partner is null by design. csv has no types, so what comes back is whatever
-``pandas.read_csv`` infers, and for a column mixing integers with blanks that is never an
-integer dtype — measured on this pandas, ``UInt64`` with one null returns as ``str``; on
-older ones it returns as ``float64``, which silently **rounds** any id above 2^53. Either
-way a body id stops comparing equal to itself and a join against it quietly finds nothing.
-
-(A *non*-nullable ``uint64`` column does survive csv — pandas infers ``uint64`` correctly,
-including values above 2^63. So ``points.body`` would be fine and ``relationships.to_body``
-would not, which is a worse failure mode than a uniform one: the corruption is confined to
-the column people are least likely to check.)
-
-Parquet stores the declared type, holds per-file key-value metadata (so the provenance
-travels *inside* the file as well as beside it), and compresses a 4M-row point table to
-something worth keeping.
-
-csv remains available because eyeballing a few hundred rows in a terminal is a real need.
-It warns, naming the columns that will not survive. Feather is offered for the
-local-scratch case where write speed matters more than portability.
-
-## Every write goes through the kvstore
-
-``neu_vol.location.write_bytes``, never ``open()`` — so ``--out`` may be a local
-path or ``s3://…`` with no branch in the caller. pyarrow can serialise to a buffer, which
-is what makes this possible; a ``to_parquet(path)`` would quietly write nothing useful to
-an object store. Same rule, and same reason, as neu-morpho's ``precomputed.py``.
+Every write goes through ``neu_vol.location``, so a destination may be a local path or
+``s3://…``.
 """
 
 from __future__ import annotations
@@ -81,9 +62,8 @@ def _to_bytes(df, fmt: str, metadata: Mapping[str, Any] | None) -> bytes:
     return buf.getvalue()
 
 
-#: Pandas' nullable integer dtypes. These are the ones csv cannot round-trip: the null
-#: forces the inferred type away from an integer, to `str` or `float64` depending on the
-#: pandas version. A plain `uint64` column has no null and survives intact.
+#: Nullable integer dtypes, which csv cannot round-trip when they hold a null (a plain
+#: `uint64` column survives).
 _NULLABLE_INT_DTYPES = ("UInt64", "Int64", "UInt32", "Int32", "UInt16", "Int16",
                         "UInt8", "Int8")
 
@@ -128,18 +108,12 @@ def read_table(src: str, name: str, *, fmt: str = "parquet"):
     return pd.read_csv(buf)
 
 
-#: Preference order when reading a table whose format was not stated. parquet first because
-#: it is what `write_table` defaults to, and csv last because it is the one that cannot
-#: round-trip a nullable uint64 body id.
+#: Order in which formats are looked for when reading a table of unstated format.
 READ_FORMATS = ("parquet", "feather", "csv")
 
 
 def read_tables(src: str, names: Sequence[str]) -> tuple:
-    """Read several tables out of one directory, detecting each one's format.
-
-    The point is that a caller pointing at an earlier run's output should not have to know
-    or restate which ``--format`` that run used.
-    """
+    """Read several tables out of one directory, detecting each one's format."""
     from neu_vol.location import exists
 
     out = []
@@ -153,8 +127,7 @@ def read_tables(src: str, names: Sequence[str]) -> tuple:
                 + ", ".join(table_name(name, f) for f in READ_FORMATS))
         frame = read_table(src, name, fmt=fmt)
         if fmt == "csv":
-            # Warn rather than refuse: for a points table csv is merely lossy at the edges,
-            # but a body id that came back as float64 is silently wrong above 2**53.
+            # Warn rather than refuse: csv-read body ids may be wrong above 2**53.
             logger.warning("%s was read from csv; uint64 body ids do not survive that "
                            "round trip. Re-fetch with --format parquet if ids look odd.",
                            name)
@@ -178,12 +151,8 @@ def read_embedded_provenance(src: str, name: str) -> dict | None:
 
 def write_provenance(dst: str, record: Mapping[str, Any], *,
                      name: str = "provenance") -> None:
-    """Write the sidecar. Never fails the run — the tables are the valuable part.
-
-    A sidecar *as well as* the parquet metadata, because csv and feather have nowhere to
-    put it and a record that only sometimes exists is one nobody learns to look for. Same
-    argument as neu-vol's ``ops/provenance.py``, whose record shape this reuses.
-    """
+    """Write ``<name>.json`` beside the tables (csv and feather cannot embed it). A failure
+    is logged, not raised. The record shape is neu-vol's ``ops/provenance.py``."""
     from neu_vol.location import write_json
 
     try:

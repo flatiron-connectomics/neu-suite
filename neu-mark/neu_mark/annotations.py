@@ -1,41 +1,19 @@
 """Encoding ``neuroglancer_annotations_v1`` LINE annotations.
 
-One annotation per synaptic connection: a line from the T-bar to the PSD. That is what the
-published male-CNS synapse dataset does, and it is strictly more useful than two POINT
-sources, because the shader can render either endpoint alone —
-``setLineWidth(0.0); setEndpointMarkerSize(pre, 0.0)`` draws just the T-bars. So LINE gives
-both point views for free, and adds the connection.
+One annotation per synaptic connection, a line from the T-bar to the PSD, as published
+synapse sources do. A shader can still draw either endpoint alone
+(``setLineWidth(0.0); setEndpointMarkerSize(pre, 0.0)`` shows only T-bars).
 
-## The byte layout, verified against a published file
+Byte layout, little-endian, checked against a published male-CNS source. Per annotation:
+geometry (for LINE, two ``float32`` xyz triples), then properties in descending size
+(4-, 2-, then 1-byte), then zero padding to 4 bytes. The single-annotation (``by_id``)
+encoding then adds, per relationship, a ``uint32`` count and that many ``uint64`` ids; the
+multi-annotation encoding instead starts with a ``uint64`` count and ends with all the ids.
 
-Little-endian throughout. Per annotation:
-
-1. geometry — for LINE, two ``float32`` triples: first endpoint then second
-2. properties, in **descending size order**: 4-byte, then 2-byte, then 1-byte
-3. 0-3 zero bytes of padding to a 4-byte boundary
-4. *single-annotation encoding only*: per relationship, a ``uint32`` count then that many
-   ``uint64`` ids
-
-A group of annotations (the spatial and relationship indexes) instead writes a ``uint64``
-count, then every annotation's geometry+properties+padding, then **all** the ids — and no
-relationship trailers.
-
-This was checked against ``gs://flyem-male-cns/v1.0/male-cns-v1.0-synapses-precomputed``
-rather than read off the spec alone. Their records are 24 geometry + 37 properties + 3
-padding = 64 bytes, and ``8 + 10000*64 + 10000*8 = 720,008`` is exactly the size of their
-level-0 blob. One of their ``by_id`` entries decodes to 88 bytes = 64 + (4+8) + (4+8), the
-trailer for two relationships with one id each.
-
-## Property order is a correctness rule, not a style choice
-
-The reader infers each property's offset from the declared order, so :func:`sort_properties`
-puts them in descending size and the encoder writes them in that order. Declaring
-``uint8`` before ``float32`` and writing them in that order produces a file that parses
-into garbage — every value misaligned, no error anywhere.
-
-**Properties cannot be uint64**, which is why the reference stores body ids as
-``body_pre_u32`` / ``body_post_u32``: the shader-visible value is truncated to 32 bits, and
-the suffix says so. The untruncated ids live in the *relationships*, which are uint64-keyed.
+**Property order matters:** a reader infers offsets from the declared order, and a file
+written in any other order parses into misaligned values with no error, so
+:func:`sort_properties` fixes it. Properties cannot be uint64; full body ids go in
+relationships, with a truncated ``uint32`` copy as a property if a shader needs one.
 """
 
 from __future__ import annotations
@@ -47,8 +25,7 @@ import numpy as np
 
 AT_TYPE = "neuroglancer_annotations_v1"
 
-#: Lowercase, matching the published reference. The spec document writes "LINE"; the file
-#: that demonstrably renders says "line", so follow the file.
+#: Lowercase, as published sources write it (the spec document says "LINE").
 LINE = "line"
 POINT = "point"
 
@@ -65,10 +42,8 @@ GEOMETRY_FLOATS = {LINE: 6, POINT: 3}
 
 
 def sort_properties(properties: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Properties in the order the format requires: descending size, order kept within a size.
-
-    Stable within a size class so a caller's ordering of, say, several float32s survives.
-    """
+    """Properties in the order the format requires: descending size, the caller's order
+    kept within a size."""
     known = [p for p in properties]
     for p in known:
         if p.get("type") not in PROPERTY_TYPES:
@@ -108,11 +83,8 @@ def encode_group(geometry: np.ndarray, ids: Sequence[int], *,
                  values: Mapping[str, Any] | None = None) -> bytes:
     """The multiple-annotation encoding: a spatial cell, or one relationship's annotations.
 
-    ``geometry`` is ``(n, floats)`` in the **xyz** order the format stores — build it with
-    ``tables.positions_xyz``, which is the only place that decides axis order.
-
-    Note what this encoding does *not* carry: relationship ids. Those appear only in the
-    single-annotation encoding, which is why :func:`encode_single` exists separately.
+    ``geometry`` is ``(n, floats)`` in xyz, from :func:`neu_mark.tables.positions_xyz`.
+    Relationship ids are not part of this encoding; see :func:`encode_single`.
     """
     props = list(properties)
     n = len(ids)
@@ -131,8 +103,7 @@ def encode_group(geometry: np.ndarray, ids: Sequence[int], *,
         size = PROPERTY_TYPES[p["type"]][0]
         body[:, offset:offset + size] = column.view("u1").reshape(n, size)
         offset += size
-    # Everything from `offset` to `stride` stays zero: that is the padding, and the reference
-    # file's padding bytes are zero too.
+    # Bytes from `offset` to `stride` stay zero: the padding.
 
     return (struct.pack("<Q", n) + body.tobytes()
             + np.asarray(ids, dtype="<u8").tobytes())
@@ -144,8 +115,8 @@ def encode_single(geometry: Sequence[float], *, annotation_type: str = LINE,
                   relationships: Sequence[Sequence[int]] = ()) -> bytes:
     """The single-annotation encoding, for the ``by_id`` index.
 
-    ``relationships`` is one sequence of segment ids per declared relationship, **in the
-    declared order** — each written as a ``uint32`` count followed by ``uint64`` ids.
+    ``relationships`` is one sequence of segment ids per declared relationship, in the
+    declared order.
     """
     props = list(properties)
     floats = GEOMETRY_FLOATS[annotation_type]
@@ -172,10 +143,7 @@ def decode_group(raw: bytes, *, annotation_type: str = LINE,
                  properties: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """Invert :func:`encode_group`. Returns ``{"ids", "geometry", "values"}``.
 
-    This exists so the layout can be pinned by round trip rather than by asserting byte
-    offsets that only restate the encoder — and so a written source can be read back and
-    checked against the table it came from, which is the only end-to-end evidence that a
-    viewer will see the right thing.
+    Used to check a written source against the table it came from.
     """
     props = list(properties)
     floats = GEOMETRY_FLOATS[annotation_type]
@@ -233,13 +201,9 @@ def build_info(*, lower_bound: Sequence[float], upper_bound: Sequence[float],
                spatial: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """The annotation source's ``info``.
 
-    ``@type``, ``dimensions``, ``lower_bound``, ``upper_bound``, ``annotation_type``,
-    ``properties``, ``relationships``, ``by_id`` and ``spatial`` are all **required** members
-    — ``relationships`` and ``spatial`` may be empty arrays, but they must be present.
-
-    ``dimensions`` names the axes and fixes their order, so it is written x, y, z to match
-    the xyz the geometry is stored in. Sizes are metres, as the format requires: 8 nm is
-    ``8e-9``.
+    Every member is required (``relationships`` and ``spatial`` may be empty).
+    ``dimensions`` is written x, y, z, matching the stored geometry, in metres (8 nm is
+    ``8e-9``).
     """
     props = sort_properties(properties)
     return {
@@ -260,9 +224,7 @@ def enum_property(prop_id: str, labels: Sequence[str], *, dtype: str = "int16",
                   description: str | None = None) -> dict[str, Any]:
     """A property whose integer values index ``labels``.
 
-    ``enum_labels`` is required exactly when ``enum_values`` is given. The reference encodes
-    its 238 neuropil ROIs this way, with ``<unspecified>`` at index 0 — so a value of 0
-    meaning "none" is the established convention and a shader can test for it.
+    By convention index 0 means "none" (``<unspecified>``), so a shader can test for it.
     """
     return {"id": prop_id, "type": dtype,
             **({"description": description} if description else {}),

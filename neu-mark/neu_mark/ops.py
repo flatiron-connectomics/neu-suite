@@ -1,20 +1,12 @@
-"""The two stage-1 operations, as functions the CLI is a thin shell over.
+"""The write operations, as functions the CLI is a thin shell over.
 
-Both take an **already-resolved source** — the dict :func:`open_source` returns, carrying a
-concrete uuid rather than a ref. The caller resolves, once, and everything downstream
-(including the destination name) derives from that one answer.
+Each takes an already-opened source (from an ``open_*_source`` function here), which
+carries the concrete uuid rather than a ref. The caller resolves the node once, so the
+tables, the provenance record and a destination name such as ``--dst {uuid:8}`` all
+describe the same node.
 
-That split is not stylistic. When these functions resolved the ref themselves, the CLI had
-to expand ``--dst {uuid:8}`` *before* calling them, so with ``--dvid-locked`` the tables
-were correctly read from the locked node while the directory was named after HEAD. The
-provenance said one node and the path said another, which is worse than having no name at
-all: the name is what someone browsing a directory believes. Resolving in the caller makes
-the ordering impossible to get wrong, and is the same discipline as neu-vol's
-invariant 9.
-
-Fetch for an explicit body list, write tables, write provenance **after** the tables.
-Neither uses dask or a manifest — a fetch of 20k bodies is ~16 minutes in one process, and
-a resumable distributed run would be more machinery than the job needs.
+Each fetches for an explicit body list, writes tables, then writes provenance. There is
+no dask or manifest: 20,000 bodies take about 16 minutes in one process.
 """
 
 from __future__ import annotations
@@ -58,8 +50,7 @@ def open_counts_source(src: Mapping[str, Any], *,
     return _dvid.resolve_labelsz(source)
 
 
-#: Written by `select_bodies`. A single file, and the name is stable so the next command
-#: can be pointed at `<out>/selected_bodies.csv` without thinking.
+#: The table `select_bodies` writes (`<dst>/selected_bodies.csv` by default).
 SELECTED_TABLE = "selected_bodies"
 
 
@@ -68,19 +59,15 @@ def select_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: int = 10
                   fmt: str = "csv") -> dict[str, Any]:
     """Choose which bodies are worth fetching annotations for, and write the list.
 
-    Uses DVID's own ranked ``labelsz`` index, which costs seconds — against ~70 minutes to
-    scan all ~80M label sizes, and unlike a size ranking it selects on what actually makes a
-    body interesting in a connectome. A body with no synapses is a fragment.
+    Uses DVID's ranked ``labelsz`` index, which takes seconds, and selects on synapses
+    rather than size.
 
-    **The default threshold is on the TOTAL**, not on pre and post separately, and that is a
-    domain constraint rather than a simplification: sensory neurons may have no postsynapses
-    at all, and a neuron projecting outside the traced volume may have no presynapses.
-    Requiring both would silently drop exactly the cells most worth looking at.
-    ``min_pre`` / ``min_post`` exist for when that is what you want.
+    The default threshold is on the total, not on pre and post separately: sensory neurons
+    may have no postsynapses, and a neuron leaving the volume may have no presynapses.
+    ``min_pre`` / ``min_post`` add per-type minimums.
 
-    Output goes to a directory so the list carries a provenance record naming the node it
-    was computed from — a body list whose node nobody can identify is the thing that goes
-    quietly stale, since proofreading changes body ids.
+    The provenance record names the node the list was computed from, since proofreading
+    changes body ids.
     """
     df = _dvid.fetch_synapse_counts(source, min_total=min_synapses, min_pre=min_pre,
                                     min_post=min_post, limit=limit)
@@ -113,12 +100,9 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
 
     ``source`` comes from :func:`open_points_source`; it carries a concrete uuid.
 
-    ``drop_unmatched`` removes relationships whose partner body could not be resolved.
-    **Off by default, deliberately.** An unresolved partner and a genuinely dangling
-    reference are indistinguishable from the fetched data alone, so dropping silently
-    turns "the body list did not cover this partner" into "this synapse does not exist" —
-    and at low coverage that presents a mostly-incomplete connectome as a complete one.
-    Keep the nulls, read the match rate, then drop once the rate says it is safe.
+    ``drop_unmatched`` removes relationships whose partner body was not resolved. It is off
+    by default: an unfetched partner looks the same as a missing synapse, so dropping them
+    at low coverage makes an incomplete connectome look complete. Check the match rate first.
     """
     synced = _dvid.require_sync(source)
     logger.info("%s: %d bodies, %d threads (bodies from sync: %s)",
@@ -129,9 +113,7 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
 
     roi_stats = None
     if rois:
-        # Only the points table gets a `roi`. A relationship spans two points that may sit
-        # in different neuropils, so a single column on it would have to pick one; the join
-        # back to `points` answers either side exactly.
+        # Only points get a `roi`: a relationship's two ends may be in different neuropils.
         labelled = _dvid.label_point_rois(source, points, rois,
                                           on_overlap=on_roi_overlap)
         points = labelled["points"]
@@ -173,13 +155,9 @@ def annotation_source(dst: str, *, connections=None, points=None,
                       threads: int = _dvid.DEFAULT_THREADS) -> dict[str, Any]:
     """Write a precomputed LINE annotation source: one line per synaptic connection.
 
-    Either pass ``connections`` and ``points`` (from an earlier ``neu-mark points`` run — the
-    tables are the durable artifact, so a rebuild need not refetch) or a ``source`` plus
-    ``bodies`` to fetch now.
-
-    ``bounds`` defaults to the data's own extent, padded by one voxel so no annotation sits
-    exactly on the upper bound. The format requires ``lower_bound``/``upper_bound``, and a
-    viewer uses them to size its spatial navigation.
+    Pass ``connections`` and ``points`` from an earlier ``neu-mark points`` run, or a
+    ``source`` and ``bodies`` to fetch now. ``bounds`` (the format's required
+    ``lower_bound``/``upper_bound``) defaults to the data's extent plus one voxel.
     """
     import numpy as np
 
@@ -220,8 +198,7 @@ def annotation_source(dst: str, *, connections=None, points=None,
         record = build_record(src_spec={"backend": "tables"}, dst=dst, **run)
         record["tool"] = "neu-mark"
     _io.write_provenance(dst, record)
-    # `table` is the enriched frame the source was built from, returned so a caller verifying
-    # the result compares against exactly that rather than re-deriving it.
+    # `table` is the enriched frame the source was built from.
     return {**built, "written": written, "record": record, "table": enriched}
 
 
@@ -235,21 +212,15 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
                        dry_run: bool = False) -> dict[str, Any]:
     """Build a ``segment_properties`` source and, by default, link the volume to it.
 
-    ``dst`` is the **segmentation volume**: the document lands at
-    ``<dst>/segment_properties/info`` and the volume's own ``info`` gains a
-    ``"segment_properties"`` key pointing at that subdirectory. Those are two separate
-    steps and only the second is what makes neuroglancer show names and tags on the labels
-    layer — ``link=False`` writes the source without touching the published volume, which
-    is the right way to look at it first.
+    ``dst`` is the segmentation volume. The document goes to
+    ``<dst>/segment_properties/info``, and linking adds a ``"segment_properties"`` key to
+    the volume's own ``info``, which is what makes neuroglancer show names and tags.
+    ``link=False`` writes the document without touching the volume; ``dry_run`` builds and
+    reports without writing anything.
 
-    ``rules_path`` loads a rules module whose rules **override the builtins by name**
-    (``rules_only`` uses it alone). ``dry_run`` builds and reports without writing
-    anything: a rule that fires on 2% of bodies is worth seeing before it reaches a
-    published volume, and ``link=False`` is not enough — that still writes the document.
-
-    ``counts_source`` (a labelsz instance) adds ``pre``/``post``/``syn``; ``labelmap_source``
-    adds ``voxels``. Both are optional and both are cheap — measured ~5.6 s per 2,000 bodies
-    for sizes, so ~1 minute for a 20k list.
+    ``rules_path`` loads a rules module that overrides the builtins by name (``rules_only``
+    uses it alone). ``counts_source`` (a labelsz instance) adds ``pre``/``post``/``syn``,
+    and ``labelmap_source`` adds ``voxels``.
     """
     from . import segprops
 
@@ -297,9 +268,7 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
            "facets": built["report"]["facets"], "bytes": built["report"]["bytes"],
            "coverage": built["report"]["coverage"],
            "numbers": built["report"]["numbers"], "keep_glia": keep_glia,
-           # The rules decide what this source SAYS, so without them the record cannot
-           # answer "what produced this" — see `rules.provenance` for why a hash is not
-           # enough on its own.
+           # The rules decide what the document says; see `rules.provenance`.
            "rules": rules_record, "rules_only": bool(rules_only),
            "linked": linked}
     record = _record(bodies_source, dst, run=run)
@@ -316,16 +285,9 @@ def fetch_bodies(source: Mapping[str, Any], dst: str,
 
     ``source`` comes from :func:`open_bodies_source`; it carries a concrete uuid.
 
-    ``everything=True`` reads every record rather than a list. That is a genuinely different
-    population and worth having: the ≥10-synapse selection holds 117 glia, while the instance
-    holds **1,014** — nine times as many — because most glia sit below any synapse threshold.
-    Anything asking "what is annotated in this dataset" needs the whole set, not a slice of
-    it. It goes through a partition of the key space rather than ``/keys``; see
-    ``dvid.fetch_all_body_annotations`` for why that endpoint is unusable here.
-
-    A separate destination from the point tables on purpose: they come from a different
-    instance, they are a different grain (one row per body, not per element), and nothing
-    joins them at write time.
+    ``everything=True`` reads every record in the instance instead
+    (:func:`neu_mark.dvid.fetch_all_body_annotations`), a different population from a
+    synapse-selected list. Written to its own destination, apart from the point tables.
     """
     if everything:
         if bodies:

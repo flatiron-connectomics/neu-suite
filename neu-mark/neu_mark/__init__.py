@@ -1,35 +1,24 @@
 """neu-mark: annotations out of DVID, into tables and neuroglancer layers.
 
-Two kinds of annotation, one package:
+Two kinds of annotation:
 
-- **point annotations** — synapses (``synapses``), and anything else stored in a DVID
+- **point annotations**: synapses (``synapses``), and anything else stored in a DVID
   ``annotation`` instance (``labels_todo``, ``bookmark_annotations``).
-- **body annotations** — the per-body records in a ``keyvalue`` instance
-  (``labels_annotations``): neuron name, status, who traced it.
+- **body annotations**: the per-body records in a ``keyvalue`` instance
+  (``labels_annotations``), such as neuron name, status and who traced it.
 
-Both land as columnar tables first (:mod:`neu_mark.tables`, :mod:`neu_mark.io`)
-and are published to neuroglancer second. The tables are the durable artifact: they are
-what analysis reads, and they are what a precomputed layer is built from, so a fetch is
-never repeated to change how something is displayed.
+Both are fetched into columnar tables first (:mod:`neu_mark.tables`, :mod:`neu_mark.io`),
+which analysis reads and precomputed layers are built from, so changing a display never
+needs a new fetch.
 
-**Everything is driven by an explicit body list.** The dataset has a huge number of label
-ids of which the overwhelming majority are fragments nobody cares about, and DVID offers
-no cheap way to enumerate "the interesting ones" — the label-index and
-whole-instance-threshold routes are both O(all bodies) and were measured as unusable. So a
-body list is a required input rather than an optimization; see :mod:`neu_mark.bodies`.
-
-Layering: this sits above neu-vol (``location`` for every write, ``dvid`` for node
-resolution, ``ops.provenance`` for the record) and alongside neu-morpho. It imports
-nothing from neu-morpho and nothing above.
+Everything is driven by an explicit body list: most label ids are fragments, and DVID has
+no cheap way to enumerate the bodies worth fetching (see :mod:`neu_mark.bodies`).
 """
 
 __version__ = "0.1.0"
 
-#: Re-exported from `notebook` (fetches that return DataFrames and write nothing) and from
-#: `rules`. Resolved through a module `__getattr__` (PEP 562) rather than imported here,
-#: because `cli` reads `__version__` from this module and an eager import would make
-#: `neu-mark --help` pay for pandas and neu-vol. Same reason and same mechanism as
-#: neu-vol's lazy `start_dask`.
+#: Re-exported from `notebook` (fetches that return DataFrames) and `rules`, resolved on
+#: first access (PEP 562) so that `neu-mark --help` does not import pandas and neu-vol.
 _LAZY = {
     "source": "notebook",
     "select_bodies": "notebook",
@@ -52,7 +41,7 @@ def __getattr__(name: str):
 
         module = importlib.import_module(f".{_LAZY[name]}", __name__)
         value = getattr(module, name)
-        globals()[name] = value          # cached, so this runs once per name
+        globals()[name] = value          # cached
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

@@ -1,39 +1,17 @@
 """Assembling a complete precomputed annotation source from a connections table.
 
-One LINE per distinct (T-bar, PSD) coordinate pair. Writes the four things the format
-requires: an ``info``, a ``by_id`` index, one index per relationship, and one or more spatial
-levels — all sharded through :mod:`neu_vol.sharded`, so tensorstore owns the shard
-format and this module owns only what goes in it.
+One LINE per distinct (T-bar, PSD) coordinate pair. Writes what the format requires: an
+``info``, a ``by_id`` index, one index per relationship, and spatial levels, all sharded
+through :mod:`neu_vol.sharded`.
 
-## Annotation ids are hashed from the geometry, not counted
-
-The id is the ``by_id`` key and it appears in every index, so it has to be stable. Hashing
-both endpoints makes it a deterministic function of the synapse: re-running against the same
-node produces identical ids, and a line's id does not change because the body list grew.
-Sequential ids would renumber the entire source on every run, which would make two exports
-impossible to compare and would invalidate any saved link into one.
-
-## A pair with one unknown body is still a line
-
-Every relationship carries both coordinates — the element's own and its partner's, from the
-``To`` field — so geometry is always complete. What can be missing is the partner's *body
-id*, because that body was not in the fetched list. Since elements are fetched per body, each
-pair has at least one known body by construction.
-
-Such a line renders, and filters correctly on the body that *is* known: it is the boundary of
-the subgraph, a real synapse on a neuron of interest whose partner was not requested.
-``include_partial=False`` drops them if a strictly intra-list connectome is wanted; measured
-on the 20k list, that is the difference between 1,973,448 lines and 1,138,913 (57.7%).
-
-## The spatial index emits each annotation at exactly one level
-
-Coarse to fine, each level takes up to ``limit`` annotations per cell from what has not been
-emitted yet; the remainder falls through. A zoomed-out view then fetches one small cell and
-draws a representative scattering instead of two million lines.
-
-The subsampling *policy* is ours — the format fixes the file layout, not how a writer chooses
-what to put where — so the numbers here are a starting point to check in a viewer, not
-something the spec dictates.
+- **Annotation ids are hashed from both endpoints**, so they are stable: re-running gives
+  the same ids, and a saved link stays valid when the body list grows.
+- **A pair with one unknown body is still a line.** Geometry is always complete; the
+  partner's body is unknown when it was not fetched. Such lines are kept by default
+  (``include_partial=False`` drops them).
+- **The spatial index emits each annotation at exactly one level**, coarse to fine, so a
+  zoomed-out view draws a representative sample from one small cell. The sampling numbers
+  are a starting point to check in a viewer, not fixed by the spec.
 """
 
 from __future__ import annotations
@@ -49,16 +27,16 @@ from . import annotations as ann
 
 logger = logging.getLogger(__name__)
 
-#: Index keys, matching the reference's naming so a reader of both is not surprised.
+#: Index keys, named as in published sources.
 BY_ID_KEY = "by_id"
 REL_PRE, REL_POST = "body_pre", "body_post"
 REL_KEYS = {REL_PRE: "by_rel_body_pre", REL_POST: "by_rel_body_post"}
 SPATIAL_KEY = "by_spatial_level_{level}"
 
-#: The properties a synapse line carries, before sorting. `conf_*` are the element
-#: confidences; the `_u32` pair exists because a property cannot be uint64, so the
-#: shader-visible body id is truncated and named to say so.
 def default_properties(roi_labels: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """The properties of a synapse line, unsorted: element confidences, and body ids
+    truncated to uint32 (properties cannot be uint64), plus an ``roi`` enum if labels are
+    given."""
     props: list[dict[str, Any]] = [
         {"id": "conf_pre", "type": "float32",
          "description": "confidence of the presynaptic element"},
@@ -80,10 +58,8 @@ def default_properties(roi_labels: Sequence[str] | None = None) -> list[dict[str
 def annotation_ids(pre_xyz: np.ndarray, post_xyz: np.ndarray) -> np.ndarray:
     """Stable uint64 ids, hashed from both endpoints.
 
-    blake2b over the six little-endian int32 coordinates, truncated to 63 bits — the top bit
-    is left clear so no id can be confused with a sign-extended value by a consumer that
-    reads it as signed. Collisions at 63 bits over a few million keys are not a practical
-    concern; a duplicate would show up as a lost annotation, which :func:`build` checks for.
+    blake2b over the six little-endian int32 coordinates, truncated to 63 bits (the top bit
+    clear, for consumers that read it as signed). :func:`build` checks for collisions.
     """
     pre = np.asarray(pre_xyz, dtype="<i4")
     post = np.asarray(post_xyz, dtype="<i4")
@@ -100,14 +76,9 @@ def annotation_ids(pre_xyz: np.ndarray, post_xyz: np.ndarray) -> np.ndarray:
 
 def _cells(points: np.ndarray, lower: np.ndarray, chunk: np.ndarray,
            grid: np.ndarray) -> np.ndarray:
-    """Which cell each point falls in, as the **key a viewer will ask for**.
-
-    That key is the cell's compressed Morton code, not a row-major flattening — see
-    :func:`neu_vol.sharded.compressed_morton_code`, which explains why substituting one
-    for the other produces a complete file that renders almost nothing.
-
-    Points are xyz, ``grid``/``chunk`` are xyz, and the Morton code is defined over xyz with x
-    varying fastest, so no axis order changes hands here.
+    """Which cell each point falls in, as the key a viewer asks for: the cell's compressed
+    Morton code (:func:`neu_vol.sharded.compressed_morton_code`), not a row-major index,
+    which would produce a complete file that renders almost nothing. Everything is xyz.
     """
     from neu_vol.sharded import compressed_morton_code
 
@@ -117,11 +88,7 @@ def _cells(points: np.ndarray, lower: np.ndarray, chunk: np.ndarray,
 
 
 def next_level(grid: Sequence[int], extent: Sequence[float]) -> dict[str, Any]:
-    """One level finer: halve the axis whose cells are currently longest.
-
-    That is what keeps cells roughly cubic, so a viewer's cell fetch covers a compact region
-    whichever way it is looking.
-    """
+    """One level finer: halve the axis whose cells are longest, keeping cells roughly cubic."""
     grid = np.asarray(grid, dtype=np.int64).copy()
     extent = np.asarray(extent, dtype=float)
     grid[int(np.argmax(extent / grid))] *= 2
@@ -133,10 +100,8 @@ def plan_spatial(n: int, lower: Sequence[float], upper: Sequence[float], *,
                  per_cell: int = 4_000, max_levels: int = 16) -> list[dict[str, Any]]:
     """Grid shapes, coarsest first — the schedule assuming annotations spread evenly.
 
-    This is a starting guess only, because annotations do not spread evenly: synapses
-    concentrate in neuropil, so a grid whose *average* cell is within ``per_cell`` still has
-    dense cells far over it. :func:`_assign_levels` extends the schedule from the real
-    distribution, and that is what makes each level's ``limit`` mean what it says.
+    A starting guess: synapses concentrate in neuropil, so :func:`_assign_levels` extends
+    the schedule from the real distribution.
     """
     lower = np.asarray(lower, dtype=float)
     upper = np.asarray(upper, dtype=float)
@@ -153,26 +118,18 @@ def _assign_levels(pre_xyz: np.ndarray, levels: list[dict[str, Any]],
                    ) -> tuple[list[dict[int, np.ndarray]], list[int]]:
     """Which annotations each level emits, coarse to fine, each exactly once.
 
-    This is the format's own generation algorithm, and the shape of it is load-bearing:
+    The format's generation algorithm:
 
-        maxCount(level) = the largest number of REMAINING annotations in any one cell
+        maxCount(level) = the most remaining annotations in any one cell
         p(level)        = min(1, limit / maxCount(level))
         emitted(cell)   = each remaining annotation in `cell`, independently, with prob. p
 
-    The levels partition the annotations — what a cell emits is subtracted before its children
-    are computed — and the schedule continues until nothing remains, which happens exactly when
-    `maxCount <= limit` makes `p` equal 1.
+    Emitted annotations are removed before the next level, until none remain. **p is one
+    number per level, for every cell.** Capping each cell at `limit` instead would drain
+    sparse cells completely at a coarse level, so a viewer zoomed in on them would find
+    nothing at the finer levels.
 
-    **The subsampling probability is ONE number per level, applied to every cell.** Capping each
-    cell at `limit` instead looks equivalent and is not: a cell holding fewer than `limit`
-    annotations gets drained *completely* at that level and contributes nothing to any finer
-    one, so sparse regions run out of cells partway down the pyramid. Zoomed in far enough to
-    reach those levels, a viewer then finds nothing there and the annotations vanish — which is
-    a rendering bug with no trace in the file. Thinning every cell by the same probability keeps
-    a share of every occupied region alive all the way to the finest level.
-
-    ``levels`` is extended in place when the initial guess was too shallow. Placement uses the
-    *presynaptic* endpoint, so a line belongs to one cell rather than straddling two.
+    ``levels`` is extended in place if needed. A line is placed by its presynaptic endpoint.
     """
     remaining = np.arange(len(pre_xyz))
     per_level: list[dict[int, np.ndarray]] = []
@@ -191,8 +148,7 @@ def _assign_levels(pre_xyz: np.ndarray, levels: list[dict[str, Any]],
                   if len(g)]
         max_count = max(len(g) for g in groups)
 
-        # A level that cannot be followed by another must emit everything left, or the
-        # annotations would simply be dropped.
+        # The last allowed level emits everything left.
         terminal = len(levels) >= max_levels and depth == len(levels) - 1
         p = 1.0 if terminal else min(1.0, limit_per_cell / max_count)
 
@@ -207,9 +163,8 @@ def _assign_levels(pre_xyz: np.ndarray, levels: list[dict[str, Any]],
         remaining = remaining[~keep_mask]
 
         per_level.append(cells)
-        # The DECLARED limit is the largest cell actually written. The generation parameter is
-        # only the target: emission is independent per annotation, so a cell's count lands near
-        # `limit_per_cell` rather than on it, and a viewer reading this wants the true bound.
+        # Declare the largest cell actually written: random emission lands near the target,
+        # not on it.
         limits.append(max(1, max((len(v) for v in cells.values()), default=1)))
         if not len(remaining):
             return per_level, limits
@@ -261,10 +216,8 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
     pre_body = frame["pre_body"].fillna(0).astype("uint64").to_numpy()
     post_body = frame["post_body"].fillna(0).astype("uint64").to_numpy()
 
-    # A declared property whose column is absent must NOT be quietly zero-filled: the file
-    # would be valid, the viewer would show a confidence of 0 for every synapse, and nothing
-    # would say so. `connections` genuinely lacks conf — it comes from the element, not the
-    # relationship — so the caller must run `tables.enrich_connections` first.
+    # Refuse rather than zero-fill a missing conf column, which would show confidence 0 for
+    # every synapse. Confidence comes from elements, via `tables.enrich_connections`.
     for column, hint in (("pre_conf", "tables.enrich_connections(conns, points)"),
                          ("post_conf", "tables.enrich_connections(conns, points)")):
         if column not in frame.columns:
@@ -287,7 +240,7 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
 
     geometry = np.hstack([pre_xyz, post_xyz]).astype("<f4")
 
-    # ---- by_id: the single encoding, which is the only one carrying relationships ----
+    # ---- by_id: the single encoding, the only one carrying relationships ----
     by_id_entries = []
     for i in range(len(frame)):
         related = [[int(pre_body[i])] if have_pre[i] else [],
@@ -319,7 +272,7 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
                           per_cell=per_cell, max_levels=max_levels)
     assigned, limits = _assign_levels(pre_xyz.astype(float), levels, lower, extent, per_cell,
                                       np.random.default_rng(seed), max_levels)
-    del levels[len(assigned):]      # the guess may have over-provisioned; keep what was used
+    del levels[len(assigned):]      # drop unused levels from the guess
 
     spatial_entries: list[list[tuple[int, bytes]]] = []
     for level, cells in zip(levels, assigned):
@@ -330,7 +283,7 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
                 values={p["id"]: values[p["id"]][members] for p in props})))
         spatial_entries.append(entries)
 
-    # ---- sharding, sized to each index rather than one setting for all ----
+    # ---- sharding, sized to each index ----
     by_id_sharding = sharded.plan_sharding(len(by_id_entries))
     rel_sharding = {rel: sharded.plan_sharding(max(1, len(e)))
                     for rel, e in rel_entries.items()}
@@ -356,8 +309,7 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
         "levels": [{"grid": lvl["grid_shape"], "cells": len(e), "limit": limits[i]}
                    for i, (lvl, e) in enumerate(zip(levels, spatial_entries))],
     }
-    # `table` is the frame actually encoded — which is not the input when `include_partial` is
-    # false — so a caller verifying the written source compares against the right rows.
+    # `table` is the frame actually encoded (fewer rows with include_partial=False).
     return {"info": info, "by_id": by_id_entries, "relationships": rel_entries,
             "spatial": spatial_entries, "report": report, "table": frame}
 
@@ -392,9 +344,7 @@ def read_annotation(src: str, annotation_id: int, *, info: Mapping[str, Any] | N
                     ) -> dict[str, Any] | None:
     """One annotation out of a written source's ``by_id`` index, decoded.
 
-    ``None`` when the id is not there. This reads the source the way a viewer does — through
-    the sharded index, using the ``info`` the source itself declares — so it is the check that
-    the file is addressable and not merely present.
+    ``None`` when the id is absent. Reads through the sharded index, as a viewer does.
     """
     from neu_vol import sharded
     from neu_vol.location import read_json
@@ -435,11 +385,10 @@ def read_related(src: str, relationship: str, body: int, *,
 def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[str, Any]:
     """Read a written source back and check it against the table it was built from.
 
-    Samples ``sample`` rows, fetches each by id, and compares endpoints, confidences and
-    relationships. Then checks one body's relationship index in full. The point is that
-    everything up to :func:`write` can be verified in memory, but only a read-back proves the
-    **keys** are right — a wrong key gives a viewer nothing while every byte on the store is
-    correct.
+    Fetches ``sample`` rows by id and compares endpoints, confidences and relationships,
+    checks one body's relationship index in full, then the spatial index
+    (:func:`verify_spatial`). Only a read-back shows the keys are right: a wrong key leaves
+    correct bytes on the store and nothing in the viewer.
     """
     from neu_vol.location import read_json
 
@@ -477,8 +426,7 @@ def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[s
                 problems.append(f"row {row}: {column} {got['relationships'][rel_index]} "
                                 f"!= {want_rel}")
 
-    # One body's index in full: the relationship index is what "this body's synapses" uses,
-    # and a count that disagrees with the table means a viewer shows the wrong set.
+    # One body's relationship index in full: what "this body's synapses" fetches.
     bodies = connections["pre_body"].dropna()
     body_check: dict[str, Any] = {}
     if len(bodies):
@@ -502,15 +450,9 @@ def verify_spatial(src: str, info: Mapping[str, Any], *, per_level: int = 3,
                    seed: int = 0) -> dict[str, Any]:
     """Fetch spatial cells by the key a viewer computes, and check what comes back.
 
-    Two independent things, both of which were silently wrong once:
-
-    - **The key.** A cell is addressed by its compressed Morton code. Computing the key here the
-      way a *reader* does — from the grid position — rather than the way the writer did is the
-      whole point: a row-major key writes every object successfully and a viewer finds almost
-      none of them.
-    - **The contents.** Every annotation in a cell must actually lie inside that cell's bounds.
-      A right key over a wrong assignment renders annotations in the wrong place, which looks
-      like a coordinate bug rather than an index one.
+    Checks two things: that cells can be found by the key a reader computes from a grid
+    position (a compressed Morton code), and that each annotation in a cell lies inside the
+    cell's bounds.
     """
     from neu_vol import sharded
     from neu_vol.location import read_json
@@ -525,9 +467,8 @@ def verify_spatial(src: str, info: Mapping[str, Any], *, per_level: int = 3,
     for depth, level in enumerate(info["spatial"]):
         grid = np.asarray(level["grid_shape"], dtype=np.int64)
         chunk = np.asarray(level["chunk_size"], dtype=float)
-        # Ask about cells chosen by POSITION, so a cell the writer never emitted simply reads
-        # back empty rather than being skipped — an absent cell and a mis-keyed one look the
-        # same from here, which is why the count is reported rather than asserted per cell.
+        # Cells are chosen by position; an empty cell and a mis-keyed one look the same, so
+        # only the total found is checked.
         cells = np.stack([rng.integers(0, int(g), size=per_level) for g in grid], axis=1)
         for position in cells:
             checked += 1
@@ -539,7 +480,7 @@ def verify_spatial(src: str, info: Mapping[str, Any], *, per_level: int = 3,
             found += 1
             group = ann.decode_group(raw, annotation_type=info["annotation_type"],
                                      properties=info["properties"])
-            # Placement uses the presynaptic endpoint, which is the first half of the geometry.
+            # Placed by the presynaptic endpoint, the first half of the geometry.
             pre = group["geometry"][:, :3]
             cell_lo = lower + position * chunk
             inside = np.all((pre >= cell_lo - 1e-6)

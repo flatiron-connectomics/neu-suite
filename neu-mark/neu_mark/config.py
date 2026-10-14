@@ -1,33 +1,18 @@
 """Site defaults for building DVID URLs, from an uncommitted TOML file.
 
-The tension this has to resolve: implicit defaults are *good* for interactive exploration
-and *bad* for anything that produces an artifact. A run whose source depended on a file
-nobody else has is a run nobody can reproduce, and the whole point of the provenance record
-is to say exactly which node an export came from.
+It builds URLs; it is never a silent fallback. ``cfg.url("synapses")`` returns a complete
+``dvid://server/uuid/instance`` string, and the CLI consults the config only for a value
+written as ``@name``, printing what it resolved to. Provenance records store the resolved
+URL, so an export stays traceable without the config.
 
-So this is a **URL builder, not a fallback**. ``cfg.url("synapses")`` returns a complete
-``dvid://server/uuid/instance`` string that you can print, paste and put in a saved command.
-Nothing consults the config implicitly: the CLI takes a config reference only when it is
-written as ``@name``, and it prints what that resolved to, exactly as it does for a
-``{uuid}`` placeholder in ``--out``. The provenance record stores the resolved URL either
-way, so a config can never make an export less traceable.
+Search order, first hit wins:
 
-Search order (first hit wins):
+1. ``$NEU_MARK_CONFIG`` (an error if it names no file);
+2. ``neu-mark.toml``, then ``configs/neu-mark.toml``, in the current directory or any
+   parent, so one file at the workspace root serves notebooks in subdirectories.
 
-1. ``$NEU_MARK_CONFIG``
-2. ``neu-mark.toml`` — or ``configs/neu-mark.toml`` — in the current directory **or any
-   parent**, so one file at the workspace root serves every repo and every notebook
-   subdirectory under it, the way ``pyproject.toml`` and ``.git`` are found. At each level
-   the bare file wins over the one in ``configs/``.
-
-There is deliberately **no machine-wide location**. A config in the tree is one you trip over
-while working, next to the body lists and the notes it goes with; a hidden one in
-``~/.config`` applies to every shell on the host and is exactly the kind of invisible state
-that makes a command behave differently for two people running it.
-
-The upward walk is what makes a config in the tree usable: notebooks live a couple of
-directories down from where the file naturally sits, and requiring the cwd to match exactly
-would mean it silently stopped being found depending on where Jupyter was started.
+There is no machine-wide location, so two people running the same command in the same
+tree get the same config.
 
 .. code-block:: toml
 
@@ -44,13 +29,12 @@ would mean it silently stopped being found depending on where Jupyter was starte
    counts   = "synapses_labelsz"
    todo     = "labels_todo"
 
-   # Named ROI lists, for `--rois @neuropils`. The set must be a chosen, non-overlapping
-   # partition — see `dvid.label_point_rois` for why there is no "all".
+   # Named ROI lists, for `--rois @neuropils`. They must not overlap; see
+   # `dvid.label_point_rois`.
    [roi_sets]
    neuropils = ["ME(L)", "ME(R)", "LO(L)", "LO(R)", "AL(L)", "LH(L)", "LH(R)"]
 
-   # Named rules modules, for `--rules @wasp`. A path, relative to this file — so the
-   # reference means the same thing from any directory the config is found from.
+   # Named rules modules, for `--rules @wasp`. Paths are relative to this file.
    [rule_sets]
    wasp = "rules/wasp_rules.py"
 """
@@ -61,9 +45,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-#: The filename looked for in the cwd and every parent directory. The only place a config is
-#: ever found, other than $NEU_MARK_CONFIG — see the module docstring for why there is
-#: no machine-wide location.
+#: The filename looked for in the cwd and every parent directory.
 FILENAME = "neu-mark.toml"
 
 #: Also looked in at every level, so a workspace can keep its site configs together.
@@ -72,8 +54,8 @@ SUBDIR = "configs"
 #: The environment variable that overrides the search entirely.
 ENV_VAR = "NEU_MARK_CONFIG"
 
-#: Marks a ``--src`` value as a config lookup rather than a URL. Required, so that a saved
-#: command line visibly says "this depended on my config" instead of looking self-contained.
+#: Marks a ``--src`` value as a config lookup rather than a URL, so a saved command shows
+#: that it depends on the config.
 REFERENCE_PREFIX = "@"
 
 
@@ -89,23 +71,16 @@ class Config:
         self.locked = bool(dvid.get("locked", False))
         self.scheme = dvid.get("scheme", "dvid")
         self.instances = dict(self._data.get("instances") or {})
-        #: Named ROI lists. The set has to be chosen (a non-overlapping partition), and it is
-        #: long, so naming one is the difference between a usable command and a paragraph.
+        #: Named ROI lists (non-overlapping partitions).
         self.roi_sets = {k: list(v) for k, v in
                          (self._data.get("roi_sets") or {}).items()}
-        #: Named rules modules. Same argument as `roi_sets`: the thing being named is a
-        #: path nobody wants to retype, and `@name` keeps the dependency visible.
+        #: Named rules modules, as paths.
         self.rule_sets = {k: str(v) for k, v in
                           (self._data.get("rule_sets") or {}).items()}
 
     def rule_set(self, name: str) -> str:
-        """The path of a named rules module from ``[rule_sets]``.
-
-        Resolved **relative to the config file**, not the working directory, so a notebook
-        two directories down and a shell at the workspace root get the same module. A
-        relative path interpreted against the cwd is how the same command loads different
-        rules depending on where it was run.
-        """
+        """The path of a named rules module from ``[rule_sets]``, resolved relative to the
+        config file rather than the working directory."""
         if name not in self.rule_sets:
             known = ", ".join(sorted(self.rule_sets)) or "(none configured)"
             raise ValueError(
@@ -131,8 +106,7 @@ class Config:
     def url(self, name: str, *, uuid: str | None = None) -> str:
         """A complete ``dvid://`` URL for a configured instance name.
 
-        ``name`` may be a key under ``[instances]`` or a literal DVID instance name — a
-        literal is allowed so a one-off instance needs no config edit.
+        ``name`` is a key under ``[instances]`` or a literal DVID instance name.
         """
         if not self.server:
             raise ValueError(
@@ -147,10 +121,7 @@ class Config:
         return f"the config at {self.path}" if self.path else "the (empty) default config"
 
     def resolve(self, value: str) -> str:
-        """Turn ``@name`` into a URL; leave anything else untouched.
-
-        The one entry point the CLI uses, so the ``@`` requirement lives in one place.
-        """
+        """Turn ``@name`` into a URL; leave anything else untouched."""
         if not isinstance(value, str) or not value.startswith(REFERENCE_PREFIX):
             return value
         name = value[len(REFERENCE_PREFIX):]
@@ -162,8 +133,7 @@ class Config:
                 f"${ENV_VAR}, then for {FILENAME} (or {SUBDIR}/{FILENAME}) in the working "
                 f"directory and every parent.")
         if name not in self.instances:
-            # Allowed, but say so: a typo would otherwise become a request for a
-            # nonexistent DVID instance and fail much further along.
+            # A typo would otherwise become a request for a nonexistent instance.
             known = ", ".join(sorted(self.instances)) or "(none configured)"
             raise ValueError(
                 f"--src {value!r}: {name!r} is not in [instances] of {self._where()}. "
@@ -186,8 +156,7 @@ def find(start: str | Path | None = None) -> str | None:
     """
     explicit = os.environ.get(ENV_VAR)
     if explicit:
-        # An explicit path that does not exist is an error, not something to fall through:
-        # the caller said which file they meant.
+        # An explicit path that does not exist is an error, not a fall-through.
         if not Path(explicit).expanduser().is_file():
             raise FileNotFoundError(
                 f"${ENV_VAR} points at {explicit!r}, which is not a file")
@@ -196,7 +165,7 @@ def find(start: str | Path | None = None) -> str | None:
     here = Path(start).expanduser().resolve() if start else Path.cwd().resolve()
     if here.is_file():
         here = here.parent
-    # `here` then all parents, nearest first — so a repo-local file beats a workspace one.
+    # Nearest first, so a repo-local file beats a workspace one.
     for directory in (here, *here.parents):
         for candidate in (directory / FILENAME, directory / SUBDIR / FILENAME):
             if candidate.is_file():
@@ -205,11 +174,8 @@ def find(start: str | Path | None = None) -> str | None:
 
 
 def load(path: str | None = None) -> Config:
-    """Load the config, or an empty one if there is none.
-
-    Empty rather than an error, so importing this package never depends on a file existing.
-    Asking an empty config for a URL is what raises, and it names where it looked.
-    """
+    """Load the config, or an empty one if there is none. Asking an empty config for a URL
+    raises, naming where it looked."""
     chosen = str(Path(path).expanduser()) if path else find()
     if chosen is None:
         return Config({}, None)

@@ -1,8 +1,7 @@
 """``neu-mark`` — the command line over neu_mark.
 
-Argparse, matching its siblings (`neu-vol`, `neu-morpho`) rather than introducing a second
-CLI framework into the family. Heavy imports stay inside the subcommand that needs them so
-`--help` is fast.
+Argparse, like `neu-vol` and `neu-morpho`. Heavy imports stay inside the subcommand that
+needs them, so `--help` is fast.
 """
 
 from __future__ import annotations
@@ -14,12 +13,8 @@ from typing import Any
 
 from . import __version__
 
-#: Repeated verbatim in both fetch subcommands, since `--src` is where the URL structure
-#: gets explained and it is the thing users are least likely to guess.
-# Flowing prose, not an aligned table: argparse re-wraps `help=` whatever formatter the
-# parser uses (RawDescriptionHelpFormatter only spares description/epilog), so the columns
-# never survived to the terminal — and in the docs the unindented line after an indented
-# block made docutils read it as a broken definition list, eight warnings' worth.
+#: The `--src` help, shared by the fetch subcommands. Flowing prose rather than a table:
+#: argparse re-wraps `help=` text, and the docs build misreads indented blocks in it.
 _SRC_HELP = (
     "DVID source as dvid://SERVER/UUID/INSTANCE, always three segments. "
     "SERVER may carry a port (emdata3:8900); a bare host gets http://, so use "
@@ -297,16 +292,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_help_command(sub) -> None:
-    """``neu-mark help [COMMAND ...]`` — the same text ``--help`` prints.
-
-    Because `help explore` and `explore --help` are the same thing to everyone except
-    argparse: one of the two is what a person types first, and being told "invalid choice"
-    for it is a poor greeting from a tool whose whole surface is subcommands.
-
-    It **re-parses** rather than reaching into the parser, so what it prints cannot drift
-    from ``--help``: it literally is ``--help``. An unknown name gets argparse's own error
-    listing the real choices, which is better than anything written here.
-    """
+    """``neu-mark help [COMMAND ...]``, which re-parses as ``COMMAND --help``, so it prints
+    exactly what ``--help`` does."""
     q = sub.add_parser(
         "help", help="what `--help` prints, as a subcommand",
         description="Print the help for the tool, or for one of its subcommands.\n\n"
@@ -345,10 +332,8 @@ def _resolve_src(value: str) -> str:
 def _src_spec(src: str) -> dict[str, Any]:
     """Resolve ``--src`` to a spec, expanding an ``@name`` config reference.
 
-    A reference is **printed** when it resolves, for the same reason a ``{uuid}``
-    placeholder in ``--out`` is: a command whose meaning depends on an uncommitted file
-    should say what that file turned it into. The provenance record stores the resolved URL
-    regardless, so a config cannot make an export less traceable.
+    A resolved reference is printed, so the command's output shows what the config turned
+    it into.
     """
     from neu_vol.dvid import is_url, parse_url
 
@@ -370,10 +355,8 @@ def _src_spec(src: str) -> dict[str, Any]:
 def _expand_out(out: str, source: dict[str, Any]) -> str:
     """Resolve {uuid}/{branch}/{instance} in the destination.
 
-    Takes the **already-resolved** source, so ``{uuid}`` is the node the data will
-    actually be read from. Expanding against an unresolved spec would name the output
-    after the branch HEAD even under ``--dvid-locked``, i.e. after a node the tables did
-    not come from — and the path is what someone browsing a directory believes.
+    Takes the already-resolved source, so ``{uuid}`` is the node actually read (under
+    ``--dvid-locked``, not the branch HEAD).
     """
     from neu_vol.ops.naming import expand, has_placeholder
 
@@ -413,8 +396,7 @@ def _roi_list(value: str | None) -> list[str] | None:
 def _rules_path(value: str | None) -> str | None:
     """``--rules`` as a path: a filename, or an ``@name`` from ``[rule_sets]``.
 
-    Prints what an ``@name`` resolved to, for the same reason ``--src @counts`` does: a
-    saved command must not look self-contained when it depended on someone's config.
+    Prints what an ``@name`` resolved to.
     """
     from . import config as _config
 
@@ -469,8 +451,7 @@ def _report_match(match: dict) -> None:
 def cmd_points(args) -> int:
     from . import ops
 
-    # Resolve the node FIRST: the destination name derives from it, and so does every
-    # request. One resolution, one answer.
+    # Resolve the node first: the destination name and every request derive from it.
     source = ops.open_points_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)

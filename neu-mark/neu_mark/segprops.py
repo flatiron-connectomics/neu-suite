@@ -1,62 +1,21 @@
 """Building a neuroglancer ``segment_properties`` source from the body annotations.
 
-The format is one **inline** JSON document — there is no sharded form — so the whole thing
-is a dict, and every write goes through ``neu_vol.location`` like the rest of this
-package.
+The format is one inline JSON document, written through ``neu_vol.location``. What the
+spec allows shapes it:
 
-## What the spec allows, and what that forces
+- At most one ``label``, one ``description`` and one ``tags`` property, so every facet
+  pools into the one ``tags`` property as ``prefix:value`` (``side:L``, ``group:Mi1``).
+- A segment's ``tags`` values are indices into the ``tags`` array, in increasing order.
+- A tag may contain no spaces (they are hyphenated here) and no leading ``#``. Matching is
+  case-insensitive, so values differing only in case show as one chip in the viewer
+  (:func:`case_collisions` reports them); case is preserved.
 
-- **At most one property of type ``label``**, one ``description``, one ``tags``. Any number
-  of ``number`` and ``string``. That single-``tags`` limit is the shape-defining constraint:
-  every facet has to pool into one property, which is why tags carry a facet prefix
-  (``side:L``, ``group:Mi1``) rather than living in separate properties.
-  The separator is a **colon**, matching published sources, because it is what lets a
-  reader tell a facet from a standalone flag — with a hyphen every tag becomes its own
-  boolean and no facet can be grouped on.
-- ``tags`` values are **indices into that property's own ``tags`` array, in increasing
-  order**. Not strings.
-- A tag must contain **no spaces** and no leading ``#``, and matching is
-  **case-insensitive** — so spaces are hyphenated here. Case is **preserved**, because
-  cell types are conventionally cased and folding them costs readability everywhere; the
-  case-insensitive matching means two values differing only in case are one chip in the
-  viewer, which :func:`case_collisions` reports rather than pre-empting.
-- The ``description`` *member* must not appear on a ``tags`` property (it may on the
-  others). Note ``description`` is both a member name and a property type; only the member
-  is restricted.
+Facets come from rules (:class:`neu_mark.rules.Rule`): the builtins in
+:mod:`neu_mark.segprops_rules`, overridden by name by a dataset's rules module. The
+``label`` defaults to the raw ``instance`` string; a reserved ``label`` rule replaces it.
 
-## Where the facets come from
-
-Every facet is a :class:`neu_mark.rules.Rule`. The defaults live in
-:mod:`neu_mark.segprops_rules` and have no privileges: a dataset's own module is loaded
-by path and **overrides them by name**, so ``side`` can be redefined, a ``glomerulus`` rule
-added, and a ``drop`` rule can exclude a body outright. Nothing here parses a cell type —
-that is dataset knowledge, and a rules module is where it goes.
-
-## Why `label` is the raw instance string by default
-
-Because it lets this ship before the ``cell_type`` question is settled. ``instance`` is
-populated on 99.9% of annotated bodies and is the most informative single string available;
-the curated ``type`` field, on only ~5% of the instance and ~13% of synapse-rich bodies,
-goes in as a ``group:`` tag instead of competing to be the name. A rules module may declare
-a reserved ``label`` rule (``tag=False``) to name segments itself; without one, the default
-stands. The label is put through :func:`neu_mark.explore.normalize` and **not** through
-:func:`normalize_tag` — hyphenating spaces is a *tag* constraint the format does not place
-on a label, and applying it would rewrite ``LC10 anterior`` for no reason.
-
-## The vocabulary guard
-
-One ``tags`` property means one flat vocabulary array, **inline in a document every viewer
-downloads whole**, so a rule that accidentally returns the entire instance string produces a
-spec-legal source that is unusable and slow. ``max_tags`` takes either form — **below 1 a
-fraction of the segment count, 1 or above an absolute ceiling** — and defaults to a fraction
-because what counts as a lot depends on the dataset: 11,752 distinct ``type`` values over
-~165k male-CNS bodies is 7%, and perfectly reasonable. See :func:`resolve_tag_limit`.
-
-## Numbers, and one dtype that is not free to choose
-
-``voxels`` **must be uint32**, not float32: float32 represents integers exactly only up to
-2^24 (16,777,216), and real bodies here run to 86 million voxels, which would be silently
-rounded. The synapse counts are small enough for either; they use uint32 too, for one rule.
+The document is inline, so every viewer downloads all of it: ``max_tags`` and ``max_facets``
+refuse a vocabulary large enough to make the layer unusable (:func:`resolve_tag_limit`).
 """
 
 from __future__ import annotations
@@ -67,54 +26,32 @@ from typing import Any, Iterable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
-#: The subdirectory of a volume that holds this, and the `info` key naming it. Both are
-#: fixed by the precomputed spec: the key's value is a subdirectory name.
+#: The volume subdirectory holding the document (also its `info` key's value).
 SUBDIR = "segment_properties"
 
 AT_TYPE = "neuroglancer_segment_properties"
 
-#: Joins a facet prefix to its value. **Load-bearing, not cosmetic.** It is what lets a
-#: reader tell a *facet* (`side:L`, groupable) from a standalone flag (`fragment`, a
-#: boolean); with a hyphen, `side-l` is indistinguishable from `fragment` and every tag
-#: collapses into its own boolean — 483 of them on real data, with no `groupby` possible on
-#: any facet. It also matches the convention published datasets use
-#: (`superclass:ol_intrinsic`), so one reader handles both. A rule declaring ``prefix=""``
-#: mints a bare tag, which is right for flags: they are not mutually exclusive — a body can
-#: be nucleated *and* cervical — so there is no first value to prefer.
+#: Joins a facet prefix to its value. It is what distinguishes a facet (`side:L`, which can
+#: be grouped on) from a bare flag (`fragment`), and matches published datasets
+#: (`superclass:ol_intrinsic`). A rule with ``prefix=""`` mints a bare flag.
 SEPARATOR = ":"
 
-#: Cap on the tag vocabulary. **A fraction below 1, or an absolute count at 1 or above** —
-#: see :func:`resolve_tag_limit`. The default is a fraction because the honest size depends
-#: on the dataset: 11,752 distinct `type` values over ~165k male-CNS bodies is 7% and
-#: entirely reasonable, while the same 11,752 over 21k bodies would mean a rule is echoing
-#: the instance string back.
+#: Cap on the tag vocabulary: a fraction of the segment count below 1, an absolute count at 1
+#: or above (:func:`resolve_tag_limit`). A fraction, because a reasonable size depends on
+#: the dataset (11,752 types over ~165k bodies is 7%).
 DEFAULT_MAX_TAGS = 0.10
 
-#: Floor under the FRACTION branch only: on a short list every body can legitimately have
-#: its own type, and 10% of 40 bodies is a meaningless threshold. An absolute count is a
-#: statement rather than a ratio, so it is never raised to meet this.
+#: Floor under a fractional limit only (10% of 40 bodies is too small to mean anything).
 MIN_TAG_ALLOWANCE = 100
 
-#: Cap on distinct facets — the `side:`/`group:` namespaces, plus one for bare flags. This
-#: is the *other* failure the fraction does not catch: the hyphen incident produced 483 tags
-#: that were each their own field, which is a small vocabulary and an unusable layer.
+#: Cap on distinct facets (`side:`, `group:`, ..., plus one for bare flags), which catches
+#: rules minting a separate facet per value.
 MAX_FACETS = 24
 
 
 def normalize_tag(value: Any) -> str | None:
-    """A tag as the format requires: no spaces, no leading ``#``. **Case is preserved.**
-
-    Cell types are conventionally cased (``Tm2``, ``LC10``, ``MBON``) and folding them to
-    ``group:tm2`` costs readability in the viewer and in every group-by, for a collision
-    that is rare and now *detected* rather than pre-empted: neuroglancer matches tags
-    case-insensitively, so two values differing only in case would be one chip, and
-    :func:`case_collisions` reports any before they are written. Published sources
-    preserve case for the same reason.
-
-    Missingness goes through :func:`neu_mark.explore.normalize`, which is the one place
-    that knows ``pd.NA`` is neither ``None`` nor a float. Testing it by hand here is how
-    16,606 bodies acquired a tag reading ``group:<na>``: ``pd.NA is not None`` is True and
-    ``str(pd.NA)`` is the *truthy* string ``"<NA>"``.
+    """A tag as the format requires: spaces hyphenated, no leading ``#``, case preserved.
+    Missing values (including ``pd.NA``) give ``None``, via :func:`neu_mark.explore.normalize`.
     """
     from .explore import normalize
 
@@ -130,10 +67,8 @@ def normalize_tag(value: Any) -> str | None:
 def case_collisions(vocabulary: Iterable[str]) -> dict[str, list[str]]:
     """``{lowercased: [tags]}`` for tags that differ only in case.
 
-    Such tags are ONE chip in the viewer, because matching is case-insensitive — so a
-    body carrying ``group:Tm2`` and another carrying ``group:TM2`` are indistinguishable
-    there while remaining two values in the table. Reported rather than folded: folding
-    is lossy and the collision is rare, so it is better to know which values did it.
+    The viewer matches tags case-insensitively, so ``group:Tm2`` and ``group:TM2`` show as
+    one chip while remaining two values in the table.
     """
     seen: dict[str, list[str]] = {}
     for tag in vocabulary:
@@ -144,10 +79,7 @@ def case_collisions(vocabulary: Iterable[str]) -> dict[str, list[str]]:
 def tag_for(rule, value: Any) -> str | None:
     """One rule's value as a tag: ``prefix:value``, or a bare tag where prefix is empty.
 
-    The colon is added **here**, not by the rule, because ``Rule.prefix`` defaults to the
-    rule's own name — so ``@rule def glomerulus`` yields ``glomerulus:VA1v`` with nothing
-    declared, and an author who writes ``prefix="col:"`` out of habit does not get
-    ``col::C2``.
+    A trailing colon on the prefix is tolerated (``prefix="col:"`` gives ``col:C2``).
     """
     prefix = getattr(rule, "prefix", "") or ""
     prefix = prefix.rstrip(SEPARATOR)
@@ -158,17 +90,13 @@ def tag_for(rule, value: Any) -> str | None:
 def facets(record: Mapping[str, Any], ruleset=None) -> dict[str, list[str]]:
     """Every facet for one body, as ``{rule name: [tags]}``, already tag-normalized.
 
-    Uses the built-in rules unless given a :class:`~neu_mark.rules.RuleSet`. Drop rules
-    are **not** consulted here — exclusion is :func:`build`'s decision, and a function that
-    silently returned ``{}`` for both "no facets" and "should not exist" would be the
-    ambiguity this package keeps removing elsewhere.
+    Uses the built-in rules unless given a :class:`~neu_mark.rules.RuleSet`, used as is.
+    Drop rules are not consulted; exclusion happens in :func:`build`.
     """
     from .explore import _plain
     from .rules import RESERVED
 
     if ruleset is None:
-        # As-is when given, unlike `build`, which overrides the builtins with it: a caller
-        # handing this one ruleset is asking what exactly that ruleset does.
         from .segprops_rules import BUILTIN
 
         ruleset = BUILTIN
@@ -192,12 +120,8 @@ def _as_series(record: Mapping[str, Any]):
 
 
 def _resolve_rules(rules=None, *, only: bool = False, keep_glia: bool = True):
-    """The rules to run: builtins, or builtins **overridden by name**, or yours alone.
-
-    Override rather than replace is the default because a module adding one glomerulus rule
-    should not have to re-declare ``side`` and the flags to keep them. ``only=True`` is for
-    a module that means to own the whole output.
-    """
+    """The rules to run: the builtins, the builtins overridden by name by ``rules``, or
+    (``only=True``) ``rules`` alone."""
     from .rules import Rule, RuleSet
     from .segprops_rules import BUILTIN, DROP_GLIA
 
@@ -208,11 +132,8 @@ def _resolve_rules(rules=None, *, only: bool = False, keep_glia: bool = True):
     else:
         resolved = BUILTIN.override(rules)
     if not keep_glia:
-        # An override, not a second exclusion path: after this, exactly one rule named
-        # `glia` decides both whether a body is glia and what happens to it. Built from
-        # WHATEVER rule currently answers that question — a module that redefined `glia`,
-        # or replaced the builtins entirely, must not have --drop-glia quietly fall back to
-        # this package's idea of what glia look like in its dataset.
+        # Turn whichever rule is currently named `glia` (possibly a dataset's own) into a
+        # drop rule, so --drop-glia uses the same definition of glia as the tags.
         current = next((r for r in resolved if r.name == "glia"), None)
         dropper = DROP_GLIA if current is None else Rule(
             current.func, name="glia", drop=True, needs=current.needs,
@@ -230,15 +151,13 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     optional frame with ``body``/``pre``/``post``/``syn``; ``sizes`` an optional
     ``{body: voxels}``.
 
-    ``rules`` is a :class:`~neu_mark.rules.RuleSet` (or anything it accepts) whose rules
-    **override the builtins by name**; ``rules_only=True`` uses it alone. Evaluation order
-    is: drop rules first, so an excluded body's tag rules never run and cannot skew the
-    coverage numbers; then tag rules; then the reserved ``label``/``description`` rules;
-    then any other ``tag=False`` rule, which is computed and reported but emits nothing.
+    ``rules`` is a :class:`~neu_mark.rules.RuleSet` (or anything it accepts) overriding the
+    builtins by name; ``rules_only=True`` uses it alone. Evaluation order: drop rules,
+    then tag rules, then the reserved ``label``/``description`` rules, then any other
+    ``tag=False`` rule (reported, emits nothing).
 
-    Returns ``{"info": …, "report": …}``. The report is not decoration: a facet that fired
-    on 2% of bodies looks exactly like a facet the data does not have, and only a coverage
-    number tells them apart.
+    Returns ``{"info": …, "report": …}``. Check the report's coverage: a facet that fired on
+    2% of bodies looks the same in the viewer as one the data does not have.
     """
     import json
 
@@ -251,10 +170,8 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
 
     ruleset = _resolve_rules(rules, only=rules_only, keep_glia=keep_glia)
 
-    # A declared column the records simply never carried is normal here, not an error:
-    # `type` is populated on ~13% of bodies, so a body list where nobody has one has no
-    # `type` column at all. Fill it and SAY so — `RuleSet.require` would refuse a
-    # legitimate list, and leaving it out is the AttributeError `needs` exists to prevent.
+    # A declared column absent from every record (e.g. `type` on a list where no body has
+    # one) is filled with None and reported, rather than refused.
     absent = sorted({c for r in ruleset for c in r.needs} - set(frame.columns))
     for column in absent:
         frame[column] = None
@@ -306,8 +223,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
                 fired[r.name] += 1
                 distinct[r.name].update(str(v) for v in values)
 
-        # The label goes through `normalize` and NOT `normalize_tag`: hyphenating spaces is
-        # a tag constraint, and a label is free of it.
+        # `normalize`, not `normalize_tag`: labels may contain spaces.
         label = normalize(label_rule.scalar(row)) if label_rule is not None else None
         if label is not None:
             fired["label"] += 1
@@ -325,8 +241,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
         raise ValueError("every body was excluded; nothing to write")
 
     ids = [str(body) for body, _l, _d, _t in rows]
-    # `label` falls back to the id so that no segment is nameless in the viewer — a blank
-    # label is indistinguishable from a missing property.
+    # A segment with no label is labelled with its id.
     labels = [label if label else str(body) for body, label, _d, _t in rows]
 
     vocabulary: list[str] = []
@@ -356,8 +271,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
                            "values": [d or "" for _b, _l, d, _t in rows]})
     properties.append(
         {"id": "tags", "type": "tags", "tags": vocabulary,
-         # Parallel to `tags`, so every entry needs one; it is the description of the rule
-         # that minted it, which is why a bare flag can now describe itself properly.
+         # Parallel to `tags`: the description of the rule that minted each.
          "tag_descriptions": [described.get(tag, tag) for tag in vocabulary],
          "values": per_body})
 
@@ -375,14 +289,11 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
         "bodies": len(ids),
         "excluded": excluded,
         "tags": len(vocabulary),
-        # The RESOLVED ceiling and the setting that produced it. Both, because `0.1` and
-        # `2111` are the same ceiling here and a reader should not have to re-derive which
-        # branch ran — see `resolve_tag_limit`.
+        # The resolved ceiling, and the setting it came from.
         "tag_limit": limit,
         "max_tags": max_tags,
         "facets": facet_names,
-        # The whole document is inline and every viewer downloads all of it, so this is the
-        # number that says what a big vocabulary actually costs the person opening the link.
+        # What every viewer downloads.
         "bytes": len(json.dumps(info)),
         "case_collisions": {low: tags for low, tags in sorted(collisions.items())},
         "coverage": _coverage_report(ruleset, fired, distinct, segments=len(ids),
@@ -399,10 +310,8 @@ def _coverage_report(ruleset, fired: Mapping[str, int], distinct: Mapping[str, s
                      segments: int, total: int) -> dict[str, dict]:
     """Per rule: how many bodies it fired on, and how many distinct values it produced.
 
-    A **drop** rule's fraction is over the bodies that went IN, since the ones it fired on
-    are by definition not among those that came out; every other fraction is over the
-    segments written. Reporting both against one denominator is how a drop rule that fired
-    on most of the input comes out at 250%.
+    A drop rule's fraction is over the input bodies; every other rule's is over the
+    segments written.
     """
     out = {}
     for r in ruleset:
@@ -420,16 +329,9 @@ def _coverage_report(ruleset, fired: Mapping[str, int], distinct: Mapping[str, s
 def resolve_tag_limit(max_tags: float, segments: int) -> tuple[int, str]:
     """``max_tags`` as a concrete tag ceiling: ``(limit, how)``.
 
-    **Below 1 is a fraction of the segment count; 1 or above is an absolute count.** The
-    branch is chosen by VALUE, never by whether the number was written with a decimal point:
-    ``1`` and ``1.0`` are the same number to TOML and to JSON, so a setting that meant "all
-    of them" would come back from a config or a provenance record meaning "one tag". Nothing
-    is lost by the rule, since a fraction of 1.0 and an absolute count of ``segments`` are
-    the same ceiling.
-
-    :data:`MIN_TAG_ALLOWANCE` floors the **converted fraction only**. An absolute count is a
-    statement rather than a ratio — ``max_tags=25`` means 25, and raising it to meet a floor
-    would make the setting not do what it says.
+    Below 1 is a fraction of the segment count, 1 or above an absolute count, decided by
+    value (``1`` and ``1.0`` are the same to TOML and JSON). :data:`MIN_TAG_ALLOWANCE`
+    floors a fraction only; ``max_tags=25`` means 25.
     """
     if not max_tags > 0:
         raise ValueError(
@@ -446,12 +348,8 @@ def check_vocabulary(vocabulary: Sequence[str], distinct: Mapping[str, set], *,
                      facets: Sequence[str] | None = None) -> int:
     """Refuse a vocabulary big enough to make the layer unusable. Returns the limit applied.
 
-    Two different failures, so two checks. **Too many values** is a rule echoing the
-    instance string back — spec-legal, and it produces a chip per body plus a document every
-    viewer downloads whole. **Too many facets** is the hyphen incident: 483 tags that were
-    each their own field, a small vocabulary and an unusable layer.
-
-    See :func:`resolve_tag_limit` for how ``max_tags`` becomes a number.
+    Two checks: too many tags (typically a rule echoing the whole instance string) and too
+    many facets (a rule minting a separate facet per value). See :func:`resolve_tag_limit`.
     """
     if facets is None:
         facets = sorted({t.split(SEPARATOR, 1)[0] if SEPARATOR in t else ""
@@ -467,7 +365,7 @@ def check_vocabulary(vocabulary: Sequence[str], distinct: Mapping[str, set], *,
     if len(vocabulary) > limit:
         worst, count = max(((n, len(v)) for n, v in distinct.items()),
                            key=lambda kv: kv[1], default=("", 0))
-        # Say WHICH branch produced the number, so it is clear whether the floor was in play.
+
         applied = (f"{max_tags:.0%} of {segments}, floored at {MIN_TAG_ALLOWANCE}"
                    if how == "fraction" else f"an explicit count of {limit}")
         raise ValueError(
@@ -496,8 +394,8 @@ def _number_properties(ids: Sequence[str], *, counts=None, sizes=None) -> list[d
                         "values": [int(v) for v in series]})
 
     if sizes:
-        # uint32, NOT float32: float32 is exact only to 2^24 and real bodies here reach
-        # 86 million voxels, which float32 would round.
+        # uint32, not float32: float32 is exact only to 2^24, and bodies can exceed 86
+        # million voxels.
         out.append({"id": "voxels", "type": "number", "data_type": "uint32",
                     "description": "size in voxels at full resolution",
                     "values": [int(sizes.get(b, 0)) for b in order]})

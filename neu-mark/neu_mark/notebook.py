@@ -1,13 +1,7 @@
 """Fetches that return DataFrames and write nothing. The interactive entry point.
 
-``neu_mark.ops`` is the other half: same fetches, but they write tables and a provenance
-record to a destination. Both call the same functions in :mod:`neu_mark.dvid`, so what
-you get in a notebook is what a run would write — the difference is only whether it lands on
-disk.
-
-Everything here is re-exported at package top level and imported lazily, so
-``from neu_mark import select_bodies`` works without ``neu-mark --help`` paying for
-pandas:
+:mod:`neu_mark.ops` runs the same fetches (both call :mod:`neu_mark.dvid`) and writes
+tables and a provenance record. Everything here is re-exported at the package top level:
 
     >>> from neu_mark import source, select_bodies, points, body_annotations
     >>> src   = source("dvid://dvid.example.org/93fdbc:main/synapses",
@@ -16,9 +10,9 @@ pandas:
     >>> pts, rels = points(src, sel.head(50))           # DataFrames; nothing written
     >>> ann   = body_annotations("@bodies", sel.head(50))
 
-Sources are accepted in four forms, so nothing has to be spelled twice: a ``dvid://`` URL, an
-``@name`` config reference (see :mod:`neu_mark.config`), an already-opened source dict,
-or a plain instance name when a config supplies the server and uuid.
+A source is a ``dvid://`` URL, an ``@name`` config reference (:mod:`neu_mark.config`), an
+already-opened source dict, or a bare instance name when a config supplies the server and
+uuid.
 """
 
 from __future__ import annotations
@@ -47,7 +41,7 @@ def _url(location: str, *, config=None) -> str:
     cfg = config if config is not None else _config.load()
     if location.startswith(_config.REFERENCE_PREFIX):
         return cfg.resolve(location)
-    # A bare name: only meaningful with a config, and worth a clear message otherwise.
+    # A bare instance name needs a config for the server and uuid.
     if not cfg.server:
         raise ValueError(
             f"{location!r} is not a dvid:// URL, and no config was found to build one "
@@ -60,16 +54,14 @@ def source(location: str | Mapping[str, Any], *, kind: str = "points",
            locked: bool = False, config=None) -> dict[str, Any]:
     """Resolve a location to an opened source: concrete uuid, validated instance type.
 
-    ``kind`` selects which validation applies — ``"points"`` for an annotation instance,
-    ``"bodies"`` for a keyvalue, ``"counts"`` for a labelsz index (or the annotation instance
-    it indexes). The resolved node is pinned here, once, so every later call in the notebook
-    reads the same version rather than following a branch that moves under you.
+    ``kind`` is ``"points"`` (an annotation instance), ``"bodies"`` (keyvalue) or
+    ``"counts"`` (a labelsz index, or the annotation instance it indexes). The node is
+    pinned once, so later calls read the same version even if the branch moves.
     """
     if kind not in _OPENERS:
         raise ValueError(f"kind must be one of {', '.join(_OPENERS)}; got {kind!r}")
     if isinstance(location, Mapping):
-        # Already a spec or an opened source. Re-opening a pinned spec is idempotent and
-        # cheap (the node resolution is memoized), and it validates the instance type.
+        # A spec or opened source; re-opening is cheap and validates the instance type.
         spec = dict(location)
     else:
         from neu_vol.dvid import parse_url
@@ -85,11 +77,8 @@ def _as_source(location, kind: str, locked: bool, config) -> dict[str, Any]:
 
 
 def body_ids(bodies) -> list[int]:
-    """Body ids out of whatever you have: a DataFrame, a Series, an array, or a list.
-
-    A DataFrame is looked up by column, so the output of :func:`select_bodies` and a table
-    read back off disk both work without a ``["body"]`` in between.
-    """
+    """Body ids from a DataFrame (its ``body``, ``bodyid`` or ``body_id`` column), a Series,
+    an iterable, a body-list file path, or a single id."""
     import pandas as pd
 
     from . import bodies as _bodies
@@ -114,8 +103,7 @@ def select_bodies(location="counts", *, min_synapses: int = 10, min_pre: int = 0
                   config=None):
     """Bodies ranked by synapse count. Returns ``body``, ``pre``, ``post``, ``syn``.
 
-    The no-write half of ``neu-mark select-bodies``. Same query, same ranked ``labelsz``
-    index, nothing written.
+    The query behind ``neu-mark select-bodies``, without writing anything.
     """
     src = _as_source(location, "counts", locked, config)
     return _dvid.fetch_synapse_counts(src, min_total=min_synapses, min_pre=min_pre,
@@ -128,16 +116,13 @@ def points(location, bodies, *, threads: int = _dvid.DEFAULT_THREADS,
            on_roi_overlap: str = "warn"):
     """Point annotations for ``bodies``. Returns ``(points, relationships)``.
 
-    With ``connections=True`` returns ``(points, relationships, connections)`` — the
-    oriented, de-duplicated ``(tbar, psd)`` pairs. The match rate is not printed here; take
-    it with ``neu_mark.tables.match_rate(connections)``, and remember it is a statement
-    about how much of the connectome ``bodies`` covers.
+    With ``connections=True`` returns ``(points, relationships, connections)``, the last
+    being de-duplicated ``(tbar, psd)`` pairs; check how much of it resolved with
+    :func:`neu_mark.tables.match_rate`.
 
-    ``rois`` adds a ``roi`` column to the points frame: which neuropil each synapse is in.
-    A list of instance names, or ``"@name"`` for a set from the config. Only the points
-    frame gets it — a relationship spans two points that may be in different neuropils, so
-    a single column on it would have to pick one, while a join back to ``points`` answers
-    either side. ``neu_mark.tables.body_roi_counts`` aggregates it per body.
+    ``rois`` (ROI names, or ``"@name"`` for a set in the config) adds a ``roi`` column to the
+    points frame only, since a relationship's two ends may be in different neuropils.
+    :func:`neu_mark.tables.body_roi_counts` aggregates it per body.
     """
     src = _as_source(location, "points", locked, config)
     result = _dvid.fetch_points(src, body_ids(bodies), threads=threads)
@@ -177,13 +162,9 @@ def body_annotations(location="bodies", bodies=None, *, locked: bool = False, co
 def all_body_annotations(location="bodies", *, locked: bool = False, config=None):
     """Every record in the property keyvalue instance, as one row per body.
 
-    A different population from :func:`body_annotations` over a selected list, and the
-    difference is large: the ≥10-synapse selection holds 117 glia against **1,014** in the
-    instance, because most glia sit below any synapse threshold. Use this to ask what is
-    annotated in the dataset at all; use the body-list form to ask about a chosen set.
-
-    Reads a partition of the key space rather than calling ``/keys``, which is unreliable at
-    this size — 58,394 records in ~57 s. There is no cheap count, and none is needed.
+    A different population from a synapse-selected body list: most glia, for instance, sit
+    below any synapse threshold. About a minute for ~58,000 records (see
+    :func:`neu_mark.dvid.fetch_all_body_annotations`).
     """
     src = _as_source(location, "bodies", locked, config)
     from . import tables as _tables
@@ -195,8 +176,7 @@ def all_body_annotations(location="bodies", *, locked: bool = False, config=None
 def synapse_counts(location="counts", bodies=None, *, locked: bool = False, config=None):
     """Exact ``PreSyn``/``PostSyn`` counts for specific bodies, ignoring any threshold.
 
-    :func:`select_bodies` answers "which bodies are big"; this answers "how big are these",
-    which is the one a notebook usually wants when the body list came from somewhere else.
+    :func:`select_bodies` finds the bodies above a threshold; this counts a given list.
     """
     import pandas as pd
 
