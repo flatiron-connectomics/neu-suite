@@ -49,7 +49,7 @@ def _voxel_size_xyz(info: Mapping[str, Any]) -> tuple[float, float, float]:
         if unit not in ("nanometer", "nm"):
             raise ValueError(
                 f"dataset {info.get('name')!r} has voxel size in {unit!r}; only "
-                f"nanometres are supported (invariant NM-SPACE)")
+                f"nanometres are supported, since every volume here is placed in nm")
         scale = scale["factor"]
     return tuple(float(v) for v in scale)    # type: ignore[return-value]
 
