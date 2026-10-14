@@ -80,9 +80,10 @@ in neu-proc and neu-eval needs the cupy wheel matching your CUDA, installed by h
 without it pip re-resolves conda-provided binaries (tensorstore, h5py) from PyPI and
 invites an ABI mismatch.
 
-`neuclease` (DVID sources) comes from `flyem-forge` for the same reason — it needs
-`libdvid-cpp`, `vigra` and `dvidutils`, none of which exist on PyPI, which is why there is
-no `dvid` pip extra and cannot be one. `cloud-volume` is deliberately **not** in this environment: it pins
+**DVID sources are optional.** They need `neuclease`, also conda-only on `flyem-forge`
+(it needs `libdvid-cpp`, `vigra` and `dvidutils`, none on PyPI), so there is no `dvid` pip
+extra. Add it by layering `environment-dvid.yml` when you create the environment:
+`mamba create -n neu-env -f environment.yml -f environment-dvid.yml`. `cloud-volume` is deliberately **not** in this environment: it pins
 `DracoPy<2` and would downgrade the DracoPy behind neu-morpho's mesh serialisation, so
 it belongs in a separate one.
 

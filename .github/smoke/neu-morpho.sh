@@ -5,7 +5,7 @@
 set -euo pipefail
 python -c "
 import importlib
-for m in ('vol2mesh', 'dvidutils', 'kimimaro', 'tensorstore', 'neuclease', 'neu_morpho'):
+for m in ('vol2mesh', 'dvidutils', 'kimimaro', 'tensorstore', 'neu_morpho'):
     importlib.import_module(m); print(f'  ok  {m}')
 "
 source "$(dirname "$0")/_wheel.sh"

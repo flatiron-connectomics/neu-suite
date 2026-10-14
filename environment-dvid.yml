@@ -1,0 +1,14 @@
+# Optional: DVID sources (neu-vol's dvid backend, neu-mark). Layer it on environment.yml:
+#
+#   mamba create -n neu-env -f environment.yml -f environment-dvid.yml
+#
+# neuclease needs libdvid-cpp and vigra, which are not on PyPI. It is pinned exactly
+# because the solver otherwise spends 25+ minutes backtracking through its older builds;
+# pinned, the combined solve takes about a minute. It also holds hdf5 and h5py at older
+# versions than the main spec alone would pick.
+name: neu-env
+channels:
+  - flyem-forge
+  - conda-forge
+dependencies:
+  - neuclease=0.81.post0.dev114

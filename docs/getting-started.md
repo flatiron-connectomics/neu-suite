@@ -54,7 +54,8 @@ rest of the suite is pinned to 3.12. Two other pieces have their own requirement
 `ipywidgets`); nothing else in the suite imports it. `neu-mark`'s DVID sources need
 `neuclease`, which is conda-only for the same reason `vol2mesh` is — it depends on
 `libdvid-cpp`, and libdvid is what inflates DVID's compressed label blocks. There is
-therefore no `dvid` pip extra, and there cannot be one.
+therefore no `dvid` pip extra. It is optional: create the environment with
+`mamba create -n neu-env -f environment.yml -f environment-dvid.yml` to include it.
 
 ## Running on the cluster
 

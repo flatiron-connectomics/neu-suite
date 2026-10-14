@@ -1,14 +1,19 @@
 # One environment for all nine neu-* packages, for users and CI alike.
 #
-#   conda env create -n neu-env -f environment.yml
+#   mamba create -n neu-env -f environment.yml        # or micromamba; conda is slow
 #   conda activate neu-env
 #   pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
 #       -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc -e ./neu-eval
 #   pip install -r docs/requirements.txt        # only to build the docs site
 #
+# DVID sources (neu-vol's dvid backend, neu-mark) need neuclease, kept out of this file
+# on purpose; layer environment-dvid.yml on top when creating the environment:
+#
+#   mamba create -n neu-env -f environment.yml -f environment-dvid.yml
+#
 # `--no-deps` matters: without it pip re-resolves the compiled stack below (numpy,
 # tensorstore, h5py) from PyPI and can install builds that do not match the conda
-# libraries vol2mesh, dvidutils and neuclease were compiled against.
+# libraries vol2mesh and dvidutils were compiled against.
 #
 # Python is 3.12 because vol2mesh and dvidutils are built only for 3.12 on flyem-forge.
 #
@@ -18,7 +23,7 @@
 name: neu-env
 
 channels:
-  - flyem-forge   # vol2mesh, dvidutils, neuclease: conda-only
+  - flyem-forge   # vol2mesh, dvidutils: conda-only
   - conda-forge
 
 dependencies:
@@ -42,7 +47,6 @@ dependencies:
   - h5py
   - tifffile
   - imageio
-  - neuclease             # DVID sources; needs libdvid-cpp and vigra, not on PyPI
 
   # neu-mark, and the tables in neu-morpho[measure] / neu-eval[report]
   - pandas>=2
