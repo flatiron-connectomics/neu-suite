@@ -1,22 +1,15 @@
-"""The pure half: array in, array out.
+"""The array-in, array-out half of neu-proc.
 
-Every function here takes a numpy array and **voxel-native** parameters, and returns a new
-array. No store, no dask, no blockrun — which is what makes the whole layer importable and
-testable on its own, and is pinned by a test asserting that importing it leaves ``neu_vol``,
-``tensorstore`` and ``dask`` out of ``sys.modules``.
+Every function takes an array and voxel parameters, and returns a new array. Nothing here
+imports a store, dask or blockrun; a test checks that importing this package leaves
+``neu_vol``, ``tensorstore`` and ``dask`` unimported.
 
-Two conventions, both of which cost nothing now and are annoying to retrofit:
+- Per-axis arguments are zyx.
+- Lengths are per axis, or a scalar applied to all three, since a physical length becomes
+  different voxel counts per axis on an anisotropic volume: ``sigma_vox=(1, 4, 4)``.
 
-- **zyx**, like everything else in the suite. A function that takes a per-axis sequence
-  takes it in ``(z, y, x)``.
-- **Per-axis lengths, or a scalar that broadcasts.** ``sigma_vox=(1, 4, 4)`` is what a
-  physical length becomes on an anisotropic volume — and real pyramids are anisotropic — so
-  a signature that only accepts a scalar would have to change. scipy
-  already takes a sequence for ``sigma`` and for most footprint arguments.
-
-Use them directly, or through a :class:`~neu_lib.Piece`, which is where the metadata
-discipline lives: ``piece.apply`` refuses a shape change without a new ``frame=`` and a
-dtype change without a ``kind=``, so a function here can stay dumb about both.
+Use them directly, or through :meth:`neu_lib.Piece.apply`, which refuses a shape change
+without a new ``frame=`` and a dtype change without ``kind=``::
 
     piece.apply(dust, min_voxels=100)
     piece.apply(opening, radius=2)

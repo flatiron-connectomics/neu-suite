@@ -1,77 +1,26 @@
 """Which library runs an op: scipy on the CPU, or cupyx on the GPU.
 
-**Dispatch is on the array, never on a flag or a parameter.** ``cupyx.scipy.ndimage``
-requires a ``cupy.ndarray``, so the module cannot be swapped without moving the data::
+Dispatch follows the array, never a flag: ``cupyx.scipy.ndimage`` needs a ``cupy.ndarray``,
+so one body serves both backends::
 
     def dilate(array, *, radius_vox):
         ndi, array = ndimage_for(array, "grey_dilation")
         return ndi.grey_dilation(array, footprint=kernels.ball(radius_vox))
 
-One body, both backends.
+An op handed a CPU array may still compute on the GPU and copy back, when it has enough
+arithmetic to pay for the transfers; each op declares this with :func:`stage`. Measured on
+an RTX A6000, an EDT dilation of a 192^3 array takes 811 ms in scipy, 16 ms on the GPU
+including both transfers, and 2 ms on an array already there. A bandwidth-bound op (a
+threshold, a cast) cannot win the round trip and should not stage. :func:`like` returns
+each result to where the input lived, so ``dilate(numpy_array)`` returns numpy. For a
+chain of ops, move once with :func:`to_gpu` and every step stays on the GPU.
 
-**An op handed a CPU array may still go to the GPU and come back, and for an expensive
-op that wins.** This module first claimed the opposite — that a single op's transfer
-dominates, so only a chain could pay for it — and measurement contradicted it: a dilation is
-enough arithmetic that the round trip is still faster than staying on the CPU. That was an
-assumption stated as a reason, which is worse than no reason, so it is corrected here rather
-than quietly dropped.
-
-But it is **per-op, not blanket**, because arithmetic intensity is a property of the op and
-not of the caller: a dilation earns the round trip and a threshold cannot, being bandwidth-
-bound either way. So each op declares its own default via :func:`stage`, a caller can
-override it, and ``NEU_PROC_GPU=0`` turns the whole thing off.
-
-**What you hand in is what you get back.** :func:`like` returns the result to the array's
-original home, so ``dilate(numpy_array)`` is numpy and nothing silently moves a caller's data
-onto a GPU. For a *chain*, move once yourself — ``Piece(to_gpu(a), frame)`` — and every op
-then sees a GPU array and stays there, which is the case where transfers really are the
-whole cost.
-
-Three things follow from dispatching on the array rather than on a global switch:
-
-- **No hidden state.** A global ``use_gpu`` is the thing that makes one call behave
-  differently for two people, which is the argument that kept a machine-wide config out of
-  neu-mark. Here the answer is a property of the array in your hand.
-- **Free when cupy is absent.** :func:`is_gpu_array` reads ``type(a).__module__``, so
-  nothing here imports cupy to discover that it is not needed — which is what keeps the
-  ``import neu_proc.ops`` guard honest.
-- **The enable switch governs TRANSFERS, not dispatch.** ``NEU_PROC_GPU=0`` (or
-  ``backend.enabled = False``) makes :func:`to_gpu` a no-op, so a chain stays on the CPU.
-  It deliberately does not disable dispatch: handed a GPU array anyway, the right thing is
-  still to use cupyx, and a flag that silently ran the CPU code on GPU memory would just
-  raise somewhere less obvious.
-
-Measured, on an RTX A6000, for the EDT dilation — ``CPU`` is scipy, ``round trip`` includes
-both transfers, ``on GPU`` is an array already there:
-
-======  =========  ==================  ===================
-size    CPU        round trip          already on GPU
-======  =========  ==================  ===================
-96^3     36.4 ms    2.7 ms (13.6x)      0.7 ms (52x)
-144^3   140.7 ms    6.3 ms (22.3x)      1.3 ms (112x)
-192^3   811.2 ms   16.4 ms (49.5x)      2.0 ms (401x)
-======  =========  ==================  ===================
-
-Two things to read off it. The round trip wins by a wide margin *and the margin grows*,
-because scipy's EDT is superlinear in the voxel count while a transfer is linear — so the
-break-even is below any size worth processing, for this op. And staying on the GPU is
-another ~8x on top, which is the argument for moving once yourself around a chain rather than
-relying on the per-op default.
-
-None of that generalises to a cheap op: a threshold is bandwidth-bound, so it can only lose
-the transfer. Hence ``prefer_gpu`` being the op's call.
-
-The first call is slower than any of these — CUDA context setup and kernel compilation, once
-per process, not attributable to anything here. Use :func:`synchronize` when timing, or cupy
-queues the work and returns and the GPU looks impossibly fast.
-
-**The namespaces are not identical, and the gap is small.** Measured against cupy 14.2 /
-scipy 1.18, ``cupyx.scipy.ndimage`` lacks four real functions —
-``distance_transform_bf``, ``distance_transform_cdt``, ``geometric_transform``,
-``watershed_ift`` — out of the whole module (``distance_transform_edt`` *is* there).
-:func:`ndimage_for` handles that by falling back **loudly**: it moves the array to the CPU
-and warns once, so the op works and the performance cliff is visible. Falling back silently
-would turn "I am using the GPU" into the slowest possible path with nothing to show it.
+``NEU_PROC_GPU=0`` (or ``backend.enabled = False``) makes :func:`to_gpu` a no-op, so
+nothing moves; a GPU array handed in is still processed on the GPU. ``cupyx`` lacks a few
+ndimage functions (``distance_transform_bf``, ``distance_transform_cdt``,
+``geometric_transform``, ``watershed_ift``); :func:`ndimage_for` then falls back to the CPU
+and warns once. When timing GPU code, call :func:`synchronize` first: cupy queues work and
+returns immediately, and the first call in a process also pays CUDA setup.
 """
 
 from __future__ import annotations
@@ -83,34 +32,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Whether :func:`to_gpu` may move anything. Dispatch is unaffected — see the module
-#: docstring. ``NEU_PROC_GPU=0`` turns it off for a process without touching code, which is
-#: what a benchmark or a bisect wants.
+#: Whether :func:`to_gpu` may move anything (dispatch is unaffected). Set from
+#: ``NEU_PROC_GPU``; ``0``, ``false``, ``no`` or ``off`` disable it.
 enabled: bool = os.environ.get("NEU_PROC_GPU", "1").strip().lower() not in (
     "0", "false", "no", "off")
 
-#: Functions cupyx lacks, warned about once each rather than on every call — a filter in a
-#: loop would otherwise bury everything else.
+#: Names already warned about, so each fallback warns once per process.
 _warned: set[str] = set()
 
 
 def is_gpu_array(value: Any) -> bool:
-    """True if ``value`` lives on a GPU, decided **without importing cupy**.
-
-    The type's defining module, not ``isinstance``: importing cupy to ask whether an array
-    is a numpy array would make every CPU-only install pay for a CUDA stack, and on a
-    machine without one it would fail outright.
-    """
+    """True if ``value`` is a cupy array. Checked by module name, so cupy is never imported."""
     return type(value).__module__.split(".")[0] == "cupy"
 
 
 def gpu_available() -> bool:
-    """True if cupy imports *and* a GPU answers. Cached after the first call.
-
-    Both halves are needed and the second is the one that bites: cupy installs fine on a
-    machine with no driver, no GPU, or a CUDA version mismatch, and then fails at the
-    first allocation rather than at import.
-    """
+    """True if cupy imports and a GPU device is found; cached after the first call. cupy
+    can import on a machine with no GPU or driver and fail only at first use, hence the
+    device check."""
     global _available
     if _available is None:
         try:
@@ -127,11 +66,7 @@ _available: bool | None = None
 
 
 def array_module(value: Any):
-    """``cupy`` for a GPU array, ``numpy`` otherwise.
-
-    The ``xp`` of the array-API idiom, so an op needing ``zeros_like`` or ``unique`` gets it
-    from the right library without branching.
-    """
+    """``cupy`` for a GPU array, ``numpy`` otherwise (the array-API ``xp``)."""
     if is_gpu_array(value):
         import cupy
 
@@ -142,16 +77,11 @@ def array_module(value: Any):
 
 
 def ndimage_for(value: Any, need: str | None = None):
-    """``(ndimage module, array)`` for ``value`` — the array moved only if it had to be.
+    """``(ndimage module, array)`` for ``value``.
 
-    ``need`` names the function about to be called. When ``value`` is on the GPU and
-    cupyx does not provide it, the array is brought **back to the CPU** and scipy is
-    returned, with a warning once per function name. Loud rather than silent, because the
-    fallback is the slowest path available and the whole reason to be on the GPU was
-    speed; and loud rather than fatal, because the op still works and a hard failure would
-    make a mixed pipeline unusable over one missing function.
-
-    With no ``need`` the namespace is chosen and the array returned untouched.
+    ``need`` names the function about to be called. If ``value`` is on the GPU and cupyx
+    lacks that function, the array is moved to the CPU and scipy is returned, with a
+    warning once per name. Without ``need`` the array is returned untouched.
     """
     if is_gpu_array(value):
         from cupyx.scipy import ndimage as cu
@@ -172,17 +102,9 @@ def ndimage_for(value: Any, need: str | None = None):
 
 
 def stage(value: Any, *, prefer_gpu: bool = True):
-    """``value`` where the op should compute — moved to the GPU if that is worth it.
-
-    The op decides, through ``prefer_gpu``, because only the op knows its own arithmetic
-    intensity. Pass ``False`` for anything bandwidth-bound (a threshold, a cast, a remap):
-    those cannot recover a round trip and would be slower for the move.
-
-    A GPU array is returned untouched, so a caller who moved once for a chain pays
-    nothing here. Otherwise the usual guards apply: ``NEU_PROC_GPU=0`` or no GPU means
-    the array comes back as it went in, so one piece of calling code runs in both places.
-
-    Pair with :func:`like`, which returns the result to where ``value`` actually lived::
+    """``value`` where the op should compute: moved to the GPU if ``prefer_gpu`` and a GPU
+    is enabled and available, otherwise unchanged. Pass ``prefer_gpu=False`` for a
+    bandwidth-bound op. Pair with :func:`like`::
 
         work = stage(arr)
         ...
@@ -194,30 +116,17 @@ def stage(value: Any, *, prefer_gpu: bool = True):
 
 
 def like(result: Any, reference: Any):
-    """``result`` moved to wherever ``reference`` lives — CPU or GPU.
-
-    So an op gives back what it was handed: ``dilate(numpy_array)`` returns numpy even if it
-    computed on the GPU, and nothing silently leaves a caller's data on a GPU they did not
-    ask to use. It is also what makes :func:`stage` safe to apply by default.
-    """
+    """``result`` moved to wherever ``reference`` lives, CPU or GPU, so an op returns the
+    kind of array it was given."""
     if is_gpu_array(reference):
         return to_gpu(result)
     return to_cpu(result)
 
 
 def cpu_only(value: Any, what: str):
-    """``value`` on the CPU, warning once if it had to be moved.
-
-    For a library with **no GPU implementation at all** — fastmorph, cc3d, fill_voids,
-    edt — which is most of the Seung-lab half. Without this, handing one a GPU array
-    fails with cupy's ``Implicit conversion to a NumPy array is not allowed``, which names
-    neither the function nor what to do about it.
-
-    Loud rather than silent for the same reason :func:`ndimage_for`'s fallback is: the array
-    came to the GPU to be fast, and a copy back is the slowest thing that can happen to
-    it. Loud rather than fatal because the op still works, and refusing would make one
-    CPU-only function poison a whole chain.
-    """
+    """``value`` on the CPU, warning once per ``what`` if it had to be moved. For libraries
+    with no GPU implementation (fastmorph, cc3d, fill_voids, edt), which would otherwise
+    fail with cupy's unhelpful "Implicit conversion to a NumPy array" error."""
     if not is_gpu_array(value):
         return value
     if what not in _warned:
@@ -230,12 +139,8 @@ def cpu_only(value: Any, what: str):
 
 
 def to_gpu(value: Any):
-    """``value`` on the GPU, or unchanged if that is not possible or not wanted.
-
-    Honours :data:`enabled` and :func:`gpu_available`, so a CPU-only machine and a
-    deliberately disabled one both get the array back untouched rather than an error — which
-    is what lets one piece of calling code run in both places.
-    """
+    """``value`` on the GPU; unchanged, without error, if :data:`enabled` is false or no GPU
+    is available."""
     if is_gpu_array(value):
         return value
     if not (enabled and gpu_available()):
@@ -255,12 +160,8 @@ def to_cpu(value: Any):
 
 
 def synchronize() -> None:
-    """Wait for the GPU to finish. Only needed when TIMING something.
-
-    cupy queues work and returns, so a naive ``time.perf_counter()`` around an op measures
-    the enqueue and reports a GPU as impossibly fast. Every benchmark needs this; nothing
-    else does, because a subsequent read synchronizes on its own.
-    """
+    """Wait for queued GPU work to finish. Needed only when timing: cupy returns before the
+    work is done, while reading a result synchronizes on its own."""
     if not gpu_available():
         return
     import cupy

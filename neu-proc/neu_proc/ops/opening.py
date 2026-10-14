@@ -1,40 +1,16 @@
-"""Spherical morphological opening: :func:`opening`.
+"""Spherical morphological opening, label-aware: :func:`opening`.
 
-An erosion followed by a dilation, which is the standard way to remove a thin protrusion or
-a one-voxel bridge without shrinking what is left. ``fastmorph.spherical_open`` does it in
-one pass and is label-aware, so bodies do not merge across the erosion the way a binary
-implementation would.
+An erosion then a dilation, to remove thin protrusions and one-voxel bridges.
+``fastmorph.spherical_open`` does it in one pass without merging bodies.
 
-**It is NOT anti-extensive, and a mathematical opening is.** ``γ(X) ⊆ X`` is the property
-the name implies — an opening can only take voxels away — and fastmorph's does not have it,
-because its erosion and its dilation read ``radius`` differently. Measured on a 10^3 box:
+**The result is not guaranteed to be a subset of the input**, unlike a mathematical
+opening, because fastmorph's erosion and dilation read ``radius`` differently. On a 10^3
+box, ``radius=1`` erodes nothing and dilates to 1600 voxels, so it is a pure dilation;
+``radius=2`` removes a one-voxel shell but returns 1384 voxels. Sizes measured after an
+opening are therefore not comparable to sizes before it. :func:`opening` warns at a radius
+too small to erode.
 
-===========  =========  ==========  ==========
-``radius``   erode      dilate      open
-===========  =========  ==========  ==========
-1.0          1000 (—)   1600        **1600**
-2.0          512        2328        **1384**
-===========  =========  ==========  ==========
-
-So at ``radius=1`` the erosion removes nothing while the dilation still grows the shape by a
-6-neighbourhood: ``opening(arr, radius=1)`` is a **pure dilation**, the opposite of what the
-word promises. At ``radius=2`` a one-voxel shell does come off — a thin spike is genuinely
-removed, which is the point — but the survivor comes back 38% larger than it went in.
-
-Neither number is a bug here to fix; they are what the library does, and both are useful as
-long as nobody is counting on the subset property. What would be a bug is a caller assuming
-``opening`` can only remove: a size measured after opening is not comparable to one measured
-before, and a shape that grew into its neighbour's background changes what touches what.
-:func:`opening` therefore reports the radius at which the erosion is inert rather than
-letting it pass as a no-op.
-
-``radius`` is in the units of ``anisotropy`` — measured, the same convention
-``dilate``'s ``max_distance`` follows for ``sampling`` (:mod:`neu_proc.ops.dilate`): on a
-32^3 array with one 4^3 seed, ``radius=2`` leaves 8 voxels while
-``radius=2, anisotropy=(4, 1, 1)`` leaves 16, and ``radius=8, anisotropy=(4, 1, 1)`` — the
-same 2 voxels along z — erodes it away entirely. Without ``anisotropy`` the radius is
-counted in voxels, which on an anisotropic volume is lopsided in tissue while looking
-symmetric in the array.
+``radius`` is in the units of ``anisotropy`` when given, otherwise in voxels.
 """
 
 from __future__ import annotations
@@ -45,9 +21,8 @@ from fastmorph import spherical_open
 
 from .backend import cpu_only, like
 
-#: Below this, ``fastmorph``'s erosion removes nothing (measured; see the module docstring),
-#: so the call is a dilation wearing the wrong name. Warned about rather than refused —
-#: growing labels by one voxel is a legitimate thing to want, just not under this name.
+#: Below this radius (times the smallest ``anisotropy``), fastmorph's erosion removes
+#: nothing and the call is a pure dilation, so it warns.
 _INERT_EROSION_BELOW = 2.0
 
 
@@ -57,14 +32,10 @@ def opening(arr, radius: float, *, anisotropy=None, **kwargs):
         opening(labels, 2)                              # a one-voxel shell off and back
         opening(labels, 80, anisotropy=(40, 8, 8))      # 80 nm, on an anisotropic volume
 
-    ``radius`` is in the units of ``anisotropy`` when that is given and in voxels when it is
-    not — see the module docstring, which also records why the result is **not** guaranteed
-    to be a subset of the input. It is required rather than defaulted: every useful property
-    of this op depends on it, including whether the erosion happens at all.
+    ``radius`` is in the units of ``anisotropy`` when given, otherwise voxels. The result
+    may be larger than the input (see the module docstring).
 
-    fastmorph has no GPU implementation, so a GPU array is copied off and back with a
-    warning; the answer comes back where the input lived, the same contract
-    :func:`~neu_proc.ops.dilate.dilate` follows.
+    Runs on the CPU; a GPU array is copied off and back with a warning.
     """
     radius = float(radius)
     if radius <= 0:
