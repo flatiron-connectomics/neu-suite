@@ -58,7 +58,7 @@ def aniso(tmp_path):
 @pytest.fixture
 def sharded(tmp_path):
     """A sharded level: write unit 32^3, inner read chunk 8^3."""
-    from neu_vol import StorageProfile
+    from neu_vol.profiles import StorageProfile
 
     src = _source(str(tmp_path / "s_src.zarr"))
     dst = str(tmp_path / "sharded.zarr")

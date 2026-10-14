@@ -241,7 +241,7 @@ def test_packing_a_file_into_itself_is_refused_plainly(tmp_path):
 
 
 def test_release_backends_reports_and_closes_what_it_dropped(tmp_path):
-    from neu_vol import release_backends
+    from neu_vol.backends.base import release_backends
     from neu_vol.backends.base import open_backend
 
     out = str(tmp_path / "held.h5")
@@ -257,7 +257,7 @@ def test_release_backends_reports_and_closes_what_it_dropped(tmp_path):
 
 
 def test_a_view_over_the_file_is_released_too(tmp_path):
-    from neu_vol import release_backends
+    from neu_vol.backends.base import release_backends
     from neu_vol.backends.base import open_backend
 
     out = str(tmp_path / "viewed.h5")

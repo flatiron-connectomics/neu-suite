@@ -621,7 +621,7 @@ def _convert_targets(fmt, dst, profile_arg, chunk, shard):
     ``both`` writes two volumes from one read-side setup: precomputed for viewing, zarr
     for downstream compute. Suffixes keep them distinguishable at one ``--dst``.
     """
-    from neu_vol import StorageProfile
+    from neu_vol.profiles import StorageProfile
 
     targets: list[tuple[object, str]] = []
     if fmt in ("precomputed", "both"):

@@ -187,7 +187,7 @@ Reading a file and then writing to it in the same process works, including a re-
 same cell. That needs saying because it once did not: a backend caches its open `h5py.File`,
 and HDF5 refuses to open a file for writing while any handle holds it read-only, so the
 write failed with an error naming the file rather than the reader still holding it. The
-write path now releases those handles first. `neu_vol.release_backends(path)` is the same
+write path now releases those handles first. `neu_vol.backends.base.release_backends(path)` is the same
 thing by hand, if something outside this package is holding one.
 ```
 

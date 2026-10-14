@@ -7,76 +7,72 @@ orchestration background.
 
 __version__ = "0.1.0"
 
-# NOTE: `BBox` and the grid arithmetic moved to the shared `neu_lib` package and are
-# deliberately NOT re-exported here. Import them from where they live — a second
-# binding for the same name is the patch-point hazard the dvid modules already
-# document, and naming `neu_lib` is what keeps the layering legible in a diff. The same
-# goes for blockrun's orchestration names (`block_map`, `start_dask`, ...).
-from .backends.base import (ArrayBackend, clear_backend_cache, open_backend,
-                            register_backend, release_backends)
-# The one format-specific opener, and the reason it earns a top-level name: an HDF5 file
-# is a container, so "open this path" is ambiguous in a way it is not for a volume, and
-# `open_backend` deliberately stays spec-only (see `open_hdf5`'s own docstring). Costs
-# nothing at import: `backends/__init__` already imports this module, and h5py is loaded
-# lazily inside it.
-from .backends.hdf5 import open_hdf5
-from .retry import is_transient, with_retry
-from .profiles import StorageProfile, PROFILES, get_profile
+# `BBox` and grid arithmetic live in `neu_lib`, and `block_map` / `start_dask` in
+# `blockrun`; they are not re-exported here, so each name has one import path.
+#
+# The top level is the user-facing API. Everything else stays importable from its module:
+# the backend registry (`neu_vol.backends.base`), storage profiles (`neu_vol.profiles`),
+# and source inspection (`neu_vol.source_metadata`).
+from . import location
+# Byte and JSON I/O that works the same on local paths and object stores.
+from .location import (exists, is_local, local_path, read_bytes, read_json, to_kvstore,
+                       write_bytes, write_json)
+from .backends.base import open_backend
+# HDF5 gets a top-level opener because a file is a container: "open this path" is
+# ambiguous for it in a way it is not for a volume.
+from .backends.hdf5 import open_hdf5, sole_dataset
+from .logs import quiet_store_logs
 from .ops import (convert, create_volume, extract_roi, ingest_image_stack,
                   mask_values, pack_hdf5, plan_subvolume_write, plan_volume,
                   rebuild_pyramid, write_subvolume, write_subvolumes)
-from .piece import piece_name, read_piece, write_piece
-from .source_metadata import describe, existing_levels, level_spec
-# Per-level shape, voxel size and origin, read from the source's own metadata. Came
-# from neu-morpho, which had meant neu-draw importing a meshing package to learn a
-# volume's voxel size.
+from .ops.annotate import labeled_regions
+from .ops.subresources import link_subresources
+from .piece import read_piece, write_piece
+from .retry import is_transient, with_retry
 from .scales import describe_scales, read_scales, scale_spec
-# Location handling + byte/JSON I/O that works the same for local paths and
-# object stores, so consumers never branch on the destination.
-from .location import (exists, is_local, local_path, read_bytes, read_json,
-                       to_kvstore, write_bytes, write_json)
+from .source_metadata import describe
 
 __all__ = [
     "__version__",
-    "ArrayBackend",
-    "open_backend",
-    "clear_backend_cache",
-    "release_backends",
-    "register_backend",
-    "is_transient",
-    "with_retry",
-    "StorageProfile",
-    "PROFILES",
-    "get_profile",
-    "ingest_image_stack",
+    # convert, copy, downsample, mask
     "convert",
     "extract_roi",
+    "ingest_image_stack",
     "rebuild_pyramid",
+    "mask_values",
+    # create a volume and write into it
     "create_volume",
     "plan_volume",
     "write_subvolume",
     "write_subvolumes",
     "plan_subvolume_write",
-    "pack_hdf5",
-    "open_hdf5",
+    # pieces and HDF5
     "read_piece",
     "write_piece",
-    "piece_name",
-    "mask_values",
+    "pack_hdf5",
+    "open_hdf5",
+    "sole_dataset",
+    # inspect and read
     "describe",
     "describe_scales",
     "read_scales",
     "scale_spec",
-    "existing_levels",
-    "level_spec",
-    "to_kvstore",
+    "open_backend",
+    "labeled_regions",
+    # stores, retry and logs
+    "location",
+    "exists",
     "is_local",
     "local_path",
     "read_bytes",
-    "write_bytes",
     "read_json",
+    "to_kvstore",
+    "write_bytes",
     "write_json",
-    "exists",
+    "with_retry",
+    "is_transient",
+    "link_subresources",
+    "quiet_store_logs",
 ]
 
 

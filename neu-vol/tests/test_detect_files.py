@@ -631,7 +631,8 @@ def test_the_refusal_names_a_level_that_would_fit(tmp_path):
 
 def test_a_piece_is_named_after_its_source(tmp_path):
     """`stem/dataset`, or just the stem; either half alone collides across files."""
-    from neu_vol import piece_name, read_piece
+    from neu_vol.piece import piece_name
+    from neu_vol import read_piece
 
     assert piece_name("data/gt_v1_eval.h5", "/vol_03700") == "gt_v1_eval/vol_03700"
     assert piece_name("piece.h5") == "piece"
