@@ -54,7 +54,6 @@ __all__ = [
     "cache", "layout", "logs", "sources",
     "quiet_stores", "install_quiet_stores", "remove_quiet_stores",
     "body_mesh", "body_meshes", "body_skeleton", "body_skeletons",
-    "volume_frame", "skeleton_tube", "synapse_points",
-    "box_predicate", "mask_predicate",
+    "volume_frame", "synapse_points",
     "show",
 ]
