@@ -4,9 +4,8 @@ One subcommand so far. ``compare`` reads a reference and a segmentation as two r
 pieces, scores them, and writes the metrics plus a ranked disagreement table you fill in and
 hand back.
 
-Every heavy import is inside the handler that needs it, so ``--help`` stays fast and the
-docs site — which imports this module to render the CLI reference, with no conda and no
-tensorstore — can do so at all.
+Heavy imports are inside the handlers, so ``--help`` is fast and the docs site can import
+this module without conda or tensorstore.
 """
 
 from __future__ import annotations
@@ -42,8 +41,7 @@ examples:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The parser. **Name and signature are a contract with the docs site**, which imports
-    this module and renders ``--help`` from the real object so the reference cannot drift."""
+    """The parser. The docs site imports it by this name to render the CLI reference."""
     p = argparse.ArgumentParser(
         prog="neu-eval",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -151,16 +149,10 @@ def _floats(text: str) -> tuple[float, ...]:
 def _paired_source(src: str, name: str | None) -> str:
     """``src`` addressed to dataset ``name`` when it is a container that has one.
 
-    Under ``--all-datasets`` the reference is a container of crops, and the segmentation is
-    usually one volume that every crop is read out of — so it is passed through unchanged.
-    But it can *also* be a container of matching crops (comparing two versions of an
-    annotation, say), and then each reference crop has to be paired with its namesake
-    instead of with the whole file, which raises "needs one array and this is a container
-    of 13".
-
-    Detected rather than flagged: an explicit ``:/dataset`` is left alone, a path that is
-    not a readable HDF5 file is left alone, and a container is addressed only if it actually
-    holds that name.
+    Under ``--all-datasets`` the segmentation is usually one volume, passed through
+    unchanged. If it is also a container of crops (two versions of an annotation), each
+    reference crop is paired with its namesake. An explicit ``:/dataset``, or a path that is
+    not a readable HDF5 file, is left alone.
     """
     if name is None or ":/" in src:
         return src
@@ -239,12 +231,10 @@ def cmd_compare(args) -> int:
         contingencies.append(report.contingency)
 
     if len(contingencies) > 1:
-        # Separately annotated crops have independent label spaces, so this is `pool`, not
-        # a sum — see neu_eval.overlap.pool for why the difference is not cosmetic.
+        # Crops have independent label spaces, so `pool`, not a sum (see overlap.pool).
         pooled = overlap.pool(contingencies)
         pooled_summary = compare_mod.summarize(pooled)
-        # No adjudicated column for the pooled row: `pool` renumbers, so a verdict keyed on
-        # a real body id has nothing to match. Adjudicate per piece and read those rows.
+        # No adjudicated pooled row: `pool` renumbers ids, so verdicts cannot match.
         print(f"\n== pooled over {len(contingencies)} pieces "
               f"(ids renumbered, so scalars only)")
         print(f"{labels[0]} vs {labels[1]}: VOI {pooled_summary['voi']:.4f} "

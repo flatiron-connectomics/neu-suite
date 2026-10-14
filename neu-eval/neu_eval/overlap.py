@@ -1,44 +1,19 @@
 """The contingency table between two labelings, and the one pass over the voxels.
 
-This is the only module in the package that reads an array. Everything else operates on
-what it returns, which is why it is also the only place a GPU or a block boundary is
-visible.
+The only module that reads an array, so the only place a GPU or block boundary shows. A
+:class:`Contingency` keeps its pairs sorted by ``(a_id, b_id)`` with no zero counts and no
+duplicates, which is what makes ``c1 + c2 == c3`` an exact test of additivity.
 
-**Canonical form is what makes the algebra work.** A :class:`Contingency` holds its pairs
-sorted by ``(a_id, b_id)``, with no zero counts and no duplicates. Without that,
-``c1 + c2 == c3`` would be a statement about insertion order rather than about the
-partition, and the additivity test — the property the blockwise sweep is built on — could
-pass on a wrong implementation and fail on a right one. It is the same argument
-``NEU-PROC-PLAN``'s canonical-id decision makes: a test that only holds for one traversal
-order is a test that gets weakened the first time it fails.
+**Ignored labels are asymmetric by default**, because 0 means different things: on side
+``a``, a partly annotated reference, 0 is "not annotated" and leaves the denominator; on
+side ``b``, a dense segmentation, 0 inside an annotated region is an error. But many
+pipelines label **membrane** 0. Scored with the default ``ignore_b=()``, that membrane
+becomes one huge segment touching every body, a false merge that inflated VOI 2-7x on real
+vendor segmentations. Nothing in the array tells the two conventions apart, so pass
+``ignore_b=(0,)`` when 0 is membrane, and read ``frac_scored`` beside every score.
 
-**Ignored labels are asymmetric on purpose.** The default drops label 0 on side ``a`` and
-nothing on side ``b``, and that asymmetry is about what 0 *means* on each side, not about
-which side is authoritative. In the common call side ``a`` is a partially-annotated
-reference, where 0 is "nobody looked here" and must leave the denominator; side ``b`` is a
-dense segmentation, where 0 is "assigned to no body" inside a region somebody did annotate
-— an error, not an absence. Scoring the second as if it were the first is the ordinary way
-these numbers come out flattering.
-
-**But "0 means membrane" is a common convention, and then the default is badly wrong.**
-Several pipelines label membranes 0 and cell interiors with body ids. Scored with
-``ignore_b=()`` that invents one enormous segment threading between every cell in the
-volume, so it touches nearly every reference body at once and registers as a colossal false
-merge. Measured on two vendor segmentations of the same specimen, ``ignore_b=(0,)`` against
-``ignore_b=()``: VOI **0.63 vs 1.37**, **0.51 vs 2.01**, **0.96 vs 2.16**, **0.29 vs 1.98**
-— a factor of 2.2 to 6.9, all of it artefact. Nothing in the array distinguishes the two
-conventions, so **the caller has to know and say**; there is no safe guess, which is why
-there is no attempt at one.
-
-The guard against the obvious abuse — declaring everything membrane so almost nothing is
-scored — is ``n_ignored``, and therefore ``frac_scored`` in every summary. On those same two
-vendors it reads 93.6% for one and 84.5–87.1% for the other, which is a real difference in
-how much each declined to label and belongs beside their scores rather than buried.
-
-One consequence worth stating because it looks like a bug: ``contingency(a, b).T`` is not
-``contingency(b, a)``. Transposing relabels the axes of a table already built;
-re-running the kernel applies the *defaults* to the new side ``a``. Both are right, and if
-you want the second, say so.
+``contingency(a, b).T`` is not ``contingency(b, a)``: the second applies the default
+ignore sets to the swapped sides.
 """
 
 from __future__ import annotations
@@ -48,12 +23,8 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-#: Above this many cells, count the packed keys with a sort instead of a dense histogram.
-#: `bincount` is O(voxels) and beats a sort handily, but it allocates `n_a * n_b` int64
-#: cells whether or not they are occupied — so the choice is between paying for the empty
-#: cells and paying for the sort. 2**22 cells is 32 MB, which a GT crop (hundreds of
-#: reference bodies against thousands of segments) stays comfortably under, and a
-#: whole-volume pair with millions of ids on both sides never would.
+#: Above this many ``n_a * n_b`` cells, count pairs by sorting packed keys rather than
+#: with a dense ``bincount``, which allocates every cell (2**22 int64 cells is 32 MB).
 DENSE_CELL_LIMIT = 1 << 22
 
 
@@ -61,13 +32,9 @@ DENSE_CELL_LIMIT = 1 << 22
 class Contingency:
     """Voxel counts for every ``(a_id, b_id)`` pair that co-occurs.
 
-    Sparse and canonical: ``a_ids``, ``b_ids`` and ``counts`` are parallel arrays sorted by
-    ``(a_id, b_id)``, carrying only pairs with a nonzero count. Always in **CPU memory** —
-    the table is ``O(pairs)`` where the input is ``O(voxels)``, so there is nothing to gain
-    by leaving it on the GPU and a great deal to lose in every consumer having to care.
-
-    ``labels`` names the two sides for reporting. It takes part in equality and in addition
-    because two tables built with the sides swapped must not silently sum.
+    ``a_ids``, ``b_ids`` and ``counts`` are parallel arrays sorted by ``(a_id, b_id)``,
+    with only nonzero pairs, always in CPU memory. ``labels`` names the two sides; it is
+    part of equality and addition, so tables with swapped sides cannot be summed.
     """
 
     a_ids: np.ndarray
@@ -120,11 +87,8 @@ class Contingency:
 
     @property
     def T(self) -> "Contingency":
-        """The same table with the two sides exchanged.
-
-        Not the same thing as re-running :func:`contingency` with the arguments swapped —
-        see the module docstring.
-        """
+        """The same table with the sides exchanged (not the same as re-running
+        :func:`contingency` with the arguments swapped; see the module docstring)."""
         return _canonical(
             self.b_ids, self.a_ids, self.counts,
             n_ignored=self.n_ignored,
@@ -134,19 +98,12 @@ class Contingency:
     def __add__(self, other: Any) -> "Contingency":
         """The table for the union of two **disjoint** regions.
 
-        Exact, and the property the blockwise sweep rests on: summing the tables of the
-        blocks of a volume gives the table of the volume, so no metric code has to know
-        that blocks exist.
-
-        Disjointness is the caller's to guarantee — two tables over overlapping regions add
-        to something with no meaning, and there is nothing in a reduced table to detect it
-        with. What *is* checked is the framing: both sides must name their labels the same
-        way and have dropped the same labels, because adding tables that disagree about
-        either is the failure that produces a plausible number from mismatched halves.
+        Exact, so summing block tables gives the volume's table. Disjointness is the
+        caller's responsibility and cannot be detected; matching ``labels`` and ignore sets
+        are checked.
         """
         if other is None or (isinstance(other, int) and other == 0):
-            # `sum(tables)` starts from the integer 0, and summing a list of block tables
-            # is the natural way to write the driver-side reduction.
+            # So that `sum(tables)`, which starts from 0, works.
             return self
         if not isinstance(other, Contingency):
             return NotImplemented
@@ -169,12 +126,7 @@ class Contingency:
     __radd__ = __add__
 
     def __eq__(self, other: Any) -> bool:
-        """Exact equality of the canonical form, framing included.
-
-        Spelled out because the default dataclass ``__eq__`` compares numpy arrays with
-        ``==`` and lands on the ambiguous-truth-value error — and because this is the
-        assertion the additivity test makes, so it had better mean what it says.
-        """
+        """Exact equality of the canonical form, labels and ignore sets included."""
         if not isinstance(other, Contingency):
             return NotImplemented
         return (
@@ -191,10 +143,8 @@ class Contingency:
     def keep_pairs(self, keep: np.ndarray) -> "Contingency":
         """A table holding only the pairs where ``keep`` is True.
 
-        The dropped voxels move into ``n_ignored``, so ``n_scored + n_ignored`` stays the
-        size of the region the table was built over however it is whittled down. That is
-        what lets a report say what fraction was actually scored — which is the number an
-        adjudicated metric has to disclose.
+        Dropped voxels move into ``n_ignored``, so ``n_scored + n_ignored`` stays the size of
+        the region and ``frac_scored`` stays honest.
         """
         keep = np.asarray(keep, dtype=bool)
         if keep.shape != (self.n_pairs,):
@@ -209,8 +159,7 @@ class Contingency:
                  b_ids: Iterable | None = None) -> "Contingency":
         """A table restricted to the given labels on either side, or both.
 
-        What ``thresholded_fragmentation`` needs: take the largest segments covering some
-        fraction of each side, then measure only those.
+        For example, the labels :func:`neu_eval.assign.completeness` keeps.
         """
         keep = np.ones(self.n_pairs, dtype=bool)
         if a_ids is not None:
@@ -226,11 +175,8 @@ class Contingency:
     # -- output -----------------------------------------------------------------------
 
     def to_frame(self):
-        """A DataFrame of the pairs, columns named after the two sides.
-
-        pandas is imported here rather than at module scope: it arrives with
-        ``neu-eval[report]``, and nothing that computes a metric needs it.
-        """
+        """A DataFrame of the pairs, columns named after the two sides. Needs pandas
+        (``neu-eval[report]``)."""
         import pandas as pd
 
         a, b = self.labels
@@ -249,21 +195,12 @@ class Contingency:
 def pool(tables: Sequence[Contingency]) -> Contingency:
     """Combine tables from regions whose label spaces are **independent**.
 
-    Not the same operation as ``+``, and confusing the two is the chimera bug in table form.
-    ``c1 + c2`` is for two regions of *one* labeling, where a shared id means one body.
-    :func:`pool` is for separately annotated crops, where every crop numbers its bodies from
-    1 and a shared id means **nothing** — so adding those tables directly would fuse
-    unrelated cells exactly the way scoring an un-relabelled multi-crop volume does, and
-    would produce a plausible pooled number from a partition that does not exist.
+    Use ``+`` for regions of one labeling, where a shared id is one body. Use this for
+    separately annotated crops, where each numbers its bodies from 1 and a shared id means
+    nothing: adding those tables would fuse unrelated cells. Each table's ids are renumbered
+    and offset past the previous table's, as ``neu-vol relabel`` does to a volume.
 
-    So each table's labels are renumbered densely and offset past the previous table's
-    before the sum. The result is a single honest partition over all the regions, which is
-    what a pooled VOI needs, and it is the same thing ``neu-vol relabel`` does to a volume —
-    done here in the table, since the arrays are already reduced.
-
-    **Pooled ids do not name bodies.** They are positions in a concatenation, so the pooled
-    table is for scalars only; per-crop rows keep the real ids and are what you look things
-    up by.
+    Pooled ids do not name bodies, so the result is for scalar metrics only.
     """
     tables = list(tables)
     if not tables:
@@ -309,18 +246,14 @@ def contingency(a: Any, b: Any, *,
                 labels: Sequence[str] = ("a", "b")) -> Contingency:
     """Count the voxels shared by every pair of labels in ``a`` and ``b``.
 
-    The two arrays must be the same shape and are taken to be **already registered** —
-    reading them as two crops of one physical box is ``neu_vol.read_piece``'s job
-    (``read_piece(seg, level=…, crop=gt_piece)``), and doing it any other way is how a
-    half-voxel shift turns into a metric.
+    The arrays must have the same shape and already be registered, e.g. read with
+    ``read_piece(seg, level=..., crop=gt_piece)``. ``ignore_a`` / ``ignore_b`` drop those
+    label values and ``mask`` restricts to where it is True; dropped voxels are counted in
+    ``n_ignored``. See the module docstring for the asymmetric defaults, and especially
+    for segmentations that label membrane 0.
 
-    ``ignore_a`` / ``ignore_b`` drop those label values from the count entirely; ``mask``
-    restricts to where it is True. Everything dropped is tallied in ``n_ignored`` rather
-    than silently vanishing. See the module docstring for why the defaults are asymmetric.
-
-    Runs wherever the arrays already live, CPU or GPU, via :mod:`neu_proc.ops.backend` —
-    dispatch is on the array, so one body serves both — and the table comes back in CPU
-    memory either way.
+    Runs where the arrays live, CPU or GPU (both must be on the same one); the table comes
+    back in CPU memory.
     """
     from neu_proc.ops.backend import array_module, to_cpu
 
@@ -346,7 +279,7 @@ def contingency(a: Any, b: Any, *,
     ignore_a = frozenset(int(v) for v in ignore_a)
     ignore_b = frozenset(int(v) for v in ignore_b)
 
-    # A spatial mask has to be applied to the voxels; there is no other place it exists.
+    # A mask is applied to the voxels; ignored labels are applied to the table, below.
     if mask is not None:
         mask = xp.asarray(mask)
         if mask.shape != a.shape:
@@ -359,12 +292,8 @@ def contingency(a: Any, b: Any, *,
     a_ids, b_ids, counts = _count_pairs(xp, af, bf)
     a_ids, b_ids, counts = to_cpu(a_ids), to_cpu(b_ids), to_cpu(counts)
 
-    # An **ignored label**, by contrast, is applied to the finished table. Dropping the rows
-    # that name it gives exactly the table of the voxels that survive it — the ignore is a
-    # union of whole rows and columns — and that is O(pairs) rather than a boolean pass plus
-    # a fancy-index compaction of both labelings, which measured 142 ms on a 21.7 Mvoxel
-    # crop *whose side a contained no 0 at all*. The default `ignore_a=(0,)` is therefore
-    # free, which matters because it is on every call.
+    # Dropping whole rows and columns of the table is exact, and O(pairs) rather than a
+    # pass over the voxels, so the default `ignore_a=(0,)` costs nothing.
     n_dropped = 0
     if (ignore_a or ignore_b) and counts.size:
         drop = np.zeros(counts.shape, dtype=bool)
@@ -387,7 +316,7 @@ def contingency(a: Any, b: Any, *,
 # -- internals ------------------------------------------------------------------------
 
 def _as_labels(arr: Any, which: str):
-    """``arr`` as a label array, refusing the things that would wrap silently."""
+    """``arr`` as an integer label array; refuses floats and negative ids."""
     if arr is None:
         raise TypeError(f"labeling {which} is None")
     if not hasattr(arr, "dtype") or not hasattr(arr, "shape"):
@@ -402,8 +331,7 @@ def _as_labels(arr: Any, which: str):
     if arr.dtype.kind not in "ui":
         raise TypeError(f"labeling {which} has dtype {arr.dtype}, which is not an integer")
     if arr.dtype.kind == "i":
-        # A negative id would wrap to an enormous uint64 and still count, giving a table
-        # nobody can trace back to a body. Cheaper to refuse it than to explain it later.
+        # A negative id would wrap to a huge uint64 and still be counted.
         if arr.size and int(arr.min()) < 0:
             raise ValueError(
                 f"labeling {which} holds negative values, which are not label ids")
@@ -411,24 +339,14 @@ def _as_labels(arr: Any, which: str):
 
 
 def _factorize(xp, arr):
-    """``(ids, dense)`` — the distinct labels, and each voxel's index into them.
+    """``(ids, dense)``: the distinct labels, and each voxel's index into them.
 
-    Two implementations, because the obvious one is slow where it matters.
-    ``unique(return_inverse=True)`` is a sort, and **on the CPU that was most of the cost of
-    the whole pass**: measured on a 21.7 Mvoxel uint64 crop with 1,316 labels, 3.43 s
-    against **116 ms** for ``fastremap.renumber``, which is hash-based and linear. It took
-    the whole CPU pass from 7.26 s to 0.41 s — a larger win than the GPU's, and one that
-    CI and every GPU-less worker gets.
-
-    So the CPU uses fastremap (already a neu-proc dependency) and the GPU uses cupy's
-    ``unique``, where the sort is parallel and the question does not arise. Both return the
-    same thing up to the arbitrary numbering of the dense indices, which nothing downstream
-    can see — and ``test_backend`` pins that rather than assuming it, because these are
-    genuinely different algorithms and not one function with a flag.
+    On the CPU this uses ``fastremap.renumber`` (hash-based, about 30x faster than
+    ``np.unique`` here); on the GPU, cupy's ``unique``. The two number the dense indices
+    differently, which nothing downstream depends on.
     """
     from neu_proc.ops.backend import is_gpu_array
 
-    # `is_gpu_array` is neu-proc's name for "lives in GPU memory".
     if is_gpu_array(arr):
         ids, dense = xp.unique(arr, return_inverse=True)
         return ids, dense.reshape(-1)
@@ -436,9 +354,8 @@ def _factorize(xp, arr):
     import fastremap
 
     dense, mapping = fastremap.renumber(np.ascontiguousarray(arr), in_place=False)
-    # `renumber` hands back original -> new; the table needs new -> original to name a body.
-    # It always includes 0 -> 0 whether or not 0 occurs, which leaves index 0 unused and
-    # costs one empty row.
+    # Invert renumber's original -> new mapping. It always maps 0 -> 0, which may leave
+    # index 0 unused.
     ids = np.zeros(int(dense.max()) + 1, dtype=np.uint64)
     for original, new in mapping.items():
         if new < ids.size:
@@ -449,9 +366,7 @@ def _factorize(xp, arr):
 def _count_pairs(xp, af, bf):
     """``(a_ids, b_ids, counts)`` for the co-occurring pairs, wherever they live.
 
-    Dense-renumber each side, pack the pair into one integer, and count that — the trick
-    ``neu_morpho.measure.compartments.joint_counts`` uses, with its 16-labels-on-one-side
-    cap removed by renumbering first instead of assuming a small label set.
+    Each side is renumbered densely, and each pair packed into one integer and counted.
     """
     if af.shape[0] == 0:
         empty_id = xp.zeros(0, dtype=xp.uint64)
@@ -499,9 +414,7 @@ def _canonical(a_ids, b_ids, counts, **kwargs) -> Contingency:
         if not new.all():
             groups = np.cumsum(new) - 1
             counts = np.bincount(groups, weights=counts.astype(np.float64))
-            # float64 is exact to 2**53 voxels, ~9e15 — a volume that size is not
-            # addressable, so the round trip cannot lose a count. bincount has no integer
-            # weight path, and np.add.at is an order of magnitude slower.
+            # float64 weights are exact up to 2**53 voxels; bincount has no integer weights.
             counts = counts.astype(np.uint64)
             a_ids = a_ids[new]
             b_ids = b_ids[new]
@@ -524,14 +437,11 @@ def _group_sum(ids: np.ndarray, counts: np.ndarray) -> tuple[np.ndarray, np.ndar
 def boundary_band(labels, width: int = 2, *, ignore: Iterable[int] = (0,)):
     """Boolean mask of voxels within ``width`` voxels of a boundary in ``labels``.
 
-    For a boundary-TOLERANT score: pass ``mask=~boundary_band(gt)`` to :func:`contingency`
-    and voxels where two labelings merely place the same boundary differently leave the
-    denominator. Common practice in segmentation benchmarks, and a sensitivity next to the
-    ordinary score rather than a replacement for it -- the band is a property of the
-    reference, and a wide one also removes thin processes wholesale.
-
-    A boundary is any 6-neighbour pair of different labels, ignored values included (the
-    edge of the annotated region is a boundary too).
+    For a boundary-tolerant score, pass ``mask=~boundary_band(gt)`` to
+    :func:`contingency`, so small differences in where a boundary is drawn are not counted.
+    Report it beside the ordinary score, not instead of it: a wide band also removes thin
+    processes entirely. A boundary is any 6-neighbour pair of different labels, ignored
+    values included.
     """
     from scipy import ndimage as ndi
 

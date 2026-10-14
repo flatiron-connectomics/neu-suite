@@ -1,19 +1,12 @@
 """Writing results out, and reading a reviewed disagreement table back in.
 
-pandas and pyarrow arrive with ``neu-eval[report]`` and are imported **inside** functions,
-so ``import neu_eval`` does not pay for them and neither will ``--help``. Same rule
-``neu_morpho.measure`` follows, and a test asserts it.
+Metrics go to parquet, which round-trips nullable integer columns. The disagreement table
+goes to csv, because a reviewer edits its verdict column. Spreadsheets parse long integers
+as float64 and round 19-digit body ids, so ids are written as text and ``pair_key`` is the
+join key on the way back in.
 
-**The file formats differ on purpose, and the reason is who edits which.** Metrics go to
-parquet: nobody hand-edits them, and parquet round-trips a nullable integer column where csv
-does not. The disagreement table goes to **csv**, because a human opens it and fills in the
-verdict column, and a parquet file is not something you can do that to.
-
-**Which makes csv's own hazard load-bearing here: a spreadsheet destroys a uint64 body id.**
-Excel and LibreOffice both parse a long integer as a float64, so a 19-digit id comes back
-rounded — the failure `neu_morpho.measure.cohort` already hit from the other direction.
-So ids are written as **text**, and ``pair_key`` rather than the id columns is the join key
-on the way back in. A reviewer who reformats a column still cannot break the join.
+pandas and pyarrow (``neu-eval[report]``) are imported inside functions, so
+``import neu_eval`` does not load them.
 """
 
 from __future__ import annotations
@@ -25,8 +18,7 @@ from typing import Iterable, Mapping, Sequence
 from .adjudicate import VERDICT_COLUMN
 from .overlap import Contingency
 
-#: Columns written as text in the csv, whatever their Python type. Everything that is or
-#: could be a uint64 label id.
+#: Columns always written as text in the csv (besides every ``*_id`` column).
 _TEXT_COLUMNS = ("pair_key",)
 
 
@@ -44,8 +36,7 @@ def write_summary(rows: Mapping | Sequence[Mapping], path: str | Path) -> str:
 def per_label_frame(c: Contingency):
     """Per-label VOI contributions and sizes, one row per label on each side.
 
-    A long frame with a ``side`` column rather than two frames, because the two sides are
-    measured the same way and a single table is what a groupby wants.
+    One long frame with a ``side`` column.
     """
     import pandas as pd
 
@@ -74,28 +65,20 @@ def write_disagreements(rows: Iterable[Mapping], path: str | Path, *,
                         verdicts: Mapping[str, str] | None = None) -> str:
     """The ranked disagreements as csv, with a ``verdict`` column to fill in.
 
-    Written with the stdlib ``csv`` module rather than pandas: this is the one output that
-    does not need the ``report`` extra, and it would be perverse for the file a reviewer
-    edits to be the one requiring an optional dependency.
-
-    ``verdicts`` pre-fills the column, so re-running a comparison preserves a review that
-    has already happened instead of blanking it — which, the first time it blanks somebody's
-    afternoon of work, is not recoverable.
+    Uses the stdlib ``csv`` module, so it needs no optional extra. ``verdicts`` pre-fills
+    the column, so re-running a comparison keeps an existing review. Also writes a
+    ``.README.txt`` legend beside it for the reviewer.
     """
     rows = list(rows)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # The UNION of every row's keys, in first-seen order — not `rows[0].keys()`, which is
-    # what this did and which silently dropped any column a later row added. Rows compared
-    # under different side names (one table per vendor, say) have different id columns, and
-    # `DictWriter(extrasaction="ignore")` discarded the ones missing from row zero: 450 of
-    # 600 rows came out with no segment id at all, and nothing said so.
+    # The union of every row's keys, in first-seen order: rows compared under different
+    # side names have different id columns, and DictWriter drops keys not in the header.
     header: list[str] = []
     for row in rows:
         for key in row:
-            # `shapes` is nested geometry for the viewer (see shape_csvs); it has no
-            # meaning as one spreadsheet cell and would only bury the verdict column.
+            # `shapes` is nested viewer geometry (see shape_csvs), not a cell.
             if key not in header and key not in _NOT_TABULAR:
                 header.append(key)
     if not header:
@@ -147,9 +130,8 @@ def read_disagreements(path: str | Path) -> tuple[list[dict], dict[str, str]]:
     """``(rows, verdicts)`` from a csv written by :func:`write_disagreements`.
 
     ``verdicts`` maps ``pair_key`` to the verdict text, ready for
-    :func:`neu_eval.adjudicate.apply`. Rows come back as read — strings — because the only
-    thing this needs to be right about is the key and the verdict, and re-typing the numeric
-    columns from a file a human has edited invites a parse failure over a column nobody uses.
+    :func:`neu_eval.adjudicate.apply`. Rows come back as strings; numeric columns in a
+    hand-edited file are not re-parsed.
     """
     path = Path(path)
     with path.open(newline="") as handle:
@@ -166,10 +148,8 @@ def read_disagreements(path: str | Path) -> tuple[list[dict], dict[str, str]]:
 #: Row keys that are not columns. Written by their own writers.
 _NOT_TABULAR = ("shapes",)
 
-#: Which shape each disagreement kind is drawn as, per side. A merge is a LINE across the
-#: false join -- it connects the two things that should not be connected. A split is an
-#: ELLIPSOID over the false cut -- a surface where there should be no boundary, sized by
-#: how big the cut is. A tangle is both errors, so it gets both.
+#: How each side of a disagreement is drawn: a merge as a line across the false join, a
+#: split as an ellipsoid over the false cut, sized by the cut. A tangle gets both.
 SHAPE_OF = {"merge": "lines", "split": "ellipsoids"}
 
 
@@ -179,18 +159,14 @@ def shape_csvs(rows: Iterable[Mapping], out_dir: str | Path, prefix: str, *,
     """The located shapes as the CSVs ``neu-glance annotate`` reads, one set per kind.
 
     Returns ``{"merges": {"lines": path, "points": path}, "splits": {"ellipsoids": ...},
-    "tangles": {"lines": ..., "ellipsoids": ...}}``, only for files that have rows. Each
-    kind is its own set because each becomes its own layer, so merges, splits and tangles
-    can be toggled independently.
+    "tangles": {"lines": ..., "ellipsoids": ...}}``, only for files with rows, so each kind
+    becomes its own toggleable layer.
 
-    Coordinates are **nanometres** (so ``annotate --nm``). Each row carries a
-    ``segments:<name>`` column per entry of ``relationships`` -- the ids
-    :func:`neu_eval.disagree.sample_ids` found at the shape's two anchors in that
-    labelling -- for ``annotate --link <name>=<layer>``. A relationship with nothing there
-    is written empty, not left out, because the viewer pairs id lists by position.
-
-    A row ``locate`` could not shape (no seam: a disconnected fragment) is kept as a POINT
-    in its kind's set rather than dropped, so every row of the table has an annotation.
+    Coordinates are nm (use ``annotate --nm``). Each row has a ``segments:<name>`` column
+    per entry of ``relationships``, holding the ids :func:`neu_eval.disagree.sample_ids`
+    found at the shape's anchors, for ``annotate --link <name>=<layer>``. An empty one is
+    written empty, not left out, because the viewer matches id lists by position. A row
+    with no seam is written as a point, so every row gets an annotation.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -257,23 +233,14 @@ def annotation_csv(rows: Iterable[Mapping], path: str | Path, *,
                    labels: Sequence[str] = ("gt", "seg")) -> str:
     """The located rows as a point list ``neu-glance annotate --points`` can read.
 
-    **The column names are neu-glance's contract, not ours**: ``z``, ``y``, ``x`` required,
-    ``id`` / ``description`` / ``segments`` optional. This wrote ``z_nm``/``y_nm``/``x_nm``
-    at first, which its reader rejects outright — caught only by running the command that
-    three of our own docs had been advertising. Coordinates here are **nanometres**, so the
-    command needs ``--nm`` and a frame (``--volume`` or ``--voxel-size``).
+    Columns ``z``, ``y``, ``x`` (required by neu-glance), ``description``, ``segments``.
+    Coordinates are nm, so the command needs ``--nm`` and a frame (``--volume`` or
+    ``--voxel-size``). ``segments`` holds both ids of the pair; only the one in the linked
+    segmentation layer is found, which is harmless.
 
-    ``segments`` carries both ids of the pair, so clicking the annotation selects the bodies
-    it is about rather than leaving you to type them. neuroglancer looks them up in the
-    segmentation the annotation layer is linked to, so the id belonging to the other side
-    simply finds nothing — harmless, and cheaper than emitting two files.
-
-    Points, not boxes, and they become **local** annotations: only local ones appear in the
-    Annotations tab, which is what makes a ranked worst-first list steppable with ``[`` and
-    ``]``. A precomputed annotation source renders in the viewport and lists nothing.
-
-    Writing the table rather than importing neu-glance is the whole interface — the same
-    abstention neu-draw keeps from neu-mark by taking synapses as tables.
+    They become local annotations, which, unlike a precomputed annotation source, are
+    listed in neuroglancer's Annotations tab, so the worst-first list can be stepped with
+    ``[`` and ``]``.
     """
     rows = [row for row in rows if "z_nm" in row]
     path = Path(path)

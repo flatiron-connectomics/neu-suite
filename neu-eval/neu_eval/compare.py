@@ -1,16 +1,13 @@
 """One call from two registered pieces to everything a comparison produces.
 
-``compare(a, b)`` is the entry point: it builds the table once, computes every metric off
-it, ranks and locates the disagreements, and — if a reviewed verdict file is supplied —
-rescores without the pairs the reviewer judged to be reference defects. A :class:`Report`
-carries the lot, raw and adjudicated side by side.
+``compare(a, b)`` builds the table once, computes every metric from it, ranks and locates
+the disagreements, and, given a reviewed verdict file, adds an adjudicated score. A
+:class:`Report` holds it all, raw and adjudicated side by side.
 
-**The two pieces must be registered, and there is exactly one right way to get that.**
-``read_piece(seg, level=…, crop=gt_piece)`` converts the reference's physical box using the
-target level's own voxel size and origin, so the two crops describe the same nanometres by
-construction. Any other route — matching shapes by hand, assuming a ``2**level`` factor —
-is how a half-voxel shift becomes a metric nobody can explain. This module checks the
-frames agree and says so when they do not.
+The two pieces must describe the same physical box. Read the second with
+``read_piece(seg, level=..., crop=gt_piece)``, which converts the box using that level's
+own voxel size and origin; matching shapes by hand or assuming a ``2 ** level`` factor can
+shift it by part of a voxel. :func:`compare` checks the frames agree.
 """
 
 from __future__ import annotations
@@ -23,13 +20,11 @@ import numpy as np
 from . import assign, disagree, voxel
 from .overlap import Contingency, contingency
 
-#: A reference label whose bounding box holds this many times more voxels than the label
-#: itself is flagged as possibly scattered. Heuristic, and reported rather than refused —
-#: see :func:`scattered_labels`.
+#: Flag a reference label whose bounding box holds this many times more voxels than the
+#: label itself (see :func:`scattered_labels`).
 SCATTER_FACTOR = 1000.0
 
-#: Labels smaller than this are never flagged as scattered. A two-voxel label at opposite
-#: corners has an enormous scatter ratio and tells you nothing.
+#: Never flag labels smaller than this; a tiny label's scatter ratio means nothing.
 SCATTER_MIN_VOXELS = 100
 
 
@@ -37,10 +32,10 @@ SCATTER_MIN_VOXELS = 100
 class Report:
     """Everything one comparison produced.
 
-    ``summary`` and ``adjudicated_summary`` are flat dicts, one row each, so a set of
-    comparisons is a DataFrame without reshaping. ``adjudicated_*`` are ``None`` when no
-    verdicts were supplied — distinct from "supplied and changed nothing", which gives a
-    summary equal to the raw one and a ``verdict_tally`` saying why.
+    ``summary`` and ``adjudicated_summary`` are flat dicts, so many comparisons make a
+    DataFrame directly. The ``adjudicated_*`` fields are ``None`` when no verdicts were
+    given; verdicts that changed nothing give a summary equal to the raw one, and
+    ``verdict_tally`` shows why.
     """
 
     contingency: Contingency
@@ -70,9 +65,7 @@ class Report:
             text += (f"\nadjudicated: VOI {a['voi']:.4f}, Rand err {a['rand_error']:.4f}, "
                      f"{a['frac_scored']:.1%} of the region scored")
             if self.verdict_tally:
-                # Spelled out because "the verdicts changed nothing" and "no verdict
-                # matched anything" read identically on the numbers alone, and the second
-                # is a bug that already shipped once.
+                # "Changed nothing" and "matched nothing" look identical in the numbers.
                 tally = dict(self.verdict_tally)
                 excluded = tally.pop("excluded_pairs", None)
                 counted = {k: v for k, v in tally.items() if v}
@@ -108,18 +101,13 @@ def compare(a: Any, b: Any, *,
             check_scattered: bool = True) -> Report:
     """Compare two registered pieces and return everything the comparison produced.
 
-    ``a`` is the reference side and ``b`` the one being assessed — which only affects the
-    default ``ignore_a=(0,)``, the names in the output, and the direction of ``voi_split`` /
-    ``voi_merge``. The table underneath is symmetric.
+    ``a`` is the reference and ``b`` the side assessed; that sets only the default
+    ``ignore_a=(0,)``, the output names, and the direction of ``voi_split`` / ``voi_merge``.
 
-    ``locate=False`` skips the per-pair distance transforms, which are the only part whose
-    cost scales with ``top`` rather than with the table. Worth turning off when scoring
-    many crops in a loop and only the numbers are wanted. ``point_at="overlap"`` picks the
-    middle of what the two labelings agree about instead of the surface where they part —
-    see :func:`neu_eval.disagree.locate`.
-
-    ``verdicts`` maps ``pair_key`` to a verdict from a reviewed disagreement file; supplying
-    it adds the adjudicated score *alongside* the raw one, never instead of it.
+    ``locate=False`` skips the per-pair distance transforms, the one cost that scales with
+    ``top``; useful when only the numbers are wanted. ``point_at`` is passed to
+    :func:`neu_eval.disagree.locate`. ``verdicts`` (``pair_key`` -> verdict, from a reviewed
+    disagreement file) adds an adjudicated score alongside the raw one.
     """
     if check_frames:
         _check_registered(a, b)
@@ -134,10 +122,8 @@ def compare(a: Any, b: Any, *,
 
     rows = disagree.rows(c, min_frac=min_frac, min_voxels=min_voxels, top=top, rank=rank)
     if locate and rows:
-        # The ignore sets have to reach `locate`: a seam is a contact with another LABELLED
-        # thing, so an ignored value must not count as the other side. Where 0 is membrane
-        # and ignored, counting it would put every split point on an ordinary cell
-        # boundary.
+        # Pass the ignore sets on: a seam is contact with another labelled thing, and
+        # counting ignored membrane (0) would put split points on every cell boundary.
         rows = disagree.locate(rows, a, b, labels=labels, at=point_at,
                                ignore_a=ignore_a, ignore_b=ignore_b)
 
@@ -150,11 +136,8 @@ def compare(a: Any, b: Any, *,
 
         adjusted = adjudicate.apply(c, verdicts, labels=labels)
         tally = adjudicate.summarize(verdicts, labels=labels)
-        # How many pairs the verdicts actually removed, which is NOT the same as how many
-        # exclusion verdicts were written: a verdict file outlives the table it came from,
-        # so it can be full of valid verdicts that match nothing here. Counting only what
-        # was supplied is how an adjudicated score that changed nothing looks identical to
-        # one that was silently ignored.
+        # Pairs actually removed, which can be fewer than the exclusion verdicts written:
+        # a verdict file can outlive its table and match nothing here.
         tally["excluded_pairs"] = c.n_pairs - adjusted.n_pairs
         report_kwargs = {
             "adjudicated": adjusted,
@@ -172,21 +155,13 @@ def scattered_labels(piece: Any, c: Contingency, *,
                      min_voxels: int = SCATTER_MIN_VOXELS) -> list[dict]:
     """Reference labels whose bounding box is far larger than the label itself.
 
-    **What this is really looking for is an un-relabelled multi-crop reference volume.**
-    Every ground-truth region in this suite numbers its bodies from 1, so the same integer
-    names a different cell in each crop — measured on one dataset, 3,637 label-instances
-    over 12 regions but only 1,824 distinct ids, with 496 shared. Score that untreated and a
-    low-numbered "body" is a chimera of a dozen unrelated cells scattered across the volume;
-    every metric comes out meaningless and nothing looks wrong. ``neu-vol relabel`` is the
-    fix and it is not optional.
+    This mainly catches a reference assembled from several annotated crops that each
+    number their bodies from 1: without ``neu-vol relabel``, one id names a different cell
+    in each crop, a low-numbered "body" is a chimera of unrelated cells, and every metric is
+    meaningless with no error.
 
-    **It reports rather than refuses, and that is a deliberate weakening of the plan.** The
-    condition that actually matters — "this reference was never relabelled" — is not
-    decidable from the voxels: a genuinely scattered annotation and a chimera look the same,
-    and bodies in these volumes really are fragmented (one had 344 components at scale 1).
-    So this is a heuristic with a tunable threshold, and raising on a heuristic inside a
-    measurement tool trades a silent wrong number for a loud wrong refusal. The warning
-    carries the numbers so the reader can judge.
+    It warns rather than raises, because a genuinely fragmented annotation looks the same
+    from the voxels; the warning carries the numbers so the reader can judge.
     """
     from scipy.ndimage import find_objects
     import fastremap
@@ -246,8 +221,7 @@ def _check_registered(a: Any, b: Any) -> None:
             f"converts the physical box with the target level's own voxel size and origin.")
     a_lo, a_hi = a.bounds_nm
     b_lo, b_hi = b.bounds_nm
-    # A voxel of slack: read_piece grows a physical box outward to whole voxels, so two
-    # levels of one volume legitimately differ by less than a voxel of the coarser.
+    # One coarse voxel of slack: read_piece rounds a physical box outward to whole voxels.
     slack = max(max(a.voxel_size_nm), max(b.voxel_size_nm))
     drift = max(abs(np.asarray(a_lo) - np.asarray(b_lo)).max(),
                 abs(np.asarray(a_hi) - np.asarray(b_hi)).max())

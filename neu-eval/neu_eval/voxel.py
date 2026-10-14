@@ -1,24 +1,14 @@
 """Voxel-level agreement metrics. Every one is a pure function of a :class:`Contingency`.
 
-No arrays, no I/O, no backend — the expensive pass already happened. That is what makes
-computing several metrics affordable, which matters because the connectomics literature's
-own advice is not to trust any single one: Plaza & Funke's survey declines to recommend a
-metric and recommends the practice of reading several together, each catching what another
-flatters.
+No arrays and no I/O, so computing several metrics is cheap; Plaza & Funke advise reading
+several together rather than trusting one.
 
-**The direction of VOI is the trap this module is arranged around.** ``VI(A, B) =
-H(A|B) + H(B|A)``, and which half is "split" and which is "merge" depends on which side is
-the reference — a fact that is invisible in a two-tuple and has been getting people wrong
-for as long as the metric has been used. So nothing here returns a bare pair. :class:`Voi`
-names its fields, ``voi_split`` and ``voi_merge`` are defined against side ``a`` as the
-reference, and two tests pin the direction with a hand-built pure-split case and a
-hand-built pure-merge case rather than trusting the algebra to be read correctly.
-
-Reading it off: if side ``b`` fused two of side ``a``'s bodies, then knowing a voxel's
-``b`` label does not tell you which ``a`` body it came from, so ``H(a|b)`` is what grows —
-that is ``voi_merge``. Symmetrically ``H(b|a)`` grows when one ``a`` body is scattered
-across many ``b`` segments, which is ``voi_split``. Plaza & Funke label the same two
-quantities "under-segmentation ``H(G|S)``" and "over-segmentation ``H(S|G)``".
+**Which half of VOI is "split" and which is "merge" depends on which side is the
+reference**, so nothing here returns a bare pair. With side ``a`` as the reference: if
+``b`` fuses two ``a`` bodies, a voxel's ``b`` label no longer tells you its ``a`` body, so
+``H(a|b)`` grows, and that is ``voi_merge``; if one ``a`` body is spread over several
+``b`` segments, ``H(b|a)`` grows, and that is ``voi_split``. Plaza & Funke call these
+under-segmentation ``H(G|S)`` and over-segmentation ``H(S|G)``.
 """
 
 from __future__ import annotations
@@ -34,12 +24,8 @@ from .overlap import Contingency
 class Voi:
     """Variation of information, decomposed, in **bits**.
 
-    ``split`` and ``merge`` are named against side ``a`` of the table as the reference:
-    ``merge = H(a|b)`` counts side ``b`` fusing distinct ``a`` bodies, ``split = H(b|a)``
-    counts side ``b`` fragmenting one. ``total`` is their sum, the metric proper.
-
-    Bits rather than nats because the unit gets quoted and "1 bit of split error" has a
-    reading — one binary decision per voxel — where 0.69 nats has none.
+    Named with side ``a`` as the reference: ``merge = H(a|b)`` (``b`` fusing ``a``
+    bodies), ``split = H(b|a)`` (``b`` fragmenting one). ``total`` is their sum.
     """
 
     split: float
@@ -57,10 +43,9 @@ class Voi:
 class Rand:
     """Adapted Rand, as a precision/recall pair plus its F-score and the error.
 
-    Pair-counting: of all voxel pairs that side ``b`` puts in one segment, what fraction
-    does side ``a`` agree belong together (``precision``), and of all pairs side ``a`` puts
-    together, what fraction does ``b`` keep together (``recall``). ``error = 1 - f_score``
-    is the number usually reported as "adapted Rand error".
+    ``precision``: of the voxel pairs ``b`` puts in one segment, the fraction ``a`` also
+    puts together. ``recall``: of the pairs ``a`` puts together, the fraction ``b`` keeps
+    together. ``error = 1 - f_score`` is the usual "adapted Rand error".
     """
 
     precision: float
@@ -83,10 +68,8 @@ class Rand:
 def voi(c: Contingency) -> Voi:
     """Variation of information between the two sides of ``c``, in bits.
 
-    Zero when the two labelings agree up to a renaming; growing with both kinds of
-    disagreement. An empty table scores zero, on the grounds that no voxels were scored and
-    a metric should not invent a disagreement out of nothing — a report says how much was
-    scored alongside, which is where an empty region becomes visible.
+    Zero when the labelings agree up to renaming. An empty table also scores zero; check
+    ``frac_scored``, which shows when nothing was scored.
     """
     total = c.n_scored
     if total == 0:
@@ -101,23 +84,17 @@ def voi(c: Contingency) -> Voi:
     h_a = _entropy(p_a)
     h_b = _entropy(p_b)
     h_joint = _entropy(p_ab)
-    # H(a|b) = H(a,b) - H(b), and mutual information is never negative, so both
-    # conditionals are clamped at zero against float cancellation on a near-perfect match.
+    # H(a|b) = H(a,b) - H(b); clamped at zero against float cancellation.
     return Voi(split=max(h_joint - h_a, 0.0), merge=max(h_joint - h_b, 0.0))
 
 
 def per_label_voi(c: Contingency) -> tuple[dict[int, float], dict[int, float]]:
     """Each label's contribution to the two halves of :func:`voi`.
 
-    ``(merge_by_a, split_by_b)``: the first maps an ``a`` id to its share of ``H(a|b)``,
-    the second a ``b`` id to its share of ``H(b|a)``. Both sum to the corresponding field
-    of :func:`voi`, which a test asserts — a decomposition that does not add up to the
-    total is a decomposition nobody can act on.
-
-    This is what localizes error, and it is also the ranking key the disagreement table
-    uses. A pair's VOI contribution is a better severity measure than its voxel count,
-    because splitting a large body into two halves and shaving a thousand voxels off it are
-    different failures that a voxel count scores the same.
+    ``(merge_by_a, split_by_b)``: each ``a`` id's share of ``H(a|b)`` and each ``b`` id's
+    share of ``H(b|a)``; each sums to the matching field of :func:`voi`. VOI contribution
+    ranks errors better than voxel counts do: halving a large body and shaving a thousand
+    voxels off it score the same in voxels.
     """
     total = c.n_scored
     if total == 0:
@@ -189,15 +166,9 @@ def rand(c: Contingency) -> Rand:
 
 
 def summary(c: Contingency) -> dict[str, float | int]:
-    """Every scalar in this module, plus what was scored, as one flat row.
-
-    The flat-row shape is deliberate and matches ``neu_morpho.measure.measure_skeleton``:
-    one dict per comparison, so a set of comparisons is a DataFrame without reshaping.
-
-    ``frac_scored`` is here rather than left to a reporting layer because a VOI computed
-    over 3% of a box is not a comparable number, and the metric and its denominator
-    travelling separately is how it gets quoted as if it were.
-    """
+    """Every scalar in this module, plus what was scored, as one flat row (so many
+    comparisons make a DataFrame). ``frac_scored`` is included because a VOI over 3% of a
+    box is not comparable to one over all of it."""
     n_total = c.n_scored + c.n_ignored
     row: dict[str, float | int] = {
         f"n_{c.labels[0]}": c.n_a,

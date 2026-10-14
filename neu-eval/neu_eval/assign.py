@@ -1,22 +1,16 @@
 """Matching one side's labels to the other's, and the completeness metrics that follow.
 
-Also pure functions of a :class:`Contingency`. Two families live here:
+Pure functions of a :class:`Contingency`, in two families:
 
-**Matching.** Which segment *is* which body. Plaza & Funke's connectivity metrics need a
-one-to-one assignment and are explicit about why the constraint matters: without it a
-segmentation can claim credit for the same body twice, and an unmatched segment keeps none
-of it. Greedy by overlap is the default; the optimal assignment is available and opt-in,
-because it is the one thing in this package whose cost is not linear in anything.
+- **Matching:** which segment is which body, one-to-one, as Plaza & Funke's connectivity
+  metrics require (otherwise a segmentation can claim one body twice). Greedy by default;
+  the optimal assignment is opt-in, being the only non-linear cost in the package.
+- **Completeness:** how many segments account for a share of the volume.
+  ``fragmentation`` estimates how many merges a proofreader would need; ``covering`` is
+  the size-weighted share of each body captured by its best segment.
 
-**Completeness.** How much of the volume a given number of segments accounts for.
-``fragmentation`` and its thresholded form are the parameter-free edit-distance estimates
-from the same survey — "how many segments would a proofreader have to merge" — and
-``covering`` is the size-weighted version of "how much of each body did its best segment
-capture".
-
-None of this presumes which side is the reference. ``fragmentation`` is signed with side
-``b`` as the thing being assessed (more ``b`` labels than ``a`` labels is positive, i.e.
-over-segmentation), which is the only asymmetry, and ``c.T`` reverses it.
+``fragmentation`` is positive when side ``b`` has more labels (over-segmentation); that is
+the only asymmetry, and ``c.T`` reverses it.
 """
 
 from __future__ import annotations
@@ -27,12 +21,9 @@ import numpy as np
 
 from .overlap import Contingency
 
-#: Refuse the optimal assignment above this many labels on either side. The dense cost
-#: matrix is one thing (``n_a * n_b`` float64), but the cubic time is the real wall: this is
-#: a guard against an apparent hang, not a measured break-even, and greedy is what to use
-#: instead. For a sparse table `scipy.sparse.csgraph.min_weight_full_bipartite_matching` is
-#: the better algorithm, but it requires a full matching to exist and raises when one does
-#: not — which is the common case here, since most segments match nothing.
+#: Refuse the optimal assignment above this many labels on either side: its dense cost
+#: matrix and cubic time would look like a hang. (scipy's sparse bipartite matching would
+#: scale better but needs a full matching to exist, which it rarely does here.)
 HUNGARIAN_MAX_LABELS = 5000
 
 
@@ -40,10 +31,8 @@ HUNGARIAN_MAX_LABELS = 5000
 class Match:
     """A one-to-one assignment between the two sides.
 
-    ``a_to_b`` and ``b_to_a`` are inverse mappings over the matched labels only; a label
-    absent from both is unmatched, which is a result and not a gap. ``method`` is carried
-    because a greedy and an optimal assignment can differ and the number that came out of
-    one should not be compared with the number that came out of the other.
+    ``a_to_b`` and ``b_to_a`` are inverse mappings over matched labels; any other label is
+    unmatched. ``method`` is recorded because greedy and optimal results are not comparable.
     """
 
     a_to_b: dict[int, int]
@@ -68,11 +57,9 @@ class Match:
 class Completeness:
     """How many segments account for a given share of each side.
 
-    ``fragmentation`` is ``n_b_kept - n_a_kept``: the count of extra segments a proofreader
-    would have to merge to recover the kept reference bodies. Parameter-free once the
-    threshold is chosen, and an estimate rather than a true edit distance — it assumes the
-    ``b`` side is an over-segmented refinement of the ``a`` side, which is the regime worth
-    estimating in and is worth remembering when it is not.
+    ``fragmentation`` is ``n_b_kept - n_a_kept``, the extra segments a proofreader would
+    merge to recover the kept reference bodies. An estimate, not a true edit distance: it
+    assumes ``b`` over-segments ``a``.
     """
 
     at: float
@@ -93,10 +80,8 @@ class Completeness:
 def iou(c: Contingency) -> np.ndarray:
     """Intersection over union for each pair in ``c``, parallel to its arrays.
 
-    ``|a ∩ b| / (|a| + |b| - |a ∩ b|)`` using each label's total over the *scored* region,
-    so a body clipped by the mask is measured against the part of it that was scored. The
-    alternative — its full extent — would score every boundary-clipped body as a partial
-    match and make the metric a function of where the crop was cut.
+    ``|a ∩ b| / (|a| + |b| - |a ∩ b|)``, with each label's total taken over the scored
+    region, so a body clipped by the crop is not penalised for the part outside it.
     """
     if c.n_pairs == 0:
         return np.zeros(0)
@@ -112,20 +97,14 @@ def best_match(c: Contingency, *, method: str = "greedy", min_iou: float = 0.0,
                by: str = "iou") -> Match:
     """A one-to-one assignment between the two sides of ``c``.
 
-    ``method="greedy"`` takes the best remaining pair repeatedly — O(pairs log pairs), and
-    what to use at volume scale. ``method="hungarian"`` maximises the total instead, which
-    can differ when a segment is a good-but-not-best match for two bodies; it densifies the
+    ``method="greedy"`` repeatedly takes the best remaining pair, O(pairs log pairs), for
+    volume scale. ``method="hungarian"`` maximises the total instead; it densifies the
     table, so it is capped at :data:`HUNGARIAN_MAX_LABELS` per side.
 
-    ``by`` chooses what "best" means: ``"iou"`` (default) or ``"overlap"`` raw voxels. They
-    disagree exactly where size does — a huge segment overlapping a small body wins on
-    voxels and loses on IoU — and IoU is the one that matches how a human reads "is this
-    the same object".
-
-    ``min_iou`` refuses a pair below that overlap. The default of 0 admits any co-occurring
-    pair, which is right for VOI-style accounting and too permissive for reporting a body
-    as "found"; 0.5 is the usual choice there, and it makes the match unique without a
-    constraint, a one-voxel-over-half overlap being possible with only one partner.
+    ``by`` is ``"iou"`` (default) or ``"overlap"`` (raw voxels); they differ when a large
+    segment overlaps a small body. ``min_iou`` drops pairs below it: 0 admits any
+    co-occurring pair, and 0.5 is the usual choice for calling a body "found" (above 0.5 a
+    label can have only one admissible partner).
     """
     if method not in ("greedy", "hungarian"):
         raise ValueError(f"method must be 'greedy' or 'hungarian', got {method!r}")
@@ -141,8 +120,7 @@ def best_match(c: Contingency, *, method: str = "greedy", min_iou: float = 0.0,
     if method == "greedy":
         a_to_b: dict[int, int] = {}
         b_to_a: dict[int, int] = {}
-        # Descending score; ties broken by id so the result does not depend on the sort's
-        # internal order, for the same reason the contingency table is canonical.
+        # Descending score, ties broken by id, so the result is deterministic.
         order = np.lexsort((c.b_ids, c.a_ids, -scores))
         for k in order:
             if not admissible[k]:
@@ -173,9 +151,7 @@ def best_match(c: Contingency, *, method: str = "greedy", min_iou: float = 0.0,
     a_to_b, b_to_a = {}, {}
     for r, col in zip(rows, cols):
         if cost[r, col] == 0:
-            # linear_sum_assignment fills the rectangle, so it pairs labels that share no
-            # voxels at all. Those are not matches; dropping them is what keeps
-            # `n_matched` meaningful.
+            # linear_sum_assignment also pairs labels that share no voxels; not matches.
             continue
         a_to_b[int(a_ids[r])] = int(b_ids[col])
         b_to_a[int(b_ids[col])] = int(a_ids[r])
@@ -190,10 +166,9 @@ def fragmentation(c: Contingency) -> int:
 def completeness(c: Contingency, at: float = 0.9) -> Completeness:
     """The smallest set of labels on each side covering ``at`` of that side's voxels.
 
-    Answers "how many segments reconstruct 90% of this volume", which is the form of the
-    question a proofreading plan can act on — where a raw label count is dominated by
-    specks. Both sides are thresholded independently, because the point is to compare *how
-    many* each needs, not to pair them up.
+    "How many segments reconstruct 90% of this volume" is a question a proofreading plan can
+    act on, where a raw label count is dominated by specks. The sides are thresholded
+    independently, not paired.
     """
     if not 0 < at <= 1:
         raise ValueError(f"at must be in (0, 1], got {at}")
@@ -206,11 +181,9 @@ def completeness(c: Contingency, at: float = 0.9) -> Completeness:
 def covering(c: Contingency) -> float:
     """Size-weighted mean, over side ``a``'s labels, of the best single ``b`` overlap.
 
-    For each ``a`` body, the IoU of its best-matching ``b`` segment; averaged with each
-    body weighted by its size. 1.0 when every body is captured exactly by one segment.
-    Unlike VOI this is bounded and reads as a fraction, which is why it survives into
-    figures; unlike VOI it is also blind to what happens to the *rest* of the best-matching
-    segment, so it does not notice a merge that leaves the body itself intact.
+    The IoU of each ``a`` body's best ``b`` segment, weighted by body size; 1.0 when every
+    body is captured exactly. Unlike VOI it is a bounded fraction, but it ignores the rest
+    of the best segment, so it misses a merge that leaves the body itself intact.
     """
     if c.n_pairs == 0:
         return 0.0
