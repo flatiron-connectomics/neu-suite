@@ -199,9 +199,9 @@ class VolumeDrawable:
     probability maps). Constructing one raises."""
     def __post_init__(self) -> None:
         raise NotImplementedError(
-            "volumetric drawables are not implemented; see NEU-DRAW-PLAN.md. Meshes and "
-            "skeletons cover segment morphology, and this slot is reserved for scalar "
-            "fields (image slices, probability maps).")
+            "volumetric drawables are not implemented yet. Meshes and skeletons cover "
+            "segment morphology; this slot is reserved for scalar fields (image slices, "
+            "probability maps).")
 
 
 Drawable = Union[MeshDrawable, LinesDrawable, PointsDrawable]

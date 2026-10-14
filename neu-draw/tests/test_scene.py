@@ -72,7 +72,7 @@ def test_an_unknown_marker_is_caught_when_the_scene_is_built():
 
 
 def test_the_volume_slot_is_reserved_and_says_so():
-    with pytest.raises(NotImplementedError, match="NEU-DRAW-PLAN"):
+    with pytest.raises(NotImplementedError, match="reserved for scalar fields"):
         VolumeDrawable()
 
 
