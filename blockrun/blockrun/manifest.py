@@ -6,7 +6,8 @@ scan. Each line has:
 
   - ``group``: a JSON-serialisable group id (a pyramid level, or 0 if there is one group);
   - ``key``: the task's identity, a scalar (a segment id) or a sequence (a block index);
-  - ``status``: any string (neu-vol writes ``written``, ``empty``, ``skipped``).
+  - ``status``: any string (neu-vol writes ``written``, ``empty``, ``skipped``);
+  - ``t``: when the driver recorded it, in Unix seconds, so a reader can measure a rate.
 
 A line with ``meta`` and no ``status`` records facts about a group, most usefully its
 task ``total`` (:meth:`Manifest.record_meta`), since only the driver knows it. Anything
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Hashable, Iterable
 
 
@@ -123,8 +125,10 @@ class Manifest:
         results = list(results)
         if self.path:
             self._open()
+            t = round(time.time(), 1)
             for key, status in results:
-                self._fh.write(json.dumps({"group": group, "key": key, "status": status}) + "\n")
+                self._fh.write(json.dumps({"group": group, "key": key, "status": status,
+                                           "t": t}) + "\n")
         for key, status in results:
             self._done[(group, _norm(key))] = status
         if self._fh:

@@ -93,3 +93,18 @@ def test_counts_can_be_scoped_to_one_group():
     assert m.counts(1) == {"written": 1}
     assert m.counts(9) == {}
     assert m.is_done(0, 1)
+
+
+def test_each_record_carries_when_it_was_recorded(tmp_path, monkeypatch):
+    import json
+
+    import blockrun.manifest as manifest
+
+    monkeypatch.setattr(manifest.time, "time", lambda: 1_792_000_000.04)
+    p = tmp_path / "prog.jsonl"
+    m = Manifest(str(p))
+    m.reset()
+    m.record(0, [((0, 0, 0), "written")])
+    m.close()
+    assert json.loads(p.read_text())["t"] == 1_792_000_000.0
+    assert Manifest(str(p)).load().is_done(0, (0, 0, 0))
