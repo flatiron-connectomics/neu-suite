@@ -67,17 +67,3 @@ def test_a_subcommand_is_required():
     with pytest.raises(SystemExit):
         cli._parse_args([])
 
-
-
-def test_a_single_stage_parser_carries_only_that_stages_options():
-    """How `neu-skel run` builds its parser: no --stages, no other stage's scales."""
-    import argparse
-
-    cli = _driver()
-    p = argparse.ArgumentParser()
-    cli.add_run_args(p, stages=("skel",))
-    args = p.parse_args(["--src", "x", "--dst", "y"])
-    assert args.stages == "skel"
-    for flag in ("--stages", "--mesh-scale", "--index-scale", "--seg-scales"):
-        with pytest.raises(SystemExit):
-            p.parse_args(["--src", "x", "--dst", "y", flag, "1"])

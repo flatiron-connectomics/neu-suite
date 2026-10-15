@@ -80,10 +80,11 @@ from neu_vol import describe_scales as describe
 
 log = logging.getLogger("neu-morpho")
 
-from neu_morpho.pipeline import STAGE_DOC, STAGES  # noqa: E402  (re-exported for the docs)
+# STAGE_DOC is read from here by the docs build.
+from neu_morpho.pipeline import DEFAULT_STAGES, STAGE_DOC, STAGES  # noqa: E402
 
 
-def stages_help(indent: str = "  ", width: int = 79, stage_doc=None) -> str:
+def _stages_help(indent: str = "  ", width: int = 79) -> str:
     """The stage list as ``--help`` prints it: one wrapped paragraph per stage.
 
     For the ``run`` subparser's description (``RawDescriptionHelpFormatter`` keeps the
@@ -91,10 +92,9 @@ def stages_help(indent: str = "  ", width: int = 79, stage_doc=None) -> str:
     """
     import textwrap
 
-    stage_doc = STAGE_DOC if stage_doc is None else stage_doc
-    label = max(len(name) for name in stage_doc) + 2
+    label = max(len(name) for name in STAGE_DOC) + 2
     out = ["Stages, in the order they run (--stages):", ""]
-    for name, doc in stage_doc.items():
+    for name, doc in STAGE_DOC.items():
         lines = textwrap.wrap(doc, width=width - len(indent) - label)
         out.append(f"{indent}{name:<{label}}{lines[0]}")
         out += [f"{indent}{'':<{label}}{line}" for line in lines[1:]]
@@ -108,13 +108,8 @@ def _configs(args) -> list[str]:
     return args.config or ["dask-local"]
 
 
-def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
-    """The ``run`` arguments for ``stages``, on parser ``p``.
-
-    An option only one built-in stage reads is added only with that stage, and a single
-    stage gets no ``--stages``. ``neu-skel run`` passes ``stages=("skel",)`` and adds
-    its own options.
-    """
+def _add_run_args(p) -> None:
+    """Every ``run`` argument, on parser ``p``."""
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
                                  "meshes/skeletons inside it. Local path or s3://...; "
@@ -126,32 +121,26 @@ def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
-    if len(stages) > 1:
-        p.add_argument("--stages", default=default_stages, metavar="LIST",
-                       help=f"comma-separated subset of {','.join(stages)}, described "
-                            f"under 'Stages' above. They run in that order, and each is "
-                            f"idempotent and resumable, so re-running a subset continues "
-                            f"rather than redoing it (default: {default_stages})")
-    else:
-        p.set_defaults(stages=stages[0])
-    if "seg" in stages:
-        p.add_argument("--seg-encoding", default="compressed_segmentation",
-                       help="encoding for the exported segmentation (or 'raw')")
-        p.add_argument("--seg-scales", default="all",
-                       help="source scales to copy in the seg stage: 'all', a range "
-                            "like '1-6', or a comma list. Scale 0 usually dominates "
-                            "the cost by an order of magnitude — check the log line")
+    default = ",".join(DEFAULT_STAGES)
+    p.add_argument("--stages", default=default, metavar="LIST",
+                   help=f"comma-separated subset of {','.join(STAGES)}, described under "
+                        f"'Stages' above. They run in that order, and each is idempotent "
+                        f"and resumable, so re-running a subset continues rather than "
+                        f"redoing it (default: {default})")
+    p.add_argument("--seg-encoding", default="compressed_segmentation",
+                   help="encoding for the exported segmentation (or 'raw')")
+    p.add_argument("--seg-scales", default="all",
+                   help="source scales to copy in the seg stage: 'all', a range "
+                        "like '1-6', or a comma list. Scale 0 usually dominates "
+                        "the cost by an order of magnitude — check the log line")
     p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 voxels, at --roi-scale")
     p.add_argument("--roi-scale", type=int, default=None,
                    help="scale the --roi values are given in. REQUIRED with --roi: "
                         "the same six numbers name a different box at every scale, "
                         "and guessing wrong silently processes the wrong region")
 
-    if "index" in stages:
-        p.add_argument("--index-scale", type=int, default=2,
-                       help="scale to scan for bboxes")
-    if "mesh" in stages:
-        p.add_argument("--mesh-scale", type=int, default=2)
+    p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
+    p.add_argument("--mesh-scale", type=int, default=2)
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,
@@ -201,10 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "run", help="index -> allowlist -> meshes",
-        description=f"{__doc__}\n{stages_help()}",
+        description=f"{__doc__}\n{_stages_help()}",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.set_defaults(func=_main)
-    add_run_args(p)
+    _add_run_args(p)
     # --- progress -----------------------------------------------------------
     q = sub.add_parser("progress", help="live progress of a run, from its work dir",
                        description="Per-stage task counts against the plan, for a run "
@@ -325,7 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_help_command(sub)
 
-    # `run`'s own subparser, so `check_run_args` reports errors against it.
+    # `run`'s own subparser, so `_check_run_args` reports errors against it.
     top._run_parser = p
     return top
 
@@ -360,11 +349,11 @@ def _parse_args(argv=None):
     top = build_parser()
     args = top.parse_args(argv)
     if args.command == "run":
-        check_run_args(top._run_parser, args)
+        _check_run_args(top._run_parser, args)
     return args
 
 
-def check_run_args(p, args) -> None:
+def _check_run_args(p, args) -> None:
     """The ``run`` checks argparse cannot express, reported as errors of parser ``p``."""
     # No default for --roi-scale: an ROI read at the wrong scale processes the wrong
     # region, and nothing downstream can tell it from a deliberately smaller ROI.
@@ -690,16 +679,7 @@ def main(argv=None) -> int:
 
 
 def _main(args) -> int:
-    return run_main(args)
-
-
-def run_main(args, *, extra_stages=None, runners=None, extra=None,
-             label: str = "neu-morpho") -> int:
-    """``run`` from parsed arguments: plan, then run on a cluster or serially.
-
-    ``extra_stages`` / ``runners`` / ``extra`` pass through to :mod:`neu_morpho.pipeline`
-    for a stage another package provides.
-    """
+    """``run`` from parsed arguments: plan, then run on a cluster or serially."""
     from neu_morpho import pipeline
 
     if args.describe:
@@ -709,28 +689,25 @@ def run_main(args, *, extra_stages=None, runners=None, extra=None,
         raise SystemExit("--dst is required unless --describe")
 
     seg_scales = None
-    raw_scales = getattr(args, "seg_scales", None)
-    if raw_scales and raw_scales != "all":
-        if "-" in raw_scales:
-            a, _, b = raw_scales.partition("-")
+    if args.seg_scales and args.seg_scales != "all":
+        if "-" in args.seg_scales:
+            a, _, b = args.seg_scales.partition("-")
             seg_scales = list(range(int(a), int(b) + 1))
         else:
-            seg_scales = [int(x) for x in raw_scales.split(",")]
-    # Options add_run_args left out for these stages keep pipeline.plan's defaults.
-    stage_opts = {k: getattr(args, k) for k in ("index_scale", "mesh_scale", "seg_encoding")
-                  if hasattr(args, k)}
+            seg_scales = [int(x) for x in args.seg_scales.split(",")]
     try:
         plan = pipeline.plan(
             args.src, args.dst, work_dir=args.work_dir,
             stages=[s.strip() for s in args.stages.split(",") if s.strip()],
             block=tuple(int(v) for v in args.block.split(",")),
-            extra_stages=extra_stages, roi=parse_roi(args.roi), roi_scale=args.roi_scale,
+            index_scale=args.index_scale, mesh_scale=args.mesh_scale,
+            roi=parse_roi(args.roi), roi_scale=args.roi_scale,
             seg_scales=seg_scales, occupancy_scale=args.occupancy_scale,
             occupancy_dilate=args.occupancy_dilate, allowlist=args.allowlist,
             min_voxels=args.min_voxels, limit_bodies=args.limit_bodies,
-            metrics_db=not args.no_metrics_db,
+            metrics_db=not args.no_metrics_db, seg_encoding=args.seg_encoding,
             max_consecutive_failures=args.max_consecutive_failures,
-            resume=not args.no_resume, extra=extra, **stage_opts)
+            resume=not args.no_resume)
     except ValueError as e:
         raise SystemExit(str(e)) from None
     if args.dry_run:
@@ -739,15 +716,15 @@ def run_main(args, *, extra_stages=None, runners=None, extra=None,
 
     if args.serial:
         log.info("serial mode: no dask client")
-        summary = pipeline.run(plan, runners=runners)
+        summary = pipeline.run(plan)
     else:
         # Imported here: it pulls in dask.distributed (~1 s), which `progress` and
         # `run-report` never need.
         from blockrun import start_dask
 
-        with start_dask(args.workers, _configs(args), label=label,
+        with start_dask(args.workers, _configs(args), label="neu-morpho",
                         effective_config_path=plan.work_dir) as client:
-            summary = pipeline.run(plan, client=client, runners=runners)
+            summary = pipeline.run(plan, client=client)
     # Isolated per-body failures do not stop the run; exit non-zero so a scripted
     # pipeline does not treat a partial result as clean.
     return 1 if summary["n_failed_bodies"] else 0
