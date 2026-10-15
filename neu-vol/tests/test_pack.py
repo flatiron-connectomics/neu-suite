@@ -90,6 +90,253 @@ def test_the_dtype_can_be_cast(tmp_path):
     np.testing.assert_array_equal(arr, data)
 
 
+def _labels(tmp_path, top, *, dtype=np.uint64, name="labels.h5"):
+    """A self-describing label file whose largest id is ``top``."""
+    src, _ = _stack(tmp_path, name=f"{name}.stack")
+    path = str(tmp_path / name)
+    pack_hdf5(src, path, voxel_size=(8, 8, 8), voxel_offset=(1, 2, 3), kind="segmentation")
+    data = np.arange(4 * 6 * 8, dtype=dtype).reshape(4, 6, 8)
+    data[-1, -1, -1] = top
+    import h5py
+
+    with h5py.File(path, "a") as f:
+        attrs = dict(f[DEFAULT_DATASET].attrs)
+        del f[DEFAULT_DATASET]
+        f.create_dataset(DEFAULT_DATASET, data=data)
+        f[DEFAULT_DATASET].attrs.update(attrs)
+    return path, data
+
+
+def test_a_narrowing_cast_whose_values_fit_is_written(tmp_path):
+    src, data = _labels(tmp_path, 65535)
+    out = str(tmp_path / "u16.h5")
+    plan = pack_hdf5(src, out, dtype="uint16")
+    arr, dattrs, _ = _h5(out)
+    assert plan["narrowing"] and arr.dtype == np.uint16
+    np.testing.assert_array_equal(arr, data)
+    assert list(dattrs["voxel_offset"]) == [1, 2, 3] and dattrs["kind"] == "segmentation"
+
+
+@pytest.mark.parametrize("top, dtype, to", [(65536, np.uint64, "uint16"),
+                                            (-1, np.int16, "uint8")],
+                         ids=["too-big", "negative"])
+def test_a_narrowing_cast_that_does_not_fit_is_refused_and_writes_nothing(
+        tmp_path, top, dtype, to):
+    import os
+
+    src, _ = _labels(tmp_path, top, dtype=dtype)
+    out = str(tmp_path / "narrow.h5")
+    with pytest.raises(ValueError, match=r"1 value\(s\) in block .* do not fit"):
+        pack_hdf5(src, out, dtype=to)
+    assert not os.path.exists(out), "a file this call created is removed"
+
+
+def test_a_refused_replacement_leaves_the_old_dataset_alone(tmp_path):
+    import h5py
+
+    src, data = _labels(tmp_path, 70000)
+    out = str(tmp_path / "keep.h5")
+    pack_hdf5(src, out)                                       # uint64, as the source is
+    with pytest.raises(ValueError, match="do not fit uint16"):
+        pack_hdf5(src, out, dtype="uint16", overwrite=True)
+    np.testing.assert_array_equal(_h5(out)[0], data)
+    with h5py.File(out, "r") as f:
+        assert list(f) == ["data"], "no partial dataset left behind"
+
+
+def test_truncate_casts_what_does_not_fit(tmp_path):
+    src, data = _labels(tmp_path, 65537)
+    out = str(tmp_path / "trunc.h5")
+    pack_hdf5(src, out, dtype="uint16", truncate=True)
+    arr = _h5(out)[0]
+    assert arr[-1, -1, -1] == 1, "low-order bits, as astype keeps them"
+    np.testing.assert_array_equal(arr, data.astype(np.uint16))
+
+
+# --------------------------------------------------------------------------- #
+# object-store source and destination
+# --------------------------------------------------------------------------- #
+class _Bucket:
+    """``s3://my-bucket/<key>`` backed by a directory, counting transfers."""
+
+    def __init__(self, root):
+        self.root = root
+        self.downloads = 0
+        self.uploads = 0
+
+    def path(self, url):
+        assert url.startswith("s3://my-bucket/"), url
+        return self.root / url[len("s3://my-bucket/"):]
+
+    def put(self, local, url):
+        import shutil
+
+        self.path(url).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(local, self.path(url))
+
+
+@pytest.fixture
+def bucket(tmp_path, monkeypatch):
+    """A fake object store, plus a temp root that must be empty again after each call."""
+    import shutil
+    import tempfile
+
+    from neu_vol import location, transfer
+
+    b = _Bucket(tmp_path / "bucket")
+    b.root.mkdir()
+
+    def download(url, path):
+        if not b.path(url).exists():
+            raise FileNotFoundError(f"{url} does not exist")
+        b.downloads += 1
+        shutil.copyfile(b.path(url), path)
+
+    def upload(path, url):
+        b.uploads += 1
+        b.put(path, url)
+
+    monkeypatch.setattr(transfer, "download", download)
+    monkeypatch.setattr(transfer, "upload", upload)
+    monkeypatch.setattr(location, "exists", lambda url: b.path(url).exists())
+    b.scratch = tmp_path / "scratch"
+    b.scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(b.scratch))
+    return b
+
+
+def test_an_hdf5_source_on_an_object_store_is_read_from_a_local_copy(tmp_path, bucket):
+    src, data = _labels(tmp_path, 9)
+    url = "s3://my-bucket/gt/labels.h5"
+    bucket.put(src, url)
+
+    plan = pack_hdf5(url, str(tmp_path / "from-s3.h5"), dtype="uint16")
+    arr, dattrs, _ = _h5(str(tmp_path / "from-s3.h5"))
+    np.testing.assert_array_equal(arr, data)
+    assert list(dattrs["voxel_offset"]) == [1, 2, 3], "the frame comes along"
+    assert plan["src_spec"]["path"] == url, "reported as read from where it lives"
+    assert list(bucket.scratch.iterdir()) == [], "the local copy is removed"
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        pack_hdf5("s3://my-bucket/gt/absent.h5", str(tmp_path / "x.h5"))
+
+
+def test_a_remote_out_is_written_locally_then_uploaded(tmp_path, bucket):
+    src, data = _labels(tmp_path, 9)
+    url = "s3://my-bucket/out/piece.h5"
+    plan = pack_hdf5(src, url, dtype="uint16")
+    assert plan["out"] == url and bucket.uploads == 1
+    np.testing.assert_array_equal(_h5(str(bucket.path(url)))[0], data)
+    assert list(bucket.scratch.iterdir()) == []
+
+
+def test_a_remote_out_that_exists_is_added_to(tmp_path, bucket):
+    import h5py
+
+    src, _ = _labels(tmp_path, 9)
+    url = "s3://my-bucket/out/piece.h5"
+    pack_hdf5(src, url, dataset="a")
+    pack_hdf5(src, url, dataset="b")
+    assert bucket.downloads == 1, "the second call starts from what is there"
+    with h5py.File(bucket.path(url), "r") as f:
+        assert sorted(f) == ["a", "b"]
+
+
+def test_a_remote_out_is_not_uploaded_on_failure_or_dry_run(tmp_path, bucket):
+    src, _ = _labels(tmp_path, 70000)
+    url = "s3://my-bucket/out/piece.h5"
+    with pytest.raises(ValueError, match="do not fit"):
+        pack_hdf5(src, url, dtype="uint16")
+    pack_hdf5(src, url, dry_run=True)
+    assert bucket.uploads == 0 and not bucket.path(url).exists()
+    assert list(bucket.scratch.iterdir()) == []
+
+
+# --------------------------------------------------------------------------- #
+# several datasets of one file
+# --------------------------------------------------------------------------- #
+def _multi(tmp_path, name="multi.h5"):
+    """A file of three self-describing datasets at different offsets."""
+    src, _ = _stack(tmp_path, name=f"{name}.stack")
+    path = str(tmp_path / name)
+    for i, d in enumerate(("a", "b", "c")):
+        pack_hdf5(src, path, voxel_size=(8, 8, 8), voxel_offset=(i, 10 * i, 100 * i),
+                  dataset=d, kind="segmentation")
+    return path
+
+
+def test_every_dataset_is_repacked_under_its_own_name(tmp_path):
+    from neu_vol import pack_hdf5_datasets
+
+    src = _multi(tmp_path)
+    out = str(tmp_path / "all.h5")
+    plans = pack_hdf5_datasets(src, out, dtype="uint16")
+    assert [p["dataset"] for p in plans] == ["/a", "/b", "/c"]
+    for i, d in enumerate(("a", "b", "c")):
+        arr, dattrs, _ = _h5(out, d)
+        assert arr.dtype == np.uint16
+        np.testing.assert_array_equal(arr, _h5(src, d)[0])
+        assert list(dattrs["voxel_offset"]) == [i, 10 * i, 100 * i]
+
+
+def test_a_subset_of_datasets_can_be_named(tmp_path):
+    import h5py
+
+    from neu_vol import pack_hdf5_datasets
+
+    src = _multi(tmp_path)
+    out = str(tmp_path / "some.h5")
+    pack_hdf5_datasets(src, out, ["c", "a"])
+    with h5py.File(out, "r") as f:
+        assert sorted(f) == ["a", "c"]
+
+
+@pytest.mark.parametrize("kwargs, err", [({"dataset": "x"}, TypeError),
+                                         ({"voxel_offset": (0, 0, 0)}, ValueError),
+                                         ({"crop_start": (0, 0, 0)}, ValueError)])
+def test_what_describes_one_dataset_is_refused_for_several(tmp_path, kwargs, err):
+    from neu_vol import pack_hdf5_datasets
+
+    with pytest.raises(err):
+        pack_hdf5_datasets(_multi(tmp_path), str(tmp_path / "x.h5"), **kwargs)
+
+
+def test_several_datasets_cost_one_transfer_each_way(tmp_path, bucket):
+    from neu_vol import pack_hdf5_datasets
+
+    src_url, out_url = "s3://my-bucket/in/multi.h5", "s3://my-bucket/out/multi.h5"
+    bucket.put(_multi(tmp_path), src_url)
+    plans = pack_hdf5_datasets(src_url, out_url, dtype="uint16")
+    assert (bucket.downloads, bucket.uploads) == (1, 1)
+    assert all(p["out"] == out_url and p["src_spec"]["path"] == src_url for p in plans)
+    assert list(bucket.scratch.iterdir()) == []
+
+
+def test_the_cli_repacks_all_datasets(tmp_path, capsys):
+    src = _multi(tmp_path)
+    out = str(tmp_path / "cli-all.h5")
+    assert cli.main(["to-hdf5", "--src", src, "--out", out, "--all-datasets",
+                     "--dtype", "uint16"]) == 0
+    assert "wrote 3 datasets" in capsys.readouterr().out
+    assert cli.main(["to-hdf5", "--src", src, "--out", str(tmp_path / "two.h5"),
+                     "--src-dataset", "a", "--src-dataset", "b"]) == 0
+    with pytest.raises(SystemExit, match="describes ONE dataset"):
+        cli.main(["to-hdf5", "--src", src, "--out", str(tmp_path / "y.h5"),
+                  "--all-datasets", "--dataset", "x"])
+
+
+def test_the_cli_reports_and_refuses_narrowing(tmp_path, capsys):
+    src, _ = _labels(tmp_path, 65536)
+    out = str(tmp_path / "cli-narrow.h5")
+    assert cli.main(["to-hdf5", "--src", src, "--out", out, "--dtype", "uint16",
+                     "--dry-run"]) == 0
+    assert "narrowing   uint64 -> uint16: refused if" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="--truncate"):
+        cli.main(["to-hdf5", "--src", src, "--out", out, "--dtype", "uint16"])
+    assert cli.main(["to-hdf5", "--src", src, "--out", out, "--dtype", "uint16",
+                     "--truncate"]) == 0
+
+
 def test_a_big_source_is_read_in_blocks(tmp_path):
     """A "small volume" that is not stays packable: the array is never held whole."""
     src, data = _stack(tmp_path, shape=(8, 6, 8))
@@ -478,11 +725,9 @@ def test_the_cli_dry_run_writes_nothing(tmp_path, capsys):
     assert not os.path.exists(out)
 
 
-def test_a_remote_path_is_refused_with_a_useful_error(tmp_path):
-    """h5py has no object-store driver, and its own error does not say so."""
-    src, _ = _stack(tmp_path)
-    with pytest.raises(ValueError, match="ordinary filesystem path"):
-        pack_hdf5(src, "s3://bucket/piece.h5", voxel_size=(8, 8, 8))
+def test_the_reader_refuses_a_remote_path_with_a_useful_error():
+    """h5py has no object-store driver, and its own error does not say so. (`pack_hdf5`
+    stages remote files instead; see the object-store tests above.)"""
     with pytest.raises(ValueError, match="rclone|aws s3 cp"):
         open_backend({"backend": "hdf5", "path": "s3://bucket/piece.h5"})
 

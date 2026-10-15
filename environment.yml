@@ -47,6 +47,7 @@ dependencies:
   - h5py
   - tifffile
   - imageio
+  - boto3                 # neu-vol[s3]: streamed, multipart S3 transfers of HDF5 files
 
   # neu-mark, and the tables in neu-morpho[measure] / neu-eval[report]
   - pandas>=2

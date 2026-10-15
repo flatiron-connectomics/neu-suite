@@ -15,7 +15,8 @@ error, never a guess: reversed, the data lands mirrored through the z=x diagonal
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from contextlib import contextmanager
+from typing import Any, Iterator, Mapping
 
 import numpy as np
 
@@ -54,6 +55,69 @@ def require_local_path(path: str, what: str = "an HDF5 file") -> str:
             f"and upload it afterwards.")
     # Resolved, not just vetted: h5py does not expand `~`.
     return local_path(path)
+
+
+def names_remote_hdf5(src: Any, src_format: str | None = None) -> bool:
+    """True if ``src`` is an HDF5 file on an object store, by ``src_format`` or extension."""
+    from ..location import is_local
+
+    if not isinstance(src, str) or is_local(src):
+        return False
+    if src_format is not None:
+        return src_format == TAG
+    return src.rstrip("/").lower().endswith(HDF5_EXTENSIONS)
+
+
+def _temp_path(tmp: str, location: str) -> str:
+    import os
+
+    return os.path.join(tmp, location.rstrip("/").rpartition("/")[2])
+
+
+@contextmanager
+def local_copy(location: str) -> Iterator[str]:
+    """``location`` downloaded into a temporary directory, removed when the block exits.
+
+    h5py reads only filesystems (:func:`neu_vol.transfer.download` says how the bytes
+    move). Cached readers of the copy are closed before it is removed.
+    """
+    import tempfile
+
+    from ..transfer import download
+    from .base import release_backends
+
+    with tempfile.TemporaryDirectory(prefix="neu-vol-hdf5-") as tmp:
+        path = _temp_path(tmp, location)
+        download(location, path)
+        try:
+            yield path
+        finally:
+            release_backends(path)
+
+
+@contextmanager
+def staged_output(location: str, *, upload: bool = True) -> Iterator[str]:
+    """A local file to write in place of ``location``, uploaded when the block exits cleanly.
+
+    Starts as a copy of the object if there is one, so a file can be added to. Nothing is
+    uploaded if the block raises, or with ``upload=False`` (a dry run).
+    """
+    import tempfile
+
+    from ..location import exists
+    from ..transfer import download, upload as upload_file
+    from .base import release_backends
+
+    with tempfile.TemporaryDirectory(prefix="neu-vol-hdf5-out-") as tmp:
+        path = _temp_path(tmp, location)
+        if exists(location):
+            download(location, path)
+        try:
+            yield path
+        finally:
+            release_backends(path)
+        if upload:
+            upload_file(path, location)
 
 
 def _as_floats(value: Any, where: str) -> tuple[float, ...]:

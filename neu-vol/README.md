@@ -427,6 +427,20 @@ neu-vol to-hdf5 --src dvid://dvid.example.org/93fdbc:main/labels --out piece.h5 
 A branch ref is resolved once, so every block comes from the same node, and the command
 prints which node that was.
 
+An HDF5 file can be the source too, which is how a file's dtype, chunking or compression
+is changed. `--all-datasets` (or `--src-dataset` repeated) repacks a whole container, each
+dataset keeping its name and frame; `--src` and `--out` may be `s3://` or `gs://`, worked on
+as temporary local copies and transferred once for the whole set:
+
+```bash
+neu-vol to-hdf5 --src s3://my-bucket/gt/crops.h5 --out s3://my-bucket/gt/crops_u16.h5 \
+    --all-datasets --dtype uint16
+```
+
+A narrowing `--dtype` is refused if any value does not fit, naming the block; `--truncate`
+casts anyway. Large S3 files want the `s3` extra (boto3: streamed, multipart); without it
+a file passes through memory and an S3 upload stops at 5 GB.
+
 ### Inspecting anything readable, not just a volume
 
 `neu-vol info` works on every format the package can read — a zarr or precomputed
@@ -454,7 +468,8 @@ dataset for a container, one per level for a volume, holding the numbers rather 
 formatted strings. Subscripting is unchanged, and pandas is only needed for `.frame()`.
 
 Everything else that resolves an array (`create --like`, `align-bbox`, `convert`,
-`to-hdf5 --src`) needs exactly one, and each takes the dataset name where it can. If a
+`to-hdf5 --src`) needs exactly one, and each takes the dataset name where it can —
+`to-hdf5` alone can also take them all (`--all-datasets`). If a
 file records no frame, `info` says which attribute names it looked for — `voxel_size`,
 `voxel_offset`, `offset`, `units`, `axes` — because "records no scale" and "spells it
 differently" look identical otherwise, and those names are parameters

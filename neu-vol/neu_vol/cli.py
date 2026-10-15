@@ -1241,35 +1241,8 @@ def cmd_mask_by_value(args) -> int:
 # --------------------------------------------------------------------------- #
 # to-hdf5
 # --------------------------------------------------------------------------- #
-def cmd_to_hdf5(args) -> int:
-    """Pack a small volume into an HDF5 file that `neu-vol write` can place.
-
-    The inverse of `write`: the frame, position and axis order travel with the data.
-    """
-    from neu_vol.ops.pack import pack_hdf5
-
-    axes = tuple(args.axes)
-    if len(axes) != 3 or set(axes) != {"z", "y", "x"}:
-        raise SystemExit(f"--axes must be a permutation of zyx, got {args.axes!r}")
-    crop = _sextuple(args.crop_bbox, "crop-bbox") if args.crop_bbox else (None, None)
-    try:
-        plan = pack_hdf5(
-            args.src, args.out, voxel_size=_ftriple(args.voxel_size, "voxel-size"),
-            voxel_offset=_triple(args.offset, "offset"), units=args.units, axes=axes,
-            level=args.level, crop_start=crop[0], crop_stop=crop[1],
-            dataset=args.dataset, src_dataset=args.src_dataset,
-            src_format=args.src_format, dtype=args.dtype,
-            supervoxels=args.dvid_supervoxels, prefer_locked=args.dvid_locked,
-            wk_mapping=args.wk_mapping,
-            voxel_size_field=args.voxel_size_field, offset_field=args.offset_field,
-            background=(_int_list(args.background, "background")
-                        if args.background else None),
-            chunk=_triple(args.chunk, "chunk"),
-            compression=None if args.compression == "none" else args.compression,
-            overwrite=args.overwrite, dry_run=args.dry_run)
-    except (FileNotFoundError, FileExistsError, ValueError, KeyError) as e:
-        raise SystemExit(str(e).strip("'")) from None
-
+def _print_packed(plan: dict, *, many: bool) -> None:
+    """One packed (or planned) dataset, as `to-hdf5` reports it."""
     print(f"{plan['out']}{plan['dataset']}")
     print(f"  source      {_source_label(plan['src_spec'])}"
           + (f"  level {plan['level']}" if plan["level"] else ""))
@@ -1280,22 +1253,85 @@ def cmd_to_hdf5(args) -> int:
     print(f"  shape       {plan['shape']} {plan['dtype']}"
           f"{'  (channel-leading)' if plan['has_channels'] else ''}"
           f"   {_human_bytes(plan['nbytes'])}")
+    if plan["narrowing"]:
+        print(f"  narrowing   {plan['src_dtype']} -> {plan['dtype']}: "
+              + ("values that do not fit are cast anyway (--truncate)" if plan["truncate"]
+                 else "refused if any value does not fit"))
     print(f"  voxel size  {'x'.join(f'{v:g}' for v in plan['voxel_size'])} {plan['units']}")
     print("  voxel_offset " + "  ".join(f"{ax} {o}" for ax, o
                                         in zip(plan['axes'], plan['voxel_offset'])))
-    print(f"  axes        {''.join(plan['axes'])}  (recorded, so `neu-vol write` need not "
-          f"be told the order)")
-    print(f"  chunk       {plan['chunk'] or 'up to 64 per axis'}"
-          f"   compression {plan['compression'] or 'none'}")
-    if plan["other_datasets"]:
-        print(f"  also holds  {', '.join(plan['other_datasets'])}"
-              f"  — readers must name a dataset")
+    if not many:
+        print(f"  axes        {''.join(plan['axes'])}  (recorded, so `neu-vol write` need "
+              f"not be told the order)")
+        print(f"  chunk       {plan['chunk'] or 'up to 64 per axis'}"
+              f"   compression {plan['compression'] or 'none'}")
+        if plan["other_datasets"]:
+            print(f"  also holds  {', '.join(plan['other_datasets'])}"
+                  f"  — readers must name a dataset")
     if plan["replacing"]:
         print("  replacing   the existing dataset of that name")
-    print("--dry-run: nothing written" if args.dry_run else
-          f"wrote {plan['blocks']} block(s); place it with `neu-vol write <volume> --src "
-          f"{plan['out']}" + (f" --dataset {plan['dataset']}"
-                              if plan["other_datasets"] else "") + "`")
+
+
+def cmd_to_hdf5(args) -> int:
+    """Pack a small volume into an HDF5 file that `neu-vol write` can place.
+
+    The inverse of `write`: the frame, position and axis order travel with the data.
+    """
+    from neu_vol.location import is_local
+    from neu_vol.ops.pack import pack_hdf5, pack_hdf5_datasets
+
+    axes = tuple(args.axes)
+    if len(axes) != 3 or set(axes) != {"z", "y", "x"}:
+        raise SystemExit(f"--axes must be a permutation of zyx, got {args.axes!r}")
+    crop = _sextuple(args.crop_bbox, "crop-bbox") if args.crop_bbox else (None, None)
+    src_datasets = args.src_dataset or []
+    many = args.all_datasets or len(src_datasets) > 1
+    if many:
+        if args.all_datasets and src_datasets:
+            raise SystemExit("give --all-datasets or --src-dataset, not both")
+        for flag, value in (("--dataset", args.dataset), ("--offset", args.offset),
+                            ("--crop-bbox", args.crop_bbox)):
+            if value is not None:
+                raise SystemExit(f"{flag} describes ONE dataset; with several, each keeps "
+                                 f"its own name, offset and extent. Repack it on its own "
+                                 f"to give one")
+    common = dict(
+        voxel_size=_ftriple(args.voxel_size, "voxel-size"), units=args.units, axes=axes,
+        level=args.level, src_format=args.src_format, dtype=args.dtype,
+        truncate=args.truncate, supervoxels=args.dvid_supervoxels,
+        prefer_locked=args.dvid_locked, wk_mapping=args.wk_mapping,
+        voxel_size_field=args.voxel_size_field, offset_field=args.offset_field,
+        background=(_int_list(args.background, "background") if args.background else None),
+        chunk=_triple(args.chunk, "chunk"),
+        compression=None if args.compression == "none" else args.compression,
+        overwrite=args.overwrite, dry_run=args.dry_run)
+    try:
+        if many:
+            plans = pack_hdf5_datasets(args.src, args.out, src_datasets or None, **common)
+        else:
+            plans = [pack_hdf5(
+                args.src, args.out, voxel_offset=_triple(args.offset, "offset"),
+                crop_start=crop[0], crop_stop=crop[1], dataset=args.dataset,
+                src_dataset=src_datasets[0] if src_datasets else None, **common)]
+    except (FileNotFoundError, FileExistsError, ValueError, KeyError) as e:
+        raise SystemExit(str(e).strip("'")) from None
+
+    for plan in plans:
+        _print_packed(plan, many=many)
+    plan = plans[-1]
+    if args.dry_run:
+        print("--dry-run: nothing written")
+        return 0
+    wrote = (f"wrote {len(plans)} datasets" if many
+             else f"wrote {plan['blocks']} block(s)")
+    if not is_local(plan["out"]):
+        print(f"{wrote}; uploaded to {plan['out']}")
+    elif many or plan["other_datasets"]:
+        name = "NAME" if many else plan["dataset"]
+        print(f"{wrote}; place {'one' if many else 'it'} with `neu-vol write <volume> "
+              f"--src {plan['out']} --dataset {name}`")
+    else:
+        print(f"{wrote}; place it with `neu-vol write <volume> --src {plan['out']}`")
     return 0
 
 
@@ -1968,8 +2004,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     q = sub.add_parser(
         "to-hdf5", help="pack a small volume into one HDF5 file, with its frame",
-        description="Pack an image stack (or any readable source) into a single HDF5 "
-                    "file, recording where it belongs and at what scale.\n\n"
+        description="Pack an image stack, an HDF5 file or any readable volume into a "
+                    "single HDF5 file, recording where it belongs and at what scale.\n\n"
                     "The inverse of `neu-vol write`: that places a piece into a large "
                     "volume, this produces the piece. An image stack off a microscope or "
                     "an annotation tool has no coordinates attached, so this attaches "
@@ -1987,25 +2023,37 @@ def build_parser() -> argparse.ArgumentParser:
                     "several pieces of one volume in one file is a legitimate "
                     "arrangement, each with its own voxel_offset — and refused when it "
                     "does not. A name already in use needs --dataset or --overwrite.\n\n"
+                    "An HDF5 --src is repacked dataset by dataset — one --src-dataset, "
+                    "several, or --all-datasets — each keeping its name and its recorded "
+                    "voxel size, offset, axes and kind: the way to change a file's "
+                    "--dtype, --chunk or --compression.\n\n"
+                    "--src (when HDF5) and --out may be s3:// or gs:// URLs. h5py reads "
+                    "and writes only filesystems, so each is a temporary local copy: "
+                    "downloaded first (--out only if it exists, so it can be added to), "
+                    "--out uploaded once everything is written. S3 transfers go through "
+                    "boto3 when it is installed (streamed, multipart); otherwise the "
+                    "whole file passes through memory and S3 uploads stop at 5 GB.\n\n"
                     "Reads are blocked, so a volume larger than advertised streams rather "
                     "than filling memory. Serial and in-process, like `create`/`write`.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     q.add_argument("--src", required=True,
-                   help="image stack (directory or glob of ordered 2D slices), or any "
+                   help="image stack (directory or glob of ordered 2D slices), an HDF5 "
+                        "file, local or s3:// / gs:// (see --src-dataset), or any "
                         "readable volume, including dvid://SERVER/UUID/INSTANCE and "
                         "wk://DATASET/LAYER (give those a --crop-bbox)")
     _add_server_source_args(q)
     q.add_argument("--out", required=True, metavar="FILE.h5",
-                   help="the HDF5 file to write. Created, or added to if it already "
-                        "records the same frame")
+                   help="the HDF5 file to write, local or s3:// / gs://. Created, or added "
+                        "to if it already records the same frame")
     q.add_argument("--src-format", default=None,
                    help="backend for --src (default: auto-detect — a zarr or "
                         "precomputed volume by its metadata document, an HDF5 file or a "
                         "glob/file/directory of 2D slices by name)")
     q.add_argument("--voxel-size", default=None, metavar="Z,Y,X",
                    help="physical size of one voxel, e.g. 8,8,8. Required for a source "
-                        "that records none (an image stack, an HDF5 file, a bare array); "
-                        "read from the volume, at --level, when the source is one")
+                        "that records none (an image stack, a bare array, an HDF5 file "
+                        "without --voxel-size-field); read from the volume, at --level, "
+                        "when the source is one")
     q.add_argument("--offset", default=None, metavar="Z,Y,X",
                    help="whole-voxel position of this piece's (0,0,0) corner in the "
                         "volume it belongs to, in --axes order. Default: what an HDF5 "
@@ -2021,9 +2069,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="pack only this box, in --level's voxels. Half-open, clipped to "
                         "the source. Its origin becomes the recorded voxel_offset unless "
                         "--offset says otherwise")
-    q.add_argument("--src-dataset", default=None, metavar="NAME",
+    q.add_argument("--src-dataset", action="append", default=None, metavar="NAME",
                    help="dataset to read, when --src is itself an HDF5 file with more "
-                        "than one")
+                        "than one. Repeatable: with several, each is written under its own "
+                        "name, and --dataset/--offset/--crop-bbox are refused")
+    q.add_argument("--all-datasets", action="store_true",
+                   help="repack every volumetric dataset of an HDF5 --src, each under its "
+                        "own name; a remote --src or --out is transferred once for all")
     q.add_argument("--voxel-size-field", default=DEFAULT_VOXEL_SIZE_FIELD, metavar="NAME",
                    help=f"attribute to record the voxel size under, and to READ it from "
                         f"when --src is an HDF5 file that carries one (default: "
@@ -2043,7 +2095,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"dataset to write (default: {DEFAULT_DATASET}, which is what a "
                         f"reader assumes when it is not told)")
     q.add_argument("--dtype", default=None,
-                   help="cast to this dtype (default: the source's)")
+                   help="cast to this dtype (default: the source's). A narrower dtype is "
+                        "refused if any value falls outside its range, naming the block; "
+                        "see --truncate")
+    q.add_argument("--truncate", action="store_true",
+                   help="cast values that do not fit --dtype anyway, as numpy's astype "
+                        "does: an integer keeps its low-order bits, so 65537 becomes 1 in "
+                        "uint16 and two labels can merge. Default: refuse")
     q.add_argument("--chunk", default=None, metavar="Z,Y,X",
                    help="HDF5 storage chunk (default: up to 64 per axis). This is what "
                         "governs partial reads when the piece is written back")

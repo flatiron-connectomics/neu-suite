@@ -229,7 +229,8 @@ def _host_block(block):
 
 
 def write_piece(piece, out: str, *, dataset: str | None = None,
-                dtype: Any = None, chunk: Sequence[int] | None = None,
+                dtype: Any = None, truncate: bool = False,
+                chunk: Sequence[int] | None = None,
                 compression: str | None = "gzip", overwrite: bool = False,
                 dry_run: bool = False,
                 voxel_size_field: str | None = None,
@@ -251,7 +252,8 @@ def write_piece(piece, out: str, *, dataset: str | None = None,
     An existing file is added to when its recorded frame matches; a frame that disagrees,
     or a dataset name already in use without ``overwrite``, is refused
     (:func:`~neu_vol.ops.pack.check_hdf5_target`). Writing is blocked, so a lazy array
-    streams. ``dry_run`` returns the plan without writing.
+    streams. ``dry_run`` returns the plan without writing. A ``dtype`` too narrow for the
+    values is refused unless ``truncate`` (:func:`~neu_vol.ops.pack.check_fits`).
 
     ``out`` must be a local path with an HDF5 extension: h5py has no object-store driver,
     and HDF5 files are recognised by name. ``neu-vol write <volume> --src <file>`` then
@@ -324,7 +326,8 @@ def write_piece(piece, out: str, *, dataset: str | None = None,
                          kind=piece.kind, chunk=chunk, compression=compression,
                          replacing=replacing, block=block,
                          has_channels=piece.channel_axis,
-                         voxel_size_field=voxel_size_field, offset_field=offset_field)
+                         voxel_size_field=voxel_size_field, offset_field=offset_field,
+                         truncate=truncate)
     logger.info("wrote %s -> %s%s (%s %s, %d block(s))", piece.name or "piece", out, name,
                 shape, out_dtype, plan["blocks"])
     return plan

@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -158,6 +159,50 @@ def resolve_source(src: str | dict, src_format: str | None = None, level: int = 
     return level_spec(volume, fmt, level), frame
 
 
+def _needs_staging(src: Any, src_format: str | None, out: str) -> bool:
+    from ..backends.hdf5 import names_remote_hdf5
+    from ..location import is_local
+
+    return names_remote_hdf5(src, src_format) or not is_local(out)
+
+
+@contextmanager
+def _staged(src: Any, src_format: str | None, out: str, *,
+            dry_run: bool) -> Iterator[tuple[Any, str]]:
+    """Local stand-ins for a remote HDF5 ``src`` and a remote ``out``.
+
+    ``out`` is uploaded when the block exits cleanly, unless ``dry_run``.
+    """
+    from ..backends.hdf5 import local_copy, names_remote_hdf5, staged_output
+    from ..location import is_local
+
+    with ExitStack() as stack:
+        if names_remote_hdf5(src, src_format):
+            logger.info("reading %s from a temporary local copy", src)
+            src = stack.enter_context(local_copy(src))
+        if not is_local(out):
+            logger.info("writing %s through a temporary local copy", out)
+            out = stack.enter_context(staged_output(out, upload=not dry_run))
+        yield src, out
+
+
+def _as_given(plan: dict, src: Any, local_src: Any, out: str) -> dict:
+    """``plan`` naming the locations the caller gave rather than the temporary copies."""
+    plan = dict(plan, out=out)
+    if local_src != src:
+        plan["src_spec"] = _with_path(plan["src_spec"], local_src, src)
+    return plan
+
+
+def _with_path(spec: dict, old: str, new: str) -> dict:
+    """``spec`` with every ``path`` equal to ``old`` replaced by ``new``, views included."""
+    out = {k: (_with_path(v, old, new) if isinstance(v, dict) else v)
+           for k, v in spec.items()}
+    if out.get("path") == old:
+        out["path"] = new
+    return out
+
+
 def _block_shape(shape: Sequence[int], itemsize: int,
                  max_bytes: int = DEFAULT_BLOCK_BYTES) -> tuple[int, ...]:
     """Whole slabs along the slowest axis, sized to ``max_bytes``. At least one plane."""
@@ -257,6 +302,34 @@ def check_hdf5_target(out: str, name: str, frame: dict, *, overwrite: bool = Fal
     return existing_frame, existing_datasets, replacing
 
 
+def check_fits(data: np.ndarray, dtype: Any, region: Sequence[slice] | None = None) -> None:
+    """Raise unless every value of ``data`` lies within ``dtype``'s range.
+
+    A cast that cannot lose range (uint16 -> uint64) is not inspected. Only range is
+    checked: integer -> float precision and float -> integer fractions are not.
+    """
+    dtype = np.dtype(dtype)
+    if data.size == 0 or np.can_cast(data.dtype, dtype, "safe"):
+        return
+    if dtype.kind in "iu":
+        info = np.iinfo(dtype)
+    elif dtype.kind == "f":
+        info = np.finfo(dtype)
+    else:
+        return
+    outside = (data < info.min) | (data > info.max)
+    n = int(np.count_nonzero(outside))
+    if not n:
+        return
+    where = ("" if region is None else
+             " in block [" + ", ".join(f"{s.start}:{s.stop}" for s in region) + "]")
+    raise ValueError(
+        f"{n} value(s){where} do not fit {dtype} (range {info.min}..{info.max}; this "
+        f"block holds {np.nanmin(data)}..{np.nanmax(data)}), and the cast would change "
+        f"them. Choose a wider dtype, renumber the source first, or pass truncate=True "
+        f"(--truncate) to cast anyway.")
+
+
 def write_hdf5_array(out: str, name: str, read_region, *, shape: Sequence[int],
                      dtype: Any, voxel_size: Sequence[float],
                      voxel_offset: Sequence[int], units: str = "nm",
@@ -266,14 +339,21 @@ def write_hdf5_array(out: str, name: str, read_region, *, shape: Sequence[int],
                      block: Sequence[int] | None = None,
                      has_channels: bool = False,
                      voxel_size_field: str = DEFAULT_VOXEL_SIZE_FIELD,
-                     offset_field: str = DEFAULT_OFFSET_FIELD) -> None:
+                     offset_field: str = DEFAULT_OFFSET_FIELD,
+                     truncate: bool = False) -> None:
     """Create ``out``'s ``name`` from ``read_region``, and record the frame beside it.
 
     ``read_region(region) -> ndarray`` is called once per block, so the whole array is
     never held. ``voxel_offset`` describes the spatial axes; a leading channel axis gets 0.
     ``voxel_size`` / ``units`` / ``axes`` go on the root and the dataset; ``voxel_offset``,
     ``offset`` and ``kind`` on the dataset alone (see the module docstring).
+
+    A value outside ``dtype``'s range raises (:func:`check_fits`) unless ``truncate``. The
+    dataset is written under a temporary name and moved into place only once complete, so
+    a refused or failed write leaves the file as it was, a replaced dataset included.
     """
+    import os
+
     import h5py
 
     from ..backends.base import release_backends
@@ -293,27 +373,44 @@ def write_hdf5_array(out: str, name: str, read_region, *, shape: Sequence[int],
     chunk_full = tuple(min(int(c), int(s)) for c, s in zip(chunk_full, shape))
     block = tuple(block) if block else _block_shape(shape, out_dtype.itemsize)
 
-    with h5py.File(out, "a") as f:
-        if replacing:
-            del f[name]
-        dset = f.create_dataset(name, shape=shape, dtype=out_dtype, chunks=chunk_full,
-                                **({"compression": compression} if compression else {}))
-        for b in iter_blocks(shape, block):
-            data = read_region(b.region)
-            if str(data.dtype) != str(out_dtype):
-                data = data.astype(out_dtype)
-            dset[b.region] = data
+    created = not os.path.exists(out)
+    try:
+        with h5py.File(out, "a") as f:
+            partial = name.rstrip("/") + ".partial"
+            if partial in f:
+                del f[partial]                     # left by a run killed mid-write
+            dset = f.create_dataset(partial, shape=shape, dtype=out_dtype,
+                                    chunks=chunk_full,
+                                    **({"compression": compression} if compression else {}))
+            try:
+                for b in iter_blocks(shape, block):
+                    data = read_region(b.region)
+                    if str(data.dtype) != str(out_dtype):
+                        if not truncate:
+                            check_fits(data, out_dtype, b.region)
+                        data = data.astype(out_dtype)
+                    dset[b.region] = data
+            except BaseException:
+                del f[partial]
+                raise
 
-        for target in (f, dset):
-            target.attrs[voxel_size_field] = np.asarray(voxel_size, dtype="float64")
-            target.attrs["units"] = units
-            target.attrs["axes"] = "".join(axes)
-        full_offset = ((0,) + voxel_offset) if has_channels else voxel_offset
-        dset.attrs[offset_field] = np.asarray(full_offset, dtype="int64")
-        dset.attrs["offset"] = np.asarray(
-            [o * v for o, v in zip(voxel_offset, voxel_size)], dtype="float64")
-        if kind is not None:
-            dset.attrs[KIND_ATTR] = str(kind)
+            for target in (f, dset):
+                target.attrs[voxel_size_field] = np.asarray(voxel_size, dtype="float64")
+                target.attrs["units"] = units
+                target.attrs["axes"] = "".join(axes)
+            full_offset = ((0,) + voxel_offset) if has_channels else voxel_offset
+            dset.attrs[offset_field] = np.asarray(full_offset, dtype="int64")
+            dset.attrs["offset"] = np.asarray(
+                [o * v for o, v in zip(voxel_offset, voxel_size)], dtype="float64")
+            if kind is not None:
+                dset.attrs[KIND_ATTR] = str(kind)
+            if replacing:
+                del f[name]
+            f.move(partial, name)
+    except BaseException:
+        if created and os.path.exists(out):
+            os.remove(out)
+        raise
 
 
 def pack_hdf5(
@@ -338,11 +435,13 @@ def pack_hdf5(
     background: Sequence[int] | None = None,
     kind: str | None = None,
     dtype: str | None = None,
+    truncate: bool = False,
     chunk: Sequence[int] | None = None,
     compression: str | None = "gzip",
     overwrite: bool = False,
     dry_run: bool = False,
     max_bytes: int = DEFAULT_BLOCK_BYTES,
+    warn_others: bool = True,
 ) -> dict:
     """Write ``src`` into ``out`` as an HDF5 dataset carrying its frame and position.
 
@@ -363,12 +462,26 @@ def pack_hdf5(
     ``wk_mapping`` for webknossos. Give it a crop; a whole instance is far too large
     for one file.
 
+    h5py reads and writes only filesystems, so an HDF5 ``src`` or an ``out`` on an object
+    store (``s3://`` / ``gs://``) is worked on as a temporary local copy: downloaded first
+    (``out`` only if it exists, so it can be added to), and ``out`` uploaded once the write
+    succeeds. :mod:`neu_vol.transfer` says how the bytes move.
+
+    ``dtype`` narrower than the source's is refused if any value falls outside its range
+    (:func:`check_fits`); ``truncate=True`` casts anyway, as numpy's ``astype`` does.
+
     To write an array that is **already in memory**, use
     :func:`neu_vol.write_piece` — same file layout, no round trip through a store.
+    To repack several datasets of one file, :func:`pack_hdf5_datasets`.
     """
+    params = dict(locals())
+    if _needs_staging(src, src_format, out):
+        with _staged(src, src_format, out, dry_run=dry_run) as (local_src, local_out):
+            plan = pack_hdf5(**{**params, "src": local_src, "out": local_out})
+        return _as_given(plan, src, local_src, out)
+
     from ..backends.hdf5 import require_local_path
 
-    # Before any of the source is read: h5py has no object-store driver.
     out = require_local_path(out, "the HDF5 file to write")
     name = hdf5_dataset_name(dataset)
     axes = tuple(axes)
@@ -400,7 +513,8 @@ def pack_hdf5(
 
     backend = open_backend(spec)
     shape = tuple(int(s) for s in backend.shape)
-    out_dtype = np.dtype(dtype or backend.dtype)
+    src_dtype = np.dtype(backend.dtype)
+    out_dtype = np.dtype(dtype or src_dtype)
     n_spatial = len(axes)
     if len(shape) not in (n_spatial, n_spatial + 1):
         raise ValueError(f"source is {len(shape)}-D, which is neither {n_spatial} spatial "
@@ -447,7 +561,9 @@ def pack_hdf5(
     block = _block_shape(shape, out_dtype.itemsize, max_bytes)
     plan = {
         "out": out, "dataset": name, "src_spec": spec, "shape": shape,
-        "dtype": str(out_dtype), "has_channels": has_channels,
+        "dtype": str(out_dtype), "src_dtype": str(src_dtype),
+        "narrowing": not np.can_cast(src_dtype, out_dtype, "safe"),
+        "truncate": truncate, "has_channels": has_channels,
         "voxel_size": voxel_size, "voxel_offset": voxel_offset, "units": units,
         "axes": axes, "kind": kind, "chunk": tuple(chunk) if chunk else None,
         "compression": compression, "nbytes": float(out_dtype.itemsize) * math.prod(shape),
@@ -459,7 +575,7 @@ def pack_hdf5(
         return plan
 
     # A second volumetric dataset means every later reader has to name one.
-    if others:
+    if others and warn_others:
         logger.warning("%s will hold %d volumetric datasets (%s); readers must name one "
                        "— `neu-vol write --dataset %s`, or HDF5Backend's `dataset` key",
                        out, len(others) + 1, ", ".join(others + [name]), name)
@@ -468,7 +584,41 @@ def pack_hdf5(
                      voxel_size=voxel_size, voxel_offset=voxel_offset, units=units,
                      axes=axes, kind=kind, chunk=chunk, compression=compression,
                      replacing=replacing, block=block, has_channels=has_channels,
-                     voxel_size_field=voxel_size_field, offset_field=offset_field)
+                     voxel_size_field=voxel_size_field, offset_field=offset_field,
+                     truncate=truncate)
     logger.info("packed %s -> %s%s (%s %s, %d block(s))", spec, out, name, shape,
                 out_dtype, plan["blocks"])
     return plan
+
+
+def pack_hdf5_datasets(src: str, out: str, datasets: Sequence[str] | None = None, *,
+                       src_format: str | None = None, dry_run: bool = False,
+                       **kwargs) -> list[dict]:
+    """Repack several datasets of one HDF5 file into ``out``, each under its own name.
+
+    ``datasets`` defaults to every volumetric dataset in ``src``. Each keeps the frame and
+    ``voxel_offset`` it records; the other :func:`pack_hdf5` arguments (``dtype``,
+    ``truncate``, ``chunk``, ``compression``, ``overwrite``, ...) apply to all of them. A
+    remote ``src`` or ``out`` is transferred once for the whole set, not once per dataset.
+    """
+    from ..backends.hdf5 import datasets as volumetric
+    from ..detect import detect_file_backend
+
+    chosen_here = ("dataset", "src_dataset")
+    per_dataset = ("voxel_offset", "crop_start", "crop_stop")
+    if any(k in kwargs for k in chosen_here):
+        raise TypeError(f"{'/'.join(chosen_here)} are chosen per dataset here; pass `datasets`")
+    if any(kwargs.get(k) is not None for k in per_dataset):
+        raise ValueError("an offset or a crop describes ONE dataset; repack datasets one at a "
+                         "time with pack_hdf5 to give them")
+
+    with _staged(src, src_format, out, dry_run=dry_run) as (local_src, local_out):
+        if (src_format or detect_file_backend(local_src)) != "hdf5":
+            raise ValueError(f"{src} is not an HDF5 file, so it has no datasets to repack")
+        names = list(datasets) if datasets else volumetric(local_src)
+        if not names:
+            raise ValueError(f"{src} holds no volumetric dataset")
+        plans = [pack_hdf5(local_src, local_out, src_dataset=n, dataset=n,
+                           src_format="hdf5", dry_run=dry_run, warn_others=False, **kwargs)
+                 for n in names]
+    return [_as_given(p, src, local_src, out) for p in plans]

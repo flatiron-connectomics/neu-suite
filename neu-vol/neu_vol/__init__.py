@@ -23,7 +23,8 @@ from .backends.base import open_backend
 from .backends.hdf5 import open_hdf5, sole_dataset
 from .logs import quiet_store_logs
 from .ops import (convert, create_volume, extract_roi, ingest_image_stack,
-                  mask_values, pack_hdf5, plan_subvolume_write, plan_volume,
+                  mask_values, pack_hdf5, pack_hdf5_datasets, plan_subvolume_write,
+                  plan_volume,
                   rebuild_pyramid, write_subvolume, write_subvolumes)
 from .ops.occupancy import labeled_regions
 from .ops.subresources import link_subresources
@@ -53,6 +54,7 @@ __all__ = [
     "read_piece",
     "write_piece",
     "pack_hdf5",
+    "pack_hdf5_datasets",
     "open_hdf5",
     "sole_dataset",
     # inspect and read

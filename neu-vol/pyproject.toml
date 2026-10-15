@@ -54,6 +54,9 @@ neu-vol = "neu_vol.cli:main"
 # only at a small worker count. See tests/conftest.py for the measured numbers and
 # why `-n auto` is the wrong answer here.
 dev = ["pytest", "pytest-xdist"]
+# Streamed, multipart S3 transfers for files with no object-store driver (HDF5); without
+# it they pass through memory and S3 uploads stop at 5 GB. Imported lazily.
+s3 = ["boto3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["neu_vol"]

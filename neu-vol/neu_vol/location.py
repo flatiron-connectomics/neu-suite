@@ -152,8 +152,8 @@ def read_range(location: str | Mapping[str, Any], start: int, end: int,
                *parts: str) -> bytes | None:
     """Read the half-open byte range ``[start, end)`` of one object; ``None`` if absent.
 
-    A range past the end of the object returns what is there, so callers needing the
-    full range check the length. On an object store this is an HTTP Range request.
+    A range reaching past the end of the object raises ``OUT_OF_RANGE`` (a ``ValueError``)
+    on both the file and S3 drivers. On an object store this is an HTTP Range request.
     """
     store, key = _kv(location, *parts)
     result = store.read(key, byte_range=slice(int(start), int(end))).result()
