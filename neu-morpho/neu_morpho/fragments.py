@@ -64,6 +64,8 @@ def count_bodies(chunked_dir: str) -> int | None:
         return None
     buckets = _buckets(chunked_dir)               # also refuses the old flat layout
     try:
+        # Only CephFS has these attributes. Any other filesystem raises OSError (macOS,
+        # lacking os.getxattr, AttributeError) and the listing below runs instead.
         # rsubdirs counts the store itself, its top-level directories and everything
         # below them, and below the top level every directory is a body.
         below = int(os.getxattr(chunked_dir, "ceph.dir.rsubdirs"))
