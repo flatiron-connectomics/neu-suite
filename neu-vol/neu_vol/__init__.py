@@ -29,8 +29,8 @@ from .ops.occupancy import labeled_regions
 from .ops.subresources import link_subresources
 from .piece import read_piece, write_piece
 from . import readback
-from .readback import (UnsupportedSubresource, mesh_transform, read_body_mesh,
-                       read_body_skeleton, skeleton_transform)
+from .readback import (UnsupportedSubresource, mesh_body_ids, mesh_transform,
+                       read_body_mesh, read_body_skeleton, skeleton_transform)
 from .retry import is_transient, with_retry
 from .scales import describe_scales, read_scales, scale_spec
 from .source_metadata import describe
@@ -66,6 +66,7 @@ __all__ = [
     "readback",
     "read_body_mesh",
     "read_body_skeleton",
+    "mesh_body_ids",
     "mesh_transform",
     "skeleton_transform",
     "UnsupportedSubresource",

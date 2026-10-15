@@ -17,7 +17,7 @@ import numpy as np
 
 from . import location
 
-__all__ = ["read_body_skeleton", "read_body_mesh", "mesh_transform",
+__all__ = ["read_body_skeleton", "read_body_mesh", "mesh_body_ids", "mesh_transform",
            "skeleton_transform", "UnsupportedSubresource"]
 
 
@@ -363,6 +363,37 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
     if matrix is not None:
         vertices = vertices @ matrix[:, :3].T + matrix[:, 3]
     return vertices, faces, want
+
+
+def mesh_body_ids(volume: str, mesh_dir: str = "mesh") -> list[int]:
+    """Sorted ids of the bodies with a mesh under ``volume/mesh_dir``; ``[]`` for none.
+
+    A multi-resolution mesh counts once its ``<id>.index`` manifest exists (neu-morpho
+    writes it after the fragment data); a legacy mesh, once its ``<id>:0`` manifest does.
+    One listing of the directory. A sharded mesh raises :class:`UnsupportedSubresource`:
+    enumerating one means reading every minishard index (about a billion ids and 3.7 GB
+    of index reads for one published fly CNS), so name the bodies explicitly instead.
+    """
+    import re
+
+    info = _subresource_info(volume, mesh_dir)
+    _check_supported(info, volume, mesh_dir, "mesh")
+    if info.get("sharding") is not None:
+        raise UnsupportedSubresource(
+            f"{volume}/{mesh_dir} is sharded, so its body ids can only be enumerated by "
+            f"reading every shard's minishard indexes. Pass the bodies explicitly "
+            f"(an allowlist) instead.")
+    declared = info.get("@type")
+    patterns = {"neuroglancer_multilod_draco": r"(\d+)\.index",
+                LEGACY_MESH: r"(\d+):0"}
+    wanted = [patterns[declared]] if declared in patterns else list(patterns.values())
+    match = re.compile("|".join(f"(?:{p})" for p in wanted) + "$").fullmatch
+    ids = set()
+    for key in location.list_keys(volume, mesh_dir):
+        m = match(key.rsplit("/", 1)[-1])
+        if m:
+            ids.add(int(next(g for g in m.groups() if g is not None)))
+    return sorted(ids)
 
 
 def _decode_lod(manifest: bytes, data: bytes, bits: int, lod: int | None, body_id: int):

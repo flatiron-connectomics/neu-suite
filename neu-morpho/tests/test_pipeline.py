@@ -116,6 +116,9 @@ def test_run_produces_one_linked_volume(tmp_path):
     assert set(summary["stages"]) == {"seg", "index", "mesh"}
     assert set(summary["linked_subresources"]) == {"mesh"}
     assert "mesh" in json.loads((work / "seg" / "info").read_text())
+    from neu_vol.readback import mesh_body_ids
+
+    assert mesh_body_ids(str(work / "seg")) == [7, 9]     # listed as the writer names them
     assert json.loads((work / "run_summary.json").read_text())["command"] == "test"
     assert json.loads((work / "run_plan.json").read_text())["planned_blocks"]["mesh"] == 8
 
