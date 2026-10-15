@@ -27,7 +27,8 @@ from ..precomputed import check_quantization, write_body_multires, write_mesh_in
 from .. import fragments as _frag
 from .. import roi as _roi
 from .manifest import (FAILED, FailureBreaker, check_manifest_matches_output,
-                        group_counts, guarded, is_complete, write_failures)
+                        check_selection, group_counts, guarded, is_complete,
+                        write_failures)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,10 @@ def meshify(
     # Before write_mesh_info, which would recreate the 'info' the check probes for.
     check_manifest_matches_output(manifest, out_dir, stage="mesh",
                                   progress_path=progress, resume=resume)
+    chunk_todo = ([b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
+                  if "chunk" in stages else [])
+    check_selection(manifest, "chunk", allow, stage="mesh", progress_path=progress,
+                    record=bool(chunk_todo))
 
     write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
 
@@ -154,7 +159,7 @@ def meshify(
     try:
         if "chunk" in stages:
             # Stage 1 is deliberately NOT fault-isolated: see ops/manifest.py.
-            todo = [b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
+            todo = chunk_todo
             worker = functools.partial(_chunk_block, seg_spec=seg_spec, chunked_dir=chunked_dir,
                                        mesh_cfg=mesh_cfg, allow=allow,
                                        mesh_voxel_size=tuple(mesh_voxel_size))

@@ -172,6 +172,10 @@ report success having written nothing. Each stage refuses to resume when its
 manifest records completed work but its output `info` is gone, naming
 `--no-resume` as the explicit override.
 
+A resume also keeps to the bodies stage 1 was run for. A completed block is not
+revisited, so a body added to the allowlist afterwards would get nothing; the run
+refuses instead. Mesh or skeletonize new bodies with a new `--work-dir`.
+
 `--dry-run` reports the plan (scales, voxel sizes, block counts per stage)
 without touching anything — worth running before any large job.
 

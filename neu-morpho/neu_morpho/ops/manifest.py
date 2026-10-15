@@ -3,6 +3,8 @@
 - :func:`is_complete`: resume skips *successful* tasks. blockrun's ``Manifest.is_done``
   tests key presence, so a recorded ``failed`` would read as done and never be retried.
 - :func:`guarded`: per-task fault isolation, for **stage-2 workers only**.
+- :func:`check_selection`: a resume may not ask stage 1 for bodies it already ran
+  without.
 
 Stage-2 tasks are one body each and independent, so a bad one costs that body and is
 recorded. Stage-1 tasks are blocks, and stage 2 aggregates across them: a skipped block
@@ -63,6 +65,43 @@ def check_manifest_matches_output(manifest: Any, out_dir: str, *, stage: str,
         f"the manifest survived. Resuming would skip every task and report success "
         f"having written nothing. Re-run with --no-resume to start over (or delete "
         f"the manifest), or point --dst back at the intended destination.")
+
+
+class SelectionChanged(RuntimeError):
+    """A resume asks for bodies that stage 1's completed blocks were not run for."""
+
+
+def check_selection(manifest: Any, group: str, allow: set[int] | None, *, stage: str,
+                    progress_path: str, record: bool) -> None:
+    """Refuse a resume for bodies the completed stage-1 blocks were not run for.
+
+    A completed block is never revisited, so a body outside the selection it ran with
+    gets no fragments: stage 2 finds nothing for it and the run reports success. A
+    later run may ask for that selection or a subset of it. ``record`` is whether this
+    run processes stage-1 blocks: its selection is then recorded in the manifest, since
+    the remaining blocks see only that (``None`` for every label).
+    """
+    complete = sum(1 for k in manifest.done_keys(group) if is_complete(manifest, group, k))
+    recorded = manifest.meta(group)
+    before = recorded.get("selection") if complete else None
+    if complete and "selection" not in recorded:
+        return                                   # stage 1 ran before selections were kept
+    if before is not None:
+        if allow is None:
+            asked = f"every label, where they were run for {len(before)} bodies"
+        else:
+            added = sorted(allow - set(before))
+            asked = (f"{len(added)} bodies they were not run for (e.g. "
+                     f"{', '.join(map(str, added[:5]))})") if added else None
+        if asked:
+            raise SelectionChanged(
+                f"{progress_path}: {complete} {stage} stage-1 blocks are complete, and "
+                f"this run asks for {asked}. A complete block is not revisited, so those "
+                f"bodies would get no {stage} output while the run reports success. Use "
+                f"a new --work-dir for them, or --no-resume to redo stage 1 for this "
+                f"selection.")
+    if record:
+        manifest.record_meta(group, selection=None if allow is None else sorted(allow))
 
 
 def is_systemic(exc: BaseException) -> bool:
