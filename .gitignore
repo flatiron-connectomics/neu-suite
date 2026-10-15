@@ -15,6 +15,10 @@ neu-scripts-mega/
 # Dataset-specific scripts and their records. They name real volumes and ground-truth sets.
 /scripts
 
+# A link to the sibling neu-skel checkout, so an IDE opened here shows it. No trailing
+# slash: that matches only a directory and would let the symlink through.
+/neu-skel
+
 # Working notes and agent context. These carry ceph/S3 paths, usernames and in-flight
 # run detail that do not belong in a public repository.
 CLAUDE.md
