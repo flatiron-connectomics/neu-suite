@@ -12,6 +12,9 @@ safe to run as often as you like from any terminal:
 Denominators come from ``run_plan.json``, which the CLI writes at startup
 (ROI ∩ occupancy block counts, which are expensive to re-derive because they need
 an occupancy-array read). Without that file, absolute counts are still reported.
+Each manifest record carries its time, so a group with a denominator also gets its
+recent rate and the time left at that rate; a per-body group has a denominator only
+once its stage 1 is complete.
 
 For cluster-side questions this cannot answer — are the workers alive, is anything
 queued — use the dashboard URL the driver logged, or one shot of
@@ -50,12 +53,17 @@ STAGE_GROUPS = {
 # retries failures (see ops/_progress.is_complete).
 DONE = ("written", "empty", "dust", "skipped")
 
+#: The rate behind an estimate is measured over at most this many recent minutes.
+RATE_WINDOW_MIN = 10.0
 
-def _read_manifest(path: str) -> Counter:
-    """(group, status) -> count. Tolerates a torn final line from a hard crash."""
+
+def _read_manifest(path: str) -> tuple[Counter, dict]:
+    """``(group, status) -> count``, and ``group -> [time]`` for finished tasks whose
+    record carries one. Tolerates a torn final line from a hard crash."""
     counts: Counter = Counter()
+    times: dict = {}
     if not os.path.exists(path):
-        return counts
+        return counts, times
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -67,8 +75,11 @@ def _read_manifest(path: str) -> Counter:
                 continue
             if "status" not in rec:
                 continue          # a manifest meta line, not a task
-            counts[(rec.get("group", rec.get("level")), rec["status"])] += 1
-    return counts
+            group = rec.get("group", rec.get("level"))
+            counts[(group, rec["status"])] += 1
+            if rec["status"] in DONE and "t" in rec:
+                times.setdefault(group, []).append(rec["t"])
+    return counts, times
 
 
 def _match(counts: Counter, group_pattern: str) -> Counter:
@@ -80,6 +91,32 @@ def _match(counts: Counter, group_pattern: str) -> Counter:
         if (prefix is not None and g.startswith(prefix)) or g == group_pattern:
             out[status] += n
     return out
+
+
+def _match_times(times: dict, group_pattern: str) -> list[float]:
+    prefix = group_pattern[:-1] if group_pattern.endswith("*") else None
+    return [t for group, ts in times.items()
+            if (prefix is not None and str(group).startswith(prefix))
+            or str(group) == group_pattern for t in ts]
+
+
+def _estimate(times: list[float], remaining: int, now: float) -> str | None:
+    """Rate over the last :data:`RATE_WINDOW_MIN` minutes, and the time left at it."""
+    if not times or remaining <= 0:
+        return None
+    first = min(times)
+    start = max(now - RATE_WINDOW_MIN * 60, first)
+    window = (now - start) / 60
+    # Exclusive: when the window opens at the first completion, that one marks the start.
+    recent = sum(1 for t in times if t > start)
+    if window < 0.5 or (not recent and start == first):
+        return None                       # too little to call it a rate
+    if not recent:
+        return f"none finished in the last {window:.0f} min"
+    rate = recent / window
+    left = remaining / rate
+    when = f"~{left / 60:.1f} h" if left >= 90 else f"~{left:.0f} min"
+    return f"{rate:,.1f}/min over the last {window:.0f} min: {when} left"
 
 
 def _bar(done: int, total: int | None, width: int = 24) -> str:
@@ -133,12 +170,15 @@ def _human(n: float) -> str:
     return f"{n:.1f}EB"
 
 
-def _snapshot(work: str) -> dict[str, Counter]:
-    return {stage: _read_manifest(os.path.join(work, f"progress.{stage}.jsonl"))
+def _snapshot(work: str) -> tuple[dict[str, Counter], dict[str, dict]]:
+    """Per stage, its manifest's status counts and finish times."""
+    read = {stage: _read_manifest(os.path.join(work, f"progress.{stage}.jsonl"))
             for stage in STAGE_GROUPS}
+    return ({s: c for s, (c, _) in read.items()}, {s: t for s, (_, t) in read.items()})
 
 
-def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
+def _report(work: str, plan: dict, snap: dict[str, Counter],
+            times: dict[str, dict] | None = None) -> dict[str, int]:
     planned = run_records.planned_blocks(plan)
     seg_scales = run_records.seg_scales(plan)
     seg_total = sum(s["blocks"] for s in seg_scales)
@@ -170,6 +210,10 @@ def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
             print(f"  {label} {done:>7}/{total if total else '?':>7}  "
                   f"{_bar(done, total)}")
             print(f"  {'':17} {detail}" + (f"   <-- {failed} FAILED" if failed else ""))
+            eta = _estimate(_match_times((times or {}).get(stage, {}), group_pattern),
+                            total - done, time.time()) if total else None
+            if eta:
+                print(f"  {'':17} {eta}")
             done_now[f"{stage}:{group_pattern}"] = done
 
     # Per-scale detail for the seg copy: it is the only stage with many groups, and
@@ -212,10 +256,10 @@ def main(argv=None) -> int:
         print(f"{work}\n  (no run_plan.json — absolute counts only; it is written "
               f"by the driver at startup, so a run from before this existed has none)")
 
-    snap = _snapshot(work)
+    snap, times = _snapshot(work)
     if not any(snap.values()):
         print("\nno manifests yet — the first stage has not recorded anything")
-    done_before = _report(work, plan, snap)
+    done_before = _report(work, plan, snap, times)
 
     frags = _fragment_stores(work)
     if frags:
@@ -252,8 +296,8 @@ def main(argv=None) -> int:
     if args.sample:
         print(f"\nsampling for {args.sample}s to estimate a rate ...")
         time.sleep(args.sample)
-        after = _snapshot(work)
-        done_after = _report(work, plan, after)
+        after, after_times = _snapshot(work)
+        done_after = _report(work, plan, after, after_times)
         print("\nrate")
         for key, before in done_before.items():
             delta = done_after.get(key, before) - before
