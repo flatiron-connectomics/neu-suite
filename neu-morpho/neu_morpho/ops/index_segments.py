@@ -33,11 +33,13 @@ def _index_block(block, *, seg_spec: dict, fullres_factor: Sequence[int],
 
     ``keep`` filters the per-label result, not the array: specks of a fragmented
     segmentation would each cost a driver-side upsert, and ``np.isin`` over the array
-    costs 20x the block read.
+    costs 20x the block read. The read retries transient store errors.
     """
     from neu_vol.backends.base import open_backend
+    from neu_vol.retry import with_retry
 
-    seg = open_backend(seg_spec).read_region(block.region)
+    seg = with_retry(lambda: open_backend(seg_spec).read_region(block.region),
+                     label=f"index block {block.index}")
     key = _block_key(block.index)
     nz = seg != 0
     if not nz.any():

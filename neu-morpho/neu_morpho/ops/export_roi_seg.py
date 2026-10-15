@@ -119,8 +119,8 @@ def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[i
                 attempts: int = 5) -> tuple:
     """Copy one block, retrying transient store failures.
 
-    Unlike meshing's stage 1, a copy block feeds no aggregation and is idempotent, so a
-    transient store error is retried rather than ending a long copy. ``"written"`` /
+    A copy block is idempotent, so a transient store error is retried rather than
+    ending a long copy. ``"written"`` /
     ``"empty"`` describe the data: TensorStore writes no object for an all-zero chunk.
     """
     from neu_vol.backends.base import open_backend

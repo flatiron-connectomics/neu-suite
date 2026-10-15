@@ -37,9 +37,13 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfig,
                  allow: set[int] | None, mesh_voxel_size: Sequence[float]) -> tuple:
+    """Mesh one block into fragments. The read retries transient store errors; one
+    that persists still fails the stage (see ``ops/manifest.py``)."""
     from neu_vol.backends.base import open_backend
+    from neu_vol.retry import with_retry
 
-    seg = open_backend(seg_spec).read_region(block.region)      # one block at the mesh scale
+    seg = with_retry(lambda: open_backend(seg_spec).read_region(block.region),
+                     label=f"mesh block {block.index}")       # one block at the mesh scale
     meshes = mesh_block(seg, physical_box(block.region, mesh_voxel_size), mesh_cfg, allow)
     for body_id, m in meshes.items():
         _frag.write_fragment(chunked_dir, body_id, block.index, m, mesh_cfg.fragment_format)
