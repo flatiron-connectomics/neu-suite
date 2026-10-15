@@ -26,6 +26,8 @@ import os
 import time
 from collections import Counter
 
+from neu_morpho import run_records
+
 # The two-stage ops key their manifest groups by pipeline phase. Stage 1 is per
 # BLOCK, stage 2 per BODY, so their totals are not comparable and are reported
 # separately — a combined percentage would be meaningless.
@@ -137,8 +139,9 @@ def _snapshot(work: str) -> dict[str, Counter]:
 
 
 def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
-    planned = plan.get("planned_blocks") or {}
-    seg_total = sum(s["blocks"] for s in plan.get("seg_scales") or [])
+    planned = run_records.planned_blocks(plan)
+    seg_scales = run_records.seg_scales(plan)
+    seg_total = sum(s["blocks"] for s in seg_scales)
     done_now: dict[str, int] = {}
 
     for stage, groups in STAGE_GROUPS.items():
@@ -172,9 +175,9 @@ def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
     # Per-scale detail for the seg copy: it is the only stage with many groups, and
     # knowing which scale is in flight tells you how much cost is left (scale 0
     # dominates by ~8x per level).
-    if plan.get("seg_scales") and snap["seg"]:
+    if seg_scales and snap["seg"]:
         print("\n  seg by scale")
-        for s in plan["seg_scales"]:
+        for s in seg_scales:
             g = _match(snap["seg"], f"seg-{s['scale']}")
             done = sum(n for st, n in g.items() if st in DONE)
             state = "done" if done >= s["blocks"] else ("active" if done else "pending")
@@ -202,12 +205,9 @@ def main(argv=None) -> int:
     if os.path.exists(plan_path):
         with open(plan_path) as f:
             plan = json.load(f)
-        scales = plan.get("scales", {})
-        print(f"{work}\n  started {plan.get('started', '?')}  "
-              f"stages={','.join(plan.get('stages', []))}  "
-              f"scales index/mesh/skel = "
-              f"{scales.get('index')}/{scales.get('mesh')}/{scales.get('skel')}")
-        print(f"  dst {plan.get('dst')}")
+        print(f"{work}\n  dst {plan.get('dst')}")
+        for stage, e in (plan.get("stages") or {}).items():
+            print(f"  {stage:6s} scale {e.get('scale')}  run {e['run']['id']}")
     else:
         print(f"{work}\n  (no run_plan.json — absolute counts only; it is written "
               f"by the driver at startup, so a run from before this existed has none)")
@@ -239,8 +239,15 @@ def main(argv=None) -> int:
     if os.path.exists(run_summary):
         with open(run_summary) as f:
             s = json.load(f)
-        print(f"\nrun_summary.json present — the run finished. "
-              f"timing(min)={s.get('timing_min')}  failed_bodies={s.get('n_failed_bodies')}")
+        print("\nruns")
+        for r in s.get("runs", []):
+            took = (r.get("timing_min") or {}).get("total")
+            failed = r.get("n_failed_bodies")
+            print(f"  {r['id']:32s} {r['status']:10s}"
+                  + (f" {took:7.1f} min" if took is not None else "")
+                  + (f"  {failed} failed bodies" if failed else ""))
+        if any(r["status"] == run_records.UNFINISHED for r in s.get("runs", [])):
+            print("  (unfinished: still running, or killed before writing its summary)")
 
     if args.sample:
         print(f"\nsampling for {args.sample}s to estimate a rate ...")

@@ -21,14 +21,15 @@ GPL-licensed; ``neu-skel run`` runs only its ``skel`` stage, in a work dir that
 ``neu-morpho run`` itself (an entry point) is a possible later addition, deliberately
 not made: it would load GPL code into this package's process.
 
-**Runs sharing a work dir.** ``run_plan.json`` and ``run_summary.json`` keep each
-stage's latest run, so a work dir built by several commands (``neu-morpho run --stages
-index,mesh``, then ``neu-skel run``) records all of them.
+**Runs sharing a work dir.** Each run is recorded in full in its own
+``runs/<run id>/``, and the work dir's ``run_plan.json`` and ``run_summary.json`` show
+each stage's latest run, so a work dir built by several commands (``neu-morpho run
+--stages index,mesh``, then ``neu-skel run``, then a retry) keeps all of them
+(:mod:`.run_records`).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -263,53 +264,32 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     return p
 
 
-def _previous(path: str, key: str, value: str) -> dict:
-    """The record at ``path`` if an earlier run wrote it for the same ``key`` value."""
-    try:
-        with open(path) as f:
-            prev = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return prev if isinstance(prev, dict) and prev.get(key) == value else {}
-
-
-def _ordered(stages) -> list[str]:
-    """Built-in stages in run order, then extra stages as first seen."""
-    seen = list(dict.fromkeys(stages))
-    return [s for s in STAGES if s in seen] + [s for s in seen if s not in STAGES]
-
-
-def _write_run_plan(p: Plan, command: str) -> None:
-    """``run_plan.json``: the denominators ``neu-morpho progress`` reports against.
-
-    Merged into the file an earlier run to the same ``dst`` left: this run's stages
-    replace their own entries and the others are kept.
-    """
+def _run_plan(p: Plan, command: str, run_id: str, started: datetime) -> dict:
+    """This run's ``run_plan.json``, including the denominators ``neu-morpho progress``
+    reports against."""
     from .ops.export_roi_seg import DEFAULT_COPY_BLOCK, scale_cost
 
-    path = f"{p.work_dir}/run_plan.json"
-    prev = _previous(path, "dst", p.dst)
     seg = [{"scale": c["scale"], "shape": list(c["shape"]),
             "blocks": math.prod(-(-c["shape"][a] // DEFAULT_COPY_BLOCK[a]) for a in range(3))}
            for c in scale_cost(p.src, p.rois["mesh"], p.scales["mesh"].voxel_size,
                                block_shape=p.block, scale_indices=p.seg_scales)
-           ] if "seg" in p.stages else prev.get("seg_scales", [])
-    with open(path, "w") as f:
-        json.dump({
-            **prev,
-            "started": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "command": command, "dst": p.dst, "work_dir": p.work_dir,
-            "stages": _ordered([*prev.get("stages", []), *p.stages]),
-            "commands": {**prev.get("commands", {}), **dict.fromkeys(p.stages, command)},
-            "block_shape": list(p.block),
-            "roi": list(p.roi) if p.roi else None,
-            "roi_scale": p.roi_scale,                 # the ROI is meaningless without it
-            "scales": {**prev.get("scales", {}),
-                       **{k: s.index for k, s in p.scales.items() if k in p.stages}},
-            **p.extra,
-            "planned_blocks": {**prev.get("planned_blocks", {}), **p.planned_blocks},
-            "seg_scales": seg,
-        }, f, indent=2)
+           ] if "seg" in p.stages else []
+    return {
+        "run": run_id,
+        "started": started.isoformat(timespec="seconds"),
+        "command": command, "src": p.src, "dst": p.dst, "work_dir": p.work_dir,
+        "stages": list(p.stages),
+        "block_shape": list(p.block),
+        "roi": list(p.roi) if p.roi else None,
+        "roi_scale": p.roi_scale,                 # the ROI is meaningless without it
+        "occupancy_scale": p.occupancy_scale, "occupancy_dilate": p.occupancy_dilate,
+        "allowlist": p.allowlist, "min_voxels": p.min_voxels,
+        "limit_bodies": p.limit_bodies, "resume": p.resume,
+        "scales": {k: s.index for k, s in p.scales.items() if k in p.stages},
+        **p.extra,
+        "planned_blocks": dict(p.planned_blocks),
+        "seg_scales": seg,
+    }
 
 
 def run(p: Plan, *, client: Any = None, command: str | None = None,
@@ -321,34 +301,66 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
     failures do not stop a stage; they are counted in ``n_failed_bodies`` and retried by
     the next run. Afterwards the volume's ``info`` is pointed at whichever of the mesh and
     skeleton subresources exist, so one neuroglancer layer carries all three.
-    ``run_summary.json`` gets the summary merged with an earlier run's to the same
-    volume, so it covers every stage run in the work dir.
+
+    The run is recorded in ``<work_dir>/runs/<run id>/`` (see :mod:`.run_records`): its
+    plan when it starts, its summary when it ends, with ``status`` ``"aborted"`` and the
+    error if a stage raised. The work dir's ``run_plan.json`` and ``run_summary.json``
+    are then rebuilt from every run to the same volume.
     """
-    from neu_vol import exists, scale_spec
+    from . import run_records
+
+    command = command if command is not None else " ".join(sys.argv)
+    runners = dict(runners or {})
+    missing = [s for s in p.stages if s not in STAGES and s not in runners]
+    if missing:
+        raise ValueError(f"no runner for extra stage(s) {missing}")
+
+    os.makedirs(p.work_dir, exist_ok=True)
+    started = datetime.now().astimezone()
+    run_id = run_records.new_run_id(p.work_dir, started, p.stages)
+    run_records.write_run_plan(p.work_dir, run_id, _run_plan(p, command, run_id, started))
+    run_records.rebuild_view(p.work_dir, p.dst)
+    log.info("run %s", run_id)
+
+    t_start = time.time()
+    summaries: dict[str, dict] = {}
+    timing: dict[str, float] = {}
+    try:
+        _run_stages(p, client, runners, summaries, timing)
+    except BaseException as exc:
+        record = {"run": run_id, "status": "aborted",
+                  "error": f"{type(exc).__name__}: {exc}"[:2000],
+                  **_summary(p, command, t_start, summaries, timing, linked={})}
+        run_records.write_run_summary(p.work_dir, run_id, record)
+        run_records.rebuild_view(p.work_dir, p.dst)
+        raise
+    linked = _link(p)
+    summary = _summary(p, command, t_start, summaries, timing, linked=linked)
+    run_records.write_run_summary(p.work_dir, run_id,
+                                  {"run": run_id, "status": "completed", **summary})
+    run_records.rebuild_view(p.work_dir, p.dst)
+    log.info("timing (min): %s", summary["timing_min"])
+    log.info("done -> %s", f"{p.work_dir}/{run_records.RUNS}/{run_id}")
+    return summary
+
+
+def _run_stages(p: Plan, client: Any, runners: Mapping[str, StageRunner],
+                summaries: dict[str, dict], timing: dict[str, float]) -> None:
+    """Run ``p``'s stages in order, filling ``summaries`` and ``timing`` (minutes) as
+    each finishes, so an abort still leaves the finished ones."""
+    from neu_vol import scale_spec
 
     from .config import MeshConfig, OutputConfig
     from .metrics_db import MetricsDB
     from .ops import export_roi_seg, index_segments, meshify
     from .ops.export_roi_seg import scale_cost
-    from .precomputed import link_subresources
 
-    command = command if command is not None else " ".join(sys.argv)
     work, src, stages = p.work_dir, p.src, p.stages
-    runners = dict(runners or {})
-    missing = [s for s in stages if s not in STAGES and s not in runners]
-    if missing:
-        raise ValueError(f"no runner for extra stage(s) {missing}")
     db_path, allowlist_path = p.db_path, p.allowlist_path
     out = OutputConfig(dst=p.dst, work_dir=work)
-
-    os.makedirs(work, exist_ok=True)
-    _write_run_plan(p, command)
-    t_start = time.time()
     occupancy = dict(occupancy_spec=p.occupancy_spec,
                      occupancy_voxel_size=p.occupancy_voxel_size,
                      occupancy_dilate=p.occupancy_dilate)
-    summaries: dict[str, dict] = {}
-    timing: dict[str, float] = {}
 
     if "seg" in stages:
         mesh_s = p.scales["mesh"]
@@ -422,8 +434,19 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
         timing[name] = (time.time() - t) / 60
         log.info("%s: %s  (%.1f min)", name, summaries[name], timing[name])
 
-    # After the stages, because the seg stage rewrites info. A subresource is there when
-    # its own info is, probed through the kvstore since the volume may be remote.
+
+def _link(p: Plan) -> dict[str, str]:
+    """Point the volume's ``info`` at the mesh and skeleton subresources that exist.
+
+    After the stages, because the seg stage rewrites info. A subresource is there when
+    its own info is, probed through the kvstore since the volume may be remote.
+    """
+    from neu_vol import exists
+
+    from .config import OutputConfig
+    from .precomputed import link_subresources
+
+    out = OutputConfig(dst=p.dst, work_dir=p.work_dir)
     vol = out.volume_dir()
     linked: dict[str, str] = {}
     if exists(vol, "info"):
@@ -436,6 +459,13 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
     else:
         log.warning("no volume at %s — run the seg stage to export the labels, otherwise "
                     "meshes/skeletons have no volume to attach to", vol)
+    return linked
+
+
+def _summary(p: Plan, command: str, t_start: float, summaries: dict[str, dict],
+             timing: dict[str, float], *, linked: dict[str, str]) -> dict:
+    """This run's summary, over the stages that finished."""
+    from .config import OutputConfig
 
     failed = {stage: s.get("failed_bodies") or [] for stage, s in summaries.items()}
     for stage, bodies in failed.items():
@@ -444,36 +474,17 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
                         bodies[:10], " ..." if len(bodies) > 10 else "")
             log.warning("%s: tracebacks in %s; re-run to retry them",
                         stage, summaries[stage].get("failures_path"))
-
-    wall = (time.time() - t_start) / 60
-    summary = {
+    vol = OutputConfig(dst=p.dst, work_dir=p.work_dir).volume_dir()
+    return {
         "timing_min": {**{k: round(v, 2) for k, v in timing.items()},
-                       "total": round(wall, 2)},
+                       "total": round((time.time() - t_start) / 60, 2)},
         "started": datetime.fromtimestamp(t_start).astimezone().isoformat(timespec="seconds"),
         "finished": datetime.now().astimezone().isoformat(timespec="seconds"),
         "command": command,
         "volume": vol,
-        "work_dir": work,
+        "work_dir": p.work_dir,
         "neuroglancer_source": ng_source(vol),
         "linked_subresources": linked,
         "n_failed_bodies": sum(len(v) for v in failed.values()),
         "stages": {k: dict(v) for k, v in summaries.items()},
     }
-    # The file covers the work dir: earlier runs' stages are kept, timing totals add up.
-    prev = _previous(f"{work}/run_summary.json", "volume", vol)
-    stages_all = {**prev.get("stages", {}), **summary["stages"]}
-    prev_timing = prev.get("timing_min", {})
-    merged = {
-        **prev, **summary,
-        "timing_min": {**prev_timing, **summary["timing_min"],
-                       "total": round(prev_timing.get("total", 0) + wall, 2)},
-        "commands": {**prev.get("commands", {}), **dict.fromkeys(summaries, command)},
-        "n_failed_bodies": sum(len(v.get("failed_bodies") or [])
-                               for v in stages_all.values()),
-        "stages": {k: stages_all[k] for k in _ordered(stages_all)},
-    }
-    with open(f"{work}/run_summary.json", "w") as f:
-        json.dump(merged, f, indent=2, default=str)
-    log.info("timing (min): %s", summary["timing_min"])
-    log.info("done -> %s", f"{work}/run_summary.json")
-    return summary

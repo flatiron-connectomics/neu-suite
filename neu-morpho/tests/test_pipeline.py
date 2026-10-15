@@ -92,25 +92,116 @@ def test_a_size_filter_without_its_counts_is_refused(tmp_path, kwargs, match):
 
 
 def test_runs_sharing_a_work_dir_accumulate_its_records(tmp_path):
-    """`neu-morpho run --stages index`, then `neu-skel run`: both stay on record."""
+    """`neu-morpho run --stages index`, then `neu-skel run`: both stay on record in full."""
+    src = _source(tmp_path)
+    dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
+    common = dict(index_scale=0, extra_stages={"extra": 1}, block=(32, 32, 32),
+                  occupancy_scale=-1)
+    pipeline.run(pipeline.plan(src, dst, stages=("index",), roi=(0, 0, 0, 64, 64, 32),
+                               roi_scale=0, **common), command="first")
+    p = pipeline.plan(src, dst, stages=("extra",), min_voxels=1, extra={"tool": "x"},
+                      **common)
+    summary = pipeline.run(p, runners={"extra": lambda p, c, a: {"failed_bodies": [3]}},
+                           command="second")
+    assert set(summary["stages"]) == {"extra"}           # the return is this run's
+
+    runs = sorted(os.listdir(work / "runs"))
+    assert [r.split("-", 1)[1] for r in runs] == ["index", "extra"]
+    first = json.loads((work / "runs" / runs[0] / "run_plan.json").read_text())
+    assert first["command"] == "first" and first["roi"] == [0, 0, 0, 64, 64, 32]
+    assert json.loads((work / "runs" / runs[1] / "run_summary.json").read_text())[
+        "status"] == "completed"
+
+    plan = json.loads((work / "run_plan.json").read_text())
+    assert list(plan["stages"]) == ["index", "extra"]
+    index, extra = plan["stages"]["index"], plan["stages"]["extra"]
+    assert index["run"]["command"] == "first" and index["roi"] == [0, 0, 0, 64, 64, 32]
+    assert extra["run"]["command"] == "second" and extra["roi"] is None
+    assert extra["tool"] == "x" and "tool" not in index
+    assert index["planned_blocks"] == 4 and extra["planned_blocks"] == 1
+    assert [r["command"] for r in plan["runs"]] == ["first", "second"]
+
+    on_disk = json.loads((work / "run_summary.json").read_text())
+    assert list(on_disk["stages"]) == ["index", "extra"]
+    assert on_disk["stages"]["index"]["run"]["id"] == runs[0]
+    assert on_disk["stages"]["extra"]["failed_bodies"] == [3]
+    assert on_disk["n_failed_bodies"] == 1
+    assert [r["status"] for r in on_disk["runs"]] == ["completed", "completed"]
+
+
+def test_a_retry_is_recorded_beside_the_run_it_retries(tmp_path):
+    src = _source(tmp_path)
+    dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
+    p = pipeline.plan(src, dst, stages=("extra",), extra_stages={"extra": 1},
+                      block=(32, 32, 32), occupancy_scale=-1)
+    pipeline.run(p, runners={"extra": lambda p, c, a: {"failed_bodies": [3]}}, command="a")
+    pipeline.run(p, runners={"extra": lambda p, c, a: {"failed_bodies": []}}, command="b")
+
+    runs = sorted(os.listdir(work / "runs"))
+    assert len(runs) == 2
+    assert json.loads((work / "runs" / runs[0] / "run_summary.json").read_text())[
+        "n_failed_bodies"] == 1                           # the first attempt is kept
+    view = json.loads((work / "run_summary.json").read_text())
+    assert view["stages"]["extra"]["run"]["command"] == "b"
+    assert view["n_failed_bodies"] == 0
+    assert [r["n_failed_bodies"] for r in view["runs"]] == [1, 0]
+
+
+def test_an_aborted_run_is_recorded_with_its_error(tmp_path):
+    src = _source(tmp_path)
+    dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
+    p = pipeline.plan(src, dst, stages=("index", "extra"), index_scale=0,
+                      extra_stages={"extra": 1}, block=(32, 32, 32), occupancy_scale=-1)
+
+    def boom(p, client, allow):
+        raise RuntimeError("worker lost")
+
+    with pytest.raises(RuntimeError, match="worker lost"):
+        pipeline.run(p, runners={"extra": boom}, command="x")
+    (run,) = os.listdir(work / "runs")
+    record = json.loads((work / "runs" / run / "run_summary.json").read_text())
+    assert record["status"] == "aborted" and record["error"] == "RuntimeError: worker lost"
+    assert set(record["stages"]) == {"index"}            # what finished before the abort
+    view = json.loads((work / "run_summary.json").read_text())
+    assert view["stages"]["index"]["run"]["status"] == "completed"
+    assert view["stages"]["extra"]["run"]["status"] == "aborted"
+
+
+def test_a_run_in_flight_shows_as_unfinished(tmp_path):
+    """The view is rebuilt when a run starts, so its stages read as not yet summarised."""
+    src = _source(tmp_path)
+    dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
+    seen = {}
+
+    def peek(p, client, allow):
+        seen.update(json.loads((work / "run_summary.json").read_text()))
+        return {}
+
+    pipeline.run(pipeline.plan(src, dst, stages=("extra",), extra_stages={"extra": 1},
+                               block=(32, 32, 32), occupancy_scale=-1),
+                 runners={"extra": peek}, command="x")
+    assert seen["stages"]["extra"]["run"]["status"] == "unfinished"
+    assert seen["runs"][0]["status"] == "unfinished"
+
+
+def test_progress_and_report_read_a_work_dir_of_several_runs(tmp_path, capsys):
+    from neu_morpho._scripts import run_progress, run_report
+
     src = _source(tmp_path)
     dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
     common = dict(index_scale=0, extra_stages={"extra": 1}, block=(32, 32, 32),
                   occupancy_scale=-1)
     pipeline.run(pipeline.plan(src, dst, stages=("index",), **common), command="first")
-    p = pipeline.plan(src, dst, stages=("extra",), min_voxels=1, extra={"tool": "x"},
-                      **common)
-    summary = pipeline.run(p, runners={"extra": lambda p, c, a: {"failed_bodies": [3]}},
-                           command="second")
+    pipeline.run(pipeline.plan(src, dst, stages=("extra",), **common),
+                 runners={"extra": lambda p, c, a: {}}, command="second")
 
-    assert set(summary["stages"]) == {"extra"}           # the return is this run's
-    plan = json.loads((work / "run_plan.json").read_text())
-    assert plan["stages"] == ["index", "extra"]
-    assert plan["commands"] == {"index": "first", "extra": "second"}
-    assert set(plan["planned_blocks"]) == {"index", "extra"} and plan["tool"] == "x"
-    on_disk = json.loads((work / "run_summary.json").read_text())
-    assert list(on_disk["stages"]) == ["index", "extra"]
-    assert on_disk["n_failed_bodies"] == 1
+    assert run_progress.main([str(work)]) == 0
+    out = capsys.readouterr().out
+    assert "index  scale 0" in out and "extra  scale 1" in out
+    assert out.count("completed") == 2
+
+    page = run_report.render(run_report.read_run(str(work)))
+    assert "Completed" in page and "first" in page and "second" in page
 
 
 def test_run_produces_one_linked_volume(tmp_path):
@@ -128,8 +219,9 @@ def test_run_produces_one_linked_volume(tmp_path):
     from neu_vol.readback import mesh_body_ids
 
     assert mesh_body_ids(str(work / "seg")) == [7, 9]     # listed as the writer names them
-    assert json.loads((work / "run_summary.json").read_text())["command"] == "test"
-    assert json.loads((work / "run_plan.json").read_text())["planned_blocks"]["mesh"] == 8
+    plan = json.loads((work / "run_plan.json").read_text())
+    assert plan["stages"]["mesh"]["planned_blocks"] == 8
+    assert plan["stages"]["mesh"]["run"]["command"] == "test"
 
     from neu_morpho.metrics_db import MetricsDB
 
@@ -156,7 +248,8 @@ def test_an_extra_stage_runs_after_the_built_in_ones_on_the_same_plan(tmp_path):
     assert seen == {"scale": 1, "roi": None, "client": None, "index_done": True}
     assert summary["stages"]["extra"] == {"failed_bodies": [3]}
     assert summary["n_failed_bodies"] == 1                  # its failures count too
-    assert json.loads((tmp_path / "out" / "run_plan.json").read_text())["tool"] == "x"
+    plan = json.loads((tmp_path / "out" / "run_plan.json").read_text())
+    assert plan["stages"]["extra"]["tool"] == "x"
     with pytest.raises(ValueError, match="no runner for extra stage"):
         pipeline.run(p)
 

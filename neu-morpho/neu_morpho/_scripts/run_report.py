@@ -25,6 +25,8 @@ import sqlite3
 from collections import Counter
 from datetime import datetime
 
+from neu_morpho import run_records
+
 # Validated categorical slots 1-3, plus status red. Colourblind-safe pairs.
 BLUE, ORANGE, GREEN, RED = "#2a78d6", "#eb6834", "#1baf7a", "#e34948"
 
@@ -203,17 +205,25 @@ def render(run: dict) -> str:
     m = run["metrics"]
     skel = (summary or {}).get("stages", {}).get("skel", {})
     fs = skel.get("fusion_stats", {})
-    done = summary is not None
+    unfinished = run_records.unfinished_stages(summary)
+    done = summary is not None and not unfinished
+    runs = (summary or {}).get("runs") or plan.get("runs") or []
+    open_runs = [r for r in runs if r.get("status", run_records.UNFINISHED)
+                 == run_records.UNFINISHED]
+    started = open_runs[-1].get("started") if open_runs else None
 
     parts = []
     title = os.path.basename(run["work"].rstrip("/")) or run["work"]
-    status = ("Completed" if done else "In progress — no run_summary.json yet")
+    status = ("Completed" if done else
+              f"In progress — no summary yet for {', '.join(unfinished)}" if unfinished
+              else "In progress — no run_summary.json yet")
     parts.append(f'<h1>{html.escape(title)}</h1>')
     parts.append(f'<p class="sub">{html.escape(status)}')
-    if summary and summary.get("finished"):
-        parts.append(f' · finished {html.escape(str(summary["finished"]))}')
-    elif plan.get("started"):
-        parts.append(f' · started {html.escape(str(plan["started"]))}')
+    finished = [r["finished"] for r in runs if r.get("finished")]
+    if done and finished:
+        parts.append(f' · finished {html.escape(str(max(finished)))}')
+    elif started:
+        parts.append(f' · started {html.escape(str(started))}')
     parts.append("</p>")
 
     # ---- headline numbers -------------------------------------------------
@@ -227,7 +237,7 @@ def render(run: dict) -> str:
     n_bodies = (skel.get("num_bodies_fused") or counted.get("skel-fuse")
                 or m.get("_n_bodies") or 0)
     n_blocks = skel.get("num_blocks") or counted.get("skel-chunk") or 0
-    planned = (plan.get("planned_blocks") or {}).get("skel")
+    planned = run_records.planned_blocks(plan).get("skel")
     blocks_txt = (f"{n_blocks:,} / {planned:,}"
                   if planned and not done else f"{n_blocks:,}" if n_blocks else "—")
     # Stage 2's denominator is not in run_plan.json — the body set is unknown until
@@ -239,11 +249,12 @@ def render(run: dict) -> str:
         if expected:
             bodies_txt = f"{n_bodies:,} / {expected:,}"
     n_failed = (summary or {}).get("n_failed_bodies", 0)
-    timing = (summary or {}).get("timing_min", {})
+    stage_minutes = [e["run"].get("minutes") for e in (summary or {}).get("stages", {}).values()
+                     if e.get("run", {}).get("minutes") is not None]
     elapsed = ""
-    if not done and plan.get("started"):
+    if not done and started:
         try:
-            began = datetime.fromisoformat(plan["started"])
+            began = datetime.fromisoformat(started)
             elapsed = f"{(datetime.now().astimezone() - began).total_seconds() / 60:.0f} min"
         except ValueError:
             pass
@@ -252,31 +263,55 @@ def render(run: dict) -> str:
         stat("Total cable", fmt_nm(sum(cable)) if cable else "—",
              "" if done else "so far"),
         stat("Blocks", blocks_txt, "" if done else "done / planned"),
-        stat("Wall time", f"{timing.get('total', 0):.1f} min" if timing
-             else elapsed or "—", "" if done else "elapsed"),
+        stat("Stage time", f"{sum(stage_minutes):.1f} min" if done and stage_minutes
+             else elapsed or "—", "summed over stages" if done else "elapsed"),
         stat("Failed bodies", f"{n_failed:,}",
              "retried on the next run" if n_failed else ""),
     ]
     parts.append(f'<div class="stats">{"".join(stats)}</div>')
 
     # ---- what was run -----------------------------------------------------
+    plan_stages = plan.get("stages") or {}
+    sum_stages = (summary or {}).get("stages") or {}
     rows = []
-    for k, label in (("tracer", "Tracer"), ("neutu_cost", "Cost"),
-                     ("stages", "Stages"), ("roi", "ROI"),
-                     ("roi_scale", "ROI scale")):
-        v = plan.get(k)
-        if v is not None:
-            rows.append((label, f"<code>{html.escape(str(v))}</code>"))
-    if plan.get("scales"):
-        rows.append(("Scales", f"<code>{html.escape(str(plan['scales']))}</code>"))
+    for stage, e in plan_stages.items():
+        about = (sum_stages.get(stage) or {}).get("run") or e.get("run") or {}
+        roi = e.get("roi")
+        rows.append((html.escape(stage), f"<code>{html.escape(str(about.get('id')))}</code>",
+                     html.escape(str(e.get("scale"))),
+                     html.escape(f"{roi} @ scale {e.get('roi_scale')}" if roi else "whole"),
+                     html.escape(str(about.get("status", "?"))),
+                     f"{about['minutes']:.1f}" if about.get("minutes") is not None else ""))
+    if rows:
+        parts.append("<h2>Stages</h2>")
+        parts.append('<p class="sub">Each stage as its latest run left it.</p>')
+        parts.append(table(["Stage", "Run", "Scale", "ROI", "Status", "Minutes"], rows,
+                           ["l", "l", "r", "l", "l", "r"]))
+    rows = []
+    skel_plan = plan_stages.get("skel") or {}
+    for k, label in (("tracer", "Tracer"), ("neutu_cost", "Cost")):
+        if skel_plan.get(k) is not None:
+            rows.append((label, f"<code>{html.escape(str(skel_plan[k]))}</code>"))
     if summary and summary.get("neuroglancer_source"):
         rows.append(("Neuroglancer source",
                      f"<code>{html.escape(summary['neuroglancer_source'])}</code>"))
     if rows:
         parts.append("<h2>Configuration</h2>")
         parts.append(table(["", ""], rows, ["l", "l"]))
-    if plan.get("command"):
-        parts.append(f'<pre class="cmd">{html.escape(plan["command"])}</pre>')
+    if runs:
+        parts.append("<h2>Runs</h2>")
+        parts.append('<p class="sub">Every run in this work dir, oldest first; each is '
+                     'recorded in full under <code>runs/</code>.</p>')
+        for r in runs:
+            took = (r.get("timing_min") or {}).get("total")
+            line = " · ".join(x for x in (
+                r.get("id"), r.get("status", run_records.UNFINISHED),
+                f"{took:.1f} min" if took is not None else None,
+                f"{r['n_failed_bodies']} failed bodies" if r.get("n_failed_bodies") else None,
+            ) if x)
+            parts.append(f'<p class="sub">{html.escape(line)}</p>')
+            if r.get("command"):
+                parts.append(f'<pre class="cmd">{html.escape(r["command"])}</pre>')
 
     # ---- per-stage outcome ------------------------------------------------
     if run["progress"]:
@@ -295,7 +330,7 @@ def render(run: dict) -> str:
                 # planned_blocks is per stage and counts BLOCKS, so it is the
                 # denominator for the per-block group only; a per-body group
                 # (skel-fuse) has no predeclared count.
-                planned = (plan.get("planned_blocks") or {}).get(stage)
+                planned = run_records.planned_blocks(plan).get(stage)
                 is_block_group = group and group.endswith("chunk")
                 done = (f"{total:,} / {planned:,}"
                         if is_block_group and planned else f"{total:,}")
