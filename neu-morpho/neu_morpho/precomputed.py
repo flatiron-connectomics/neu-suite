@@ -17,6 +17,7 @@ getting it wrong mirrors skeletons through the z=x diagonal relative to their me
 
 from __future__ import annotations
 
+import logging
 from typing import Sequence
 
 import numpy as np
@@ -28,6 +29,7 @@ from neu_vol.ops.subresources import link_subresources  # noqa: F401
 
 from .config import MeshConfig
 
+logger = logging.getLogger(__name__)
 # Declared in the skeleton ``info``; every blob carries exactly these, in this order.
 # float32 only (see :func:`_check_vertex_attributes`), so osteoid's default uint8
 # ``vertex_types`` is not emitted.
@@ -93,6 +95,33 @@ def write_mesh_info(output_dir: str, cfg: MeshConfig, *, transform=None,
     write_json(output_dir, info, "info")
 
 
+def _encode_cell(cell, position, lod: int, cfg: MeshConfig,
+                 chunk_shape_xyz: Sequence[float], grid_origin_xyz: Sequence[float]) -> bytes | None:
+    """One octree cell's Draco bytes, or ``None`` if it has nothing to draw.
+
+    Cutting a body at the cell planes can leave a sliver under one quantization step
+    across alone in a cell. Every triangle of it quantizes to zero area, and DracoPy 2
+    raises ("Invalid mesh") where vol2mesh expects an empty result, failing the body.
+    Such a cell is dropped; any other encoding failure still raises.
+    """
+    from vol2mesh import multires
+
+    vertices_xyz = np.asarray(cell.vertices_zyx, dtype=np.float64)[:, ::-1]
+    faces = np.asarray(cell.faces, dtype=np.int64)
+    if not len(faces):
+        return None
+    q = multires.quantize_fragment_vertices(
+        vertices_xyz, position, chunk_shape_xyz, grid_origin_xyz, lod,
+        cfg.draco_quantization_bits).astype(np.int64)
+    corners = q[faces]
+    area = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    if not area.any():
+        return None
+    return multires.encode_fragment(
+        cell, position, chunk_shape_xyz, grid_origin_xyz, lod=lod,
+        vertex_quantization_bits=cfg.draco_quantization_bits)
+
+
 def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
                         *, chunk_shape_xyz: Sequence[float], grid_origin_xyz: Sequence[float]) -> int:
     """Write one body's multi-resolution mesh; returns fragments written (0 if empty).
@@ -110,9 +139,14 @@ def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
         if lod > 0:
             try:
                 lod_mesh.simplify(1.0 / cfg.lod_decimation_factor)   # coarsen (mutates)
-            except Exception:
-                pass
-        fragments_by_lod[lod] = multires.split_mesh_for_lod(lod_mesh, list(chunk_shape_xyz), lod)
+            except Exception as exc:                               # noqa: BLE001
+                logger.warning("body %d: simplifying for LOD %d failed (%s: %s); LOD %d "
+                               "keeps LOD %d's detail", body_id, lod, type(exc).__name__,
+                               exc, lod, lod - 1)
+        cells = multires.split_mesh_for_lod(lod_mesh, list(chunk_shape_xyz), lod)
+        fragments_by_lod[lod] = {
+            pos: enc for pos, cell in cells.items()
+            if (enc := _encode_cell(cell, pos, lod, cfg, chunk_shape_xyz, grid_origin_xyz))}
 
     data_bytes, index_bytes, counts = multires.encode_multilod_object(
         fragments_by_lod, list(chunk_shape_xyz), list(grid_origin_xyz),

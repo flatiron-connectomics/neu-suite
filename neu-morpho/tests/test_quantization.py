@@ -1,4 +1,4 @@
-"""Draco quantization step against voxel size.
+"""Draco quantization step against voxel size, and cells that quantize to nothing.
 
 The step depends on chunk size, LOD count and bit depth. At 10 bits with 32 nm voxels the
 LOD-2 step equalled the voxel size and 29% of bodies failed to encode.
@@ -50,6 +50,63 @@ def test_deep_pyramids_are_caught_even_at_16_bits():
     cfg = MeshConfig(block_shape=(512, 512, 512), num_lods=9, draco_quantization_bits=16)
     with pytest.raises(ValueError, match="Raise draco_quantization_bits"):
         check_quantization(cfg, [512 * 32.0] * 3, (32.0, 32.0, 32.0))
+
+
+def _box_with_sliver(overhang_nm: float = 1e-4):
+    """A closed box inside cell (0,0,0) of a 512 nm grid, plus one triangle whose tip
+    crosses the x = 512 plane by ``overhang_nm``, so the cut leaves a sliver in (1,0,0)."""
+    from vol2mesh import Mesh
+
+    lo, hi = 100.0, 300.0
+    corners = [[z, y, x] for z in (lo, hi) for y in (lo, hi) for x in (lo, hi)]
+    box = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+           [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]]
+    tri = [[200.0, 200.0, 400.0], [210.0, 200.0, 400.0], [205.0, 205.0, 512.0 + overhang_nm]]
+    return Mesh(np.array(corners + tri), np.array(box + [[8, 9, 10]]))
+
+
+def test_a_sliver_cut_off_at_a_cell_plane_does_not_fail_the_body(tmp_path):
+    """Every triangle of the sliver quantizes to zero area, which DracoPy 2 rejects."""
+    from vol2mesh import multires
+
+    from neu_morpho.precomputed import write_body_multires
+
+    cfg = MeshConfig(num_lods=1)
+    mesh = _box_with_sliver()
+    assert set(multires.split_mesh_for_lod(mesh, [512.0] * 3, 0)) == {(0, 0, 0), (1, 0, 0)}
+
+    n = write_body_multires(str(tmp_path), 7, mesh, cfg,
+                            chunk_shape_xyz=[512.0] * 3, grid_origin_xyz=[0.0] * 3)
+    assert n == 1
+    decoded = multires.read_object_mesh(str(tmp_path), 7, 16)
+    assert [tuple(f["position"]) for f in decoded["fragments"]] == [(0, 0, 0)]
+    assert len(decoded["fragments"][0]["faces"]) >= 12
+
+
+def test_a_cell_with_drawable_triangles_is_kept():
+    """Only all-degenerate cells are dropped: an overhang of many steps still encodes."""
+    from vol2mesh import multires
+
+    from neu_morpho.precomputed import _encode_cell
+
+    cells = multires.split_mesh_for_lod(_box_with_sliver(overhang_nm=5.0), [512.0] * 3, 0)
+    assert _encode_cell(cells[(1, 0, 0)], (1, 0, 0), 0, MeshConfig(),
+                        [512.0] * 3, [0.0] * 3)
+
+
+def test_a_failed_simplify_is_logged(tmp_path, monkeypatch, caplog):
+    from vol2mesh import Mesh
+
+    from neu_morpho.precomputed import write_body_multires
+
+    def fail(self, fraction):
+        raise RuntimeError("no simplifier")
+
+    monkeypatch.setattr(Mesh, "simplify", fail)
+    with caplog.at_level("WARNING", logger="neu_morpho.precomputed"):
+        write_body_multires(str(tmp_path), 7, _box_with_sliver(), MeshConfig(num_lods=2),
+                            chunk_shape_xyz=[512.0] * 3, grid_origin_xyz=[0.0] * 3)
+    assert "body 7: simplifying for LOD 1 failed (RuntimeError: no simplifier)" in caplog.text
 
 
 def test_meshify_checks_before_doing_any_work(tmp_path):
