@@ -16,10 +16,14 @@ and the manifests.
 plan: name it in ``plan(extra_stages={name: scale_index})``, so its scale, ROI and block
 count are planned like the built-in ones, and pass ``run(runners={name: fn})``. This is
 how ``neu-skel`` provides skeletons, which are not built here because the tracers are
-GPL-licensed; ``neu-skel run`` is ``neu-morpho run`` with a ``skel`` stage. Discovering
-an installed ``neu-skel`` from ``neu-morpho run`` itself (an entry point) is a possible
-later addition, deliberately not made: it would load GPL code into this package's
-process.
+GPL-licensed; ``neu-skel run`` runs only its ``skel`` stage, in a work dir that
+``neu-morpho run`` has indexed. Discovering an installed ``neu-skel`` from
+``neu-morpho run`` itself (an entry point) is a possible later addition, deliberately
+not made: it would load GPL code into this package's process.
+
+**Runs sharing a work dir.** ``run_plan.json`` and ``run_summary.json`` keep each
+stage's latest run, so a work dir built by several commands (``neu-morpho run --stages
+index,mesh``, then ``neu-skel run``) records all of them.
 """
 
 from __future__ import annotations
@@ -69,7 +73,7 @@ class Plan:
     work_dir: str
     stages: tuple[str, ...]
     block: tuple[int, int, int]
-    scales: dict[str, Any]                  #: stage -> ScaleInfo, extra stages included
+    scales: dict[str, Any]                  #: stage -> ScaleInfo, for the stages run
     finest: Any                             #: the source's level 0
     rois: dict[str, tuple | None]           #: each stage's ROI in its own scale's voxels
     roi: tuple | None
@@ -79,7 +83,7 @@ class Plan:
     occupancy_voxel_size: tuple | None
     occupancy_scale: int | None
     occupancy_dilate: int
-    planned_blocks: dict[str, int]
+    planned_blocks: dict[str, int]          #: per block-based stage run
     allowlist: str | None
     min_voxels: int
     limit_bodies: int | None
@@ -185,14 +189,25 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
                          "different box at every pyramid level")
     if roi_scale is not None and roi is None:
         raise ValueError("roi_scale has no effect without roi")
+    # Without a DB the size filter would select nothing, or be skipped, without a word.
+    if (min_voxels or limit_bodies) and allowlist is None:
+        if not metrics_db:
+            raise ValueError("min_voxels and limit_bodies filter on the metrics DB's voxel "
+                             "counts, so they need metrics_db; or pass an allowlist")
+        if "index" not in stages and not os.path.exists(f"{work}/metrics.db"):
+            raise ValueError(
+                f"min_voxels and limit_bodies filter on the index stage's voxel counts, "
+                f"and {work}/metrics.db does not exist. Run the index stage in this work "
+                f"dir first (neu-morpho run --stages index).")
 
+    # Only the stages that run get a scale; seg exports the ROI as the mesh scale sees it.
+    wanted = {"index": index_scale, "mesh": mesh_scale, **extra_stages}
+    need = {n for n in stages if n in wanted} | ({"mesh"} if "seg" in stages else set())
     scales = read_scales(src)
-    for name, idx in (("index", index_scale), ("mesh", mesh_scale), ("roi", roi_scale),
-                      *extra_stages.items()):
+    for name, idx in [*((n, wanted[n]) for n in wanted if n in need), ("roi", roi_scale)]:
         if idx is not None and not 0 <= idx < len(scales):
             raise ValueError(f"{name}_scale {idx} out of range (source has {len(scales)})")
-    by_stage = {"index": scales[index_scale], "mesh": scales[mesh_scale],
-                **{name: scales[idx] for name, idx in extra_stages.items()}}
+    by_stage = {n: scales[idx] for n, idx in wanted.items() if n in need}
 
     # One physical box everywhere: the ROI converted into each stage's own voxels.
     roi = tuple(int(v) for v in roi) if roi is not None else None
@@ -221,7 +236,7 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
 
     block = tuple(int(v) for v in block)
     planned = {name: _blocks_in(s.shape, block, rois[name], s.voxel_size, occ)
-               for name, s in by_stage.items()}
+               for name, s in by_stage.items() if name in stages}
     p = Plan(src=src, dst=dst, work_dir=work, stages=stages, block=block,
              scales=by_stage, finest=scales[0], rois=rois, roi=roi, roi_scale=roi_scale,
              seg_scales=list(seg_scales) if seg_scales is not None else None,
@@ -233,9 +248,10 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
              resume=resume, extra=dict(extra or {}))
 
     log.info("source pyramid:\n%s", describe_scales(src))
-    for name, s in by_stage.items():
+    for name, n in planned.items():
+        s = by_stage[name]
         log.info("%-5s  scale %d  voxel %s nm  shape %s  -> %d blocks",
-                 name, s.index, s.voxel_size, s.shape, planned[name])
+                 name, s.index, s.voxel_size, s.shape, n)
     log.info("stages=%s roi=%s occupancy=%s", list(stages), roi,
              f"scale {occupancy_scale} dilate {occupancy_dilate}" if occ else "off")
     for key, value in p.extra.items():
@@ -245,38 +261,66 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     return p
 
 
+def _previous(path: str, key: str, value: str) -> dict:
+    """The record at ``path`` if an earlier run wrote it for the same ``key`` value."""
+    try:
+        with open(path) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return prev if isinstance(prev, dict) and prev.get(key) == value else {}
+
+
+def _ordered(stages) -> list[str]:
+    """Built-in stages in run order, then extra stages as first seen."""
+    seen = list(dict.fromkeys(stages))
+    return [s for s in STAGES if s in seen] + [s for s in seen if s not in STAGES]
+
+
 def _write_run_plan(p: Plan, command: str) -> None:
-    """``run_plan.json``: the denominators ``neu-morpho progress`` reports against."""
+    """``run_plan.json``: the denominators ``neu-morpho progress`` reports against.
+
+    Merged into the file an earlier run to the same ``dst`` left: this run's stages
+    replace their own entries and the others are kept.
+    """
     from .ops.export_roi_seg import DEFAULT_COPY_BLOCK, scale_cost
 
-    mesh = p.scales["mesh"]
+    path = f"{p.work_dir}/run_plan.json"
+    prev = _previous(path, "dst", p.dst)
     seg = [{"scale": c["scale"], "shape": list(c["shape"]),
             "blocks": math.prod(-(-c["shape"][a] // DEFAULT_COPY_BLOCK[a]) for a in range(3))}
-           for c in scale_cost(p.src, p.rois["mesh"], mesh.voxel_size,
+           for c in scale_cost(p.src, p.rois["mesh"], p.scales["mesh"].voxel_size,
                                block_shape=p.block, scale_indices=p.seg_scales)
-           ] if "seg" in p.stages else []
-    with open(f"{p.work_dir}/run_plan.json", "w") as f:
+           ] if "seg" in p.stages else prev.get("seg_scales", [])
+    with open(path, "w") as f:
         json.dump({
+            **prev,
             "started": datetime.now().astimezone().isoformat(timespec="seconds"),
             "command": command, "dst": p.dst, "work_dir": p.work_dir,
-            "stages": list(p.stages), "block_shape": list(p.block),
+            "stages": _ordered([*prev.get("stages", []), *p.stages]),
+            "commands": {**prev.get("commands", {}), **dict.fromkeys(p.stages, command)},
+            "block_shape": list(p.block),
             "roi": list(p.roi) if p.roi else None,
             "roi_scale": p.roi_scale,                 # the ROI is meaningless without it
-            "scales": {k: s.index for k, s in p.scales.items()},
+            "scales": {**prev.get("scales", {}),
+                       **{k: s.index for k, s in p.scales.items() if k in p.stages}},
             **p.extra,
-            "planned_blocks": p.planned_blocks, "seg_scales": seg,
+            "planned_blocks": {**prev.get("planned_blocks", {}), **p.planned_blocks},
+            "seg_scales": seg,
         }, f, indent=2)
 
 
 def run(p: Plan, *, client: Any = None, command: str | None = None,
         runners: Mapping[str, StageRunner] | None = None) -> dict:
-    """Execute ``p``'s stages; returns the run summary, also written to ``run_summary.json``.
+    """Execute ``p``'s stages; returns this run's summary.
 
     ``client`` is a dask client, or ``None`` to run serially in this process.
     ``runners`` runs each extra stage the plan names, after ``mesh``. Per-body
     failures do not stop a stage; they are counted in ``n_failed_bodies`` and retried by
     the next run. Afterwards the volume's ``info`` is pointed at whichever of the mesh and
     skeleton subresources exist, so one neuroglancer layer carries all three.
+    ``run_summary.json`` gets the summary merged with an earlier run's to the same
+    volume, so it covers every stage run in the work dir.
     """
     from neu_vol import exists, scale_spec
 
@@ -292,14 +336,12 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
     missing = [s for s in stages if s not in STAGES and s not in runners]
     if missing:
         raise ValueError(f"no runner for extra stage(s) {missing}")
-    idx_s, mesh_s = p.scales["index"], p.scales["mesh"]
     db_path, allowlist_path = p.db_path, p.allowlist_path
     out = OutputConfig(dst=p.dst, work_dir=work)
 
     os.makedirs(work, exist_ok=True)
     _write_run_plan(p, command)
     t_start = time.time()
-    mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block)
     occupancy = dict(occupancy_spec=p.occupancy_spec,
                      occupancy_voxel_size=p.occupancy_voxel_size,
                      occupancy_dilate=p.occupancy_dilate)
@@ -307,6 +349,7 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
     timing: dict[str, float] = {}
 
     if "seg" in stages:
+        mesh_s = p.scales["mesh"]
         t = time.time()
         for c in scale_cost(src, p.rois["mesh"], mesh_s.voxel_size,
                             block_shape=p.block, scale_indices=p.seg_scales):
@@ -326,6 +369,7 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
     if "index" in stages:
         from .allowlist import load_allowlist
 
+        idx_s = p.scales["index"]
         t = time.time()
         # An explicit allowlist restricts which bodies get RECORDED; every block is still
         # read in full. What it saves is the driver-side upsert per speck.
@@ -359,9 +403,11 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
                 "the index scale).", n_all)
 
     if "mesh" in stages:
+        mesh_s = p.scales["mesh"]
         t = time.time()
         summaries["mesh"] = meshify(
-            scale_spec(src, mesh_s.index), out, mesh_cfg,
+            scale_spec(src, mesh_s.index), out,
+            MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block),
             mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=p.rois["mesh"],
             db_path=db_path, max_consecutive_failures=p.max_consecutive_failures,
             client=client, resume=p.resume, **occupancy)
@@ -411,8 +457,21 @@ def run(p: Plan, *, client: Any = None, command: str | None = None,
         "n_failed_bodies": sum(len(v) for v in failed.values()),
         "stages": {k: dict(v) for k, v in summaries.items()},
     }
+    # The file covers the work dir: earlier runs' stages are kept, timing totals add up.
+    prev = _previous(f"{work}/run_summary.json", "volume", vol)
+    stages_all = {**prev.get("stages", {}), **summary["stages"]}
+    prev_timing = prev.get("timing_min", {})
+    merged = {
+        **prev, **summary,
+        "timing_min": {**prev_timing, **summary["timing_min"],
+                       "total": round(prev_timing.get("total", 0) + wall, 2)},
+        "commands": {**prev.get("commands", {}), **dict.fromkeys(summaries, command)},
+        "n_failed_bodies": sum(len(v.get("failed_bodies") or [])
+                               for v in stages_all.values()),
+        "stages": {k: stages_all[k] for k in _ordered(stages_all)},
+    }
     with open(f"{work}/run_summary.json", "w") as f:
-        json.dump(summary, f, indent=2, default=str)
+        json.dump(merged, f, indent=2, default=str)
     log.info("timing (min): %s", summary["timing_min"])
     log.info("done -> %s", f"{work}/run_summary.json")
     return summary

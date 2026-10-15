@@ -51,13 +51,57 @@ def test_a_remote_destination_needs_a_work_dir():
 def test_plan_resolves_scales_and_counts_blocks(tmp_path):
     src = _source(tmp_path)
     p = pipeline.plan(src, str(tmp_path / "out" / "seg"), index_scale=0, mesh_scale=0,
-                      extra_stages={"extra": 1}, block=(32, 32, 32), occupancy_scale=-1,
+                      stages=("index", "mesh", "extra"), extra_stages={"extra": 1},
+                      block=(32, 32, 32), occupancy_scale=-1,
                       roi=(0, 0, 0, 32, 32, 32), roi_scale=1)
     assert p.work_dir == str(tmp_path / "out")
     assert p.scales["extra"].voxel_size == (16.0, 16.0, 16.0)
     assert p.rois["mesh"] == (0, 0, 0, 64, 64, 64)       # the same box, in level-0 voxels
     assert p.planned_blocks == {"index": 8, "mesh": 8, "extra": 1}
     assert not os.path.exists(p.work_dir)                 # planning writes nothing
+
+
+def test_plan_resolves_only_the_stages_it_runs(tmp_path):
+    src = _source(tmp_path)                               # two levels
+    p = pipeline.plan(src, str(tmp_path / "out" / "seg"), stages=("extra",),
+                      index_scale=7, mesh_scale=7, extra_stages={"extra": 1},
+                      block=(32, 32, 32), occupancy_scale=-1)
+    assert set(p.scales) == set(p.planned_blocks) == {"extra"}
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({}, "metrics.db does not exist"),
+    ({"metrics_db": False}, "need metrics_db"),
+])
+def test_a_size_filter_without_its_counts_is_refused(tmp_path, kwargs, match):
+    """Left alone it would select no bodies, or silently select all of them."""
+    src = _source(tmp_path)
+    with pytest.raises(ValueError, match=match):
+        pipeline.plan(src, str(tmp_path / "out" / "seg"), stages=("extra",),
+                      extra_stages={"extra": 1}, min_voxels=10, occupancy_scale=-1,
+                      **kwargs)
+
+
+def test_runs_sharing_a_work_dir_accumulate_its_records(tmp_path):
+    """`neu-morpho run --stages index`, then `neu-skel run`: both stay on record."""
+    src = _source(tmp_path)
+    dst, work = str(tmp_path / "out" / "seg"), tmp_path / "out"
+    common = dict(index_scale=0, extra_stages={"extra": 1}, block=(32, 32, 32),
+                  occupancy_scale=-1)
+    pipeline.run(pipeline.plan(src, dst, stages=("index",), **common), command="first")
+    p = pipeline.plan(src, dst, stages=("extra",), min_voxels=1, extra={"tool": "x"},
+                      **common)
+    summary = pipeline.run(p, runners={"extra": lambda p, c, a: {"failed_bodies": [3]}},
+                           command="second")
+
+    assert set(summary["stages"]) == {"extra"}           # the return is this run's
+    plan = json.loads((work / "run_plan.json").read_text())
+    assert plan["stages"] == ["index", "extra"]
+    assert plan["commands"] == {"index": "first", "extra": "second"}
+    assert set(plan["planned_blocks"]) == {"index", "extra"} and plan["tool"] == "x"
+    on_disk = json.loads((work / "run_summary.json").read_text())
+    assert list(on_disk["stages"]) == ["index", "extra"]
+    assert on_disk["n_failed_bodies"] == 1
 
 
 def test_run_produces_one_linked_volume(tmp_path):

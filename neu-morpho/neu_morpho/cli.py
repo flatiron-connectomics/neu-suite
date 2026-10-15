@@ -60,7 +60,8 @@ of each is read from the source metadata, never assumed to be 2**scale — that
 assumption is what misaligns meshes against skeletons on non-standard pyramids.
 
 Skeletons come from **neu-skel**, a separate GPL-licensed package: ``neu-skel run``
-takes every argument below plus a ``skel`` stage and its tracer options.
+adds them to a work dir this command has indexed, with the same --src, --dst and
+--work-dir.
 """
 
 from __future__ import annotations
@@ -108,7 +109,12 @@ def _configs(args) -> list[str]:
 
 
 def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
-    """Every ``run`` argument, on parser ``p``. ``neu-skel run`` adds its own to these."""
+    """The ``run`` arguments for ``stages``, on parser ``p``.
+
+    An option only one built-in stage reads is added only with that stage, and a single
+    stage gets no ``--stages``. ``neu-skel run`` passes ``stages=("skel",)`` and adds
+    its own options.
+    """
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
                                  "meshes/skeletons inside it. Local path or s3://...; "
@@ -120,31 +126,40 @@ def add_run_args(p, *, stages=STAGES, default_stages="index,mesh") -> None:
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
-    p.add_argument("--stages", default=default_stages, metavar="LIST",
-                   help=f"comma-separated subset of {','.join(stages)}, described under "
-                        f"'Stages' above. They run in that order, and each is idempotent "
-                        f"and resumable, so re-running a subset continues rather than "
-                        f"redoing it (default: {default_stages})")
-    p.add_argument("--seg-encoding", default="compressed_segmentation",
-                   help="encoding for the exported segmentation (or 'raw')")
-    p.add_argument("--seg-scales", default="all",
-                   help="source scales to copy in the seg stage: 'all', a range "
-                        "like '1-6', or a comma list. Scale 0 usually dominates "
-                        "the cost by an order of magnitude — check the log line")
+    if len(stages) > 1:
+        p.add_argument("--stages", default=default_stages, metavar="LIST",
+                       help=f"comma-separated subset of {','.join(stages)}, described "
+                            f"under 'Stages' above. They run in that order, and each is "
+                            f"idempotent and resumable, so re-running a subset continues "
+                            f"rather than redoing it (default: {default_stages})")
+    else:
+        p.set_defaults(stages=stages[0])
+    if "seg" in stages:
+        p.add_argument("--seg-encoding", default="compressed_segmentation",
+                       help="encoding for the exported segmentation (or 'raw')")
+        p.add_argument("--seg-scales", default="all",
+                       help="source scales to copy in the seg stage: 'all', a range "
+                            "like '1-6', or a comma list. Scale 0 usually dominates "
+                            "the cost by an order of magnitude — check the log line")
     p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 voxels, at --roi-scale")
     p.add_argument("--roi-scale", type=int, default=None,
                    help="scale the --roi values are given in. REQUIRED with --roi: "
                         "the same six numbers name a different box at every scale, "
                         "and guessing wrong silently processes the wrong region")
 
-    p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
-    p.add_argument("--mesh-scale", type=int, default=2)
+    if "index" in stages:
+        p.add_argument("--index-scale", type=int, default=2,
+                       help="scale to scan for bboxes")
+    if "mesh" in stages:
+        p.add_argument("--mesh-scale", type=int, default=2)
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,
-                   help="only process bodies with at least this many voxels")
+                   help="only process bodies with at least this many voxels, counted "
+                        "at the index scale by the index stage")
     p.add_argument("--limit-bodies", type=int, default=None,
-                   help="cap the allowlist to the N largest bodies")
+                   help="cap the allowlist to the N largest bodies (needs the index "
+                        "stage too)")
     p.add_argument("--allowlist", help="explicit body-id file (overrides --min-voxels)")
     p.add_argument("--no-metrics-db", action="store_true",
                    help="skip the per-body metrics DB (its enrichment is observational; "
@@ -694,25 +709,28 @@ def run_main(args, *, extra_stages=None, runners=None, extra=None,
         raise SystemExit("--dst is required unless --describe")
 
     seg_scales = None
-    if args.seg_scales and args.seg_scales != "all":
-        if "-" in args.seg_scales:
-            a, _, b = args.seg_scales.partition("-")
+    raw_scales = getattr(args, "seg_scales", None)
+    if raw_scales and raw_scales != "all":
+        if "-" in raw_scales:
+            a, _, b = raw_scales.partition("-")
             seg_scales = list(range(int(a), int(b) + 1))
         else:
-            seg_scales = [int(x) for x in args.seg_scales.split(",")]
+            seg_scales = [int(x) for x in raw_scales.split(",")]
+    # Options add_run_args left out for these stages keep pipeline.plan's defaults.
+    stage_opts = {k: getattr(args, k) for k in ("index_scale", "mesh_scale", "seg_encoding")
+                  if hasattr(args, k)}
     try:
         plan = pipeline.plan(
             args.src, args.dst, work_dir=args.work_dir,
             stages=[s.strip() for s in args.stages.split(",") if s.strip()],
             block=tuple(int(v) for v in args.block.split(",")),
-            index_scale=args.index_scale, mesh_scale=args.mesh_scale,
             extra_stages=extra_stages, roi=parse_roi(args.roi), roi_scale=args.roi_scale,
             seg_scales=seg_scales, occupancy_scale=args.occupancy_scale,
             occupancy_dilate=args.occupancy_dilate, allowlist=args.allowlist,
             min_voxels=args.min_voxels, limit_bodies=args.limit_bodies,
-            metrics_db=not args.no_metrics_db, seg_encoding=args.seg_encoding,
+            metrics_db=not args.no_metrics_db,
             max_consecutive_failures=args.max_consecutive_failures,
-            resume=not args.no_resume, extra=extra)
+            resume=not args.no_resume, extra=extra, **stage_opts)
     except ValueError as e:
         raise SystemExit(str(e)) from None
     if args.dry_run:

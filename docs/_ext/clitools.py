@@ -368,7 +368,7 @@ def _extras(module: str) -> list[str]:
     """Per-command detail worth having on the cheat sheet, taken from the package.
 
     Only `neu-morpho`'s stages so far. They belong here because "which stages do I pass"
-    is the question the cheat sheet exists to answer, and `--stages index,mesh,skel`
+    is the question the cheat sheet exists to answer, and `--stages seg,index,mesh`
     tells you nothing about what those are — but the text is imported rather than
     restated, so the site, `--help` and the code cannot disagree.
     """
