@@ -170,6 +170,12 @@ def _add_run_args(p) -> None:
     p.add_argument("--serial", action="store_true",
                    help="no dask at all — run in this process (smallest smoke test)")
     p.add_argument("--no-resume", action="store_true", help="start over, ignoring manifests")
+    p.add_argument("--allow-body-failures", action="store_true",
+                   help="exit 0 when the only failures are individual bodies; they are "
+                        "still logged, listed in the work dir's failures file and retried "
+                        "by the next run. Without it such a run exits 1 so a script "
+                        "notices. A failed block, a store error or "
+                        "--max-consecutive-failures still exits non-zero")
     p.add_argument("--max-consecutive-failures", type=int, default=10,
                    help="stop a stage after this many per-body failures in a row "
                         "(0 disables; systemic errors abort immediately regardless)")
@@ -726,7 +732,11 @@ def _main(args) -> int:
                         effective_config_path=plan.work_dir) as client:
             summary = pipeline.run(plan, client=client)
     # Isolated per-body failures do not stop the run; exit non-zero so a scripted
-    # pipeline does not treat a partial result as clean.
+    # pipeline does not treat a partial result as clean, unless told to.
+    if summary["n_failed_bodies"] and args.allow_body_failures:
+        log.warning("%d bodies failed; exiting 0 (--allow-body-failures)",
+                    summary["n_failed_bodies"])
+        return 0
     return 1 if summary["n_failed_bodies"] else 0
 
 

@@ -67,3 +67,27 @@ def test_a_subcommand_is_required():
     with pytest.raises(SystemExit):
         cli._parse_args([])
 
+
+
+@pytest.mark.parametrize("failed, flag, code", [
+    (0, [], 0), (2, [], 1), (2, ["--allow-body-failures"], 0), (0, ["--allow-body-failures"], 0),
+])
+def test_failed_bodies_exit_1_unless_allowed(monkeypatch, failed, flag, code):
+    from neu_morpho import pipeline
+
+    monkeypatch.setattr(pipeline, "plan", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline, "run", lambda p, **k: {"n_failed_bodies": failed})
+    assert _driver().main(BASE_ARGV + ["--serial", *flag]) == code
+
+
+def test_an_aborted_stage_still_fails_with_body_failures_allowed(monkeypatch):
+    from neu_morpho import pipeline
+    from neu_morpho.ops.manifest import StageAborted
+
+    def aborted(p, **k):
+        raise StageAborted("10 consecutive task failures")
+
+    monkeypatch.setattr(pipeline, "plan", lambda *a, **k: object())
+    monkeypatch.setattr(pipeline, "run", aborted)
+    with pytest.raises(StageAborted):
+        _driver().main(BASE_ARGV + ["--serial", "--allow-body-failures"])

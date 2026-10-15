@@ -224,7 +224,9 @@ identical failures are one data point, not 40k. So a stage also aborts on a
 construction) or after `max_consecutive_failures` (default 10, one success
 resets, `0` disables). Ctrl-C always stops a run immediately. The CLI logs failed
 body ids per stage and **exits non-zero**, so a scripted pipeline cannot mistake
-a partial result for a clean one.
+a partial result for a clean one. `--allow-body-failures` makes it exit 0 when per-body
+failures are all that went wrong, for a pipeline that should carry on and retry them
+later; an aborted stage still exits non-zero.
 
 ### One caveat on the metrics
 
