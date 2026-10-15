@@ -46,6 +46,25 @@ def test_bodies_sharing_a_bucket_are_all_found(tmp_path):
     assert F.count_bodies(d) == 4
 
 
+def test_cephfs_recursive_counts_give_the_body_count_without_listing(tmp_path,
+                                                                     monkeypatch):
+    d = str(tmp_path / "chunked")
+    for body in (5, 100, 7):
+        os.makedirs(F.body_dir(d, body), exist_ok=True)
+    # what CephFS reports for this tree: 3 buckets below the store, 3 bodies below them
+    xattrs = {"ceph.dir.subdirs": b"3", "ceph.dir.rsubdirs": b"7"}
+    monkeypatch.setattr(os, "getxattr", lambda path, name: xattrs[name])
+    monkeypatch.setattr(os, "listdir", _listing_only_the_top(d, os.listdir))
+    assert F.count_bodies(d) == 3
+
+
+def _listing_only_the_top(top, listdir):
+    def guarded(path):
+        assert os.path.samefile(path, top), f"listed {path}"
+        return listdir(path)
+    return guarded
+
+
 def test_a_bucket_never_parses_as_a_body_id(tmp_path):
     # "100" is a valid 3-hex bucket AND a body id; the prefix keeps them apart.
     assert not F.bucket_name(256).isdigit()

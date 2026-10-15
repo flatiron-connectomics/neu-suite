@@ -41,23 +41,36 @@ def body_dir(chunked_dir: str, body_id: int) -> str:
 def _buckets(chunked_dir: str) -> list[str]:
     """The bucket directories, refusing a store in the old flat layout, whose bodies
     stage 2 would not see."""
-    names = os.listdir(chunked_dir)
-    old = next((n for n in names if n.isdigit()), None)
+    # scandir's entry types come with the listing; isdir per entry is a stat each on ceph.
+    with os.scandir(chunked_dir) as entries:
+        dirs = [e.name for e in entries if e.is_dir()]
+    old = next((n for n in dirs if n.isdigit()), None)
     if old is not None:
         raise OldFragmentLayout(
             f"{chunked_dir} holds body directories at its top level (e.g. {old}/), the "
             f"layout before fragment stores were bucketed. Delete the store and rerun "
             f"stage 1 (it is scratch), or finish the run with the neu-morpho that wrote it.")
-    return [os.path.join(chunked_dir, n) for n in names
-            if n.startswith("h") and os.path.isdir(os.path.join(chunked_dir, n))]
+    return [os.path.join(chunked_dir, n) for n in dirs if n.startswith("h")]
 
 
 def count_bodies(chunked_dir: str) -> int | None:
-    """How many bodies have fragments, from one listing per bucket (never a walk into the
-    body directories). ``None`` if the store does not exist."""
+    """How many bodies have fragments. ``None`` if the store does not exist.
+
+    On CephFS, from the store's recursive directory counts, which are instant (and may
+    lag the filesystem by seconds); elsewhere one listing per bucket, which on ceph takes
+    tens of seconds for a 4096-bucket store. Never a walk into the body directories.
+    """
     if not os.path.isdir(chunked_dir):
         return None
-    return sum(sum(1 for n in os.listdir(b) if n.isdigit()) for b in _buckets(chunked_dir))
+    buckets = _buckets(chunked_dir)               # also refuses the old flat layout
+    try:
+        # rsubdirs counts the store itself, its top-level directories and everything
+        # below them, and below the top level every directory is a body.
+        below = int(os.getxattr(chunked_dir, "ceph.dir.rsubdirs"))
+        top = int(os.getxattr(chunked_dir, "ceph.dir.subdirs"))
+        return below - 1 - top
+    except (AttributeError, OSError, ValueError):
+        return sum(sum(1 for n in os.listdir(b) if n.isdigit()) for b in buckets)
 
 
 def fragment_path(chunked_dir: str, body_id: int, block_index: Sequence[int], fmt: str = "drc") -> str:
