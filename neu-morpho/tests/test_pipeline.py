@@ -61,6 +61,15 @@ def test_plan_resolves_scales_and_counts_blocks(tmp_path):
     assert not os.path.exists(p.work_dir)                 # planning writes nothing
 
 
+def test_the_index_is_planned_without_the_occupancy_filter(tmp_path):
+    """index reads every block, so its denominator is the whole grid."""
+    src = _source(tmp_path)
+    p = pipeline.plan(src, str(tmp_path / "out" / "seg"), index_scale=0, mesh_scale=0,
+                      block=(16, 16, 16), occupancy_scale=1, occupancy_dilate=0)
+    assert p.planned_blocks["index"] == 64
+    assert p.planned_blocks["mesh"] < 64
+
+
 def test_plan_resolves_only_the_stages_it_runs(tmp_path):
     src = _source(tmp_path)                               # two levels
     p = pipeline.plan(src, str(tmp_path / "out" / "seg"), stages=("extra",),

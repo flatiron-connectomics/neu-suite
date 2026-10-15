@@ -235,7 +235,9 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
         occupancy_scale = None
 
     block = tuple(int(v) for v in block)
-    planned = {name: _blocks_in(s.shape, block, rois[name], s.voxel_size, occ)
+    # index scans every block in the ROI; the occupancy prefilter is for the other stages.
+    planned = {name: _blocks_in(s.shape, block, rois[name], s.voxel_size,
+                                None if name == "index" else occ)
                for name, s in by_stage.items() if name in stages}
     p = Plan(src=src, dst=dst, work_dir=work, stages=stages, block=block,
              scales=by_stage, finest=scales[0], rois=rois, roi=roi, roi_scale=roi_scale,
