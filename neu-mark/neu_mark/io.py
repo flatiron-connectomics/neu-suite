@@ -29,6 +29,19 @@ _EXT = {"parquet": ".parquet", "csv": ".csv", "feather": ".feather"}
 METADATA_KEY = b"neu_mark_provenance"
 
 
+def split_table_path(path: str) -> tuple[str, str, str]:
+    """``(directory, name, fmt)`` of a table file path, the format from its extension.
+
+    ``"out/bodies.csv"`` -> ``("out", "bodies", "csv")``. Works for ``s3://`` URLs too.
+    """
+    directory, _, filename = str(path).rpartition("/")
+    for fmt, ext in _EXT.items():
+        if filename.endswith(ext) and len(filename) > len(ext):
+            return directory or ".", filename[:-len(ext)], fmt
+    raise ValueError(f"{path!r} has no table extension; expected one of "
+                     f"{', '.join(_EXT.values())}")
+
+
 def table_name(name: str, fmt: str) -> str:
     if fmt not in _EXT:
         raise ValueError(f"unknown table format {fmt!r}; expected one of "

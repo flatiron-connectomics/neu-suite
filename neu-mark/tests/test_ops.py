@@ -323,7 +323,7 @@ def test_cli_refuses_both_or_neither(tmp_path, dvid_server):
 # --------------------------------------------------------------------------- #
 def _select(tmp_path, dvid_server, url=URL, **kw):
     source = ann_dvid.open_counts_source(_src(url))
-    out = str(tmp_path / "sel")
+    out = str(tmp_path / "sel" / "bodies.csv")
     return out, ops.write_selected_bodies(source, out, **kw)
 
 
@@ -423,7 +423,7 @@ def test_the_list_records_which_node_it_was_computed_from(tmp_path, dvid_server)
     from neu_vol.location import read_json
 
     out, r = _select(tmp_path, dvid_server, min_synapses=10)
-    rec = read_json(out, "provenance.json")
+    rec = read_json(str(tmp_path / "sel"), "bodies.provenance.json")
     assert rec["source"]["uuid"] == "d38898"
     assert rec["run"]["bodies_selected"] == 3
     assert rec["run"]["indexes"] == ["synapses"]
@@ -434,15 +434,15 @@ def test_the_written_list_is_a_valid_bodies_input(tmp_path, dvid_server):
     from neu_mark import bodies as body_reader
 
     out, r = _select(tmp_path, dvid_server, min_synapses=10)
-    path = f"{out}/{r['written'][0]}"
-    assert body_reader.load(path) == [1, 2, 3]
+    assert r["path"] == out
+    assert body_reader.load(out) == [1, 2, 3]
 
 
 def test_csv_is_the_default_and_is_lossless_here(tmp_path, dvid_server, caplog):
     """Every column is a non-nullable integer, which csv does preserve — so no warning."""
     with caplog.at_level("WARNING"):
         out, r = _select(tmp_path, dvid_server, min_synapses=10)
-    assert r["written"] == ["selected_bodies.csv"]
+    assert (tmp_path / "sel" / "bodies.csv").exists()
     assert "read them back as str or float64" not in caplog.text
 
 
@@ -452,12 +452,12 @@ def test_csv_is_the_default_and_is_lossless_here(tmp_path, dvid_server, caplog):
 def test_cli_select_bodies_prints_the_command_to_run_next(tmp_path, dvid_server, capsys):
     from neu_mark.cli import main
 
-    out = str(tmp_path / "sel")
+    out = str(tmp_path / "sel" / "bodies.csv")
     assert main(["select-bodies", "--src", URL, "--out", out,
                  "--min-synapses", "10"]) == 0
     printed = capsys.readouterr().out
     assert "selected 3 bodies" in printed
-    assert f"--bodies {out}/selected_bodies.csv" in printed
+    assert f"--bodies {out}" in printed
 
 
 
@@ -568,3 +568,18 @@ def test_segment_properties_takes_exactly_one_body_selection(which):
 
     with pytest.raises(SystemExit):
         main(["segment-properties", "--src", KV_URL, "--dst", "x", *which])
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("out/bodies.csv", ("out", "bodies", "csv")),
+    ("s3://my-bucket/sel/b.v2.parquet", ("s3://my-bucket/sel", "b.v2", "parquet")),
+    ("bodies.feather", (".", "bodies", "feather")),
+])
+def test_a_table_path_names_its_directory_name_and_format(path, expected):
+    assert io.split_table_path(path) == expected
+
+
+@pytest.mark.parametrize("path", ["out/bodies", "out/bodies.txt", "out/.csv"])
+def test_a_table_path_without_a_table_extension_is_refused(path):
+    with pytest.raises(ValueError, match="no table extension"):
+        io.split_table_path(path)

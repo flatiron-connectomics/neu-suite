@@ -26,14 +26,13 @@ POINT_TABLES = ("points", "relationships")
 BODY_TABLES = ("bodies",)
 
 
-#: The table `write_selected_bodies` writes (`<dst>/selected_bodies.csv` by default).
-SELECTED_TABLE = "selected_bodies"
-
-
-def write_selected_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: int = 10,
-                  min_pre: int = 0, min_post: int = 0, limit: int | None = None,
-                  fmt: str = "csv") -> dict[str, Any]:
+def write_selected_bodies(source: Mapping[str, Any], path: str, *, min_synapses: int = 10,
+                          min_pre: int = 0, min_post: int = 0,
+                          limit: int | None = None) -> dict[str, Any]:
     """Choose which bodies are worth fetching annotations for, and write the list.
+
+    The list goes to ``path``, in the format its extension names (``.csv``, ``.parquet``
+    or ``.feather``), and its provenance record beside it as ``<name>.provenance.json``.
 
     Uses DVID's ranked ``labelsz`` index, which takes seconds, and selects on synapses
     rather than size.
@@ -54,10 +53,11 @@ def write_selected_bodies(source: Mapping[str, Any], dst: str, *, min_synapses: 
            "bodies_selected": int(len(df)),
            "indexes": source.get("indexes"),
            "synapses_total": int(df["syn"].sum()) if len(df) else 0}
-    record = _record(source, dst, run=run)
-    written = [_io.write_table(df, dst, SELECTED_TABLE, fmt=fmt, metadata=record)]
-    _io.write_provenance(dst, record)
-    return {"bodies": df, "written": written, "record": record}
+    directory, name, fmt = _io.split_table_path(path)
+    record = _record(source, path, run=run)
+    _io.write_table(df, directory, name, fmt=fmt, metadata=record)
+    _io.write_provenance(directory, record, name=f"{name}.provenance")
+    return {"bodies": df, "path": path, "record": record}
 
 
 def _record(source: Mapping[str, Any], dst: str, *, run: Mapping[str, Any]) -> dict:

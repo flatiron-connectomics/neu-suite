@@ -59,7 +59,7 @@ neu-mark info --src dvid://dvid.example.org/93fdbc:main/synapses
 # build the body list itself, from DVID's ranked synapse index (~20 s)
 neu-mark select-bodies \
     --src dvid://dvid.example.org/93fdbc:main/synapses \
-    --min-synapses 10 --out 'bodies_{uuid:8}/' --dvid-locked
+    --min-synapses 10 --out 'bodies_{uuid:8}.csv' --dvid-locked
 
 # synapses for a body list -> points.parquet + relationships.parquet
 neu-mark points \
@@ -74,16 +74,17 @@ neu-mark bodies \
     --out body_annotations_{uuid:8}/ --dvid-locked
 ```
 
-`--out` may be a local path or `s3://…`, and may carry `{uuid}` / `{uuid:N}` /
-`{uuid:full}` / `{branch}` / `{instance}`, expanded from the resolved node. Naming an
-export after the node it came from matters because a branch ref means a different node
-tomorrow.
+`--out` is a directory for `points` and `bodies`, which write several tables, and the
+list's file for `select-bodies`. Either may be a local path or `s3://…`, and may carry
+`{uuid}` / `{uuid:N}` / `{uuid:full}` / `{branch}` / `{instance}`, expanded from the
+resolved node. Naming an export after the node it came from matters because a branch ref
+means a different node tomorrow.
 
 ## Tables
 
 | table | grain | key columns |
 | --- | --- | --- |
-| `selected_bodies` | one row per selected body | `body`, `pre`, `post`, `syn` |
+| `select-bodies --out` (the file named) | one row per selected body | `body`, `pre`, `post`, `syn` |
 | `points` | one row per element | `body`, `z`, `y`, `x`, `kind`, `conf`, `user`, `roi` |
 | `relationships` | one row per relationship | `rel`, `z/y/x`, `to_z/to_y/to_x`, `from_body`, `to_body` |
 | `connections` (`--connections`) | one row per distinct (tbar, psd) pair | `pre_*`, `post_*`, `pre_body`, `post_body` |
@@ -226,9 +227,9 @@ neuropils = ["ME(L)", "ME(R)", "LO(L)", "LO(R)", "AGNG", "PGNG"]
 ```
 
 ```console
-$ neu-mark select-bodies --src @counts --min-synapses 400 --out 'sel/{uuid:8}' --dvid-locked
+$ neu-mark select-bodies --src @counts --min-synapses 400 --out 'sel/{uuid:8}.csv' --dvid-locked
 --src @counts  ->  dvid://dvid.example.org/93fdbc:main/synapses_labelsz
---out sel/{uuid:8}  ->  sel/821d68d2
+--out sel/{uuid:8}.csv  ->  sel/821d68d2.csv
 ```
 
 ## Inspecting the annotation strings

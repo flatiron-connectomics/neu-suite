@@ -129,10 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help=_SRC_HELP + "For this command INSTANCE is a labelsz instance "
                         "(e.g. 'synapses_labelsz') or the annotation instance it indexes "
                         "(e.g. 'synapses'), in which case its labelsz is found via Syncs.")
-    q.add_argument("--out", required=True, metavar="DST",
-                   help="destination directory for the list; writes selected_bodies.<fmt> "
-                        "plus a provenance record naming the node it came from. Accepts "
-                        "the same {uuid}/{branch}/{instance} placeholders.")
+    q.add_argument("--out", required=True, metavar="FILE",
+                   help="the list's path: .csv (read and edited by hand; every column is "
+                        "a non-nullable integer, which csv preserves), .parquet or "
+                        ".feather. A provenance record naming the node goes beside it as "
+                        "<name>.provenance.json. Accepts the same {uuid}/{branch}/"
+                        "{instance} placeholders.")
     q.add_argument("--min-synapses", type=int, default=10, metavar="N",
                    help="keep bodies with at least this many synapses in TOTAL "
                         "(default 10). Total rather than per-type on purpose: sensory "
@@ -147,11 +149,6 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--limit", type=int, default=None, metavar="N",
                    help="keep only the top N after filtering. Results are ranked by total "
                         "synapses, so this is how to ask for 'the biggest N'.")
-    q.add_argument("--format", dest="fmt", default="csv",
-                   choices=("csv", "parquet", "feather"),
-                   help="list format (default: csv — a body list is meant to be read and "
-                        "edited by hand, and every column here is a non-nullable integer, "
-                        "which csv does preserve).")
     q.add_argument("--dvid-locked", action="store_true",
                    help="rank from the newest LOCKED ancestor. Worth doing: body ids "
                         "change with proofreading, so the list and the annotations should "
@@ -530,8 +527,8 @@ def cmd_select_bodies(args) -> int:
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)
     result = ops.write_selected_bodies(source, out, min_synapses=args.min_synapses,
-                               min_pre=args.min_pre, min_post=args.min_post,
-                               limit=args.limit, fmt=args.fmt)
+                                       min_pre=args.min_pre, min_post=args.min_post,
+                                       limit=args.limit)
     df = result["bodies"]
     print(f"selected {len(df)} bodies (>= {args.min_synapses} synapses"
           + (f", >= {args.min_pre} pre" if args.min_pre else "")
@@ -539,9 +536,8 @@ def cmd_select_bodies(args) -> int:
     if len(df):
         print(f"  synapses per body: {int(df['syn'].min())}..{int(df['syn'].max())}, "
               f"{int(df['syn'].sum())} total")
-    listed = f"{out.rstrip('/')}/{result['written'][0]}"
-    print(f"wrote {result['written'][0]} to {out}")
-    print(f"  feed it onward with:  --bodies {listed}")
+    print(f"wrote {result['path']}")
+    print(f"  feed it onward with:  --bodies {result['path']}")
     return 0
 
 
