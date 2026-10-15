@@ -50,3 +50,11 @@ def test_an_unknown_mesh_type_is_refused(tmp_path):
     vol = _mesh_dir(tmp_path, {"@type": "something_else"}, ["1.index"])
     with pytest.raises(UnsupportedSubresource):
         mesh_body_ids(vol)
+
+
+def test_the_mesh_dir_is_the_one_the_volume_names(tmp_path):
+    mesh = tmp_path / "vol" / "meshes-v2"
+    mesh.mkdir(parents=True)
+    (mesh / "4.index").write_bytes(b"x")
+    (tmp_path / "vol" / "info").write_text(json.dumps({"mesh": "meshes-v2"}))
+    assert mesh_body_ids(str(tmp_path / "vol")) == [4]

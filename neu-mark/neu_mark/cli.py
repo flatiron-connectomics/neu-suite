@@ -182,9 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "s3://…). The document lands at <dst>/segment_properties/info, and "
                         "the volume's own info gains the key pointing at it. Accepts the "
                         "same {uuid}/{branch}/{instance} placeholders.")
-    q.add_argument("--bodies", required=True, metavar="IDS",
-                   help="body ids: inline, or a .csv/.parquet/.feather with a body column, "
-                        "or a text file with one per line.")
+    which = q.add_mutually_exclusive_group(required=True)
+    which.add_argument("--bodies", metavar="IDS",
+                       help="body ids: inline, or a .csv/.parquet/.feather with a body "
+                            "column, or a text file with one per line.")
+    which.add_argument("--meshed-bodies", action="store_true",
+                       help="the bodies with a mesh in --dst, e.g. after neu-morpho run. "
+                            "Unsharded meshes only.")
     q.add_argument("--body-column", metavar="NAME", default=None,
                    help="which column holds the ids, if the table has several.")
     q.add_argument("--counts", metavar="URL", default=None,
@@ -375,6 +379,22 @@ def _load_bodies(args) -> list[int]:
     return ids
 
 
+def _meshed_bodies(volume: str) -> list[int]:
+    """``--meshed-bodies``: the bodies with a mesh in ``volume``."""
+    from neu_vol.readback import UnsupportedSubresource, mesh_body_ids
+
+    from . import bodies as _bodies
+
+    try:
+        ids = mesh_body_ids(volume)
+    except UnsupportedSubresource as e:
+        raise SystemExit(f"--meshed-bodies: {e} Use --bodies.") from None
+    if not ids:
+        raise SystemExit(f"--meshed-bodies: no meshes in {volume}")
+    print(f"bodies: {_bodies.summarise(ids)}, meshed in {volume}")
+    return ids
+
+
 def _roi_list(value: str | None) -> list[str] | None:
     """``--rois`` as a name list: a comma list, a file of names, or an ``@name`` config set."""
     import os
@@ -540,7 +560,7 @@ def cmd_segment_properties(args) -> int:
         labelmap_src["uuid"] = bodies_src["uuid"]      # the SAME node, always
 
     dst = _expand_out(args.dst, bodies_src)
-    ids = _load_bodies(args)
+    ids = _meshed_bodies(dst) if args.meshed_bodies else _load_bodies(args)
 
     result = ops.segment_properties(
         bodies_src, dst, ids, counts_source=counts_src, labelmap_source=labelmap_src,

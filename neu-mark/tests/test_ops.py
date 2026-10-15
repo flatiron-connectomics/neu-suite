@@ -1,6 +1,8 @@
 """The stage-1 operations end to end, with DVID stubbed at the ``neuclease.dvid`` boundary
 so the code under test is the code that runs in production."""
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -518,3 +520,51 @@ def test_cli_bodies_writes_elsewhere(tmp_path, dvid_server):
     assert main(["bodies", "--src", KV_URL, "--out", out, "--bodies", "1,2"]) == 0
     assert (tmp_path / "ann" / "bodies.parquet").exists()
     assert not (tmp_path / "ann" / "points.parquet").exists()
+
+
+# --------------------------------------------------------------------------- #
+# segment-properties --meshed-bodies
+# --------------------------------------------------------------------------- #
+
+def _meshed_volume(tmp_path, names, mesh_info=None):
+    vol = tmp_path / "seg"
+    (vol / "mesh").mkdir(parents=True)
+    (vol / "info").write_text(json.dumps({"@type": "neuroglancer_multiscale_volume",
+                                          "type": "segmentation", "mesh": "mesh"}))
+    (vol / "mesh" / "info").write_text(json.dumps(
+        mesh_info or {"@type": "neuroglancer_multilod_draco"}))
+    for name in names:
+        (vol / "mesh" / name).write_bytes(b"x")
+    return str(vol)
+
+
+def test_meshed_bodies_writes_properties_for_the_meshed_bodies(tmp_path, dvid_server,
+                                                               capsys):
+    from neu_mark.cli import main
+
+    vol = _meshed_volume(tmp_path, ["1", "1.index", "2", "2.index", "3"])  # 3: no manifest
+    assert main(["segment-properties", "--src", KV_URL, "--dst", vol,
+                 "--meshed-bodies"]) == 0
+    assert "2 bodies (1..2), meshed in" in capsys.readouterr().out
+    info = json.loads((tmp_path / "seg" / "segment_properties" / "info").read_text())
+    assert sorted(int(i) for i in info["inline"]["ids"]) == [1, 2]
+
+
+@pytest.mark.parametrize("names, mesh_info, match", [
+    ([], None, "no meshes in"),
+    (["0.shard"], {"@type": "neuroglancer_multilod_draco",
+                   "sharding": {"@type": "neuroglancer_uint64_sharded_v1"}}, "Use --bodies"),
+])
+def test_meshed_bodies_refuses_what_it_cannot_list(tmp_path, names, mesh_info, match):
+    from neu_mark.cli import _meshed_bodies
+
+    with pytest.raises(SystemExit, match=match):
+        _meshed_bodies(_meshed_volume(tmp_path, names, mesh_info))
+
+
+@pytest.mark.parametrize("which", [["--bodies", "1", "--meshed-bodies"], []])
+def test_segment_properties_takes_exactly_one_body_selection(which):
+    from neu_mark.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["segment-properties", "--src", KV_URL, "--dst", "x", *which])

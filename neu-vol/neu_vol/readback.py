@@ -365,8 +365,11 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
     return vertices, faces, want
 
 
-def mesh_body_ids(volume: str, mesh_dir: str = "mesh") -> list[int]:
+def mesh_body_ids(volume: str, mesh_dir: str | None = None) -> list[int]:
     """Sorted ids of the bodies with a mesh under ``volume/mesh_dir``; ``[]`` for none.
+
+    ``mesh_dir`` defaults to the directory the volume's ``info`` names under ``mesh``,
+    else ``mesh``.
 
     A multi-resolution mesh counts once its ``<id>.index`` manifest exists (neu-morpho
     writes it after the fragment data); a legacy mesh, once its ``<id>:0`` manifest does.
@@ -376,6 +379,8 @@ def mesh_body_ids(volume: str, mesh_dir: str = "mesh") -> list[int]:
     """
     import re
 
+    if mesh_dir is None:
+        mesh_dir = (location.read_json(volume, "info") or {}).get("mesh", "mesh")
     info = _subresource_info(volume, mesh_dir)
     _check_supported(info, volume, mesh_dir, "mesh")
     if info.get("sharding") is not None:

@@ -376,6 +376,10 @@ DRY RUN — nothing written. ./seg is untouched.
 
 (Counts are from the ≥10-synapse body list; the elided ones depend on your rules.)
 
+`--meshed-bodies` in place of `--bodies` takes the bodies that have a mesh in `--dst`, so
+the properties cover what `neu-morpho run` meshed into that volume. It reads unsharded
+meshes only; for a sharded source, pass `--bodies`.
+
 Run `--dry-run` first: it builds and reports without writing anything, which `--no-link`
 does not — that still writes the document. A rule that fires on 2% of bodies looks exactly
 like a facet the data does not have, and only the coverage number tells them apart.
