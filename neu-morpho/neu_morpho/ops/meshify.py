@@ -138,8 +138,9 @@ def meshify(
     chunked_dir = out.chunked_dir or out.work("chunked")
     progress = out.progress_path or out.work("progress.mesh.jsonl")
     # Multires octree base, in nm (model space = physical nm). One cell below the volume's
-    # corner: a body touching the edge has its surface just outside it, and a fragment's
-    # cell position may not be negative.
+    # corner: a body touching the volume's edge has a closed surface there, which the
+    # per-block decimation is free to move slightly outside, and a fragment's cell position
+    # may not be negative.
     chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
     grid_origin_xyz = [float(o) - float(c) for o, c in
                        zip(np.asarray(mesh_origin_nm, dtype=np.float64)[::-1], chunk_shape_xyz)]
