@@ -6,7 +6,7 @@
 One manifest, two groups ("chunk" keyed by block index, "assemble" by body id). Resume
 skips done tasks; running only stage 2 reuses the fragments on disk. The caller passes
 ``seg_spec`` at the meshing scale and ``occupancy_spec`` at a coarse one, with their
-voxel sizes (nm).
+voxel sizes (nm), and the meshing scale's origin (nm), which places the vertices.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import logging
 import os
 from typing import Any, Sequence
 
+import numpy as np
 from blockrun import Manifest, block_map, iter_blocks
 
 from ..allowlist import load_allowlist
@@ -37,7 +38,8 @@ logger = logging.getLogger(__name__)
 # Picklable workers
 # --------------------------------------------------------------------------- #
 def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfig,
-                 allow: set[int] | None, mesh_voxel_size: Sequence[float]) -> tuple:
+                 allow: set[int] | None, mesh_voxel_size: Sequence[float],
+                 mesh_origin_nm: Sequence[float] = (0.0, 0.0, 0.0)) -> tuple:
     """Mesh one block into fragments. The read retries transient store errors; one
     that persists still fails the stage (see ``ops/manifest.py``)."""
     from neu_vol.backends.base import open_backend
@@ -45,7 +47,8 @@ def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfi
 
     seg = with_retry(lambda: open_backend(seg_spec).read_region(block.region),
                      label=f"mesh block {block.index}")       # one block at the mesh scale
-    meshes = mesh_block(seg, physical_box(block.region, mesh_voxel_size), mesh_cfg, allow)
+    meshes = mesh_block(seg, physical_box(block.region, mesh_voxel_size, mesh_origin_nm),
+                        mesh_cfg, allow)
     for body_id, m in meshes.items():
         _frag.write_fragment(chunked_dir, body_id, block.index, m, mesh_cfg.fragment_format)
     return (block.index, "written" if meshes else "empty")
@@ -78,6 +81,7 @@ def meshify(
     mesh_cfg: MeshConfig | None = None,
     *,
     mesh_voxel_size: Sequence[float],
+    mesh_origin_nm: Sequence[float] = (0.0, 0.0, 0.0),
     allowlist: Any = None,
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
@@ -95,6 +99,9 @@ def meshify(
     ``roi`` (``"z0,y0,x0,z1,y1,x1"`` or a 6-sequence, in mesh-scale voxels) restricts
     stage 1 to the blocks intersecting it on the global grid, so a trial run is a prefix
     of the full run. A body straddling the ROI edge is meshed only from inside it.
+
+    ``mesh_origin_nm`` (zyx) is where the meshing scale's index 0 lies, from its
+    ``Frame``: a volume with a voxel offset meshes in place only with it.
 
     With ``db_path``, each body's mesh metrics (surface area, vertex and component counts)
     go to the metrics DB; under an ROI they describe the truncated body.
@@ -130,9 +137,12 @@ def meshify(
     # ordinary file I/O.
     chunked_dir = out.chunked_dir or out.work("chunked")
     progress = out.progress_path or out.work("progress.mesh.jsonl")
-    # multires octree base, in nm (model space = physical nm, grid origin at 0)
+    # Multires octree base, in nm (model space = physical nm). One cell below the volume's
+    # corner: a body touching the edge has its surface just outside it, and a fragment's
+    # cell position may not be negative.
     chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
-    grid_origin_xyz = [0.0, 0.0, 0.0]
+    grid_origin_xyz = [float(o) - float(c) for o, c in
+                       zip(np.asarray(mesh_origin_nm, dtype=np.float64)[::-1], chunk_shape_xyz)]
 
     # Before anything expensive: would Draco quantization collapse coarse LODs?
     check_quantization(mesh_cfg, chunk_shape_xyz, mesh_voxel_size)
@@ -162,7 +172,8 @@ def meshify(
             todo = chunk_todo
             worker = functools.partial(_chunk_block, seg_spec=seg_spec, chunked_dir=chunked_dir,
                                        mesh_cfg=mesh_cfg, allow=allow,
-                                       mesh_voxel_size=tuple(mesh_voxel_size))
+                                       mesh_voxel_size=tuple(mesh_voxel_size),
+                                       mesh_origin_nm=tuple(map(float, mesh_origin_nm)))
             block_map(todo, worker, client=client, npartitions=npartitions,
                       on_result=lambda r: manifest.record("chunk", r))
 

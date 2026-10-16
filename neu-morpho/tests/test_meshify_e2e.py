@@ -27,6 +27,14 @@ def _lod0_cells(mesh_dir, body):
     return {tuple(int(c) for c in fr["position"]) for fr in res["fragments"] if fr["lod"] == 0}
 
 
+def _lod0_vertices(mesh_dir, body):
+    """Decoded LOD-0 vertices, xyz nm."""
+    from vol2mesh import multires
+    res = multires.read_object_mesh(mesh_dir, body)
+    return np.concatenate([fr["vertices_xyz"] for fr in res["fragments"]
+                           if fr["lod"] == 0 and len(fr["vertices_xyz"])])
+
+
 def test_meshify_end_to_end(tmp_path):
     # voxel 8 nm, block 16 -> LOD-0 octree cell = 16*8 = 128 nm
     vol = np.zeros((32, 32, 32), np.uint64)
@@ -48,14 +56,18 @@ def test_meshify_end_to_end(tmp_path):
         assert os.path.exists(os.path.join(mesh_dir, str(body)))
         assert os.path.exists(os.path.join(mesh_dir, f"{body}.index"))
 
-    # alignment: LOD-0 fragment cells match each body's nm location
-    assert (0, 0, 0) in _lod0_cells(mesh_dir, 100)
-    assert (1, 1, 1) in _lod0_cells(mesh_dir, 200)
+    # alignment: LOD-0 fragment cells match each body's nm location. The octree starts one
+    # cell below the volume's corner, so the cell holding nm 0 is (1, 1, 1).
+    assert (1, 1, 1) in _lod0_cells(mesh_dir, 100)
+    assert (2, 2, 2) in _lod0_cells(mesh_dir, 200)
+    verts = _lod0_vertices(mesh_dir, 100)
+    np.testing.assert_allclose(verts.min(axis=0), [32] * 3, atol=8)
+    np.testing.assert_allclose(verts.max(axis=0), [96] * 3, atol=8)
 
     # cross-block body: assembled from 2 block fragments, spanning 2 z-cells
     assert len(os.listdir(F.body_dir(summary["chunked_dir"], 300))) == 2
     cells300 = _lod0_cells(mesh_dir, 300)
-    assert {(0, 0, 0), (0, 0, 1)} <= cells300      # xyz: spans z = 0 and 1
+    assert {(1, 1, 1), (1, 1, 2)} <= cells300      # xyz: spans z = 0 and 1
 
     assert summary["status_counts"].get("written", 0) >= 3
 

@@ -422,7 +422,8 @@ def _run_stages(p: Plan, client: Any, runners: Mapping[str, StageRunner],
         summaries["mesh"] = meshify(
             scale_spec(src, mesh_s.index), out,
             MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block),
-            mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=p.rois["mesh"],
+            mesh_voxel_size=mesh_s.voxel_size, mesh_origin_nm=mesh_s.frame.origin_nm,
+            allowlist=allow, roi=p.rois["mesh"],
             db_path=db_path, max_consecutive_failures=p.max_consecutive_failures,
             client=client, resume=p.resume, **occupancy)
         timing["mesh"] = (time.time() - t) / 60

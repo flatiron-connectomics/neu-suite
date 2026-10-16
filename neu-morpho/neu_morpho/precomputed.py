@@ -129,10 +129,14 @@ def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
     LOD 0 is the assembled mesh; each coarser LOD decimates by
     ``cfg.lod_decimation_factor`` and is octree-partitioned. Writes ``<body>`` and
     ``<body>.index`` (unsharded multires). Vertices are nm; the ``info`` transform is
-    identity.
+    identity. Cells count from ``grid_origin_xyz``, which must lie below every vertex.
     """
     from vol2mesh import multires
 
+    # vol2mesh splits on a grid from 0 nm, so split relative to the grid origin and move
+    # each cell back before encoding, which quantizes against that origin.
+    origin_zyx = np.asarray(grid_origin_xyz, dtype=np.float64)[::-1]
+    mesh.vertices_zyx = mesh.vertices_zyx - origin_zyx
     fragments_by_lod: dict[int, dict] = {}
     lod_mesh = mesh
     for lod in range(cfg.num_lods):
@@ -144,6 +148,8 @@ def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
                                "keeps LOD %d's detail", body_id, lod, type(exc).__name__,
                                exc, lod, lod - 1)
         cells = multires.split_mesh_for_lod(lod_mesh, list(chunk_shape_xyz), lod)
+        for cell in cells.values():
+            cell.vertices_zyx = cell.vertices_zyx + origin_zyx
         fragments_by_lod[lod] = {
             pos: enc for pos, cell in cells.items()
             if (enc := _encode_cell(cell, pos, lod, cfg, chunk_shape_xyz, grid_origin_xyz))}

@@ -17,15 +17,18 @@ from typing import Sequence
 import numpy as np
 
 
-def physical_box(region: Sequence[slice], voxel_size_zyx: Sequence[float]) -> np.ndarray:
-    """Full-res physical (nm) bounding box (2x3, zyx) for a block region at a scale.
+def physical_box(region: Sequence[slice], voxel_size_zyx: Sequence[float],
+                 origin_nm_zyx: Sequence[float] = (0.0, 0.0, 0.0)) -> np.ndarray:
+    """Physical (nm) bounding box (2x3, zyx) for a block region at a scale.
 
-    ``region`` is at some scale; ``voxel_size_zyx`` is that scale's voxel size (nm),
-    so ``voxel * voxel_size`` lands in the same nm world regardless of scale.
+    ``region`` is in that scale's array indices; ``voxel_size_zyx`` is its voxel size
+    (nm) and ``origin_nm_zyx`` where its index 0 lies (the level's ``Frame``), so the box
+    lands in the same nm world whatever the scale or the volume's offset.
     """
     vz, vy, vx = (float(v) for v in voxel_size_zyx)
     (z0, z1), (y0, y1), (x0, x1) = [(s.start, s.stop) for s in region]
-    return np.array([[z0 * vz, y0 * vy, x0 * vx], [z1 * vz, y1 * vy, x1 * vx]])
+    box = np.array([[z0 * vz, y0 * vy, x0 * vx], [z1 * vz, y1 * vy, x1 * vx]])
+    return box + np.asarray(origin_nm_zyx, dtype=np.float64)
 
 
 def crop_origin_nm(origin_vox_zyx: Sequence[int], voxel_size_zyx: Sequence[float]) -> np.ndarray:
