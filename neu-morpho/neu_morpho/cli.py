@@ -141,6 +141,12 @@ def _add_run_args(p) -> None:
 
     p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
     p.add_argument("--mesh-scale", type=int, default=2)
+    p.add_argument("--smoothing", type=int, default=0, metavar="N",
+                   help="Laplacian smoothing passes on each block's mesh before it is "
+                        "decimated, for a blocky segmentation such as ROI layers; each "
+                        "pass shrinks a surface slightly. A block's mesh is closed at the "
+                        "block faces, so smoothing also moves the seams between blocks: use "
+                        "it with a --block covering the volume (default 0, none)")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,
@@ -713,7 +719,7 @@ def _main(args) -> int:
             min_voxels=args.min_voxels, limit_bodies=args.limit_bodies,
             metrics_db=not args.no_metrics_db, seg_encoding=args.seg_encoding,
             max_consecutive_failures=args.max_consecutive_failures,
-            resume=not args.no_resume)
+            resume=not args.no_resume, mesh_smoothing=args.smoothing)
     except ValueError as e:
         raise SystemExit(str(e)) from None
     if args.dry_run:

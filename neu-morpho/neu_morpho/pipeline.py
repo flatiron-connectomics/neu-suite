@@ -93,6 +93,7 @@ class Plan:
     max_consecutive_failures: int
     resume: bool
     extra: dict                             #: recorded in run_plan.json as-is
+    mesh_smoothing: int = 0                 #: Laplacian passes per mesh block
 
     @property
     def db_path(self) -> str | None:
@@ -141,6 +142,7 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
          limit_bodies: int | None = None, metrics_db: bool = True,
          seg_encoding: str = "compressed_segmentation",
          max_consecutive_failures: int = 10, resume: bool = True,
+         mesh_smoothing: int = 0,
          extra: Mapping[str, Any] | None = None) -> Plan:
     """Resolve and check a run against ``src``'s pyramid; logs the plan. Writes nothing.
 
@@ -151,7 +153,8 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
     at 1 or more, since a coarse scale misses sparse blocks. ``seg_scales`` ``None``
     copies every scale in the seg stage. ``extra_stages`` names stages another package
     runs (see the module docstring), each with its scale index; ``extra`` is recorded
-    in ``run_plan.json``.
+    in ``run_plan.json``. ``mesh_smoothing`` is Laplacian passes on each block's mesh
+    before decimation; over more than one block it also moves the seams, and is warned of.
 
     Raises ``ValueError`` for an argument the source or the other arguments rule out.
     """
@@ -248,8 +251,12 @@ def plan(src: str, dst: str, *, work_dir: str | None = None,
              planned_blocks=planned, allowlist=allowlist, min_voxels=min_voxels,
              limit_bodies=limit_bodies, metrics_db=metrics_db,
              seg_encoding=seg_encoding, max_consecutive_failures=max_consecutive_failures,
-             resume=resume, extra=dict(extra or {}))
+             resume=resume, extra=dict(extra or {}), mesh_smoothing=int(mesh_smoothing))
 
+    if mesh_smoothing and planned.get("mesh", 0) > 1:
+        log.warning("mesh smoothing on %d blocks: each block's mesh is closed at the block "
+                    "faces, so smoothing moves the seams between them. A --block covering "
+                    "the volume avoids that.", planned["mesh"])
     log.info("source pyramid:\n%s", describe_scales(src))
     for name, n in planned.items():
         s = by_stage[name]
@@ -285,6 +292,7 @@ def _run_plan(p: Plan, command: str, run_id: str, started: datetime) -> dict:
         "occupancy_scale": p.occupancy_scale, "occupancy_dilate": p.occupancy_dilate,
         "allowlist": p.allowlist, "min_voxels": p.min_voxels,
         "limit_bodies": p.limit_bodies, "resume": p.resume,
+        "mesh_smoothing": p.mesh_smoothing,
         "scales": {k: s.index for k, s in p.scales.items() if k in p.stages},
         **p.extra,
         "planned_blocks": dict(p.planned_blocks),
@@ -421,7 +429,8 @@ def _run_stages(p: Plan, client: Any, runners: Mapping[str, StageRunner],
         t = time.time()
         summaries["mesh"] = meshify(
             scale_spec(src, mesh_s.index), out,
-            MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block),
+            MeshConfig(mesh_scale=mesh_s.index, block_shape=p.block,
+                       smoothing_iterations=p.mesh_smoothing),
             mesh_voxel_size=mesh_s.voxel_size, mesh_origin_nm=mesh_s.frame.origin_nm,
             allowlist=allow, roi=p.rois["mesh"],
             db_path=db_path, max_consecutive_failures=p.max_consecutive_failures,

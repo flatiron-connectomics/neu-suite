@@ -37,11 +37,14 @@ def mesh_block(seg_block_zyx: np.ndarray, box_nm_zyx: np.ndarray, cfg: MeshConfi
                                     ensure_halo=True, progress=False)
     meshes.pop(0, None)                                   # drop background
     for m in meshes.values():
+        if cfg.smoothing_iterations:
+            # Before decimation, which then keeps the smoothed shape. A block's mesh is
+            # closed at the block faces, so this moves the seam with a neighbouring block
+            # (see pipeline.plan's warning).
+            m.laplacian_smooth(cfg.smoothing_iterations)
         if cfg.decimation_fraction and cfg.decimation_fraction < 1.0:
             # TODO: fixed-edge simplification to preserve block boundaries for stitching.
             m.simplify(cfg.decimation_fraction)
-        if cfg.smoothing_iterations:
-            m.laplacian_smooth(cfg.smoothing_iterations)
     return meshes
 
 
