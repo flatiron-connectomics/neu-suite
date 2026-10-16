@@ -118,9 +118,28 @@ neu-mark points --src @synapses --bodies traced.csv --out syn/ \
     --rois 'ME(L),ME(R),LO(L),LO(R),AGNG,PGNG,SNP(L),SNP(R)'     # or --rois @neuropils
 ```
 
+`--rois SPEC.toml:LAYER` takes the ROIs of a [`roi-layers`](#rois-as-segmentation-layers)
+layer, so synapses are labelled with the same set the viewer shows: `rois.toml:neuropil-parts`
+for the parts of a neuropil tree.
+
 Only the **points** table gets it. A relationship spans two points that may be in different
 neuropils, so one column on it would have to pick a side; a join back to `points` answers
 either. `tables.body_roi_counts(points)` aggregates per body and kind.
+
+For segment-property rules, `segment-properties --synapses syn/` gives each body a
+`synapse_neuropils` column: the share of its pre, post and all synapses in each ROI,
+`{"pre": {"ME(L)": 0.62, ...}, "post": {...}, "all": {...}}`, largest first. With
+`--roi-spec rois.toml`, `synapse_neuropils_top` groups the same shares by the spec's
+top-level neuropils. A rule can then tag a cell by where it connects rather than by its
+name:
+
+```python
+@rule(needs=("synapse_neuropils_top",))
+def region(r):
+    """where most of the cell's synapses are"""
+    shares = r["synapse_neuropils_top"]["all"]
+    return next(iter(shares), None) if shares and max(shares.values()) > 0.5 else None
+```
 
 **The ROI set is required — there is no "all".** The combined volume is built by writing each
 ROI in turn, so passing every ROI on the node would attribute a point in `ME(L)` to whichever

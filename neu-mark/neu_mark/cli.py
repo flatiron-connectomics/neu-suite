@@ -85,8 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--rois", metavar="LIST", default=None,
                    help="label each synapse with the neuropil it falls in, adding a `roi` "
                         "column to the points table. A comma-separated list of DVID roi "
-                        "instance names, a path to a file with one per line, or '@name' for "
-                        "a set from your config. There is deliberately NO default: the "
+                        "instance names, a path to a file with one per line, '@name' for "
+                        "a set from your config, or SPEC.toml:LAYER for the ROIs of a "
+                        "roi-layers layer. There is deliberately NO default: the "
                         "combined ROI volume is built by overwriting, so 'all of them' "
                         "would attribute a point to whichever containing ROI came last.")
     q.add_argument("--strict-rois", action="store_true",
@@ -194,6 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--labelmap", metavar="URL", default=None,
                    help="a labelmap instance to add a `voxels` number property, from "
                         "DVID's own /sizes. ~1 minute for 20k bodies.")
+    q.add_argument("--synapses", metavar="DIR", default=None,
+                   help="a directory an earlier `points --rois` run wrote. Gives the rules a "
+                        "`synapse_neuropils` column: per body, the share of its pre, post "
+                        "and all synapses in each ROI, so a rule can tag a cell by where it "
+                        "connects. Not itself published.")
+    q.add_argument("--roi-spec", metavar="TOML", default=None,
+                   help="a roi-layers spec, with --synapses: adds `synapse_neuropils_top`, "
+                        "the same shares grouped by the spec's top-level neuropils.")
     q.add_argument("--rules", metavar="PATH", default=None,
                    help="a Python module of @rule functions, or @name for one configured "
                         "under [rule_sets]. Its rules override the built-in ones of the "
@@ -437,6 +446,13 @@ def _roi_list(value: str | None) -> list[str] | None:
         return None
     from . import notebook as _nb
 
+    spec_path, _, layer = value.rpartition(":")
+    if spec_path.endswith(".toml") and os.path.exists(spec_path):
+        from . import roi_layers
+
+        resolved = roi_layers.layer_rois(roi_layers.load_spec(spec_path), layer)
+        print(f"--rois {value}  ->  {len(resolved)} ROIs")
+        return resolved
     if not value.startswith("@") and os.path.exists(value):
         with open(value) as fh:
             return [line.split("#", 1)[0].strip() for line in fh
@@ -597,7 +613,7 @@ def cmd_segment_properties(args) -> int:
 
     result = ops.segment_properties(
         bodies_src, dst, ids, counts_source=counts_src, labelmap_source=labelmap_src,
-        rules_path=_rules_path(args.rules), rules_only=bool(args.rules_only),
+        synapses=args.synapses, roi_spec=args.roi_spec, rules_path=_rules_path(args.rules), rules_only=bool(args.rules_only),
         max_tags=args.max_tags,
         keep_glia=not args.drop_glia, link=bool(args.link),
         dry_run=bool(args.dry_run))

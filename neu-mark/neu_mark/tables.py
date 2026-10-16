@@ -271,6 +271,46 @@ def body_roi_counts(points: pd.DataFrame, *, kind_column: str = "kind") -> pd.Da
                               ignore_index=True)
 
 
+#: Element kinds as the sides of a synapse.
+_KIND_SIDE = {"PreSyn": "pre", "PostSyn": "post"}
+
+
+def body_neuropil_fractions(points: pd.DataFrame, *, top_level: Mapping[str, str] | None = None,
+                            kind_column: str = "kind") -> pd.DataFrame:
+    """Per body, the share of its synapses in each neuropil, as columns a rule can read.
+
+    ``synapse_neuropils`` is ``{"pre": {roi: share}, "post": {...}, "all": {...}}``, each
+    share out of all that body's synapses of that side, so a side's shares sum to at most 1
+    and the rest lies in no ROI. With ``top_level`` (``{roi: top-level neuropil}``) a
+    ``synapse_neuropils_top`` column groups the same counts by top-level neuropil. Each
+    inner dict runs largest share first.
+    """
+    if "roi" not in points.columns:
+        raise KeyError(
+            "no 'roi' column: fetch the points with a ROI set (neu-mark points --rois) to "
+            "label each synapse with its neuropil.")
+    df = pd.DataFrame({"body": points["body"],
+                       "side": points[kind_column].map(_KIND_SIDE),
+                       "roi": points["roi"]}).dropna(subset=["body", "side"])
+    columns = {"synapse_neuropils": df["roi"]}
+    if top_level is not None:
+        columns["synapse_neuropils_top"] = df["roi"].map(top_level)
+    per_side = df.groupby(["body", "side"]).size().to_dict()
+    per_body = df.groupby("body").size().to_dict()
+
+    out = pd.DataFrame({"body": sorted(per_body)})
+    for column, rois in columns.items():
+        found = df.assign(roi=rois).dropna(subset=["roi"])
+        shares: dict = {b: {"pre": {}, "post": {}, "all": {}} for b in per_body}
+        for (body, side, roi), n in found.groupby(["body", "side", "roi"]).size().items():
+            shares[body][side][roi] = round(n / per_side[(body, side)], 4)
+        for (body, roi), n in found.groupby(["body", "roi"]).size().items():
+            shares[body]["all"][roi] = round(n / per_body[body], 4)
+        out[column] = [{side: dict(sorted(d.items(), key=lambda kv: -kv[1]))
+                        for side, d in shares[b].items()} for b in out["body"]]
+    return out
+
+
 def keyvalues_to_frame(values: Mapping[str, Any]) -> pd.DataFrame:
     """``{body_key: json}`` from a keyvalue instance -> one row per body.
 

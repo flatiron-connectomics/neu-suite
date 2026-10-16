@@ -89,7 +89,11 @@ class Spec:
     max_overlap: float = DEFAULT_MAX_OVERLAP
 
     def layer(self, name: str) -> Layer:
-        return next(lay for lay in self.layers if lay.name == name)
+        for lay in self.layers:
+            if lay.name == name:
+                return lay
+        raise SpecError(f"no layer {name!r}; the spec has "
+                       f"{', '.join(lay.name for lay in self.layers)}")
 
     def used_rois(self) -> set[str]:
         """Every DVID ROI the layers read. A top-level neuropil with parts is optional."""
@@ -104,6 +108,24 @@ class Spec:
         if not any(lay.tree for lay in self.layers):
             return set()
         return {top for top, parts in self.neuropils.items() if parts}
+
+
+def layer_rois(spec: Spec, name: str) -> list[str]:
+    """The DVID ROIs a layer's segments are, in its priority order, for labelling synapses
+    with the same set (``neu-mark points --rois SPEC.toml:LAYER``)."""
+    lay = spec.layer(name)
+    if lay.rois:
+        return list(lay.rois)
+    if lay.tree == "parts":
+        return [p for top, parts in spec.neuropils.items() for p in (parts or (top,))]
+    raise SpecError(f"layer {name!r} ({lay.kind}) is built from other ROIs, so no list of "
+                    f"DVID ROIs labels synapses the same way; name a rois or a tree = "
+                    f"'parts' layer")
+
+
+def top_level(spec: Spec) -> dict[str, str]:
+    """``{part: its top-level neuropil}``, a top-level neuropil without parts its own."""
+    return {p: top for top, parts in spec.neuropils.items() for p in (parts or (top,))}
 
 
 def load_spec(path: str) -> Spec:

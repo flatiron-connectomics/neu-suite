@@ -185,6 +185,7 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
                        bodies: Sequence[int], *,
                        counts_source: Mapping[str, Any] | None = None,
                        labelmap_source: Mapping[str, Any] | None = None,
+                       synapses: str | None = None, roi_spec: str | None = None,
                        rules_path: str | None = None, rules_only: bool = False,
                        max_tags: float | None = None,
                        keep_glia: bool = True, link: bool = True,
@@ -200,6 +201,11 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
     ``rules_path`` loads a rules module that overrides the builtins by name (``rules_only``
     uses it alone). ``counts_source`` (a labelsz instance) adds ``pre``/``post``/``syn``,
     and ``labelmap_source`` adds ``voxels``.
+
+    ``synapses`` is a directory an earlier ``points --rois`` run wrote; it gives the rules a
+    ``synapse_neuropils`` column (:func:`neu_mark.tables.body_neuropil_fractions`), and
+    ``roi_spec`` (a ``roi-layers`` spec) a ``synapse_neuropils_top`` column grouping those
+    by top-level neuropil.
     """
     from . import segprops
 
@@ -215,6 +221,10 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
 
     frame = _dvid.fetch_body_annotations(bodies_source, bodies)["bodies"]
     logger.info("%d of %d bodies have a property record", len(frame), len(bodies))
+    if synapses is not None:
+        frame = _with_neuropils(frame, synapses, roi_spec)
+    elif roi_spec is not None:
+        raise ValueError("roi_spec groups the synapse neuropils, so it needs synapses")
 
     counts = None
     if counts_source is not None:
@@ -249,12 +259,35 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
            "numbers": built["report"]["numbers"], "keep_glia": keep_glia,
            # The rules decide what the document says; see `rules.provenance`.
            "rules": rules_record, "rules_only": bool(rules_only),
+           "synapses": synapses, "roi_spec": roi_spec,
            "linked": linked}
     record = _record(bodies_source, dst, run=run)
     _io.write_provenance(dst, record, name=f"{segprops.SUBDIR}/provenance")
 
     return {**built, "written": written, "linked": linked, "record": record,
             "dry_run": False}
+
+
+def _with_neuropils(frame, synapses: str, roi_spec: str | None):
+    """``frame`` with each body's synapse neuropil shares; a body with no synapses gets
+    empty ones, so a rule never meets a missing value."""
+    from . import tables as _tables
+
+    (points,) = _io.read_tables(synapses, ("points",))
+    top = None
+    if roi_spec is not None:
+        from .roi_layers import load_spec, top_level
+
+        top = top_level(load_spec(roi_spec))
+    shares = _tables.body_neuropil_fractions(points, top_level=top)
+    shares["body"] = shares["body"].astype(frame["body"].dtype)
+    out = frame.merge(shares, on="body", how="left")
+    for column in shares.columns.drop("body"):
+        out[column] = [v if isinstance(v, dict) else {"pre": {}, "post": {}, "all": {}}
+                       for v in out[column]]
+    logger.info("synapse neuropils for %d of %d bodies, from %s", int(frame["body"].isin(
+        shares["body"]).sum()), len(frame), synapses)
+    return out
 
 
 def fetch_bodies(source: Mapping[str, Any], dst: str,
