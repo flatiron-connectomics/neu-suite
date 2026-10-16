@@ -37,3 +37,25 @@ def test_help_for_something_that_is_not_a_command_lists_the_real_ones(capsys):
 
     assert cli.main(["help", "nosuch"]) == 2
     assert "invalid choice: 'nosuch'" in capsys.readouterr().err
+
+
+NOISE = (b"E1016 01:27:34.416375 3591857 AuthCredentialsProvider:6146] static: Profile "
+         b"credentials provider could not load a profile at .\n")
+
+
+@pytest.mark.parametrize("flag, shown", [([], False), (["--store-logs"], True)])
+def test_the_s3_drivers_benign_lines_are_filtered_unless_asked(monkeypatch, capfd, flag,
+                                                              shown):
+    import os
+
+    from neu_mark import cli
+
+    def noisy(args):
+        os.write(2, NOISE)
+        os.write(2, b"a real message\n")
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_info", noisy)
+    assert cli.main([*flag, "info", "--src", "dvid://dvid.example.org/abc/syn"]) == 0
+    err = capfd.readouterr().err
+    assert ("AuthCredentialsProvider" in err) is shown and "a real message" in err

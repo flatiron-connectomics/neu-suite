@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"neu-mark {__version__}")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    p.add_argument("--store-logs", action="store_true",
+                   help="do not filter the store's own logging. The S3 driver emits two "
+                        "AuthCredentialsProvider lines per prefix at ERROR severity that "
+                        "are not failures — they record the providers that missed before "
+                        "the environment one succeeded — so they are filtered by default. "
+                        "PERMISSION_DENIED and AccessDenied are never filtered")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     q = sub.add_parser(
@@ -773,8 +779,11 @@ def main(argv=None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from neu_vol.logs import quiet_store_logs
+
     try:
-        return args.func(args)
+        with quiet_store_logs(not args.store_logs):
+            return args.func(args)
     except (ValueError, FileNotFoundError, FileExistsError, ImportError) as exc:
         raise SystemExit(f"{type(exc).__name__}: {exc}") from exc
 
