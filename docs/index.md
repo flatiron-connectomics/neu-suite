@@ -108,6 +108,13 @@ guides/rendering
 
 ```{toctree}
 :maxdepth: 1
+:caption: Tutorials
+
+tutorials/synapses
+```
+
+```{toctree}
+:maxdepth: 1
 :caption: Reference
 
 _generated/neu-lib-readme
