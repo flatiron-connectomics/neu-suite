@@ -158,15 +158,15 @@ def test_concurrent_reads_do_not_race_the_descriptor():
 
 
 def test_the_escape_hatch_shows_everything():
-    """`logs.enabled = False`, for debugging a store problem."""
-    logs.enabled = False
+    """`logs.quiet = False`, for debugging a store problem."""
+    logs.quiet = False
     try:
         def noisy():
             with logs.quiet_reads():
                 os.write(2, BENIGN)
         assert _noise_through(noisy) == BENIGN
     finally:
-        logs.enabled = True
+        logs.quiet = True
 
 
 def test_a_session_wide_install_makes_the_per_read_filter_a_no_op():
@@ -179,7 +179,7 @@ def test_a_session_wide_install_makes_the_per_read_filter_a_no_op():
 
 
 def test_disabled_reads_show_what_neu_vols_own_open_filter_would_drop(monkeypatch):
-    """neu-vol's store opens filter themselves; `enabled = False` turns that off too."""
+    """neu-vol's store opens filter themselves; `quiet = False` turns that off too."""
     from neu_vol import logs as vol_logs
 
     def an_open_inside_a_read():
@@ -188,5 +188,5 @@ def test_disabled_reads_show_what_neu_vols_own_open_filter_would_drop(monkeypatc
                 os.write(2, BENIGN)
 
     assert _noise_through(an_open_inside_a_read) == b""
-    monkeypatch.setattr(logs, "enabled", False)
+    monkeypatch.setattr(logs, "quiet", False)
     assert _noise_through(an_open_inside_a_read) == BENIGN

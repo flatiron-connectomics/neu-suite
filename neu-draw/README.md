@@ -418,7 +418,7 @@ noise, not failures.
 Two knobs if you need them:
 
 ```python
-neu_draw.logs.enabled = False             # see raw store logging, benign lines included
+neu_draw.logs.quiet = False               # see raw store logging, benign lines included
 neu_draw.install_quiet_stores()           # filter for the whole session, covering reads
                                           # made outside sources; remove_quiet_stores()
                                           # to undo, or `with neu_draw.quiet_stores():`

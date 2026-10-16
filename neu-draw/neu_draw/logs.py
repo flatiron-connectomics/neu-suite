@@ -17,7 +17,7 @@ per store prefix, the first time it is opened.
 Reads through ``sources`` are filtered by default (:func:`quiet_reads`). The filter drops
 only specific known lines, so anything unrecognised, or mentioning denied access, still
 prints. It applies for the duration of a read, not the session. Set
-``neu_draw.logs.enabled = False`` to see everything. Nested and concurrent reads share one
+``neu_draw.logs.quiet = False`` to see everything. Nested and concurrent reads share one
 filter, so only one thread swaps fd 2.
 """
 
@@ -27,8 +27,9 @@ import contextlib
 import threading
 from typing import Any, Callable, Optional
 
-#: Set to False to see raw store logging, including the benign lines.
-enabled = True
+#: Filter the benign store logging (the default); False shows it raw, as does neu-vol's
+#: own store-open filter while a read runs.
+quiet = True
 
 _installed: Optional[Any] = None
 _scoped: Optional[Any] = None
@@ -39,12 +40,12 @@ _lock = threading.RLock()
 @contextlib.contextmanager
 def quiet_reads():
     """Filter benign store logging for one read; used by every ``sources`` entry point.
-    A no-op when :data:`enabled` is false, a session-wide filter is installed, or an outer
-    read is already filtering."""
+    With :data:`quiet` false it filters nothing, neu-vol's store opens included; a no-op
+    when a session-wide filter is installed or an outer read is already filtering."""
     global _depth, _scoped
     from neu_vol.logs import quiet_store_logs
 
-    if not enabled:
+    if not quiet:
         # neu-vol's store opens filter themselves; this turns that off too.
         with quiet_store_logs(False):
             yield
