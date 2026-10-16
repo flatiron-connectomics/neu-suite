@@ -5,8 +5,9 @@ writes volumes and neu-mark writes annotation sources; neither knows neuroglance
 exists, which is why the shaders and states live somewhere else.
 
 Its three producers share one output stage: `--format {layer,state,url}` chooses what you
-get, `--out` writes it somewhere instead of stdout, and `--into` adds the layers to an
-existing state given as a URL or a JSON file.
+get, `--out` writes it somewhere instead of stdout (repeatable, with `-` for stdout, so
+`--out link.txt --out -` does both), and `--into` adds the layers to an existing state given
+as a URL or a JSON file.
 
 ## Finding the data in a sparse volume
 
@@ -507,6 +508,11 @@ panel** — usually what you want when the link is about meshes or skeletons, wh
 slices otherwise sit across. It leaves the 2D panels alone; `--layout 3d` is what removes
 those. Like `--position` and the two zooms, the key is written only when asked for, so a
 link without it opens the way the viewer normally would.
+
+For a state with many layers, such as region layers beside a segmentation, `--hide NAME`
+adds a layer switched off, and `--all-segments NAME` selects every segment that layer's
+`segment_properties` lists. Together, turning a layer on in the viewer shows its meshes in
+the 3D panel at once, with nothing to click.
 
 ```{note}
 Everything after `#!` is a URL fragment and never reaches a server, so a link carries no

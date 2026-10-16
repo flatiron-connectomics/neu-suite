@@ -27,7 +27,7 @@ neu-glance gen --image s3://bucket/em --seg s3://bucket/seg_v1 \
 The three producers share one output stage. `--format {layer,state,url}` chooses the
 serialization — a bare layer to paste into a state's `layers` array, a whole state for
 neuroglancer's `{}` editor, or a link carrying that state — and `--out` writes it somewhere
-instead of stdout.
+instead of stdout (repeatable; `--out -` is stdout as well).
 
 `--into` merges the new layers into an **existing** state, given as a URL or a JSON file. The
 state's own `dimensions`, position and zoom are kept, so adding a layer does not move your

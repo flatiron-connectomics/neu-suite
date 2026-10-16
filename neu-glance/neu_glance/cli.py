@@ -167,8 +167,9 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                         f"object for pasting into a state's `layers` array; 'state' is a "
                         f"whole state as JSON, for neuroglancer's {{}} editor; 'url' is a "
                         f"link carrying that state.")
-    q.add_argument("--out", default=None, metavar="PATH_OR_URL",
-                   help="write it here instead of stdout (local or s3://…)")
+    q.add_argument("--out", action="append", default=None, metavar="PATH_OR_URL",
+                   help="write it here instead of stdout (local or s3://…). Repeatable; "
+                        "'-' is stdout, so --out link.txt --out - does both")
     q.add_argument("--into", default=None, metavar="URL_OR_JSON",
                    help="add the layers to an EXISTING state rather than building a new "
                         "one — a neuroglancer URL or a state JSON file. The state's own "
@@ -346,12 +347,20 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
                   f"clients will wrap or truncate it. --format state avoids that.",
                   file=err)
 
-    if args.out:
-        _write_text(args.out, text + "\n")
-        print(f"wrote {args.out}", file=err)
-    else:
-        print(text)
+    _deliver(args.out, text)
     return 0
+
+
+def _deliver(outs: list[str] | None, text: str) -> None:
+    """``text`` to each ``--out`` (``-`` is stdout), or to stdout when none is given."""
+    if isinstance(outs, str):
+        outs = [outs]
+    for out in outs or ["-"]:
+        if out == "-":
+            print(text)
+        else:
+            _write_text(out, text + "\n")
+            print(f"wrote {out}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--segments", action="append", metavar="IDS",
                    help="comma-separated segment ids to select, applied to the --seg "
                         "volumes in order. Repeat for a second segmentation")
+    q.add_argument("--all-segments", action="append", default=None, metavar="LAYER_NAME",
+                   help="select every segment of this --seg layer that its "
+                        "segment_properties lists, so its meshes show in 3D as soon as "
+                        "the layer is on (repeatable). For a few named regions, such as "
+                        "ROI layers, not a segmentation of thousands of bodies")
     q.add_argument("--annotations", action="append", metavar="SOURCE",
                    help="a precomputed ANNOTATION source — what `neu-mark "
                         "annotation-source` writes (repeatable). Added as its own layer, "
@@ -594,8 +608,9 @@ def build_parser() -> argparse.ArgumentParser:
                                "from stdin)")
     q.add_argument("--layers", action="store_true",
                    help="print just the layer names and types, one per line")
-    q.add_argument("--out", default=None, metavar="PATH_OR_URL",
-                   help="write the state JSON here instead of stdout")
+    q.add_argument("--out", action="append", default=None, metavar="PATH_OR_URL",
+                   help="write the state JSON here instead of stdout. Repeatable; '-' is "
+                        "stdout")
     q.set_defaults(func=cmd_parse)
 
     # --- shaders ------------------------------------------------------------
@@ -646,6 +661,18 @@ def _parse_args(argv=None):
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
+def _listed_segments(volume: str) -> list[int]:
+    """The ids a segmentation's ``segment_properties`` lists; refuses one with none."""
+    from neu_vol.location import read_json
+
+    sub = (read_json(volume, "info") or {}).get("segment_properties")
+    doc = read_json(volume, sub, "info") if sub else None
+    if not doc:
+        raise SystemExit(f"--all-segments needs segment_properties, and {volume} has none: "
+                         f"there is no list of its segments to select")
+    return [int(i) for i in doc["inline"]["ids"]]
+
+
 def cmd_gen(args) -> int:
     """A viewer state from volumes, annotation sources and layer files."""
     from .shaders import ShaderProblem
@@ -667,12 +694,16 @@ def cmd_gen(args) -> int:
             layers.append(layer)
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
+        everything = set(args.all_segments or [])
+        unknown = sorted(everything - {v.rstrip("/").rsplit("/", 1)[-1] for v in args.seg or []})
+        if unknown:
+            raise SystemExit(f"--all-segments names no --seg layer: {', '.join(unknown)}")
         for i, volume in enumerate(args.seg or []):
             picked = args.segments[i] if i < len(args.segments or []) else None
-            layer, info = volume_layer(
-                volume, kind="segmentation",
-                segments=[int(s) for s in picked.replace(",", " ").split()] if picked
-                else None)
+            ids = [int(s) for s in picked.replace(",", " ").split()] if picked else []
+            if volume.rstrip("/").rsplit("/", 1)[-1] in everything:
+                ids += [i for i in _listed_segments(volume) if i not in ids]
+            layer, info = volume_layer(volume, kind="segmentation", segments=ids or None)
             layers.append(layer)
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
@@ -963,12 +994,7 @@ def cmd_parse(args) -> int:
                 print(f"{lyr}\t(not a layer object)")
         return 0
 
-    text = render(state)
-    if args.out:
-        _write_text(args.out, text + "\n")
-        print(f"wrote {args.out}", file=sys.stderr)
-    else:
-        print(text)
+    _deliver(args.out, render(state))
     return 0
 
 

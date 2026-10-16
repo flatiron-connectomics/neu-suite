@@ -322,6 +322,48 @@ def test_hide_names_a_layer_that_exists(tmp_path):
         cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--hide", "w"]))
 
 
+def _with_properties(volume, ids):
+    """Give a segmentation volume a segment_properties document listing ``ids``."""
+    import os
+
+    os.makedirs(os.path.join(volume, "segment_properties"))
+    with open(os.path.join(volume, "segment_properties", "info"), "w") as f:
+        json.dump({"@type": "neuroglancer_segment_properties",
+                   "inline": {"ids": [str(i) for i in ids], "properties": []}}, f)
+    info_path = os.path.join(volume, "info")
+    info = json.load(open(info_path))
+    json.dump({**info, "segment_properties": "segment_properties"}, open(info_path, "w"))
+
+
+def test_all_segments_selects_what_the_properties_list(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    rois = _volume(tmp_path, "rois", kind="segmentation", dtype="uint64")
+    _with_properties(rois, [3, 1, 2])
+    cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--seg", rois, "--segments", "",
+                                 "--segments", "5", "--all-segments", "rois"]))
+    layers = {lyr["name"]: lyr for lyr in parse_url(capsys.readouterr().out.strip())["layers"]}
+    assert sorted(layers["rois"]["segments"], key=int) == ["1", "2", "3", "5"]
+    assert "segments" not in layers["a"]
+
+
+@pytest.mark.parametrize("args, match", [
+    (["--all-segments", "nope"], "names no --seg layer: nope"),
+    (["--all-segments", "v"], "needs segment_properties"),
+])
+def test_all_segments_refuses_what_it_cannot_list(tmp_path, args, match):
+    vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
+    with pytest.raises(SystemExit, match=match):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, *args]))
+
+
+def test_out_can_also_be_stdout(tmp_path, capsys):
+    vol = _volume(tmp_path, "v")
+    path = tmp_path / "link.txt"
+    cli.cmd_gen(cli._parse_args(["gen", "--image", vol, "--out", str(path), "--out", "-"]))
+    printed = capsys.readouterr().out.strip()
+    assert printed.startswith("https://") and path.read_text().strip() == printed
+
+
 def test_out_writes_through_the_kvstore(tmp_path, capsys):
     """`--out` creates missing parents and keeps stdout clean."""
     vol = _volume(tmp_path, "v")
