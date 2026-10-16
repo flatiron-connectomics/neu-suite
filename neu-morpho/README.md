@@ -176,8 +176,8 @@ A resume also keeps to the bodies stage 1 was run for. A completed block is not
 revisited, so a body added to the allowlist afterwards would get nothing; the run
 refuses instead. Mesh or skeletonize new bodies with a new `--work-dir`. Blocks are
 recorded by index, so a resume also refuses a different `--block` or scale, whose block
-(0, 0, 0) is a different region; change either in a new `--work-dir`, or with
-`--no-resume`.
+(0, 0, 0) is a different region, and different `--smoothing`, whose finished blocks were
+meshed without it; change any of them in a new `--work-dir`, or with `--no-resume`.
 
 `--dry-run` reports the plan (scales, voxel sizes, block counts per stage)
 without touching anything — worth running before any large job.

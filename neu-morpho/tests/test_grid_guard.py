@@ -23,8 +23,10 @@ def _check(m, grid, record=False):
 
 
 @pytest.mark.parametrize("grid, match", [
-    (grid_record((512, 512, 512), (32, 32, 32)), r"\[256, 256, 256\] voxels of .* uses \[512"),
-    (grid_record((256, 256, 256), (16, 16, 16)), r"of \[16.0, 16.0, 16.0\] nm"),
+    (grid_record((512, 512, 512), (32, 32, 32)),
+     r"changes block_shape \[256, 256, 256\] -> \[512, 512, 512\]\."),
+    (grid_record((256, 256, 256), (16, 16, 16)),
+     r"changes voxel_size \[32.0, 32.0, 32.0\] -> \[16.0, 16.0, 16.0\]\."),
 ])
 def test_a_different_block_shape_or_scale_is_refused(tmp_path, grid, match):
     with pytest.raises(GridChanged, match=match):
@@ -38,6 +40,18 @@ def test_the_same_grid_resumes_and_a_fresh_start_records_its_own(tmp_path):
     _check(m, other, record=True)
     assert Manifest(str(tmp_path / "fresh" / "progress.jsonl")).load().meta("chunk")[
         "grid"] == other
+
+
+def test_a_changed_mesh_setting_is_refused(tmp_path):
+    before = grid_record((256, 256, 256), (32, 32, 32), smoothing=0, decimation=0.1)
+    with pytest.raises(GridChanged, match="changes smoothing 0 -> 10"):
+        _check(_manifest(tmp_path, before),
+               grid_record((256, 256, 256), (32, 32, 32), smoothing=10, decimation=0.1))
+
+
+def test_a_setting_recorded_only_now_is_not_held_against_an_older_record(tmp_path):
+    _check(_manifest(tmp_path, GRID),
+           grid_record((256, 256, 256), (32, 32, 32), smoothing=10, decimation=0.1))
 
 
 def test_a_manifest_from_before_grids_were_recorded_is_not_checked(tmp_path):
@@ -64,6 +78,9 @@ def test_meshing_resumed_on_another_block_shape_is_refused(tmp_path):
                                    **common))
     pipeline.run(pipeline.plan(src, str(tmp_path / "out" / "seg"), block=(64, 64, 64),
                                resume=False, **common))
+    with pytest.raises(GridChanged, match="changes smoothing 0 -> 3"):
+        pipeline.run(pipeline.plan(src, str(tmp_path / "out" / "seg"), block=(64, 64, 64),
+                                   mesh_smoothing=3, **common))
 
 
 def test_indexing_resumed_on_another_scale_is_refused(tmp_path):

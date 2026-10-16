@@ -109,30 +109,37 @@ class GridChanged(RuntimeError):
     """A resume would reuse completed stage-1 blocks on a different block grid."""
 
 
-def grid_record(block_shape, voxel_size) -> dict:
-    """The block grid stage 1 runs on, as recorded and compared."""
+def grid_record(block_shape, voxel_size, **settings) -> dict:
+    """The block grid stage 1 runs on, and any ``settings`` its blocks' output depends on
+    (a mesh's smoothing and decimation), as recorded and compared."""
     return {"block_shape": [int(v) for v in block_shape],
-            "voxel_size": [float(v) for v in voxel_size]}
+            "voxel_size": [float(v) for v in voxel_size], **settings}
 
 
-def grid_mismatch(stage: str, where: str, complete: int, before: dict, now: dict) -> str:
-    return (f"{where}: {complete} {stage} stage-1 blocks are complete on blocks of "
-            f"{before['block_shape']} voxels of {before['voxel_size']} nm, and this run "
-            f"uses {now['block_shape']} of {now['voxel_size']} nm. Blocks are recorded by "
-            f"index, so those would be taken as done for regions they never covered and "
-            f"their output reused. Use a new --work-dir, or --no-resume to redo stage 1.")
+def grid_changes(before: dict, now: dict) -> dict:
+    """``{field: (before, now)}`` over the fields both records have: a record from before a
+    field was recorded is not refused for it."""
+    return {k: (before[k], now[k]) for k in now if k in before and before[k] != now[k]}
+
+
+def grid_mismatch(stage: str, where: str, complete: int, changes: dict) -> str:
+    what = ", ".join(f"{k} {a} -> {b}" for k, (a, b) in changes.items())
+    return (f"{where}: {complete} {stage} stage-1 blocks are complete, and this run changes "
+            f"{what}. Completed blocks are not revisited, so their output would be reused "
+            f"as if made this way. Use a new --work-dir, or --no-resume to redo stage 1.")
 
 
 def check_grid(manifest: Any, group: str, grid: dict, *, stage: str, progress_path: str,
                record: bool) -> None:
-    """Refuse a resume whose block grid (``grid_record``) differs from the one its
-    completed stage-1 blocks ran on; ``record`` (this run processes stage-1 blocks) notes
-    the grid in the manifest. A manifest from before grids were recorded is not checked.
+    """Refuse a resume whose block grid or stage-1 settings (``grid_record``) differ from
+    those its completed blocks ran with; ``record`` (this run processes stage-1 blocks)
+    notes them in the manifest. A manifest from before they were recorded is not checked.
     """
     complete = sum(1 for k in manifest.done_keys(group) if is_complete(manifest, group, k))
     before = manifest.meta(group).get("grid")
-    if complete and before is not None and before != grid:
-        raise GridChanged(grid_mismatch(stage, progress_path, complete, before, grid))
+    changes = grid_changes(before, grid) if complete and before is not None else {}
+    if changes:
+        raise GridChanged(grid_mismatch(stage, progress_path, complete, changes))
     if record:
         manifest.record_meta(group, grid=grid)
 

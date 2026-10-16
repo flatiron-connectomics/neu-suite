@@ -155,7 +155,10 @@ def meshify(
                                   progress_path=progress, resume=resume)
     chunk_todo = ([b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
                   if "chunk" in stages else [])
-    check_grid(manifest, "chunk", grid_record(mesh_cfg.block_shape, mesh_voxel_size),
+    check_grid(manifest, "chunk",
+               grid_record(mesh_cfg.block_shape, mesh_voxel_size,
+                           smoothing=int(mesh_cfg.smoothing_iterations),
+                           decimation=float(mesh_cfg.decimation_fraction)),
                stage="mesh", progress_path=progress, record=bool(chunk_todo))
     check_selection(manifest, "chunk", allow, stage="mesh", progress_path=progress,
                     record=bool(chunk_todo))
