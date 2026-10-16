@@ -27,8 +27,8 @@ from ..occupancy import occupied_blocks
 from ..precomputed import check_quantization, write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
-from .manifest import (FAILED, FailureBreaker, check_manifest_matches_output,
-                        check_selection, group_counts, guarded, is_complete,
+from .manifest import (FAILED, FailureBreaker, check_grid, check_manifest_matches_output,
+                        check_selection, grid_record, group_counts, guarded, is_complete,
                         write_failures)
 
 logger = logging.getLogger(__name__)
@@ -155,6 +155,8 @@ def meshify(
                                   progress_path=progress, resume=resume)
     chunk_todo = ([b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
                   if "chunk" in stages else [])
+    check_grid(manifest, "chunk", grid_record(mesh_cfg.block_shape, mesh_voxel_size),
+               stage="mesh", progress_path=progress, record=bool(chunk_todo))
     check_selection(manifest, "chunk", allow, stage="mesh", progress_path=progress,
                     record=bool(chunk_todo))
 

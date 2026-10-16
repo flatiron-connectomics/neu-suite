@@ -102,6 +102,15 @@ def index_segments(
 
     db = MetricsDB(db_path)
     done = db.done_blocks() if resume else (db.reset_index() or set())
+    before = db.read_stage_meta().get("index") if done else None
+    if before and before.get("block_shape") and before.get("voxel_size"):
+        from .manifest import GridChanged, grid_mismatch, grid_record
+
+        now = grid_record(block_shape, scan_voxel_size)
+        was = grid_record(before["block_shape"].split(","), before["voxel_size"].split(","))
+        if was != now:
+            db.close()
+            raise GridChanged(grid_mismatch("index", db_path, len(done), was, now))
     todo = [b for b in blocks if _block_key(b.index) not in done]
     # Before dispatch, so `measure progress` has a denominator mid-run.
     db.record_stage_meta("index", total=len(blocks), block_shape=block_shape,

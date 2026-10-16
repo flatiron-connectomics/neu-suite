@@ -5,6 +5,7 @@
 - :func:`guarded`: per-task fault isolation, for **stage-2 workers only**.
 - :func:`check_selection`: a resume may not ask stage 1 for bodies it already ran
   without.
+- :func:`check_grid`: nor resume stage 1 on a different block grid.
 
 Stage-2 tasks are one body each and independent, so a bad one costs that body and is
 recorded. Stage-1 tasks are blocks, and stage 2 aggregates across them: a skipped block
@@ -102,6 +103,38 @@ def check_selection(manifest: Any, group: str, allow: set[int] | None, *, stage:
                 f"selection.")
     if record:
         manifest.record_meta(group, selection=None if allow is None else sorted(allow))
+
+
+class GridChanged(RuntimeError):
+    """A resume would reuse completed stage-1 blocks on a different block grid."""
+
+
+def grid_record(block_shape, voxel_size) -> dict:
+    """The block grid stage 1 runs on, as recorded and compared."""
+    return {"block_shape": [int(v) for v in block_shape],
+            "voxel_size": [float(v) for v in voxel_size]}
+
+
+def grid_mismatch(stage: str, where: str, complete: int, before: dict, now: dict) -> str:
+    return (f"{where}: {complete} {stage} stage-1 blocks are complete on blocks of "
+            f"{before['block_shape']} voxels of {before['voxel_size']} nm, and this run "
+            f"uses {now['block_shape']} of {now['voxel_size']} nm. Blocks are recorded by "
+            f"index, so those would be taken as done for regions they never covered and "
+            f"their output reused. Use a new --work-dir, or --no-resume to redo stage 1.")
+
+
+def check_grid(manifest: Any, group: str, grid: dict, *, stage: str, progress_path: str,
+               record: bool) -> None:
+    """Refuse a resume whose block grid (``grid_record``) differs from the one its
+    completed stage-1 blocks ran on; ``record`` (this run processes stage-1 blocks) notes
+    the grid in the manifest. A manifest from before grids were recorded is not checked.
+    """
+    complete = sum(1 for k in manifest.done_keys(group) if is_complete(manifest, group, k))
+    before = manifest.meta(group).get("grid")
+    if complete and before is not None and before != grid:
+        raise GridChanged(grid_mismatch(stage, progress_path, complete, before, grid))
+    if record:
+        manifest.record_meta(group, grid=grid)
 
 
 def is_systemic(exc: BaseException) -> bool:
