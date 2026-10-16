@@ -124,7 +124,11 @@ def _open_store(kvstore: Mapping[str, Any]):
     cache_key = _json.dumps(dict(kvstore), sort_keys=True, default=str)
     store = _STORES.get(cache_key)
     if store is None:
-        store = ts.KvStore.open(ensure_credentials(kvstore)).result()
+        from .logs import quiet_reads
+
+        # The S3 driver's benign credential-chain lines are written during the open.
+        with quiet_reads():
+            store = ts.KvStore.open(ensure_credentials(kvstore)).result()
         _STORES[cache_key] = store
     return store
 

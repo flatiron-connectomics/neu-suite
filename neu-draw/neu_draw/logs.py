@@ -42,10 +42,16 @@ def quiet_reads():
     A no-op when :data:`enabled` is false, a session-wide filter is installed, or an outer
     read is already filtering."""
     global _depth, _scoped
-    if not enabled or _installed is not None:
+    from neu_vol.logs import quiet_store_logs
+
+    if not enabled:
+        # neu-vol's store opens filter themselves; this turns that off too.
+        with quiet_store_logs(False):
+            yield
+        return
+    if _installed is not None:
         yield
         return
-    from neu_vol.logs import quiet_store_logs
 
     with _lock:
         if _depth == 0:

@@ -176,3 +176,17 @@ def test_a_session_wide_install_makes_the_per_read_filter_a_no_op():
             assert logs._depth == 0        # deferred to the installed one
     finally:
         logs.remove_quiet_stores()
+
+
+def test_disabled_reads_show_what_neu_vols_own_open_filter_would_drop(monkeypatch):
+    """neu-vol's store opens filter themselves; `enabled = False` turns that off too."""
+    from neu_vol import logs as vol_logs
+
+    def an_open_inside_a_read():
+        with logs.quiet_reads():
+            with vol_logs.quiet_reads():                 # what a neu-vol store open does
+                os.write(2, BENIGN)
+
+    assert _noise_through(an_open_inside_a_read) == b""
+    monkeypatch.setattr(logs, "enabled", False)
+    assert _noise_through(an_open_inside_a_read) == BENIGN

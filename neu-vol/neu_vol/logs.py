@@ -10,9 +10,11 @@ filters fd 2 through a pipe. Two rules keep it from hiding real problems:
 2. :data:`NEVER_DROP` wins over every pattern, so denied access, HTTP error codes and
    tensorstore failure statuses are always printed.
 
-:func:`quiet_store_logs` is for entry points (scripts, drivers). :func:`quiet_reads` is
-the same filter for a library function a notebook calls directly; it nests and is safe
-across threads.
+The lines are written while a store OPENS, so neu-vol's two open paths
+(``location._open_store`` and the tensorstore backend's ``_ts_open``) filter themselves
+with :func:`quiet_reads`, and every caller is covered — CLI, notebook or script — with
+nothing to invoke. :func:`quiet_store_logs` still wraps the CLIs, for anything else on
+fd 2; ``quiet_store_logs(False)`` turns all of it off.
 """
 
 from __future__ import annotations
@@ -72,12 +74,18 @@ def is_benign(line: bytes) -> bool:
 def quiet_store_logs(enabled: bool = True):
     """Filter benign object-store logging out of fd 2 for the duration.
 
-    No-op when ``enabled`` is false, or when fd 2 cannot be duplicated (a closed
-    or exotic stderr) — in that case everything is passed through unfiltered,
-    which is the safe direction.
+    With ``enabled`` false nothing is filtered, including the store opens that filter
+    themselves (:data:`reads_quiet` is off for the duration), which is what a
+    ``--store-logs`` flag means. Also passes everything when fd 2 cannot be duplicated
+    (a closed or exotic stderr), which is the safe direction.
     """
+    global reads_quiet
     if not enabled:
-        yield
+        before, reads_quiet = reads_quiet, False
+        try:
+            yield
+        finally:
+            reads_quiet = before
         return
     try:
         saved = os.dup(2)

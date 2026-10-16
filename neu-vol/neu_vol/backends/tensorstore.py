@@ -85,6 +85,17 @@ def _rev(seq):
     return [int(v) for v in seq[::-1]]
 
 
+def _ts_open(ts_spec: dict) -> Any:
+    """``ts.open``, with the S3 driver's benign credential-chain lines filtered: they are
+    written while a store opens, so filtering here covers every caller."""
+    import tensorstore as ts
+
+    from ..logs import quiet_reads
+
+    with quiet_reads():
+        return ts.open(ts_spec).result()
+
+
 class TensorStoreBackend:
     """Wraps a ``tensorstore.TensorStore`` (canonical view) behind ArrayBackend."""
 
@@ -129,7 +140,7 @@ class TensorStoreBackend:
         scale_index = spec.get("scale_index")
         if tag == "neuroglancer_precomputed" and scale_index is not None:
             ts_spec["scale_index"] = int(scale_index)
-        store = ts.open(ts_spec).result()
+        store = _ts_open(ts_spec)
         return cls(store, tag, kv, scale_index)
 
     @classmethod
@@ -168,7 +179,7 @@ class TensorStoreBackend:
         if tag == "zarr3":
             ts_spec = {"driver": "zarr3", "kvstore": kv, "metadata": _zarr3_metadata(spec),
                        "create": True, "delete_existing": delete_existing}
-            store = ts.open(ts_spec).result()
+            store = _ts_open(ts_spec)
             return cls(store, tag, kv)
         if tag == "neuroglancer_precomputed":
             return cls._create_precomputed(spec, kv, delete_existing=delete_existing)
@@ -206,7 +217,7 @@ class TensorStoreBackend:
             "create": True,
             "delete_existing": delete_existing,
         }
-        store = ts.open(ts_spec).result()
+        store = _ts_open(ts_spec)
         return cls(store, "neuroglancer_precomputed", kv, spec.get("scale_index"))
 
     # -- ArrayBackend ------------------------------------------------------

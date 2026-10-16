@@ -70,3 +70,56 @@ def test_stderr_is_restored_after_an_exception(capfd):
     print("after", file=sys.stderr)
     sys.stderr.flush()
     assert "after" in capfd.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# store opens filter themselves
+# --------------------------------------------------------------------------- #
+class _Opened:
+    """What a tensorstore open returns: a future whose result is the store."""
+
+    def result(self):
+        return object()
+
+
+def _noisy_open(*args, **kwargs):
+    os.write(2, NOISE[0])                 # what the S3 driver writes while opening
+    return _Opened()
+
+
+@pytest.fixture
+def noisy_tensorstore(monkeypatch):
+    import tensorstore
+
+    from neu_vol import location
+
+    class KvStore:
+        open = staticmethod(_noisy_open)
+
+    monkeypatch.setattr(tensorstore, "KvStore", KvStore)
+    monkeypatch.setattr(tensorstore, "open", _noisy_open)
+    monkeypatch.setattr(location, "_STORES", {})
+
+
+def test_a_kvstore_open_filters_itself(noisy_tensorstore, capfd):
+    from neu_vol import location
+
+    location._open_store({"driver": "file", "path": "/tmp/a/"})
+    assert "AuthCredentialsProvider" not in capfd.readouterr().err
+
+
+def test_a_backend_open_filters_itself(noisy_tensorstore, capfd):
+    from neu_vol.backends.tensorstore import _ts_open
+
+    _ts_open({"driver": "zarr3"})
+    assert "AuthCredentialsProvider" not in capfd.readouterr().err
+
+
+def test_store_logs_on_shows_the_opens_too(noisy_tensorstore, capfd):
+    """`quiet_store_logs(False)` is what --store-logs means: nothing filtered anywhere."""
+    from neu_vol import location, logs
+
+    with quiet_store_logs(False):
+        location._open_store({"driver": "file", "path": "/tmp/b/"})
+    assert "AuthCredentialsProvider" in capfd.readouterr().err
+    assert logs.reads_quiet is True                       # restored afterwards
