@@ -308,6 +308,20 @@ def test_hide_slices_sets_show_slices_false_and_is_otherwise_absent(tmp_path, ca
     assert parse_url(capsys.readouterr().out.strip())["showSlices"] is False
 
 
+def test_hide_adds_a_layer_switched_off(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--seg", b, "--hide", "b"]))
+    layers = {lyr["name"]: lyr for lyr in parse_url(capsys.readouterr().out.strip())["layers"]}
+    assert layers["b"]["visible"] is False and "visible" not in layers["a"]
+
+
+def test_hide_names_a_layer_that_exists(tmp_path):
+    vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
+    with pytest.raises(SystemExit, match="--hide names no layer: w. The layers are v"):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--hide", "w"]))
+
+
 def test_out_writes_through_the_kvstore(tmp_path, capsys):
     """`--out` creates missing parents and keeps stdout clean."""
     vol = _volume(tmp_path, "v")

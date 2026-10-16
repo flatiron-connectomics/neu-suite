@@ -197,6 +197,10 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                        help="set showSlices false, hiding the cross-section planes inside "
                             "the 3D panel — the usual thing to want when the link is about "
                             "meshes or skeletons. Omitted from the state unless passed")
+        q.add_argument("--hide", action="append", default=None, metavar="LAYER_NAME",
+                       help="add this layer switched off, to turn on in the viewer "
+                            "(repeatable). For layers that would crowd the view if all were "
+                            "shown at once")
         q.add_argument("--select", default=None, metavar="LAYER_NAME",
                        help="open the side panel on this layer")
         q.add_argument("--select-last", action="store_true",
@@ -283,6 +287,14 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
                 f"--format state to get all of them in a state.")
         text = render(layers[0])
     else:
+        hide = getattr(args, "hide", None) or []
+        unknown = sorted(set(hide) - {lyr["name"] for lyr in layers})
+        if unknown:
+            raise SystemExit(f"--hide names no layer: {', '.join(unknown)}. The layers are "
+                             f"{', '.join(lyr['name'] for lyr in layers)}")
+        for lyr in layers:
+            if lyr["name"] in hide:
+                lyr["visible"] = False
         selected_name = getattr(args, "select", None) or (
             layers[-1]["name"] if getattr(args, "select_last", False) and layers
             else selected)
