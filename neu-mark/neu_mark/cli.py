@@ -281,6 +281,43 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_annotation_source, include_partial=True)
 
     q = sub.add_parser(
+        "roi-layers",
+        help="a node's DVID ROIs as precomputed segmentation layers",
+        description="Write a DVID node's ROIs as precomputed segmentations, one per layer "
+                    "of a spec, each with segment properties naming its ROIs. A voxel "
+                    "holds one label, so ROIs that nest go in different layers, and "
+                    "overlaps between ROIs in one layer are settled by the spec's overlap "
+                    "policy; ROIs nesting within one layer are refused.\n\n"
+                    "The spec (TOML) lists the layers, a neuropil tree that the 'top' and "
+                    "'parts' layers cut, ids shared by every layer, descriptions, and the "
+                    "ROIs to ignore. Every ROI on the node must be in a layer or ignored, "
+                    "so a new one is never dropped unseen. The layers are not meshed here: "
+                    "run `neu-morpho run --stages index,mesh` on each.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    q.add_argument("--src", required=True, metavar="URL",
+                   help="the DVID node, as dvid://SERVER/UUID: ROIs are a node's roi "
+                        "instances, so no instance is named. UUID may be a branch ref, "
+                        "resolved once and recorded.")
+    q.add_argument("--spec", required=True, metavar="TOML",
+                   help="the layer spec (see neu_mark.roi_layers).")
+    q.add_argument("--like", required=True, metavar="VOLUME",
+                   help="the segmentation the layers go beside. Its level-0 voxel size and "
+                        "origin set the grid: an ROI block is 32 of its voxels.")
+    q.add_argument("--dst", required=True, metavar="PATH",
+                   help="where the layers go, one volume per layer plus rois.json (local or "
+                        "s3://…).")
+    q.add_argument("--layers", metavar="NAMES", default=None,
+                   help="comma-separated layer names to build, instead of all of them.")
+    q.add_argument("--overwrite", action="store_true",
+                   help="replace layers that already exist. Their meshes go too, so re-run "
+                        "the meshing.")
+    q.add_argument("--dvid-locked", action="store_true",
+                   help="read the newest LOCKED ancestor rather than the branch HEAD.")
+    q.add_argument("--dry-run", action="store_true",
+                   help="fetch and resolve every layer, report it, write nothing.")
+    q.set_defaults(func=cmd_roi_layers)
+
+    q = sub.add_parser(
         "info", help="what a DVID annotation source is, and which node you would get",
         description="One request per fact: the instance type, what it is synced to, and "
                     "both candidate nodes for the ref (what it points at now, and the "
@@ -697,6 +734,24 @@ def cmd_info(args) -> int:
     return 0
 
 
+def cmd_roi_layers(args) -> int:
+    from . import roi_layers
+
+    layers = [s.strip() for s in args.layers.split(",") if s.strip()] if args.layers else None
+    record = roi_layers.build(args.src, args.spec, args.like, args.dst, layers=layers,
+                              overwrite=args.overwrite, dry_run=args.dry_run,
+                              prefer_locked=args.dvid_locked)
+    grid = record["grid"]
+    print(f"node {record['source']['uuid']}: {grid['shape']} blocks of "
+          f"{grid['voxel_size_nm'][0]:g} nm from {grid['origin_nm']} nm")
+    for name, layer in record["layers"].items():
+        pairs = layer["overlaps"]
+        print(f"  {name:20} {layer['segments']:4} segments" +
+              (f", {len(pairs)} overlapping pair(s), e.g. {pairs[0]}" if pairs else ""))
+    print("dry run: nothing written" if args.dry_run else f"-> {args.dst.rstrip('/')}/")
+    return 0
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(
@@ -704,7 +759,7 @@ def main(argv=None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         return args.func(args)
-    except (ValueError, FileNotFoundError, ImportError) as exc:
+    except (ValueError, FileNotFoundError, FileExistsError, ImportError) as exc:
         raise SystemExit(f"{type(exc).__name__}: {exc}") from exc
 
 

@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2",           # the table model; annotations are tabular, volumes are not
     "pyarrow>=15",         # parquet/feather writer. NOT optional: parquet is the default
                            # output because csv cannot hold a uint64 body id (see io.py)
+    "scipy",               # roi-layers: distance transform for overlaps, closing
     "neu-vol",     # location/kvstore writes, DVID node resolution, provenance
 ]
 # NOT declared, and cannot be:

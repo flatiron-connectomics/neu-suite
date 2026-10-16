@@ -9,6 +9,8 @@ Two kinds of annotation:
 - **body annotations** — the per-body records in a `keyvalue` instance
   (`labels_annotations`): neuron name, status, who traced it.
 
+It also writes a node's ROIs as segmentation layers ([below](#rois-as-segmentation-layers)).
+
 Tables come first and are the durable artifact: analysis reads them, and the
 neuroglancer layers are built from them, so a fetch is never repeated just to change how
 something is displayed.
@@ -406,6 +408,41 @@ Because the rules now decide what the source says, the provenance sidecar record
 the resolved path, a sha256, git details if the module happens to be in a work tree, and
 **the module source verbatim**. A hash lets you verify a file you already have; the text is
 what answers "what produced this" when nobody can find the module a month later.
+
+## ROIs as segmentation layers
+
+`neu-mark roi-layers` writes a node's DVID ROIs as precomputed segmentations to view beside
+the segmentation, one volume per layer of a spec, each with segment properties naming its
+ROIs:
+
+```bash
+neu-mark roi-layers --src dvid://dvid.example.org/abc123 --spec rois.toml \
+    --like s3://my-bucket/seg --dst s3://my-bucket/seg/rois
+```
+
+A voxel holds one label, so ROIs that nest (a medulla inside its optic lobe) go in
+different layers. The spec (TOML) declares:
+
+- **layers**: `rois = [...]` for a list of ROIs; `tree = "top"` and `tree = "parts"` for
+  the top-level neuropils of its `[neuropils]` tree and their parts; `from = LAYER` for
+  one label covering another layer, smoothed by `close_blocks`. A `parts` layer is cut
+  from the `top` layer's regions, so the two nest exactly; with `fill_gaps`, blocks no part
+  claims keep the top-level id.
+- **`[neuropils]`**: each top-level neuropil and the ROIs that make it up. One with parts
+  is their union, plus its own ROI where the node has one.
+- **`[ids]`**, shared by every layer, so saved states keep meaning the same segments after
+  a rebuild; **`[names]`** for descriptions; **`[ignore]`** for ROIs left out on purpose.
+  Every ROI on the node must be in a layer or ignored.
+
+Within a layer, `overlap` settles ROIs drawn slightly over each other: `split` (the
+default) gives a contested block to the ROI it lies deepest inside, `order` to the one
+listed first, `error` refuses. ROIs overlapping by more than `max_overlap` (default 20%)
+of the smaller are nested rather than imprecise, and are refused.
+
+An ROI is whole 32-voxel blocks of the node's scale-0 grid; `--like` names the
+segmentation whose level-0 voxel size and origin that grid is. `<dst>/rois.json` records
+the node, the spec's hash, the ids and each layer's overlaps. Meshing is neu-morpho's:
+`neu-morpho run --stages index,mesh` on each layer, with `--occupancy-scale -1`.
 
 ## Layering
 
