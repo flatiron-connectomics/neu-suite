@@ -239,6 +239,13 @@ Entries wrap into columns when a single column would not fit, and the whole lege
 if even that is not enough — it is never clipped, because in a figure there is nobody to
 scroll it. The strip never takes more than 45% of the canvas.
 
+## Mouse controls
+
+Left drag rotates, right drag pans, the wheel zooms, and **shift + left drag** zooms too
+(drag up to zoom in). The last is for VS Code, whose notebook scrolls on the wheel instead
+of passing it to the canvas. `neu_draw.backends.pygfx.EXTRA_CONTROLS` holds the bindings
+neu-draw adds; `view.controller.controls` is the full set and can be edited in place.
+
 ## The toolbar, and saved viewpoints
 
 In a notebook `show()` puts nine buttons above the canvas — no argument needed, and

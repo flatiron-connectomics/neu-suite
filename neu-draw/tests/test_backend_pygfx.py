@@ -205,6 +205,32 @@ def test_an_offscreen_resnapshot_draws_the_same_scene(has_gpu):
         view.close()
 
 
+def test_shift_drag_zooms_without_rotating(has_gpu):
+    """The wheel-free zoom: drag up moves the camera in along its line of sight."""
+    view = backend.show(build_scene(meshes=[_mesh()]), size=(200, 160),
+                        canvas="offscreen", pixel_ratio=1.0, legend=None)
+
+    def event(kind, y, stamp):
+        return dict(event_type=kind, x=100.0, y=float(y), button=1, buttons=(1,),
+                    modifiers=("Shift",), pointer_id=1, ntouches=0, touches={},
+                    time_stamp=stamp)
+
+    try:
+        view.snapshot()
+        before = np.array(view.camera.local.position, dtype=float)
+        view.renderer.convert_event(event("pointer_down", 120, 1.0))
+        view.renderer.convert_event(event("pointer_move", 40, 1.1))
+        view.renderer.convert_event(event("pointer_up", 40, 1.2))
+        view.controller.tick()
+        after = np.array(view.camera.local.position, dtype=float)
+
+        assert np.linalg.norm(after) < np.linalg.norm(before)
+        direction = lambda v: v / np.linalg.norm(v)
+        assert np.allclose(direction(after), direction(before))
+    finally:
+        view.close()
+
+
 def test_a_view_offers_a_mimebundle_without_raising(has_gpu):
     """Jupyter's display hook; without a bundle it falls back to a repr, never raising."""
     view = backend.show(Scene(), size=(32, 32), canvas="offscreen")

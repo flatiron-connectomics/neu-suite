@@ -29,6 +29,13 @@ from ..viewstate import LAST, SAVED, ViewState, views
 #: Canvas size in logical pixels when none is given.
 DEFAULT_SIZE = (900, 700)
 
+#: Camera controls added to pygfx's trackball defaults (left drag rotates, right drag pans,
+#: wheel zooms). Shift + left drag zooms, drag up to zoom in, for hosts whose wheel never
+#: reaches the canvas: VS Code's notebook output scrolls the notebook instead.
+EXTRA_CONTROLS = {
+    "shift+mouse1": ("zoom", "drag", (0.005, -0.005)),
+}
+
 
 def build(scene: Scene) -> pygfx.Group:
     """Scene → a pygfx object graph. No canvas, no renderer, no draw.
@@ -167,6 +174,7 @@ class View:
         self.controller = pygfx.TrackballController(
             self.camera,
             register_events=self.legend.main if self.legend else self.renderer)
+        self.controller.controls.update(EXTRA_CONTROLS)
         self.frame()
         if viewpoint is not None:
             self.restore_view(viewpoint)
