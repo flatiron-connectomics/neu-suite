@@ -153,6 +153,63 @@ def test_cli_reports_how_many_synapses_landed_in_a_roi(tmp_path, dvid_server, ca
     assert "rois: 2 of 2 synapses inside one of 2 ROIs" in printed
 
 
+def _roi_nodes_asked(monkeypatch):
+    """The uuid of every ROI fetch and point lookup, from here on."""
+    import neuclease.dvid.roi as ndroi
+
+    asked = []
+    for name in ("fetch_roi_ranges_and_boxes", "determine_point_rois"):
+        stub = getattr(ndroi, name)
+
+        def recording(server, uuid, *a, _stub=stub, **k):
+            asked.append(uuid)
+            return _stub(server, uuid, *a, **k)
+
+        monkeypatch.setattr(ndroi, name, recording)
+    return asked
+
+
+def test_rois_are_read_from_the_points_node_by_default(tmp_path, dvid_server, monkeypatch):
+    from neu_vol.location import read_json
+
+    asked = _roi_nodes_asked(monkeypatch)
+    out = str(tmp_path / "syn")
+    ops.fetch_points(_open(), out, [1, 2], rois=["ME(L)", "LO(L)"])
+    assert set(asked) == {"d38898"}
+    assert read_json(out, "provenance.json")["run"]["rois"]["node"]["uuid"] == "d38898"
+
+
+def test_cli_roi_source_labels_from_another_node_and_records_it(tmp_path, dvid_server,
+                                                                 monkeypatch):
+    """The points and body ids stay on --src's node (HEAD, d38898); only the ROIs move."""
+    from neu_mark.cli import main
+    from neu_vol.location import read_json
+
+    asked = _roi_nodes_asked(monkeypatch)
+    out = str(tmp_path / "o")
+    main(["points", "--src", URL, "--out", out, "--bodies", "1,2",
+          "--rois", "ME(L),LO(L)", "--roi-source", "dvid://dvid.example.org/846e3a"])
+    assert set(asked) == {"846e3a"}
+    assert io.read_table(out, "points")["roi"].notna().sum() == 2
+    record = read_json(out, "provenance.json")
+    assert record["source"]["uuid"] == "d38898"
+    assert record["run"]["rois"]["node"] == {"server": "dvid.example.org", "uuid": "846e3a"}
+
+
+@pytest.mark.parametrize("argv, match", [
+    (["--rois", "ME(L)", "--roi-source", "dvid://dvid.example.org/846e3a/synapses"],
+     r"--roi-source: .*names an instance.*dvid://dvid.example.org/846e3a"),
+    (["--roi-source", "dvid://dvid.example.org/846e3a"], "pass --rois too"),
+])
+def test_cli_roi_source_is_refused_without_a_node_or_without_rois(tmp_path, dvid_server,
+                                                                  argv, match):
+    from neu_mark.cli import main
+
+    with pytest.raises(SystemExit, match=match):
+        main(["points", "--src", URL, "--out", str(tmp_path / "o"), "--bodies", "1,2",
+              *argv])
+
+
 def test_cli_takes_a_roi_file(tmp_path, dvid_server, capsys):
     path = tmp_path / "rois.txt"
     path.write_text("# optic lobe\nME(L)\nLO(L)   # left only\n")

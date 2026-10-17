@@ -122,6 +122,10 @@ neu-mark points --src @synapses --bodies traced.csv --out syn/ \
 layer, so synapses are labelled with the same set the viewer shows: `rois.toml:neuropil-parts`
 for the parts of a neuropil tree.
 
+The ROIs are read from `--src`'s node unless `--roi-source dvid://SERVER/UUID` names another,
+for ROIs redrawn on a later node: the points and their body ids still come from `--src`, so
+they keep matching a segmentation exported from it. The provenance record names the ROI node.
+
 Only the **points** table gets it. A relationship spans two points that may be in different
 neuropils, so one column on it would have to pick a side; a join back to `points` answers
 either. `tables.body_roi_counts(points)` aggregates per body and kind.

@@ -103,6 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "by ROI order alone. Use this if you need a strict partition — the "
                         "dataset has subtracted variants (INP(-ATL)(L), PENP(-AMMC)) "
                         "for that.")
+    q.add_argument("--roi-source", metavar="URL", default=None,
+                   help="the DVID node to read --rois from, as dvid://SERVER/UUID (default: "
+                        "--src's node). For ROIs redrawn on a later node: the points and "
+                        "their body ids still come from --src.")
     q.set_defaults(func=cmd_points)
 
     q = sub.add_parser(
@@ -566,6 +570,17 @@ def cmd_points(args) -> int:
     source = dvid.open_points_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
     out = _expand_out(args.out, source)
+    roi_source = None
+    if args.roi_source:
+        from .roi_layers import open_node
+
+        if not args.rois:
+            raise SystemExit("--roi-source says where --rois are read; pass --rois too.")
+        try:
+            roi_source, _ = open_node(_resolve_src(args.roi_source),
+                                      prefer_locked=bool(args.dvid_locked))
+        except ValueError as e:
+            raise SystemExit(f"--roi-source: {e}") from None
     ids = _load_bodies(args)
 
     kwargs = {} if args.threads is None else {"threads": args.threads}
@@ -573,6 +588,7 @@ def cmd_points(args) -> int:
                               drop_unmatched=bool(args.drop_unmatched),
                               rois=_roi_list(args.rois),
                               on_roi_overlap="error" if args.strict_rois else "warn",
+                              roi_source=roi_source,
                               write_connections=bool(args.connections), **kwargs)
     print(f"points: {len(result['points'])} elements, "
           f"{len(result['relationships'])} relationships")

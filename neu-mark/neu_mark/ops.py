@@ -72,7 +72,7 @@ def _record(source: Mapping[str, Any], dst: str, *, run: Mapping[str, Any]) -> d
 def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
                  threads: int = _dvid.DEFAULT_THREADS, fmt: str = "parquet",
                  drop_unmatched: bool = False, rois: Sequence[str] | None = None,
-                 on_roi_overlap: str = "warn",
+                 on_roi_overlap: str = "warn", roi_source: Mapping[str, Any] | None = None,
                  write_connections: bool = False) -> dict[str, Any]:
     """Point annotations for ``bodies`` -> ``points`` + ``relationships`` tables.
 
@@ -82,6 +82,9 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
     ``drop_unmatched`` removes relationships whose partner body was not resolved. It is off
     by default: an unfetched partner looks the same as a missing synapse, so dropping them
     at low coverage makes an incomplete connectome look complete. Check the match rate first.
+
+    ``roi_source`` is the node whose ``rois`` label the points (default ``source``'s), for
+    ROIs drawn on a later node than the points and body ids; the record names it.
     """
     synced = _dvid.require_sync(source)
     logger.info("%s: %d bodies, %d threads (bodies from sync: %s)",
@@ -92,13 +95,16 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
 
     roi_stats = None
     if rois:
+        if roi_source is None:
+            roi_source = source
         # Only points get a `roi`: a relationship's two ends may be in different neuropils.
-        labelled = _dvid.label_point_rois(source, points, rois,
+        labelled = _dvid.label_point_rois(roi_source, points, rois,
                                           on_overlap=on_roi_overlap)
         points = labelled["points"]
         roi_stats = {k: labelled.get(k) for k in
                      ("rois", "labeled", "unlabeled", "overlapping", "ambiguous",
                       "ambiguous_pairs", "counts")}
+        roi_stats["node"] = {"server": roi_source["server"], "uuid": roi_source["uuid"]}
 
     if drop_unmatched:
         before = len(rels)
