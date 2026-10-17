@@ -333,6 +333,41 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_roi_layers)
 
     q = sub.add_parser(
+        "roi-survey",
+        help="measure a node's DVID ROIs: sizes, containment tree, overlaps",
+        description="Fetch every ROI on a DVID node and report what the blocks say: each "
+                    "ROI's size and parent (the smallest larger ROI holding most of it), how "
+                    "well each parent's children cover it and how far they stick out, the "
+                    "overlaps between ROIs that are not nested, empty and identical ROIs. "
+                    "The input to a roi-layers spec, and the check when a node's ROIs "
+                    "change.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    q.add_argument("--src", required=True, metavar="URL",
+                   help="the DVID node, as dvid://SERVER/UUID. UUID may be a branch ref, "
+                        "resolved once and recorded.")
+    q.add_argument("--compare", metavar="URL", default=None,
+                   help="another node, e.g. the one a spec was written against: report each "
+                        "ROI whose blocks changed, and any added or removed.")
+    q.add_argument("--spec", metavar="TOML", default=None,
+                   help="a roi-layers spec to check against this node: unplaced ROIs, parts "
+                        "outside their top-level neuropil, and each layer's overlaps or why "
+                        "it would be refused.")
+    q.add_argument("--like", metavar="VOLUME", default=None,
+                   help="the segmentation the ROIs go beside: report ROIs reaching past its "
+                        "level-0 extent.")
+    q.add_argument("--contained", type=float, default=None, metavar="FRAC",
+                   help="a child this far inside its parent is not reported as sticking out "
+                        "(default 0.95).")
+    q.add_argument("--max-overlap", type=float, default=None, metavar="FRAC",
+                   help="flag siblings overlapping by more than this share of the smaller, "
+                        "as roi-layers refuses them (default 0.2).")
+    q.add_argument("--out", metavar="JSON", default=None,
+                   help="also write the full record, every overlapping pair included.")
+    q.add_argument("--dvid-locked", action="store_true",
+                   help="read the newest LOCKED ancestor rather than the branch HEAD.")
+    q.set_defaults(func=cmd_roi_survey)
+
+    q = sub.add_parser(
         "info", help="what a DVID annotation source is, and which node you would get",
         description="One request per fact: the instance type, what it is synced to, and "
                     "both candidate nodes for the ref (what it points at now, and the "
@@ -771,6 +806,23 @@ def cmd_roi_layers(args) -> int:
         print(f"  {name:20} {layer['segments']:4} segments" +
               (f", {len(pairs)} overlapping pair(s), e.g. {pairs[0]}" if pairs else ""))
     print("dry run: nothing written" if args.dry_run else f"-> {args.dst.rstrip('/')}/")
+    return 0
+
+
+def cmd_roi_survey(args) -> int:
+    from . import roi_survey
+
+    kw = {k: v for k, v in (("contained", args.contained),
+                            ("max_overlap", args.max_overlap)) if v is not None}
+    record = roi_survey.run(args.src, like=args.like, spec=args.spec,
+                            compare_to=args.compare, prefer_locked=args.dvid_locked, **kw)
+    print(roi_survey.format_report(record))
+    if args.out:
+        import json
+
+        with open(args.out, "w") as f:
+            json.dump(record, f, indent=1)
+        print(f"-> {args.out}")
     return 0
 
 

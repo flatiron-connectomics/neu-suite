@@ -535,15 +535,26 @@ def _blocks(ranges: np.ndarray) -> int:
     return int((r[:, 3] - r[:, 2] + 1).sum())
 
 
+def open_node(src: str, *, prefer_locked: bool = False) -> tuple[dict, dict]:
+    """``(spec, provenance)`` for a node URL, its ref resolved to a UUID once."""
+    from neu_vol import dvid
+
+    node_spec = parse_node_url(src)
+    node = dvid.resolve_node(node_spec, prefer_locked=prefer_locked)
+    node_spec = {**node_spec, "uuid": node["uuid"]}
+    provenance = dvid.node_provenance(node_spec, node)
+    provenance.pop("instance", None)
+    provenance["url"] = dvid.spec_url(node_spec).rsplit("/", 1)[0]
+    return node_spec, provenance
+
+
 def fetch(src: str, spec: Spec, *, prefer_locked: bool = False,
           processes: int = 8) -> dict:
     """The regions of every ROI the spec reads, after checking the spec against the
     node's list of ROIs. Raises :class:`SpecError` listing every disagreement."""
     from neu_vol import dvid
 
-    node_spec = parse_node_url(src)
-    node = dvid.resolve_node(node_spec, prefer_locked=prefer_locked)
-    node_spec = {**node_spec, "uuid": node["uuid"]}
+    node_spec, provenance = open_node(src, prefer_locked=prefer_locked)
     available = dvid.available_rois(node_spec)
     problems = check_against_node(spec, available)
     if problems:
@@ -554,9 +565,6 @@ def fetch(src: str, spec: Spec, *, prefer_locked: bool = False,
     problems = check_against_node(spec, available, sizes)
     if problems:
         raise SpecError("the spec does not match the node:\n  " + "\n  ".join(problems))
-    provenance = dvid.node_provenance(node_spec, node)
-    provenance.pop("instance", None)
-    provenance["url"] = dvid.spec_url(node_spec).rsplit("/", 1)[0]
     return {"sizes": sizes, "provenance": provenance,
             "regions": {n: region_from_ranges(ranges[n]) for n in wanted if sizes[n]}}
 

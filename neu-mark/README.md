@@ -430,6 +430,24 @@ what answers "what produced this" when nobody can find the module a month later.
 
 ## ROIs as segmentation layers
 
+`neu-mark roi-survey` measures every ROI on a node before a spec is written, and again
+when the ROIs change:
+
+```bash
+neu-mark roi-survey --src dvid://dvid.example.org/abc123 \
+    --compare dvid://dvid.example.org/def456 --spec rois.toml --like s3://my-bucket/seg \
+    --out survey.json
+```
+
+It prints the containment tree recovered from the blocks alone: each ROI's parent is the
+smallest larger ROI holding most of it, marked with its share inside when it sticks out
+(below `--contained`, 95%), and each parent with how much of it its children cover. Then
+the overlaps between ROIs that do not nest, flagged past `--max-overlap` as `roi-layers`
+would refuse them in one layer; empty and identical ROIs; ROIs reaching past `--like`'s
+extent. `--compare` reports each ROI whose blocks changed since another node, `--spec`
+checks a spec against this node, and `--out` writes the whole record, every overlapping
+pair included.
+
 `neu-mark roi-layers` writes a node's DVID ROIs as precomputed segmentations to view beside
 the segmentation, one volume per layer of a spec, each with segment properties naming its
 ROIs:
