@@ -10,17 +10,26 @@ mismatch.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
-#: Synapse markers. ``show_pre`` / ``show_post`` toggle the two endpoint markers, and the line
-#: (sub-pixel at most zooms) is drawn only when both are on; this is also what lets one source
-#: serve as two layers.
-#:
-#: The confidence test must stay **discard-if-below**. An unknown confidence is NaN, which
-#: fails every comparison, so ``discard if conf < min`` keeps those synapses at any threshold
-#: while ``keep if conf >= min`` would hide them all. Unknown confidence usually means a
-#: synapse added by a proofreader, among the most trustworthy.
-SYNAPSE_SHADER = """\
+#: The synapse shader's optional colourings, in the order the first one ticked wins:
+#: ``(checkbox, properties read, GLSL setting pre/post)``. Each is included only when the
+#: source declares its properties, since a shader naming an absent one fails to compile.
+#: An id colour is neuroglancer's own segment colour for that id (colour seed 0), so a
+#: synapse coloured by neuropil matches that neuropil's mesh in the ROI layers.
+SYNAPSE_COLORINGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("color_by_neuropil", ("neuropil",),
+     "pre = post = id_color(uint(prop_neuropil()));"),
+    ("color_by_neuropil_part", ("roi",),
+     "pre = post = id_color(uint(prop_roi()));"),
+    ("color_by_neuron_id", ("body_pre_u32", "body_post_u32"),
+     "pre = id_color(uint(prop_body_pre_u32()));\n"
+     "    post = id_color(uint(prop_body_post_u32()));"),
+    ("color_by_tbar_fanout", ("tbar_fanout",),
+     "pre = viridis(min(float(prop_tbar_fanout()), max_fanout) / max_fanout);"),
+)
+
+_SYNAPSE_CONTROLS = """\
 #uicontrol bool show_pre checkbox(default=true)
 #uicontrol bool show_post checkbox(default=true)
 
@@ -29,21 +38,79 @@ SYNAPSE_SHADER = """\
 
 #uicontrol vec3 pre_color color(default="#ff2000")
 #uicontrol vec3 post_color color(default="#00c0ff")
-#uicontrol vec3 line_color color(default="#ffffff")
+#uicontrol vec3 line_color color(default="#ffff00")
 
 #uicontrol float min_conf slider(min=0.0, max=1.0, default=0.0, step=0.01)
+"""
 
+# neuroglancer's SegmentColorHash: murmur3 mixing of the id's low then high 32 bits, then
+# HSV with the first byte as hue. Ids here are 32-bit, so the high word is 0.
+_ID_COLOR_GLSL = """\
+uint hash_combine(uint state, uint value) {
+  value *= 0xcc9e2d51u;
+  value = (value << 15) | (value >> 17);
+  value *= 0x1b873593u;
+  state ^= value;
+  state = (state << 13) | (state >> 19);
+  return state * 5u + 0xe6546b64u;
+}
+
+vec3 hsv_to_rgb(float h, float s, float v) {
+  h *= 6.0;
+  float i = floor(h);
+  float f = h - i;
+  float p = v * (1.0 - s);
+  float q = v * (1.0 - s * f);
+  float t = v * (1.0 - s * (1.0 - f));
+  int k = int(i) % 6;
+  if (k == 0) return vec3(v, t, p);
+  if (k == 1) return vec3(q, v, p);
+  if (k == 2) return vec3(p, v, t);
+  if (k == 3) return vec3(p, q, v);
+  if (k == 4) return vec3(t, p, v);
+  return vec3(v, p, q);
+}
+
+// Id 0 is "none": white, or not drawn with hide_uncolored.
+vec3 id_color(uint id) {
+  if (id == 0u) {
+    if (hide_uncolored) { discard; }
+    return vec3(1.0);
+  }
+  uint h = hash_combine(hash_combine(0u, id), 0u);
+  return hsv_to_rgb(float(h & 255u) / 255.0, 0.5 + 0.5 * float((h >> 8) & 255u) / 255.0, 1.0);
+}
+"""
+
+# A polynomial fit to matplotlib's viridis.
+_VIRIDIS_GLSL = """\
+vec3 viridis(float t) {
+  const vec3 c0 = vec3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+  const vec3 c1 = vec3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+  const vec3 c2 = vec3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+  const vec3 c3 = vec3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+  const vec3 c4 = vec3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+  const vec3 c5 = vec3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+  const vec3 c6 = vec3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+"""
+
+_SYNAPSE_MAIN = """\
 void main() {
   // An UNKNOWN confidence is NaN, which fails this comparison and so is never hidden.
   // That is deliberate: a synapse with no confidence value was usually added by hand by a
   // proofreader, making it MORE trustworthy rather than less. Keep this as discard-if-below.
   if (prop_conf_pre() < min_conf || prop_conf_post() < min_conf) discard;
 
-  setEndpointMarkerColor(vec4(pre_color, 1.0), vec4(post_color, 1.0));
+  vec3 pre = pre_color;
+  vec3 post = post_color;
+{coloring}
+  setEndpointMarkerColor(vec4(pre, 1.0), vec4(post, 1.0));
   setLineColor(line_color);
 
   // The line is only meaningful when both ends are shown; otherwise it points at something
-  // deliberately hidden, and at these scales its colour would drown the markers.
+  // deliberately hidden.
   if (show_pre && show_post) {
     setLineWidth(1.0);
     setEndpointMarkerSize(pre_size, post_size);
@@ -60,21 +127,63 @@ void main() {
 }
 """
 
-#: Built-in shaders by name, each declaring the properties it reads so
-#: :func:`pick_shader` can refuse an unrunnable pairing.
+
+def synapse_colorings(declared: Iterable[str]) -> list[str]:
+    """The checkboxes of :data:`SYNAPSE_COLORINGS` a source declaring ``declared`` gets."""
+    have = set(declared)
+    return [name for name, props, _ in SYNAPSE_COLORINGS if have.issuperset(props)]
+
+
+def synapse_shader(declared: Iterable[str] = ()) -> str:
+    """The synapse shader for a source whose properties are ``declared``.
+
+    ``show_pre`` / ``show_post`` toggle the two endpoint markers, and the line is drawn only
+    when both are on. A ``color_by_*`` checkbox is added for each colouring the properties
+    allow; the first one ticked wins.
+
+    The confidence test must stay **discard-if-below**. An unknown confidence is NaN, which
+    fails every comparison, so ``discard if conf < min`` keeps those synapses at any
+    threshold while ``keep if conf >= min`` would hide them all. Unknown confidence usually
+    means a synapse added by a proofreader, among the most trustworthy.
+    """
+    chosen = set(synapse_colorings(declared))
+    entries = [(name, glsl) for name, _, glsl in SYNAPSE_COLORINGS if name in chosen]
+    parts = [_SYNAPSE_CONTROLS]
+    if entries:
+        controls = [f"#uicontrol bool {name} checkbox(default=false)" for name, _ in entries]
+        if "color_by_tbar_fanout" in chosen:
+            controls.append("#uicontrol float max_fanout slider(min=1.0, max=40.0, step=1.0, "
+                            "default=20.0)")
+        if chosen - {"color_by_tbar_fanout"}:
+            controls.append("#uicontrol bool hide_uncolored checkbox(default=false)")
+        parts.append("\n".join(controls) + "\n")
+        if chosen - {"color_by_tbar_fanout"}:
+            parts.append(_ID_COLOR_GLSL)
+        if "color_by_tbar_fanout" in chosen:
+            parts.append(_VIRIDIS_GLSL)
+        branches = "  " + " else ".join(f"if ({name}) {{\n    {glsl}\n  }}"
+                                        for name, glsl in entries) + "\n"
+    else:
+        branches = ""
+    parts.append(_SYNAPSE_MAIN.replace("{coloring}", branches))
+    return "\n".join(parts)
+
+
+#: Every colouring included, as `neu-glance shaders synapse` prints it.
+SYNAPSE_SHADER = synapse_shader(p for _, props, _ in SYNAPSE_COLORINGS for p in props)
+
+#: Built-in shaders by name, each declaring the properties it requires so
+#: :func:`pick_shader` can refuse an unrunnable pairing. ``build`` makes the source from the
+#: properties declared, for a shader with optional parts.
 SHADERS: dict[str, dict[str, Any]] = {
     "synapse": {
         "properties": ("conf_pre", "conf_post"),
         "doc": "pre/post endpoint markers, independently toggleable, with a confidence "
-               "threshold",
+               "threshold and, where the source has the properties, colouring by "
+               "neuropil, neuron or T-bar fanout",
         "source": SYNAPSE_SHADER,
+        "build": synapse_shader,
     },
-}
-
-#: ``shaderControls`` for the two halves of a split pair; both layers share one shader.
-SPLIT_CONTROLS = {
-    "pre": {"show_pre": True, "show_post": False},
-    "post": {"show_pre": False, "show_post": True},
 }
 
 
@@ -96,7 +205,8 @@ def pick_shader(info: Mapping[str, Any], name: str | None,
     if name is None:
         for key, entry in SHADERS.items():
             if declared.issuperset(entry["properties"]):
-                return entry["source"], f"auto-selected {key!r} ({entry['doc']})"
+                return (_built(entry, declared),
+                        f"auto-selected {key!r} ({entry['doc']})" + _extras(key, declared))
         return None, ("no built-in shader matches this source's properties "
                       + (f"({', '.join(sorted(declared))})" if declared else "(none)"))
     if name in SHADERS:
@@ -108,7 +218,7 @@ def pick_shader(info: Mapping[str, Any], name: str | None,
                 f"declare. A shader naming a property that is absent fails to compile and "
                 f"the layer draws nothing. Declared: "
                 + (", ".join(sorted(declared)) or "no properties"))
-        return entry["source"], f"built-in {name!r}"
+        return _built(entry, declared), f"built-in {name!r}" + _extras(name, declared)
 
     reader = read_bytes
     if reader is None:
@@ -120,6 +230,18 @@ def pick_shader(info: Mapping[str, Any], name: str | None,
             f"shader {name!r} is neither a built-in name ("
             + ", ".join(SHADERS) + ", none) nor a readable file")
     return raw.decode(), f"from {name}"
+
+
+def _built(entry: Mapping[str, Any], declared: set[str]) -> str:
+    build = entry.get("build")
+    return build(declared) if build else entry["source"]
+
+
+def _extras(name: str, declared: set[str]) -> str:
+    if name != "synapse":
+        return ""
+    found = synapse_colorings(declared)
+    return f"; colourings: {', '.join(found)}" if found else "; no colourings"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +354,45 @@ BUILTIN_COLORS = {
     "gray": "#808080",
     "grey": "#808080",
 }
+
+
+def _hash_combine(state: int, value: int) -> int:
+    value = (value * 0xcc9e2d51) & 0xFFFFFFFF
+    value = ((value << 15) | (value >> 17)) & 0xFFFFFFFF
+    value = (value * 0x1b873593) & 0xFFFFFFFF
+    state ^= value
+    state = ((state << 13) | (state >> 19)) & 0xFFFFFFFF
+    return (state * 5 + 0xe6546b64) & 0xFFFFFFFF
+
+
+def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
+    h *= 6.0
+    i = int(h // 1)
+    f = h - i
+    p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    return [(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)][i % 6]
+
+
+def segment_color(segment_id: int, seed: int = 0) -> str:
+    """``#rrggbb`` neuroglancer gives ``segment_id`` with colour seed ``seed``.
+
+    A port of its ``SegmentColorHash.compute``, the same function the synapse shader's
+    ``id_color`` implements in GLSL.
+    """
+    segment_id = int(segment_id)
+    h = _hash_combine(_hash_combine(int(seed) & 0xFFFFFFFF, segment_id & 0xFFFFFFFF),
+                      (segment_id >> 32) & 0xFFFFFFFF)
+    rgb = _hsv_to_rgb((h & 255) / 255, 0.5 + ((h >> 8) & 255) / 255 * 0.5, 1.0)
+    return _hex_from_rgb(rgb, 255.0)
+
+
+def value_color(value: str, seed: int = 0) -> str:
+    """A stable ``#rrggbb`` for a property value, in neuroglancer's segment palette: the value
+    is hashed to a 64-bit id (blake2b), which :func:`segment_color` colours."""
+    import hashlib
+
+    digest = hashlib.blake2b(str(value).encode(), digest_size=8).digest()
+    return segment_color(int.from_bytes(digest, "little"), seed)
 
 
 def _hex_from_rgb(values: Sequence[float], scale: float) -> str:

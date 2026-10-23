@@ -42,6 +42,18 @@ _SHADER_NAMES = ("synapse",)
 #: A copy of the ``shaders.IMAGE_SHADERS`` names, for the same reason. A test checks them.
 _IMAGE_SHADER_NAMES = ("grayscale", "probability", "colormap", "rgb", "none")
 
+#: ``gen``'s per-segmentation display flags: (flag, state key, help, range). Neuroglancer
+#: ignores an out-of-range value rather than refusing it, so the range is checked here.
+_SEG_DISPLAY_FLAGS = (
+    ("--silhouette", "meshSilhouetteRendering",
+     "3D silhouette (0-10): faces turned towards the viewer fade, leaving the outline; "
+     "0 is off, larger is stronger"),
+    ("--opacity-2d", "selectedAlpha", "opacity of the selected segments in the 2D panels"),
+    ("--opacity-3d", "objectAlpha", "opacity of the meshes in the 3D panel"),
+)
+_SEG_DISPLAY_RANGE = {"meshSilhouetteRendering": (0.0, 10.0), "selectedAlpha": (0.0, 1.0),
+                      "objectAlpha": (0.0, 1.0)}
+
 
 # --------------------------------------------------------------------------- #
 # small helpers
@@ -209,6 +221,11 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
         q.add_argument("--viewer", default=_DEFAULT_VIEWER,
                        help=f"viewer base URL for --format url (default: "
                             f"{_DEFAULT_VIEWER})")
+        q.add_argument("--expand", action="store_true",
+                       help="with --into a state JSON on s3:// or gs:// and --format url, put "
+                            "the whole state in the link. By default such a link only names "
+                            "the file (<viewer>#!s3://.../state.json), which the viewer fetches, "
+                            "so it stays short and follows later rewrites of the file")
     q.set_defaults(default_format=default)
 
 
@@ -249,6 +266,11 @@ def _load_into(source: str) -> dict:
         return load_state(source)
     except (StateProblem, ValueError) as e:
         raise SystemExit(_yellow(str(e))) from None
+
+
+def _is_cloud_state(source: str) -> bool:
+    """A state file on an object store, which a viewer can fetch from ``#!<url>``."""
+    return source.startswith(("s3://", "gs://")) and "#!" not in source
 
 
 def _resolve_format(args) -> str:
@@ -310,6 +332,20 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             selected=selected_name,
             show_slices=False if getattr(args, "hide_slices", False) else None,
         )
+        if into and fmt == "url" and _is_cloud_state(into) and not getattr(args, "expand",
+                                                                            False):
+            changed = bool(layers or hide) or any(v is not None for v in shaping.values())
+            if changed:
+                raise SystemExit(
+                    f"a link to {into} would show the file as it is, without the layers or view "
+                    f"options given here. Write the changed state with --format state --out "
+                    f"<file> and link that, or pass --expand to put it in the link.")
+            _load_into(into)                      # refuse a file that is not a state
+            text = f"{getattr(args, 'viewer', _DEFAULT_VIEWER).rstrip('/')}/#!{into}"
+            print(f"  a link to the state file, which the viewer fetches; it must be readable "
+                  f"anonymously, with CORS (--expand puts the state in the link)", file=err)
+            _deliver(args.out, text)
+            return 0
         if into:
             base = _load_into(into)
             state, notes = merge_into(base, layers, **shaping)
@@ -417,13 +453,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "annotation-source` writes (repeatable). Added as its own layer, "
                         "because unlike mesh and skeletons an annotation source is never "
                         "named in a volume's info. Its relationships are bound to the first "
-                        "--seg layer, which is what makes 'only this body's synapses' work")
-    q.add_argument("--annotation-split", action="store_true",
-                   help="add each annotation source as TWO layers on the one source: "
-                        "'-pre' filtered on the presynaptic relationship (the selected "
-                        "body's OUTPUTS) and '-post' on the postsynaptic one (its INPUTS), "
-                        "each showing only its own endpoint marker. One layer filtered on "
-                        "both conflates the two directions and the markers overlap")
+                        "--seg layer, which is what makes 'only this body's synapses' work. "
+                        "The synapse shader's show_pre / show_post checkboxes show either end "
+                        "alone, and the Annotations tab toggles the filter per relationship")
     q.add_argument("--annotation-shader", default=None, metavar="NAME_OR_PATH",
                    help="GLSL for the annotation layers: a built-in name ("
                         + ", ".join(_SHADER_NAMES) + "), a file, or 'none'. Default picks a "
@@ -443,6 +475,30 @@ def build_parser() -> argparse.ArgumentParser:
                         "e.g. the output of `neu-glance bboxes` (repeatable)")
     q.add_argument("--image-opacity", type=float, default=None, metavar="F",
                    help="opacity for the --image layers")
+    for flag, key, what in _SEG_DISPLAY_FLAGS:
+        q.add_argument(flag, action="append", default=None, metavar="LAYER_NAME=VALUE",
+                       help=f"{what} of one --seg layer (repeatable; sets {key})")
+    q.add_argument("--color", action="append", default=None, metavar="LAYER_NAME=COLOR",
+                   help="colour of every segment of one --seg layer that has no colour of its "
+                        "own: a name, #rrggbb (repeatable; sets segmentDefaultColor). Without "
+                        "it each segment gets its hash colour")
+    q.add_argument("--color-by", action="append", default=None,
+                   metavar="LAYER_NAME=PROP[,PROP...]",
+                   help="colour each segment of one --seg layer by a segment property, from "
+                        "its segment_properties: a tag facet (col, group), a flag tag, or "
+                        "label. A segment takes the first property it has a value for, so "
+                        "col,group colours by column and falls back to group. Each value gets "
+                        "a fixed colour from neuroglancer's segment palette; segments with "
+                        "none keep their hash colour. Written as segmentColors, so it is fixed "
+                        "when the state is made (repeatable)")
+    q.add_argument("--no-pick", action="append", default=None, metavar="LAYER_NAME",
+                   help="make clicks go through this --seg layer (repeatable; sets pick "
+                        "false), for a shell enclosing what you want to select")
+    q.add_argument("--config", default=None, metavar="TOML",
+                   help="site display defaults: volume bounds, annotation shader controls, "
+                        "and per-layer silhouette, opacities, hide and all_segments by layer "
+                        "name (see neu_glance.config). Read only when named; a flag here "
+                        "wins over the file")
     q.add_argument("--voxel-size", default=None, metavar="Z,Y,X",
                    help="level-0 voxel size in nm, overriding what the volumes record. "
                         "Required when every layer comes from --layer, since a layer file "
@@ -673,13 +729,86 @@ def _listed_segments(volume: str) -> list[int]:
     return [int(i) for i in doc["inline"]["ids"]]
 
 
+def _seg_display(args, layers: list[dict]) -> None:
+    """Apply ``--silhouette`` / ``--opacity-2d`` / ``--opacity-3d`` / ``--color`` /
+    ``--no-pick`` to the named layers."""
+    segs = {lyr["name"]: lyr for lyr in layers if lyr["type"] == "segmentation"}
+    for flag, key, _what in _SEG_DISPLAY_FLAGS:
+        for value in getattr(args, flag[2:].replace("-", "_")) or []:
+            name, sep, number = value.rpartition("=")
+            if not sep or not name:
+                raise SystemExit(f"{flag} wants LAYER_NAME=VALUE, got {value!r}")
+            if name not in segs:
+                raise SystemExit(f"{flag} names no --seg layer: {name!r}. The segmentation "
+                                 f"layers are {', '.join(segs) or '(none)'}")
+            try:
+                v = float(number)
+            except ValueError:
+                raise SystemExit(f"{flag} {value}: {number!r} is not a number") from None
+            lo, hi = _SEG_DISPLAY_RANGE[key]
+            if not lo <= v <= hi:
+                raise SystemExit(f"{flag} {value}: must be between {lo:g} and {hi:g}")
+            segs[name][key] = v
+
+    from .shaders import ShaderProblem, as_hex_color
+
+    for value in args.color or []:
+        name, sep, color = value.rpartition("=")
+        if not sep or not name:
+            raise SystemExit(f"--color wants LAYER_NAME=COLOR, got {value!r}")
+        if name not in segs:
+            raise SystemExit(f"--color names no --seg layer: {name!r}. The segmentation "
+                             f"layers are {', '.join(segs) or '(none)'}")
+        try:
+            segs[name]["segmentDefaultColor"] = as_hex_color(color, f"--color {name}")
+        except ShaderProblem as e:
+            raise SystemExit(str(e)) from None
+    for name in args.no_pick or []:
+        if name not in segs:
+            raise SystemExit(f"--no-pick names no --seg layer: {name!r}. The segmentation "
+                             f"layers are {', '.join(segs) or '(none)'}")
+        segs[name]["pick"] = False
+
+
+def _color_by(args, site: dict, layers: list[dict], volumes: dict[str, str], *,
+              file) -> None:
+    """Apply ``--color-by`` (or the config's ``color_by``) as each layer's segmentColors."""
+    from .sources import SourceProblem, read_segment_properties
+    from .state import StateProblem, colors_by_property
+
+    wanted = {n: s["color_by"] for n, s in site["layers"].items()
+              if s.get("color_by") and n in volumes}
+    for value in args.color_by or []:
+        name, sep, keys = value.partition("=")
+        if not sep or not name or not keys.strip():
+            raise SystemExit(f"--color-by wants LAYER_NAME=PROP[,PROP...], got {value!r}")
+        if name not in volumes:
+            raise SystemExit(f"--color-by names no --seg layer: {name!r}. The segmentation "
+                             f"layers are {', '.join(volumes) or '(none)'}")
+        wanted[name] = [k for k in keys.replace(" ", "").split(",") if k]
+    by_name = {lyr["name"]: lyr for lyr in layers}
+    for name, keys in wanted.items():
+        try:
+            colors, report = colors_by_property(read_segment_properties(volumes[name]), keys)
+        except (SourceProblem, StateProblem) as e:
+            raise SystemExit(f"--color-by {name}: {e}") from None
+        by_name[name]["segmentColors"] = colors
+        counts = ", ".join(f"{k} {n}" for k, n in report["by_key"].items())
+        print(f"  {name}: coloured {report['colored']} of {report['segments']} segments by "
+              f"{','.join(keys)} ({counts}; {report['values']} values)", file=file)
+        if report["several_values"]:
+            print(f"    {report['several_values']} had several values for a facet and took "
+                  f"the first", file=file)
+
+
 def cmd_gen(args) -> int:
     """A viewer state from volumes, annotation sources and layer files."""
     from .shaders import ShaderProblem
-    from .sources import (SourceProblem, annotation_layer, annotation_layer_pair,
-                          annotation_source_extent, annotation_source_voxel_size,
-                          volume_extent, volume_layer)
+    from .sources import (SourceProblem, annotation_layer, annotation_source_extent,
+                          annotation_source_voxel_size, volume_extent, volume_layer)
     from .state import StateProblem, annotation_extent, load_layer
+
+    from . import config as _config
 
     err = sys.stderr
     layers: list[dict] = []
@@ -688,22 +817,34 @@ def cmd_gen(args) -> int:
     shader_notes: list[str] = []
 
     try:
+        site = _config.load(args.config) if args.config else _config.parse({})
+    except _config.ConfigProblem as e:
+        raise SystemExit(str(e)) from None
+    bounds = bool(site["volume"].get("bounds", False))
+    seg_names = {v.rstrip("/").rsplit("/", 1)[-1] for v in args.seg or []}
+    everything = set(args.all_segments or [])
+    unknown = sorted(everything - seg_names)
+    if unknown:
+        raise SystemExit(f"--all-segments names no --seg layer: {', '.join(unknown)}")
+    everything |= {n for n, s in site["layers"].items() if s.get("all_segments")} & seg_names
+
+    try:
         # --image before --seg, so the segmentation draws over the image.
         for volume in args.image or []:
-            layer, info = volume_layer(volume, kind="image", opacity=args.image_opacity)
+            layer, info = volume_layer(volume, kind="image", opacity=args.image_opacity,
+                                       bounds=bounds)
             layers.append(layer)
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
-        everything = set(args.all_segments or [])
-        unknown = sorted(everything - {v.rstrip("/").rsplit("/", 1)[-1] for v in args.seg or []})
-        if unknown:
-            raise SystemExit(f"--all-segments names no --seg layer: {', '.join(unknown)}")
+        seg_volumes: dict[str, str] = {}
         for i, volume in enumerate(args.seg or []):
+            seg_volumes[volume.rstrip("/").rsplit("/", 1)[-1]] = volume
             picked = args.segments[i] if i < len(args.segments or []) else None
             ids = [int(s) for s in picked.replace(",", " ").split()] if picked else []
             if volume.rstrip("/").rsplit("/", 1)[-1] in everything:
                 ids += [i for i in _listed_segments(volume) if i not in ids]
-            layer, info = volume_layer(volume, kind="segmentation", segments=ids or None)
+            layer, info = volume_layer(volume, kind="segmentation", segments=ids or None,
+                                       bounds=bounds)
             layers.append(layer)
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
@@ -713,17 +854,11 @@ def cmd_gen(args) -> int:
         linked = linked_layer["name"] if linked_layer else None
         filtering = bool(args.filter_by_segmentation)
         for source in args.annotations or []:
-            if args.annotation_split:
-                added, info = annotation_layer_pair(
-                    source, shader=args.annotation_shader, linked_segmentation=linked,
-                    filter_by_segmentation=filtering)
-            else:
-                layer, info = annotation_layer(
-                    source, shader=args.annotation_shader, linked_segmentation=linked,
-                    filter_by_segmentation=filtering)
-                added = [layer]
-            layers.extend(added)
-            shader_notes.append(f"{added[0]['name']}: {info['shader'] or 'no shader'}")
+            layer, info = annotation_layer(
+                source, shader=args.annotation_shader, linked_segmentation=linked,
+                filter_by_segmentation=filtering)
+            layers.append(layer)
+            shader_notes.append(f"{layer['name']}: {info['shader'] or 'no shader'}")
             extents.append(annotation_source_extent(info["info"]))
             if frame_info is None:
                 voxel = annotation_source_voxel_size(info["info"])
@@ -732,9 +867,15 @@ def cmd_gen(args) -> int:
                                   "format": "annotations"}
         for path in args.layer or []:
             layers.extend(load_layer(path))
+        config_notes = _config.apply(site, layers)
     except (SourceProblem, ShaderProblem, StateProblem, ValueError,
             json.JSONDecodeError) as e:
         raise SystemExit(str(e)) from None
+    _seg_display(args, layers)
+    names = {lyr["name"] for lyr in layers}
+    args.hide = list(dict.fromkeys(
+        [*(args.hide or []), *(n for n, s in site["layers"].items()
+                               if s.get("hide") and n in names)]))
 
     # With --into and nothing to add, the state itself is the output: a view file straight
     # to a link, with any of the view options (--layout, --hide-slices, …) applied on the way.
@@ -763,6 +904,11 @@ def cmd_gen(args) -> int:
         print(f"  voxel size {tuple(voxel)} zyx, units {units or '?'}", file=err)
     for note in shader_notes:
         print(f"  shader {note}", file=err)
+    if args.config:
+        print(f"  display defaults from {args.config}", file=err)
+    for note in config_notes:
+        print(f"  {note}", file=err)
+    _color_by(args, site, layers, seg_volumes, file=err)
     _report_bindings(layers, file=err)
 
     return _emit(args, layers, voxel=voxel, units=units, frame=fit)
@@ -1071,13 +1217,16 @@ def cmd_shaders(args) -> int:
     Annotation shaders (which need the source's ``prop_`` properties) and image shaders
     (which need a channel count) are listed separately.
     """
-    from .shaders import IMAGE_SHADERS, SHADERS
+    from .shaders import IMAGE_SHADERS, SHADERS, SYNAPSE_COLORINGS
 
     if args.name is None:
         print("annotation shaders  (for `gen --annotation-shader`)")
         for name, entry in SHADERS.items():
             print(f"  {name}\t{entry['doc']}")
             print(f"    reads: {', '.join(entry['properties'])}")
+            if name == "synapse":
+                for box, props, _glsl in SYNAPSE_COLORINGS:
+                    print(f"    {box}: if the source has {', '.join(props)}")
         print("\nimage shaders  (for `serve --shader`)")
         for name, entry in IMAGE_SHADERS.items():
             print(f"  {name}\t{entry['doc']}")

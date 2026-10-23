@@ -45,27 +45,28 @@ viewer empty while every file looks correct.
 
 ```bash
 neu-glance gen --seg s3://my-bucket/seg --annotations s3://my-bucket/seg/synapses \
-    --annotation-split --annotation-shader synapse --segments 12345 --format url
+    --annotation-shader synapse --segments 12345 --format url
 ```
 
-`--annotation-split` adds the source as two layers, each showing only the selected bodies'
-synapses: one filtered on `body_pre` (its outputs, drawn as presynaptic markers) and one on
-`body_post` (its inputs, drawn as postsynaptic markers). The `synapse` shader colours
-presynaptic sites red-orange and postsynaptic sites blue.
+One layer shows the selected bodies' synapses, inputs and outputs together. The `synapse`
+shader colours presynaptic sites red-orange and postsynaptic sites blue, with a yellow line
+between them. Its `show_pre` / `show_post` boxes show either end alone (without the line),
+and the layer's **Annotations** tab filters on each relationship separately: `body_pre`
+alone gives the selected bodies' outputs, `body_post` alone their inputs.
 
-Neither split layer draws the connecting lines: the shader draws a line only when both of
-its ends are shown, and at most zooms a line is sub-pixel and swamps the markers. Tick the
-other end's checkbox (`show_pre` or `show_post`) in a layer to get its lines, in white.
-Without `--annotation-split` there is one layer with both ends and the lines, showing the
-selected bodies' inputs and outputs together.
+With `annotation-source --roi-spec SPEC.toml` (and points fetched with `--rois`), the source
+also carries each synapse's ROI and top-level neuropil, and the shader gains
+`color_by_neuropil` and `color_by_neuropil_part`; `color_by_neuron_id` and
+`color_by_tbar_fanout` need nothing extra.
 
 ## In the viewer
 
 - **Nothing shows until a body is selected.** The layers follow the segmentation's
   selection; `--segments` selects some up front. To show everything, untick the filter in
   a layer's **Annotations** tab, or pass `--no-filter-by-segmentation`.
-- **The colours, marker sizes and a confidence threshold** are controls in each layer's
-  **Rendering** tab (`pre_color`, `post_color`, `pre_size`, `post_size`, `min_conf`).
+- **The colours, marker sizes and a confidence threshold** are controls in the layer's
+  **Rendering** tab (`pre_color`, `post_color`, `line_color`, `pre_size`, `post_size`,
+  `min_conf`), next to the `color_by_*` boxes.
 - **Synapses with no confidence value stay visible at every threshold.** They are mostly
   added by hand, so unknown confidence is not treated as low.
 - **Some lines have a partner outside `bodies.csv`.** They are kept, since the synapse is

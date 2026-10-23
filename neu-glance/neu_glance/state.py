@@ -337,6 +337,72 @@ def subset_layers(state: Mapping[str, Any], layer: str,
     return out, created, notes
 
 
+def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
+                       seed: int = 0) -> tuple[dict[str, str], dict[str, Any]]:
+    """``({segment_id: "#rrggbb"}, report)``: each segment coloured by the first of ``keys``
+    it has a value for, for a segmentation layer's ``segmentColors``.
+
+    ``properties`` is what :func:`neu_glance.sources.read_segment_properties` returns. A key
+    is ``label``, or a tag facet (``col`` or ``col:``, taking the value after the colon), or
+    a bare flag tag (``glia``). A segment with several values for a facet takes the first.
+    Each ``key:value`` gets a fixed colour (:func:`neu_glance.shaders.value_color`), so a
+    value is the same colour in every state. Segments with no value keep their hash colour.
+    """
+    from .shaders import value_color
+
+    ids = list(properties.get("ids") or [])
+    vocabulary = list(properties.get("vocabulary") or [])
+    numbers = set((properties.get("numbers") or {}))
+    facets = sorted({t.split(":", 1)[0] for t in vocabulary if ":" in t})
+    flags = sorted(t for t in vocabulary if ":" not in t)
+
+    resolved: list[tuple[str, str]] = []           # (key, "label" | "facet" | "flag")
+    for raw in keys:
+        key = str(raw).strip().rstrip(":")
+        if key == "label":
+            resolved.append((key, "label"))
+        elif key in facets:
+            resolved.append((key, "facet"))
+        elif key in flags:
+            resolved.append((key, "flag"))
+        elif key in numbers:
+            raise StateProblem(f"--color-by {key!r} is a number property; colouring is by "
+                               f"category: a tag facet, a flag or label")
+        else:
+            raise StateProblem(
+                f"--color-by {key!r} is not a property of this layer. Tag facets: "
+                f"{', '.join(facets) or '(none)'}; flags: {', '.join(flags) or '(none)'}; "
+                f"or label")
+
+    labels = list(properties.get("labels") or [])
+    tags = list(properties.get("tags") or [()] * len(ids))
+    colors: dict[str, str] = {}
+    by_key = {key: 0 for key, _ in resolved}
+    values: set[str] = set()
+    several = 0
+    for i, sid in enumerate(ids):
+        for key, kind in resolved:
+            if kind == "label":
+                # read_segment_properties labels a segment with no label by its id
+                label = labels[i] if i < len(labels) else ""
+                found = [label] if label and label != sid else []
+            elif kind == "facet":
+                found = [t.split(":", 1)[1] for t in tags[i] if t.startswith(f"{key}:")]
+            else:
+                found = [key] if key in tags[i] else []
+            if not found:
+                continue
+            several += len(found) > 1
+            value = f"{key}:{found[0]}"
+            colors[sid] = value_color(value, seed)
+            values.add(value)
+            by_key[key] += 1
+            break
+    report = {"segments": len(ids), "colored": len(colors), "by_key": by_key,
+              "values": len(values), "several_values": several}
+    return colors, report
+
+
 def _read_json(path: str, read_bytes=None):
     if read_bytes is None:
         from neu_vol.location import read_bytes as read_bytes_impl

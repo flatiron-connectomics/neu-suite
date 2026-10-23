@@ -45,7 +45,6 @@ _EXPORTS = {
     "volume_layer": "sources",
     "volume_extent": "sources",
     "annotation_layer": "sources",
-    "annotation_layer_pair": "sources",
     "read_annotation_info": "sources",
     "annotation_source_extent": "sources",
     "annotation_source_voxel_size": "sources",
@@ -59,6 +58,7 @@ _EXPORTS = {
     "SHADERS": "shaders",
     "IMAGE_SHADERS": "shaders",
     "pick_shader": "shaders",
+    "synapse_shader": "shaders",
     "image_shader": "shaders",
     # Hosting arrays in this process: `serve` is the function, `serving` the module.
     "serve": "serving",

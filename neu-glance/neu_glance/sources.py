@@ -17,7 +17,7 @@ from __future__ import annotations
 import functools
 from typing import Any, Mapping, Sequence
 
-from .shaders import SPLIT_CONTROLS, ShaderProblem, pick_shader
+from .shaders import ShaderProblem, pick_shader
 
 #: How neuroglancer addresses each backend: the classic ``scheme://`` form, which older
 #: viewers read too, rather than the newer ``kvstore|adapter:`` syntax.
@@ -31,10 +31,6 @@ def _scheme_map() -> dict[str, str]:
 
 #: The `@type` a precomputed annotation source declares.
 ANNOTATION_TYPE = "neuroglancer_annotations_v1"
-
-#: ``(side, relationship)`` for the two halves of a synapse source. Filtering on ``body_pre``
-#: gives the selected body's outputs; on ``body_post``, its inputs.
-SPLIT_SIDES = (("pre", "body_pre"), ("post", "body_post"))
 
 
 class SourceProblem(RuntimeError):
@@ -88,11 +84,12 @@ def volume_extent(volume: str, fmt: str) -> tuple[tuple, tuple] | None:
 @_quiet
 def volume_layer(volume: str, *, kind: str | None = None, name: str | None = None,
                  segments: Sequence[int] | None = None,
-                 opacity: float | None = None) -> tuple[dict, dict]:
+                 opacity: float | None = None, bounds: bool = False) -> tuple[dict, dict]:
     """One layer for ``volume``, plus what its metadata says about the frame.
 
     ``kind`` (``"image"`` or ``"segmentation"``) overrides what the volume records; without
-    it the recorded kind decides, defaulting to image.
+    it the recorded kind decides, defaulting to image. ``bounds`` draws the volume's
+    bounding box, which neuroglancer shows by default.
     """
     from neu_vol.detect import detect_backend
     from neu_vol.source_metadata import read_source_metadata
@@ -114,6 +111,8 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
         "name": name or volume.rsplit("/", 1)[-1],
         "source": f"{scheme}://{volume}",
     }
+    if not bounds:
+        layer["source"] = {"url": layer["source"], "subsources": {"bounds": False}}
     if segments:
         # Strings: segment ids are uint64, and a JSON number above 2**53 is rounded.
         layer["segments"] = [str(int(s)) for s in segments]
@@ -156,7 +155,8 @@ def annotation_layer(source: str, *, name: str | None = None,
     annotation.
 
     Every relationship is bound; ``filter_relationships`` chooses which ones restrict the
-    view, e.g. only ``body_pre`` for the selected body's outputs.
+    view, e.g. only ``body_pre`` for the selected body's outputs. Each can be toggled in the
+    layer's Annotations tab.
     """
     source = source.rstrip("/")
     info = dict(info) if info is not None else read_annotation_info(source)
@@ -187,31 +187,6 @@ def annotation_layer(source: str, *, name: str | None = None,
             layer["filterBySegmentation"] = picked
 
     return layer, {"info": info, "shader": why, "relationships": relationships}
-
-
-@_quiet
-def annotation_layer_pair(source: str, *, name: str | None = None,
-                          shader: str | None = None,
-                          linked_segmentation: str | None = None,
-                          filter_by_segmentation: bool = True) -> tuple[list[dict], dict]:
-    """Two layers on one source: the selected body's outputs, then its inputs.
-
-    One layer filtered on both relationships mixes the two directions, and their markers
-    overlap. Split, each half has its own visibility, colour and marker size. The ``info`` is
-    read once for both.
-    """
-    base = (name or source.rstrip("/").rsplit("/", 1)[-1])
-    info = read_annotation_info(source)
-    layers, detail = [], None
-    for side, relationship in SPLIT_SIDES:
-        layer, detail = annotation_layer(
-            source, name=f"{base}-{side}", shader=shader,
-            linked_segmentation=linked_segmentation,
-            filter_by_segmentation=filter_by_segmentation,
-            filter_relationships=[relationship], controls=SPLIT_CONTROLS[side],
-            info=info)
-        layers.append(layer)
-    return layers, detail
 
 
 @_quiet

@@ -225,7 +225,7 @@ segmentation layer:
 ```bash
 neu-glance gen --seg s3://.../seg_v1 \
     --annotations s3://.../seg_v1/synapses_v1 \
-    --segments 61189731 --annotation-split
+    --segments 61189731
 ```
 
 The source keys its relationships on segment id, but neuroglancer only consults that index
@@ -240,10 +240,9 @@ stderr because an empty viewport is otherwise indistinguishable from a broken la
 `--no-filter-by-segmentation` turns it off; in the viewer, the per-relationship checkbox is in
 the layer's **Annotations** tab.
 
-**`--annotation-split` adds two layers on the one source**, filtering one on `body_pre` and
-the other on `body_post`. That is the selected body's outputs and its inputs, which a single
-layer filtered on both conflates; and each half shows only its own endpoint marker, which
-matters because the two overlap at any zoom showing more than a few synapses.
+Filtering on both relationships shows the selected body's inputs and outputs in one layer;
+unticking one relationship in the Annotations tab leaves only the outputs (`body_pre`) or the
+inputs (`body_post`), and the shader's `show_pre` / `show_post` boxes show one end alone.
 
 ### The shader
 
@@ -251,7 +250,9 @@ Annotation shaders live in the viewer state, not in the source, so a link is the
 one can be shipped. `--annotation-shader` takes a built-in name, a file, or `none`; the
 default picks a built-in whose properties the source declares — a shader naming a `prop_` that
 is absent does not degrade, it fails to compile and the layer draws **nothing**, with the
-error only in the layer's shader tab.
+error only in the layer's shader tab. For the same reason the `synapse` shader is assembled
+per source: each `color_by_*` box (neuropil, neuropil part, neuron, T-bar fanout) is included
+only when the source declares what it reads. Its core:
 
 ```glsl
 #uicontrol bool show_pre checkbox(default=true)
@@ -260,7 +261,7 @@ error only in the layer's shader tab.
 #uicontrol float post_size slider(min=0.0, max=20.0, default=4.0)
 #uicontrol vec3 pre_color color(default="#ff2000")
 #uicontrol vec3 post_color color(default="#00c0ff")
-#uicontrol vec3 line_color color(default="#ffffff")
+#uicontrol vec3 line_color color(default="#ffff00")
 #uicontrol float min_conf slider(min=0.0, max=1.0, default=0.0, step=0.01)
 
 void main() {

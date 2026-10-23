@@ -114,7 +114,7 @@ def test_a_state_is_loadable_and_carries_the_volume_layer(tmp_path, capsys):
     cli.main(["bboxes", dst, "--tighten-level", "1", "--format", "state"])
     state = json.loads(capsys.readouterr().out)
     assert [lyr["type"] for lyr in state["layers"]] == ["segmentation", "annotation"]
-    assert state["layers"][0]["source"] == f"precomputed://{dst}"
+    assert state["layers"][0]["source"]["url"] == f"precomputed://{dst}"
     assert state["selectedLayer"]["layer"] == state["layers"][1]["name"]
     # the view opens on the data rather than at the origin of an empty frame
     assert state["position"] != [0, 0, 0]
@@ -124,7 +124,7 @@ def test_a_state_names_the_zarr_driver_for_a_zarr_volume(tmp_path, capsys):
     dst = _sparse(tmp_path, "vol", profile="local")
     cli.main(["bboxes", dst, "--tighten-level", "1", "--format", "state"])
     state = json.loads(capsys.readouterr().out)
-    assert state["layers"][0]["source"] == f"zarr://{dst}"
+    assert state["layers"][0]["source"]["url"] == f"zarr://{dst}"
 
 
 def test_label_and_name_flow_through(tmp_path, capsys):

@@ -9,8 +9,58 @@ rather than being pushed down into whichever library happens to own the store ac
 
 ```bash
 neu-glance gen --image s3://bucket/em --seg s3://bucket/seg_v1 \
-    --annotations s3://bucket/seg_v1/synapses_v1 --annotation-split --segments 12345
+    --annotations s3://bucket/seg_v1/synapses_v1 --segments 12345
 ```
+
+## Synapses
+
+A synapse source becomes **one** layer, filtered on both relationships, so it shows the
+selected bodies' inputs and outputs with a line from each T-bar to its partner. The `synapse`
+shader's `show_pre` / `show_post` boxes show either end alone, and the layer's
+**Annotations** tab turns the filter on or off per relationship.
+
+The shader gets a `color_by_*` box for each colouring the source has the properties for
+(`neu-glance shaders` lists them); the first one ticked wins:
+
+| box | reads | colours |
+| --- | --- | --- |
+| `color_by_neuropil` | `neuropil` | both ends by the synapse's top-level neuropil |
+| `color_by_neuropil_part` | `roi` | both ends by its ROI |
+| `color_by_neuron_id` | `body_pre_u32`, `body_post_u32` | each end by its body |
+| `color_by_tbar_fanout` | `tbar_fanout` | the T-bar by its partner count (viridis, up to `max_fanout`) |
+
+An id colouring uses **neuroglancer's own segment colour** for the id (colour seed 0), so a
+synapse coloured by neuropil matches that neuropil's mesh in an ROI layer, and one coloured by
+neuron matches the body. Id 0 means none and is white; `hide_uncolored` drops those.
+`neu-mark annotation-source --roi-spec` writes `roi` and `neuropil` by the ROI spec's ids,
+which are the ids the ROI layers paint.
+
+## Display defaults
+
+Volume layers leave their bounding-box annotation off, and the synapse line is yellow, which
+reads over greyscale EM. The rest is per layer, by name:
+
+```bash
+neu-glance gen --seg s3://bucket/seg --seg s3://bucket/rois/head \
+    --silhouette head=5 --opacity-2d head=0 --opacity-3d head=1 \
+    --color head=white --no-pick head
+```
+
+Choices a site makes for every state go in a TOML file passed as `--config` (read only when
+named, and a flag wins over it). `neu_glance.config` documents the keys: `[volume] bounds`,
+`[annotations.shader_controls]`, and `[layer.NAME]` with `silhouette`, `opacity_2d`,
+`opacity_3d`, `color`, `pick`, `hide`, `all_segments` and `color_by`.
+
+**`--color-by LAYER=PROP[,PROP...]` colours bodies by their segment properties**, which a
+segmentation layer cannot do itself (it has no shader). A property is a tag facet (`group`,
+`ol_column`), a flag tag or `label`; each body takes the first one it has a value for, so
+`ol_column,group` colours by column and falls back to the cell type. Each value gets a fixed
+colour from neuroglancer's segment palette, the same in every state, written into
+`segmentColors` — so it is fixed when the state is made (regenerate after the properties
+change), adds ~25 bytes per coloured body to the state, and has no legend. Bodies with no
+value keep their hash colour. A layer the state does not have is skipped with a
+note, so one file serves many states; an unknown key or a shader control the shader does not
+declare is refused, since neuroglancer would ignore it.
 
 ## Subcommands
 
@@ -33,6 +83,13 @@ instead of stdout (repeatable; `--out -` is stdout as well).
 state's own `dimensions`, position and zoom are kept, so adding a layer does not move your
 view, and a layer whose name is already taken is renamed and reported rather than silently
 shadowing the one already there.
+
+With nothing to add, `gen --into` re-emits the state. For a state file on `s3://` or `gs://`
+the link then **names the file** (`<viewer>/#!s3://bucket/states/v1.json`) and the viewer
+fetches it: the link stays short and follows later rewrites of the file, which must be
+anonymously readable with CORS. `--expand` puts the whole state in the link instead, as it
+always is for a local file; a short link cannot carry added layers or view options, so asking
+for both is refused.
 
 **Put a neuroglancer URL in single quotes.** Inside double quotes an interactive bash expands
 `!`, and neuroglancer uses it twice: after the `#` that opens the state, and before a hidden
@@ -337,6 +394,7 @@ neu_glance/
 ├── served_layer.py  an array to host, and how to show it
 ├── serving.py       host arrays HERE and run a viewer on them
 ├── shaders.py       GLSL, and the rule for choosing one — annotation and image families
+├── config.py        site display defaults for `gen --config`
 ├── state.py         assemble a state, encode a URL, read one back, merge into one, split a layer
 ├── movie/
 │   ├── animate.py   a timeline of tweens over one state, and the interpolation under it

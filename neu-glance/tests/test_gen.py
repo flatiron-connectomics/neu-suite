@@ -42,8 +42,15 @@ def test_the_source_scheme_comes_from_the_format(tmp_path):
     """`precomputed://` or `zarr://`, from the volume's format."""
     pre = _volume(tmp_path, "pre", profile="local-neuroglancer")
     zar = _volume(tmp_path, "zar", profile="local")
-    assert volume_layer(pre)[0]["source"] == f"precomputed://{pre}"
-    assert volume_layer(zar)[0]["source"] == f"zarr://{zar}"
+    assert volume_layer(pre)[0]["source"]["url"] == f"precomputed://{pre}"
+    assert volume_layer(zar)[0]["source"]["url"] == f"zarr://{zar}"
+
+
+def test_a_volume_layer_leaves_its_bounding_box_off(tmp_path):
+    """Only `bounds` is named, so every other subsource keeps neuroglancer's default."""
+    layer, _ = volume_layer(_volume(tmp_path, "v"))
+    assert layer["source"]["subsources"] == {"bounds": False}
+    assert "enableDefaultSubsources" not in layer["source"]
 
 
 def test_the_recorded_kind_decides_image_versus_segmentation(tmp_path):
@@ -403,7 +410,7 @@ def test_building_a_layer_does_not_open_every_level(tmp_path, monkeypatch):
                         lambda *a, **k: calls.append(a) or real(*a, **k))
 
     layer, frame = volume_layer(vol)
-    assert layer["source"].startswith("precomputed://")
+    assert layer["source"]["url"].startswith("precomputed://")
     assert tuple(frame["voxel_size"]) == (8, 8, 8)
     assert not calls, "volume_layer opened every level to build one layer"
 
@@ -447,11 +454,11 @@ def test_a_volume_passed_as_annotations_is_refused(tmp_path):
 
 
 def test_the_shader_is_chosen_from_the_properties_the_source_declares(tmp_path):
-    from neu_glance.shaders import SHADERS
+    from neu_glance.shaders import synapse_shader
     from neu_glance.sources import annotation_layer
 
     layer, info = annotation_layer(_annotation_source(tmp_path))
-    assert layer["shader"] == SHADERS["synapse"]["source"]
+    assert layer["shader"] == synapse_shader({"conf_pre", "conf_post"})
     assert "synapse" in info["shader"]
 
 
@@ -510,29 +517,30 @@ def test_without_a_segmentation_there_is_no_binding(tmp_path):
     assert "filterBySegmentation" not in layer
 
 
-def test_a_split_pair_filters_each_layer_on_one_relationship(tmp_path):
-    """Two layers on one source: `body_pre` gives outputs, `body_post` inputs."""
-    from neu_glance.sources import annotation_layer_pair
+@pytest.mark.parametrize("properties, boxes", [
+    (("conf_pre", "conf_post"), []),
+    (("conf_pre", "conf_post", "body_pre_u32", "body_post_u32"), ["color_by_neuron_id"]),
+    (("conf_pre", "conf_post", "body_pre_u32", "body_post_u32", "neuropil", "roi",
+      "tbar_fanout"),
+     ["color_by_neuropil", "color_by_neuropil_part", "color_by_neuron_id",
+      "color_by_tbar_fanout"]),
+])
+def test_the_synapse_shader_offers_only_the_colourings_the_source_can_feed(
+        tmp_path, properties, boxes):
+    """A colouring reading an absent property would stop the shader compiling."""
+    import re
 
-    layers, _info = annotation_layer_pair(_annotation_source(tmp_path),
-                                          linked_segmentation="seg")
-    assert [lyr["name"] for lyr in layers] == ["syn-pre", "syn-post"]
-    assert [lyr["filterBySegmentation"] for lyr in layers] == [["body_pre"], ["body_post"]]
-    # both relationships stay bound in both layers; only the filter differs
-    for lyr in layers:
-        assert set(lyr["linkedSegmentationLayer"]) == {"body_pre", "body_post"}
-    assert {lyr["source"] for lyr in layers} == {layers[0]["source"]}
+    from neu_glance.sources import annotation_layer
 
-
-def test_each_half_of_a_split_pair_shows_only_its_own_endpoint(tmp_path):
-    """Each half shows one endpoint, through one shared shader."""
-    from neu_glance.sources import annotation_layer_pair
-
-    layers, _info = annotation_layer_pair(_annotation_source(tmp_path),
-                                          linked_segmentation="seg")
-    assert layers[0]["shaderControls"] == {"show_pre": True, "show_post": False}
-    assert layers[1]["shaderControls"] == {"show_pre": False, "show_post": True}
-    assert layers[0]["shader"] == layers[1]["shader"]
+    layer, info = annotation_layer(_annotation_source(tmp_path, properties=properties))
+    found = re.findall(r"#uicontrol bool (color_by_\w+)", layer["shader"])
+    assert found == boxes
+    declared = set(properties)
+    used = set(re.findall(r"prop_(\w+)\(\)", layer["shader"]))
+    assert used <= declared, f"the shader reads undeclared {sorted(used - declared)}"
+    assert ("hide_uncolored" in layer["shader"]) == bool(set(boxes) - {"color_by_tbar_fanout"})
+    for box in boxes:
+        assert box in info["shader"]
 
 
 def test_filtering_on_a_relationship_the_source_lacks_is_refused(tmp_path):
@@ -544,15 +552,31 @@ def test_filtering_on_a_relationship_the_source_lacks_is_refused(tmp_path):
                          filter_relationships=["body_post"])
 
 
-def test_the_cli_split_flag_adds_both_layers(tmp_path, capsys):
-    vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
+def test_seg_display_flags_set_one_layer_each(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
     cli.cmd_gen(cli._parse_args(
-        ["gen", "--seg", vol, "--annotations", _annotation_source(tmp_path),
-         "--segments", "7", "--annotation-split"]))
-    layers = parse_url(capsys.readouterr().out.strip())["layers"]
-    ann = [lyr for lyr in layers if lyr["type"] == "annotation"]
-    assert [lyr["name"] for lyr in ann] == ["syn-pre", "syn-post"]
-    assert [lyr["filterBySegmentation"] for lyr in ann] == [["body_pre"], ["body_post"]]
+        ["gen", "--seg", a, "--seg", b, "--silhouette", "a=5", "--opacity-2d", "a=0",
+         "--opacity-3d", "b=0.4"]))
+    layers = {lyr["name"]: lyr for lyr in parse_url(capsys.readouterr().out.strip())["layers"]}
+    assert layers["a"]["meshSilhouetteRendering"] == 5.0
+    assert layers["a"]["selectedAlpha"] == 0.0
+    assert "objectAlpha" not in layers["a"]
+    assert layers["b"]["objectAlpha"] == 0.4
+    assert "meshSilhouetteRendering" not in layers["b"]
+
+
+@pytest.mark.parametrize("flag, value, message", [
+    ("--silhouette", "nope=5", "names no --seg layer"),
+    ("--opacity-2d", "a", "LAYER_NAME=VALUE"),
+    ("--opacity-3d", "a=1.5", "between 0 and 1"),
+    ("--silhouette", "a=x", "not a number"),
+])
+def test_seg_display_flags_refuse_what_neuroglancer_would_ignore(tmp_path, flag, value,
+                                                                 message):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    with pytest.raises(SystemExit, match=message):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, flag, value]))
 
 
 def test_the_extent_and_voxel_size_come_from_the_sources_own_info(tmp_path):
