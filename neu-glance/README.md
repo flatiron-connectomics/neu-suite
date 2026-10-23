@@ -29,6 +29,9 @@ The shader gets a `color_by_*` box for each colouring the source has the propert
 | `color_by_neuron_id` | `body_pre_u32`, `body_post_u32` | each end by its body |
 | `color_by_tbar_fanout` | `tbar_fanout` | the T-bar by its partner count (viridis, up to `max_fanout`) |
 
+With a colouring on, each marker's **border** keeps its end's own colour (`pre_color` /
+`post_color`, `border_width` wide), so the two ends stay distinguishable.
+
 A source written with `neu-mark annotation-source --listed` also gets two filters:
 `hide_unlisted` hides synapses with neither end on a listed body, and
 `hide_unlisted_partner` keeps only those between listed bodies.

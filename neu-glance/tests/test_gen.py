@@ -543,6 +543,17 @@ def test_the_synapse_shader_offers_only_the_colourings_the_source_can_feed(
         assert box in info["shader"]
 
 
+def test_with_a_colouring_the_border_keeps_the_pre_and_post_colours():
+    from neu_glance.shaders import synapse_shader
+
+    plain = synapse_shader({"conf_pre", "conf_post"})
+    coloured = synapse_shader({"conf_pre", "conf_post", "body_pre_u32", "body_post_u32"})
+    assert "setEndpointMarkerBorderColor" not in plain and "border_width" not in plain
+    assert "if (color_by_neuron_id) {\n    setEndpointMarkerBorderColor(pre_color, post_color)" \
+        in coloured
+    assert "#uicontrol float border_width" in coloured
+
+
 @pytest.mark.parametrize("listed", [False, True])
 def test_the_hide_unlisted_filters_come_only_with_the_listed_flags(tmp_path, listed):
     import re

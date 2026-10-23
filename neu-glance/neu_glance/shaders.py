@@ -118,7 +118,7 @@ void main() {
   vec3 post = post_color;
 {coloring}
   setEndpointMarkerColor(vec4(pre, 1.0), vec4(post, 1.0));
-  setLineColor(line_color);
+{border}  setLineColor(line_color);
 
   // The line is only meaningful when both ends are shown; otherwise it points at something
   // deliberately hidden.
@@ -174,6 +174,8 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
                                for name, _ in filters) + "\n")
     if entries:
         controls = [f"#uicontrol bool {name} checkbox(default=false)" for name, _ in entries]
+        controls.append("#uicontrol float border_width slider(min=0.0, max=6.0, step=0.5, "
+                        "default=2.0)")
         if "color_by_tbar_fanout" in chosen:
             controls.append("#uicontrol float max_fanout slider(min=1.0, max=40.0, step=1.0, "
                             "default=20.0)")
@@ -186,10 +188,17 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
             parts.append(_VIRIDIS_GLSL)
         branches = "  " + " else ".join(f"if ({name}) {{\n    {glsl}\n  }}"
                                         for name, glsl in entries) + "\n"
+        # With a colouring on, the fill no longer says which end is which, so the border
+        # keeps the pre / post colour.
+        border = ("  if (" + " || ".join(name for name, _ in entries) + ") {\n"
+                  "    setEndpointMarkerBorderColor(pre_color, post_color);\n"
+                  "    setEndpointMarkerBorderWidth(border_width, border_width);\n"
+                  "  }\n")
     else:
-        branches = ""
+        branches = border = ""
     parts.append(_SYNAPSE_MAIN.replace("{coloring}", branches).replace(
-        "{filters}", "".join(f"  {glsl}\n" for _, glsl in filters)))
+        "{filters}", "".join(f"  {glsl}\n" for _, glsl in filters)).replace(
+        "{border}", border))
     return "\n".join(parts)
 
 
