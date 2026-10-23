@@ -175,7 +175,7 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
     if entries:
         controls = [f"#uicontrol bool {name} checkbox(default=false)" for name, _ in entries]
         controls.append("#uicontrol float border_width slider(min=0.0, max=6.0, step=0.5, "
-                        "default=2.0)")
+                        "default=0.5)")
         if "color_by_tbar_fanout" in chosen:
             controls.append("#uicontrol float max_fanout slider(min=1.0, max=40.0, step=1.0, "
                             "default=20.0)")
