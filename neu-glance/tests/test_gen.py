@@ -543,6 +543,20 @@ def test_the_synapse_shader_offers_only_the_colourings_the_source_can_feed(
         assert box in info["shader"]
 
 
+@pytest.mark.parametrize("listed", [False, True])
+def test_the_hide_unlisted_filters_come_only_with_the_listed_flags(tmp_path, listed):
+    import re
+
+    from neu_glance.sources import annotation_layer
+
+    props = ("conf_pre", "conf_post") + (("pre_listed", "post_listed") if listed else ())
+    layer, info = annotation_layer(_annotation_source(tmp_path, properties=props))
+    boxes = re.findall(r"#uicontrol bool (hide_unlisted\w*)", layer["shader"])
+    assert boxes == (["hide_unlisted", "hide_unlisted_partner"] if listed else [])
+    assert ("prop_pre_listed()" in layer["shader"]) == listed
+    assert ("filters: hide_unlisted" in info["shader"]) == listed
+
+
 def test_filtering_on_a_relationship_the_source_lacks_is_refused(tmp_path):
     from neu_glance.sources import annotation_layer
 

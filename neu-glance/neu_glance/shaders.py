@@ -29,6 +29,17 @@ SYNAPSE_COLORINGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
      "pre = viridis(min(float(prop_tbar_fanout()), max_fanout) / max_fanout);"),
 )
 
+#: The synapse shader's optional filters: ``(checkbox, properties read, GLSL)``, included
+#: like :data:`SYNAPSE_COLORINGS`. ``*_listed`` is 1 where that end's body is one the
+#: segmentation shows (``neu-mark annotation-source --listed``).
+SYNAPSE_FILTERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("hide_unlisted", ("pre_listed", "post_listed"),
+     "if (hide_unlisted && prop_pre_listed() == 0u && prop_post_listed() == 0u) { discard; }"),
+    ("hide_unlisted_partner", ("pre_listed", "post_listed"),
+     "if (hide_unlisted_partner && (prop_pre_listed() == 0u || prop_post_listed() == 0u)) "
+     "{ discard; }"),
+)
+
 _SYNAPSE_CONTROLS = """\
 #uicontrol bool show_pre checkbox(default=true)
 #uicontrol bool show_post checkbox(default=true)
@@ -102,7 +113,7 @@ void main() {
   // That is deliberate: a synapse with no confidence value was usually added by hand by a
   // proofreader, making it MORE trustworthy rather than less. Keep this as discard-if-below.
   if (prop_conf_pre() < min_conf || prop_conf_post() < min_conf) discard;
-
+{filters}
   vec3 pre = pre_color;
   vec3 post = post_color;
 {coloring}
@@ -134,6 +145,12 @@ def synapse_colorings(declared: Iterable[str]) -> list[str]:
     return [name for name, props, _ in SYNAPSE_COLORINGS if have.issuperset(props)]
 
 
+def synapse_filters(declared: Iterable[str]) -> list[str]:
+    """The checkboxes of :data:`SYNAPSE_FILTERS` a source declaring ``declared`` gets."""
+    have = set(declared)
+    return [name for name, props, _ in SYNAPSE_FILTERS if have.issuperset(props)]
+
+
 def synapse_shader(declared: Iterable[str] = ()) -> str:
     """The synapse shader for a source whose properties are ``declared``.
 
@@ -146,9 +163,15 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
     threshold while ``keep if conf >= min`` would hide them all. Unknown confidence usually
     means a synapse added by a proofreader, among the most trustworthy.
     """
+    declared = set(declared)
     chosen = set(synapse_colorings(declared))
     entries = [(name, glsl) for name, _, glsl in SYNAPSE_COLORINGS if name in chosen]
+    filtering = set(synapse_filters(declared))
+    filters = [(name, glsl) for name, _, glsl in SYNAPSE_FILTERS if name in filtering]
     parts = [_SYNAPSE_CONTROLS]
+    if filters:
+        parts.append("\n".join(f"#uicontrol bool {name} checkbox(default=false)"
+                               for name, _ in filters) + "\n")
     if entries:
         controls = [f"#uicontrol bool {name} checkbox(default=false)" for name, _ in entries]
         if "color_by_tbar_fanout" in chosen:
@@ -165,12 +188,14 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
                                         for name, glsl in entries) + "\n"
     else:
         branches = ""
-    parts.append(_SYNAPSE_MAIN.replace("{coloring}", branches))
+    parts.append(_SYNAPSE_MAIN.replace("{coloring}", branches).replace(
+        "{filters}", "".join(f"  {glsl}\n" for _, glsl in filters)))
     return "\n".join(parts)
 
 
-#: Every colouring included, as `neu-glance shaders synapse` prints it.
-SYNAPSE_SHADER = synapse_shader(p for _, props, _ in SYNAPSE_COLORINGS for p in props)
+#: Every colouring and filter included, as `neu-glance shaders synapse` prints it.
+SYNAPSE_SHADER = synapse_shader(p for _, props, _ in (*SYNAPSE_COLORINGS, *SYNAPSE_FILTERS)
+                                for p in props)
 
 #: Built-in shaders by name, each declaring the properties it requires so
 #: :func:`pick_shader` can refuse an unrunnable pairing. ``build`` makes the source from the
@@ -241,7 +266,9 @@ def _extras(name: str, declared: set[str]) -> str:
     if name != "synapse":
         return ""
     found = synapse_colorings(declared)
-    return f"; colourings: {', '.join(found)}" if found else "; no colourings"
+    text = f"; colourings: {', '.join(found)}" if found else "; no colourings"
+    hides = synapse_filters(declared)
+    return text + (f"; filters: {', '.join(hides)}" if hides else "")
 
 
 # --------------------------------------------------------------------------- #

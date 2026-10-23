@@ -29,6 +29,10 @@ The shader gets a `color_by_*` box for each colouring the source has the propert
 | `color_by_neuron_id` | `body_pre_u32`, `body_post_u32` | each end by its body |
 | `color_by_tbar_fanout` | `tbar_fanout` | the T-bar by its partner count (viridis, up to `max_fanout`) |
 
+A source written with `neu-mark annotation-source --listed` also gets two filters:
+`hide_unlisted` hides synapses with neither end on a listed body, and
+`hide_unlisted_partner` keeps only those between listed bodies.
+
 An id colouring uses **neuroglancer's own segment colour** for the id (colour seed 0), so a
 synapse coloured by neuropil matches that neuropil's mesh in an ROI layer, and one coloured by
 neuron matches the body. Id 0 means none and is white; `hide_uncolored` drops those.

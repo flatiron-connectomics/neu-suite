@@ -1217,7 +1217,7 @@ def cmd_shaders(args) -> int:
     Annotation shaders (which need the source's ``prop_`` properties) and image shaders
     (which need a channel count) are listed separately.
     """
-    from .shaders import IMAGE_SHADERS, SHADERS, SYNAPSE_COLORINGS
+    from .shaders import IMAGE_SHADERS, SHADERS, SYNAPSE_COLORINGS, SYNAPSE_FILTERS
 
     if args.name is None:
         print("annotation shaders  (for `gen --annotation-shader`)")
@@ -1225,7 +1225,7 @@ def cmd_shaders(args) -> int:
             print(f"  {name}\t{entry['doc']}")
             print(f"    reads: {', '.join(entry['properties'])}")
             if name == "synapse":
-                for box, props, _glsl in SYNAPSE_COLORINGS:
+                for box, props, _glsl in (*SYNAPSE_COLORINGS, *SYNAPSE_FILTERS):
                     print(f"    {box}: if the source has {', '.join(props)}")
         print("\nimage shaders  (for `serve --shader`)")
         for name, entry in IMAGE_SHADERS.items():
