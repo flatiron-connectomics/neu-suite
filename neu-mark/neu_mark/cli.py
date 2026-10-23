@@ -281,6 +281,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "are KEPT and undifferentiated: the partner is a real synapse whose "
                         "body simply was not in the fetched set, and the line is still where "
                         "the synapse is.")
+    q.add_argument("--roi-spec", metavar="TOML", default=None,
+                   help="a roi-layers spec: adds `roi` and `neuropil` properties, each "
+                        "synapse's ROI and its top-level neuropil by the spec's ids (the ids "
+                        "the ROI layers paint, so a synapse coloured by id matches its "
+                        "neuropil's mesh). Needs tables from `points --rois`.")
     q.add_argument("--per-cell", type=int, default=4_000, metavar="N",
                    help="annotations a spatial cell aims to hold, which sets how many levels "
                         "the grid needs and how much a zoomed-out view downloads "
@@ -738,14 +743,15 @@ def cmd_annotation_source(args) -> int:
         if "connections" not in kwargs:
             raise SystemExit("--dry-run needs --tables; there is nothing to plan before "
                              "the fetch has happened.")
-        frame = _t.enrich_connections(kwargs["connections"], kwargs["points"])
+        frame, rois = ops.enrich_for_source(kwargs["connections"], kwargs["points"],
+                                            args.roi_spec)
         if bounds is None:
             corners = np.vstack([_t.positions_xyz(frame, "pre_"),
                                  _t.positions_xyz(frame, "post_")]).astype(float)
             bounds = (corners.min(axis=0), corners.max(axis=0) + 1.0)
         built = annsource.build(frame, lower_bound=bounds[0], upper_bound=bounds[1],
                                 voxel_size_xyz=voxel_size, per_cell=args.per_cell,
-                                include_partial=bool(args.include_partial))
+                                include_partial=bool(args.include_partial), **rois)
         for line in annsource.format_report(built["report"]):
             print(line)
         print(f"would write to {dst} (nothing written)")
@@ -753,7 +759,7 @@ def cmd_annotation_source(args) -> int:
 
     result = ops.annotation_source(dst, voxel_size_xyz=voxel_size, bounds=bounds,
                                    include_partial=bool(args.include_partial),
-                                   per_cell=args.per_cell, **kwargs)
+                                   per_cell=args.per_cell, roi_spec=args.roi_spec, **kwargs)
     for line in annsource.format_report(result["report"]):
         print(line)
     print(f"wrote {', '.join(result['written'])} to {dst}")

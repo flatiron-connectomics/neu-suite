@@ -64,6 +64,13 @@ def normalize_tag(value: Any) -> str | None:
     return re.sub(r"\s+", "-", text)
 
 
+def natural_key(tag: str) -> tuple:
+    """Sort key for tags: case-insensitive, with runs of digits compared as numbers, and
+    the original text last so the order is total."""
+    parts = re.split(r"(\d+)", tag.lower())
+    return (tuple((0, int(p)) if p.isdigit() else (1, p) for p in parts), tag)
+
+
 def case_collisions(vocabulary: Iterable[str]) -> dict[str, list[str]]:
     """``{lowercased: [tags]}`` for tags that differ only in case.
 
@@ -244,18 +251,12 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     # A segment with no label is labelled with its id.
     labels = [label if label else str(body) for body, label, _d, _t in rows]
 
-    vocabulary: list[str] = []
-    index_of: dict[str, int] = {}
-    per_body: list[list[int]] = []
-    for _body, _label, _desc, tags in rows:
-        indices = []
-        for tag in tags:
-            if tag not in index_of:
-                index_of[tag] = len(vocabulary)
-                vocabulary.append(tag)
-            indices.append(index_of[tag])
-        # The spec requires the indices of one segment in increasing order.
-        per_body.append(sorted(set(indices)))
+    # The viewer lists tags in vocabulary order, so sort it: facets group by prefix, and
+    # numbers within a tag compare as numbers (col:A2 before col:A10).
+    vocabulary = sorted({tag for *_rest, tags in rows for tag in tags}, key=natural_key)
+    index_of = {tag: i for i, tag in enumerate(vocabulary)}
+    # The spec requires the indices of one segment in increasing order.
+    per_body = [sorted({index_of[tag] for tag in tags}) for *_rest, tags in rows]
 
     facet_names = sorted({t.split(SEPARATOR, 1)[0] if SEPARATOR in t else ""
                           for t in vocabulary})

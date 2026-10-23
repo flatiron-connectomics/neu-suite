@@ -33,10 +33,16 @@ REL_PRE, REL_POST = "body_pre", "body_post"
 REL_KEYS = {REL_PRE: "by_rel_body_pre", REL_POST: "by_rel_body_post"}
 SPATIAL_KEY = "by_spatial_level_{level}"
 
-def default_properties(roi_labels: Sequence[str] | None = None) -> list[dict[str, Any]]:
-    """The properties of a synapse line, unsorted: element confidences, and body ids
-    truncated to uint32 (properties cannot be uint64), plus an ``roi`` enum if labels are
-    given."""
+#: Value of an ROI property where the synapse is in no ROI.
+NO_ROI = 0
+NO_ROI_LABEL = "<none>"
+
+
+def default_properties(rois: Mapping[str, Mapping[int, str]] | None = None
+                       ) -> list[dict[str, Any]]:
+    """The properties of a synapse line, unsorted: element confidences, body ids truncated
+    to uint32 (properties cannot be uint64) and the T-bar's fanout, plus one int16 enum per
+    entry of ``rois`` (``{property id: {value: label}}``)."""
     props: list[dict[str, Any]] = [
         {"id": "conf_pre", "type": "float32",
          "description": "confidence of the presynaptic element"},
@@ -47,12 +53,68 @@ def default_properties(roi_labels: Sequence[str] | None = None) -> list[dict[str
                         "uint64); the full id is in the body_pre relationship"},
         {"id": "body_post_u32", "type": "uint32",
          "description": "postsynaptic body id, truncated to 32 bits"},
+        {"id": "tbar_fanout", "type": "uint16",
+         "description": "partners of this line's T-bar in the table; complete when the "
+                        "T-bar's body was fetched"},
     ]
-    if roi_labels:
-        props.append(ann.enum_property(
-            "roi", roi_labels, dtype="int16",
-            description="neuropil containing the presynaptic site"))
+    for prop_id, labels in (rois or {}).items():
+        values = sorted({NO_ROI, *labels})
+        props.append({"id": prop_id, "type": "int16",
+                      "description": ROI_DESCRIPTIONS.get(prop_id, prop_id),
+                      "enum_values": values,
+                      "enum_labels": [labels.get(v, NO_ROI_LABEL) for v in values]})
     return props
+
+
+#: The ROI properties :func:`roi_values` makes, and what each one means.
+ROI_DESCRIPTIONS = {
+    "roi": "ROI of the synapse (the T-bar's, else the PSD's), by the ROI spec's id",
+    "neuropil": "top-level neuropil of that ROI, by the ROI spec's id",
+}
+
+
+def roi_values(frame, ids: Mapping[str, int], top_level: Mapping[str, str]
+               ) -> tuple[dict[str, np.ndarray], dict[str, dict[int, str]]]:
+    """``roi`` and ``neuropil`` per line, as ROI spec ids, from ``pre_roi`` / ``post_roi``.
+
+    The ids are the ones the ROI layers paint, so a synapse coloured by id matches its
+    neuropil's mesh. A line takes its T-bar's ROI, else its PSD's (a T-bar outside the
+    body list was not fetched). Returns ``(values, {property: {id: name}})``.
+    """
+    for column in ("pre_roi", "post_roi"):
+        if column not in frame.columns:
+            raise KeyError(
+                f"the connections table has no {column!r} column: fetch the points with "
+                f"--rois, and join it with tables.enrich_connections(conns, points, "
+                f"columns=('conf', 'roi'))")
+    names = frame["pre_roi"].where(frame["pre_roi"].notna(), frame["post_roi"])
+    present = sorted(str(n) for n in names.dropna().unique())
+    unknown = [n for n in present if n not in ids or n not in top_level]
+    if unknown:
+        raise KeyError(f"ROI(s) {', '.join(unknown)} have no id or no top-level neuropil in "
+                       f"the ROI spec; the points were labelled with a different set")
+    tops = sorted({top_level[n] for n in present})
+    missing = [t for t in tops if t not in ids]
+    if missing:
+        raise KeyError(f"top-level neuropil(s) {', '.join(missing)} have no id in the ROI "
+                       f"spec")
+    as_id = {n: ids[n] for n in present}
+    values = {
+        "roi": names.map(as_id).fillna(NO_ROI).to_numpy(dtype="int16"),
+        "neuropil": names.map({n: ids[top_level[n]] for n in present})
+                         .fillna(NO_ROI).to_numpy(dtype="int16"),
+    }
+    labels = {"roi": {ids[n]: n for n in present}, "neuropil": {ids[t]: t for t in tops}}
+    return values, labels
+
+
+def tbar_fanout(frame) -> np.ndarray:
+    """How many lines share each line's presynaptic coordinate, capped at uint16."""
+    from . import tables
+
+    pre = tables.positions_xyz(frame, "pre_")
+    _, inverse, counts = np.unique(pre, axis=0, return_inverse=True, return_counts=True)
+    return np.minimum(counts[inverse.ravel()], np.iinfo(np.uint16).max).astype("uint16")
 
 
 def annotation_ids(pre_xyz: np.ndarray, post_xyz: np.ndarray) -> np.ndarray:
@@ -176,10 +238,15 @@ def _assign_levels(pre_xyz: np.ndarray, levels: list[dict[str, Any]],
 
 
 def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[float],
-          voxel_size_xyz: Sequence[float], roi_labels: Sequence[str] | None = None,
+          voxel_size_xyz: Sequence[float], roi_ids: Mapping[str, int] | None = None,
+          top_level: Mapping[str, str] | None = None,
           include_partial: bool = True, per_cell: int = 4_000,
           max_levels: int = 16, seed: int = 0) -> dict[str, Any]:
     """Everything needed to write a source, from a ``connections`` table.
+
+    ``roi_ids`` (ROI name to the ROI spec's id) and ``top_level`` (ROI to its top-level
+    neuropil) add the ``roi`` and ``neuropil`` properties, from the table's ``pre_roi`` /
+    ``post_roi`` (:func:`roi_values`).
 
     Returns ``{"info", "by_id", "relationships", "spatial", "report"}`` where the index values
     are ``{key: [(chunk_id, payload)]}`` ready for :func:`neu_vol.sharded.write_all`.
@@ -195,7 +262,11 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
     total = len(frame)
     if not total:
         raise ValueError("no connections to write")
+    if (roi_ids is None) != (top_level is None):
+        raise ValueError("roi_ids and top_level go together: both come from the ROI spec")
 
+    # Counted before partial lines are dropped: those partners are still partners.
+    frame = frame.assign(_tbar_fanout=tbar_fanout(frame))
     have_pre = frame["pre_body"].notna().to_numpy()
     have_post = frame["post_body"].notna().to_numpy()
     if not include_partial:
@@ -212,6 +283,8 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
             f"{len(ids) - len(np.unique(ids))} annotation ids collide; ids are hashed from "
             f"the endpoint pair, so a collision means two lines share both endpoints")
 
+    roi_columns, roi_labels = ({}, None) if roi_ids is None else roi_values(
+        frame, roi_ids, top_level)
     props = ann.sort_properties(default_properties(roi_labels))
     pre_body = frame["pre_body"].fillna(0).astype("uint64").to_numpy()
     post_body = frame["post_body"].fillna(0).astype("uint64").to_numpy()
@@ -230,13 +303,10 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
         "conf_post": frame["post_conf"].to_numpy(dtype="float32", na_value=np.float32("nan")),
         "body_pre_u32": (pre_body & 0xFFFFFFFF).astype("uint32"),
         "body_post_u32": (post_body & 0xFFFFFFFF).astype("uint32"),
+        "tbar_fanout": frame["_tbar_fanout"].to_numpy(dtype="uint16"),
+        **roi_columns,
     }
-    if roi_labels:
-        if "pre_roi_index" not in frame.columns:
-            raise KeyError(
-                "roi_labels were given but the table has no 'pre_roi_index' column; map the "
-                "joined 'pre_roi' names to their label indices first")
-        values["roi"] = frame["pre_roi_index"].fillna(0).to_numpy(dtype="int16")
+    frame = frame.drop(columns=["_tbar_fanout"])
 
     geometry = np.hstack([pre_xyz, post_xyz]).astype("<f4")
 
@@ -305,6 +375,10 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
         "both_bodies": int((have_pre & have_post).sum()),
         "one_body": int((have_pre ^ have_post).sum()),
         "stride": ann.record_size(ann.LINE, props),
+        "fanout_max": int(values["tbar_fanout"].max()),
+        "fanout_median": float(np.median(values["tbar_fanout"])),
+        "in_roi": int((roi_columns["roi"] != NO_ROI).sum()) if roi_columns else None,
+        "rois": len(roi_labels["roi"]) if roi_labels else None,
         "by_id_shards": 2 ** by_id_sharding["shard_bits"],
         "levels": [{"grid": lvl["grid_shape"], "cells": len(e), "limit": limits[i]}
                    for i, (lvl, e) in enumerate(zip(levels, spatial_entries))],
@@ -511,6 +585,13 @@ def format_report(report: Mapping[str, Any]) -> list[str]:
         lines.append(f"  dropped {report['dropped_partial']:,} with an unresolved partner")
     lines.append(f"  both bodies known: {report['both_bodies']:,}"
                  f"   one only: {report['one_body']:,}")
+    if "fanout_max" in report:
+        lines.append(f"  T-bar fanout: median {report['fanout_median']:g}, "
+                     f"max {report['fanout_max']}")
+    if report.get("in_roi") is not None:
+        lines.append(f"  in an ROI: {report['in_roi']:,} "
+                     f"({report['in_roi'] / max(1, report['lines']):.1%}), "
+                     f"{report['rois']} ROIs")
     lines.append(f"  by_id: {report['by_id_shards']} shards")
     for i, lvl in enumerate(report["levels"]):
         lines.append(f"  level {i}: grid {lvl['grid']}  {lvl['cells']} cells  "

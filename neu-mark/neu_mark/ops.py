@@ -137,12 +137,15 @@ def annotation_source(dst: str, *, connections=None, points=None,
                       voxel_size_xyz: Sequence[float] = (8.0, 8.0, 8.0),
                       bounds: tuple[Sequence[float], Sequence[float]] | None = None,
                       include_partial: bool = True, per_cell: int = 4_000,
+                      roi_spec: str | None = None,
                       threads: int = _dvid.DEFAULT_THREADS) -> dict[str, Any]:
     """Write a precomputed LINE annotation source: one line per synaptic connection.
 
     Pass ``connections`` and ``points`` from an earlier ``neu-mark points`` run, or a
     ``source`` and ``bodies`` to fetch now. ``bounds`` (the format's required
     ``lower_bound``/``upper_bound``) defaults to the data's extent plus one voxel.
+    ``roi_spec`` (a ``roi-layers`` spec) adds the ``roi`` and ``neuropil`` properties, by
+    the spec's ids, from the points' ``roi`` column.
     """
     import numpy as np
 
@@ -158,7 +161,7 @@ def annotation_source(dst: str, *, connections=None, points=None,
     if points is None:
         raise ValueError("points are needed to attach each endpoint's confidence")
 
-    enriched = _t.enrich_connections(connections, points, columns=("conf",))
+    enriched, rois = enrich_for_source(connections, points, roi_spec)
 
     if bounds is None:
         corners = np.vstack([_t.positions_xyz(enriched, "pre_"),
@@ -167,13 +170,13 @@ def annotation_source(dst: str, *, connections=None, points=None,
 
     built = annsource.build(enriched, lower_bound=bounds[0], upper_bound=bounds[1],
                             voxel_size_xyz=voxel_size_xyz,
-                            include_partial=include_partial, per_cell=per_cell)
+                            include_partial=include_partial, per_cell=per_cell, **rois)
     written = annsource.write(dst, built)
 
     run = {"lines": built["report"]["lines"], "connections": built["report"]["connections"],
            "both_bodies": built["report"]["both_bodies"],
            "one_body": built["report"]["one_body"],
-           "include_partial": include_partial,
+           "include_partial": include_partial, "roi_spec": roi_spec,
            "levels": len(built["info"]["spatial"]),
            "stride": built["report"]["stride"]}
     if source is not None:
@@ -185,6 +188,20 @@ def annotation_source(dst: str, *, connections=None, points=None,
     _io.write_provenance(dst, record)
     # `table` is the enriched frame the source was built from.
     return {**built, "written": written, "record": record, "table": enriched}
+
+
+def enrich_for_source(connections, points, roi_spec: str | None = None):
+    """``(connections with each end's conf (and roi), build kwargs)`` for
+    :func:`neu_mark.annsource.build`; the CLI's dry run shares it."""
+    from . import tables as _t
+
+    if roi_spec is None:
+        return _t.enrich_connections(connections, points, columns=("conf",)), {}
+    from .roi_layers import load_spec, top_level
+
+    spec = load_spec(roi_spec)
+    enriched = _t.enrich_connections(connections, points, columns=("conf", "roi"))
+    return enriched, {"roi_ids": spec.ids, "top_level": top_level(spec)}
 
 
 def segment_properties(bodies_source: Mapping[str, Any], dst: str,

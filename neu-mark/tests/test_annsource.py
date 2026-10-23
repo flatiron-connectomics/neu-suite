@@ -255,25 +255,76 @@ def test_level_count_is_capped():
 def test_properties_are_the_documented_set_in_size_order():
     props = _built(n=20)["info"]["properties"]
     assert [p["id"] for p in props] == ["conf_pre", "conf_post",
-                                        "body_pre_u32", "body_post_u32"]
+                                        "body_pre_u32", "body_post_u32", "tbar_fanout"]
 
 
-def test_a_roi_enum_is_added_when_labels_are_given():
-    df = connections(20)
-    df["pre_roi_index"] = [i % 3 for i in range(20)]
-    built = annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
-                            voxel_size_xyz=[8, 8, 8], per_cell=50,
-                            roi_labels=["<unspecified>", "ME(L)", "LO(R)"])
-    roi = [p for p in built["info"]["properties"] if p["id"] == "roi"][0]
-    assert roi["type"] == "int16" and roi["enum_labels"][0] == "<unspecified>"
-    # int16 sorts after the 4-byte properties
-    assert [p["id"] for p in built["info"]["properties"]][-1] == "roi"
+def test_fanout_counts_the_partners_of_each_tbar_including_partial_lines():
+    df = connections(6, partial=2)
+    for a in ("z", "y", "x"):                 # rows 0-3 share one T-bar, 4-5 another
+        df[f"pre_{a}"] = [1, 1, 1, 1, 2, 2]
+    for include in (True, False):
+        built = annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
+                                voxel_size_xyz=[8, 8, 8], per_cell=50,
+                                include_partial=include)
+        props = built["info"]["properties"]
+        for i, raw in built["by_id"]:
+            got = ann.decode_single(raw, annotation_type="line", properties=props,
+                                    n_relationships=2)
+            pre_z = int(got["geometry"][2])
+            assert got["values"]["tbar_fanout"] == (4 if pre_z == 1 else 2)
+        assert "_tbar_fanout" not in built["table"].columns
 
 
-def test_roi_labels_without_the_index_column_are_refused():
-    with pytest.raises(KeyError, match="pre_roi_index"):
+ROI_IDS = {"OL(L)": 1, "ME(L)": 3, "LO(L)": 4, "CX": 37, "PB(L)": 40}
+TOP = {"ME(L)": "OL(L)", "LO(L)": "OL(L)", "PB(L)": "CX"}
+
+
+def _with_rois(n=6):
+    df = connections(n)
+    df["pre_roi"] = pd.Series(["ME(L)", None, "PB(L)", None, "LO(L)", "ME(L)"][:n],
+                              dtype="string")
+    df["post_roi"] = pd.Series(["LO(L)", "PB(L)", "ME(L)", None, None, None][:n],
+                               dtype="string")
+    return df
+
+
+def test_roi_properties_carry_the_spec_ids_preferring_the_tbar():
+    """Spec ids are what the ROI layers paint, so the colours of the two agree."""
+    built = annsource.build(_with_rois(), lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
+                            voxel_size_xyz=[8, 8, 8], per_cell=50, roi_ids=ROI_IDS,
+                            top_level=TOP)
+    props = {p["id"]: p for p in built["info"]["properties"]}
+    assert props["roi"]["type"] == props["neuropil"]["type"] == "int16"
+    assert dict(zip(props["roi"]["enum_values"], props["roi"]["enum_labels"])) == {
+        0: "<none>", 3: "ME(L)", 4: "LO(L)", 40: "PB(L)"}
+    assert dict(zip(props["neuropil"]["enum_values"], props["neuropil"]["enum_labels"])) == {
+        0: "<none>", 1: "OL(L)", 37: "CX"}
+
+    rows = {}
+    for _i, raw in built["by_id"]:
+        got = ann.decode_single(raw, annotation_type="line",
+                                properties=built["info"]["properties"], n_relationships=2)
+        rows[tuple(int(v) for v in got["geometry"][:3])] = (got["values"]["roi"],
+                                                           got["values"]["neuropil"])
+    df = _with_rois()
+    want = [(3, 1), (40, 37), (40, 37), (0, 0), (4, 1), (3, 1)]   # row 1 takes the PSD's
+    for r, expected in enumerate(want):
+        key = (int(df["pre_x"][r]), int(df["pre_y"][r]), int(df["pre_z"][r]))
+        assert rows[key] == expected
+
+
+def test_an_roi_the_spec_does_not_know_is_refused():
+    df = _with_rois()
+    df.loc[0, "pre_roi"] = "AL(R)"
+    with pytest.raises(KeyError, match="AL"):
+        annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
+                        voxel_size_xyz=[8, 8, 8], roi_ids=ROI_IDS, top_level=TOP)
+
+
+def test_roi_ids_without_the_roi_columns_are_refused():
+    with pytest.raises(KeyError, match="pre_roi"):
         annsource.build(connections(5), lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
-                        voxel_size_xyz=[8, 8, 8], roi_labels=["<unspecified>", "ME(L)"])
+                        voxel_size_xyz=[8, 8, 8], roi_ids=ROI_IDS, top_level=TOP)
 
 
 def test_a_missing_conf_column_is_refused_rather_than_zero_filled():

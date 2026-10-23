@@ -113,6 +113,21 @@ def test_tag_case_is_preserved_and_collisions_are_reported_not_folded():
     assert segprops.case_collisions(["group:Tm2", "side:L"]) == {}
 
 
+def test_the_vocabulary_is_sorted_naturally_and_each_body_keeps_its_tags():
+    """The viewer lists tags in vocabulary order; digits compare as numbers."""
+    @rule(prefix="col", multi=True)
+    def col(r):
+        return {1: ["A10", "A2"], 2: ["b1"], 3: ["A1"]}.get(int(r["body"]), [])
+
+    result = _built(rules=[col])
+    vocab = _props(result["info"])["tags"]["tags"]
+    assert vocab == sorted(vocab, key=segprops.natural_key)
+    cols = [t for t in vocab if t.startswith("col:")]
+    assert cols == ["col:A1", "col:A2", "col:A10", "col:b1"]
+    assert {"col:A2", "col:A10"} <= _tags_of(result, 1)
+    assert "col:b1" in _tags_of(result, 2) and "col:A1" in _tags_of(result, 3)
+
+
 def test_facet_tags_use_a_colon_and_flags_stay_bare():
     """With a hyphen, a facet value is indistinguishable from a standalone flag."""
     tags = _props(_built()["info"])["tags"]["tags"]

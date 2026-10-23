@@ -406,6 +406,12 @@ DRY RUN — nothing written. ./seg is untouched.
 the properties cover what `neu-morpho run` meshed into that volume. It reads unsharded
 meshes only; for a sharded source, pass `--bodies`.
 
+The tag vocabulary is written **sorted**, because the viewer lists tags in vocabulary order:
+facets group by prefix, case is ignored, and numbers compare as numbers (`col:A2` before
+`col:A10`). In the Segments tab's query box, `#side:L` keeps a tag and `-#fragment` drops
+one, `/Tm[0-9]` matches the label as a regular expression, `syn>=100` constrains a number,
+`>syn` sorts by it descending (`<` ascending), and `|post` adds it as a column.
+
 Run `--dry-run` first: it builds and reports without writing anything, which `--no-link`
 does not — that still writes the document. A rule that fires on 2% of bodies looks exactly
 like a facet the data does not have, and only the coverage number tells them apart.
