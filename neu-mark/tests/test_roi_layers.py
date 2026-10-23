@@ -274,6 +274,17 @@ def test_build_refuses_to_replace_a_layer_unless_told(written):
     rl.build(*args, overwrite=True)
 
 
+def test_adding_one_layer_keeps_the_record_of_the_others(written):
+    """`--layers NAME` on a populated destination adds NAME and keeps rois.json whole."""
+    args = ("dvid://dvid.example.org/abc123", written["spec"], written["like"],
+            written["dst"])
+    rl.build(*args, layers=["top"])
+    rl.build(*args, layers=["parts"])
+    on_disk = json.load(open(f"{written['dst']}/rois.json"))
+    assert set(on_disk["layers"]) == {"top", "parts"}
+    assert on_disk["rebuilt"] == ["parts"]
+
+
 def test_a_dry_run_writes_nothing(written, tmp_path):
     rec = rl.build("dvid://dvid.example.org/abc123", written["spec"], written["like"],
                    written["dst"], dry_run=True)

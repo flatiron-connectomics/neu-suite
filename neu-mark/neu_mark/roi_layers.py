@@ -662,6 +662,16 @@ def build(src: str, spec_path: str, like: str, dst: str, *, layers: Sequence[str
               "spec": {"path": os.path.abspath(spec_path), "sha256": digest},
               "like": like, **report,
               "ids": spec.ids, "ignored": spec.ignore}
+    if layers and not dry_run:
+        # A subset run keeps the record of the layers it did not rebuild. The grid comes
+        # from every ROI the spec uses, so it is the same unless the node's ROIs changed.
+        earlier = location.read_json(dst, "rois.json")
+        if earlier and earlier.get("grid") == report["grid"]:
+            record["layers"] = {**earlier.get("layers", {}), **report["layers"]}
+            record["rebuilt"] = sorted(report["layers"])
+        elif earlier:
+            logger.warning("%s/rois.json was written on a different grid; it now records "
+                           "only %s", dst, ", ".join(sorted(report["layers"])))
     if not dry_run:
         location.write_json(dst, record, "rois.json")
     return record
