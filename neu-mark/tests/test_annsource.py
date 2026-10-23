@@ -492,3 +492,28 @@ def tables_positions(df, prefix):
     from neu_mark import tables as _t
 
     return _t.positions_xyz(df, prefix).astype("<i4")
+
+
+def test_listed_flags_mark_each_end_and_unknown_ends_are_unlisted():
+    df = connections(30, partial=5)
+    listed = set(int(b) for b in df["pre_body"].dropna().unique()[:5])
+    built = annsource.build(df, lower_bound=BOUNDS[0], upper_bound=BOUNDS[1],
+                            voxel_size_xyz=[8, 8, 8], per_cell=50, listed=listed)
+    props = built["info"]["properties"]
+    assert {"pre_listed", "post_listed"} <= {p["id"] for p in props}
+    lookup = {tuple(int(v) for v in r[["pre_x", "pre_y", "pre_z", "post_x", "post_y",
+                                       "post_z"]]): r for _, r in df.iterrows()}
+    for _i, raw in built["by_id"]:
+        got = ann.decode_single(raw, annotation_type="line", properties=props,
+                                n_relationships=2)
+        row = lookup[tuple(int(v) for v in got["geometry"])]
+        for side in ("pre", "post"):
+            body = row[f"{side}_body"]
+            want = int(not pd.isna(body) and int(body) in listed)
+            assert got["values"][f"{side}_listed"] == want
+    assert built["report"]["listed_both"] is not None
+
+
+def test_without_listed_there_are_no_listed_flags():
+    assert not {"pre_listed", "post_listed"} & {
+        p["id"] for p in _built(n=10)["info"]["properties"]}

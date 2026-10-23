@@ -180,6 +180,32 @@ def resolve_partner_bodies(points: pd.DataFrame, rels: pd.DataFrame) -> pd.DataF
                 + [c for c in rels.columns if c not in lead]]
 
 
+#: The body of an element on background label: on no body.
+NO_BODY = 0
+
+
+def complete_tables(points: pd.DataFrame, rels: pd.DataFrame) -> dict[str, Any]:
+    """The tables for a WHOLE instance, whose ``points`` carry a looked-up ``body``.
+
+    Each relationship's own body comes from its element and its partner's by the usual
+    position join, which resolves for every partner because every element was fetched. In
+    ``connections``, body 0 (background) becomes null, so no line is indexed under body 0.
+    """
+    points = _coerce_points(points)
+    rels = rels.copy()
+    if len(rels):
+        own = position_index(points)
+        keys = pd.MultiIndex.from_arrays([rels[a] for a in AXES], names=list(AXES))
+        rels["from_body"] = own.reindex(keys).to_numpy()
+    rels = resolve_partner_bodies(points, rels)
+    conns = connections(rels)
+    for column in ("pre_body", "post_body"):
+        body = conns[column].astype("UInt64")
+        conns[column] = body.mask(body == NO_BODY)
+    return {"points": points, "relationships": rels, "connections": conns,
+            "match": match_rate(conns), "failures": {}, "elements": int(len(points))}
+
+
 def connections(rels: pd.DataFrame) -> pd.DataFrame:
     """The oriented, de-duplicated synapse view over the raw relationship table.
 

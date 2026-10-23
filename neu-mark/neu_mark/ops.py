@@ -69,7 +69,7 @@ def _record(source: Mapping[str, Any], dst: str, *, run: Mapping[str, Any]) -> d
     return record
 
 
-def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
+def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int] | None, *,
                  threads: int = _dvid.DEFAULT_THREADS, fmt: str = "parquet",
                  drop_unmatched: bool = False, rois: Sequence[str] | None = None,
                  on_roi_overlap: str = "warn", roi_source: Mapping[str, Any] | None = None,
@@ -77,7 +77,8 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
     """Point annotations for ``bodies`` -> ``points`` + ``relationships`` tables.
 
     ``source`` comes from :func:`neu_mark.dvid.open_points_source`; it carries a
-    concrete uuid.
+    concrete uuid. ``bodies=None`` fetches the whole instance by region, with every
+    element's body from the labelmap (:func:`neu_mark.dvid.fetch_all_points`).
 
     ``drop_unmatched`` removes relationships whose partner body was not resolved. It is off
     by default: an unfetched partner looks the same as a missing synapse, so dropping them
@@ -87,10 +88,14 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
     ROIs drawn on a later node than the points and body ids; the record names it.
     """
     synced = _dvid.require_sync(source)
-    logger.info("%s: %d bodies, %d threads (bodies from sync: %s)",
-                source["instance"], len(bodies), threads, ", ".join(synced))
-
-    result = _dvid.fetch_points(source, bodies, threads=threads)
+    if bodies is None:
+        logger.info("%s: every element, %d processes (bodies from %s)",
+                    source["instance"], threads, synced[0])
+        result = _dvid.fetch_all_points(source, threads=threads)
+    else:
+        logger.info("%s: %d bodies, %d threads (bodies from sync: %s)",
+                    source["instance"], len(bodies), threads, ", ".join(synced))
+        result = _dvid.fetch_points(source, bodies, threads=threads)
     points, rels, match = result["points"], result["relationships"], result["match"]
 
     roi_stats = None
@@ -112,7 +117,8 @@ def fetch_points(source: Mapping[str, Any], dst: str, bodies: Sequence[int], *,
         logger.info("dropped %d relationships with an unresolved partner",
                     before - len(rels))
 
-    run = {"bodies_requested": len(bodies), "threads": threads,
+    run = {"bodies_requested": None if bodies is None else len(bodies),
+           "scope": "all" if bodies is None else "bodies", "threads": threads,
            "elements": int(len(points)), "relationships": int(len(rels)),
            "match": match, "synced_to": synced,
            "drop_unmatched": drop_unmatched or None,
@@ -137,7 +143,7 @@ def annotation_source(dst: str, *, connections=None, points=None,
                       voxel_size_xyz: Sequence[float] = (8.0, 8.0, 8.0),
                       bounds: tuple[Sequence[float], Sequence[float]] | None = None,
                       include_partial: bool = True, per_cell: int = 4_000,
-                      roi_spec: str | None = None,
+                      roi_spec: str | None = None, listed: Sequence[int] | None = None,
                       threads: int = _dvid.DEFAULT_THREADS) -> dict[str, Any]:
     """Write a precomputed LINE annotation source: one line per synaptic connection.
 
@@ -145,7 +151,8 @@ def annotation_source(dst: str, *, connections=None, points=None,
     ``source`` and ``bodies`` to fetch now. ``bounds`` (the format's required
     ``lower_bound``/``upper_bound``) defaults to the data's extent plus one voxel.
     ``roi_spec`` (a ``roi-layers`` spec) adds the ``roi`` and ``neuropil`` properties, by
-    the spec's ids, from the points' ``roi`` column.
+    the spec's ids, from the points' ``roi`` column. ``listed`` (body ids) adds
+    ``pre_listed`` / ``post_listed``.
     """
     import numpy as np
 
@@ -170,13 +177,15 @@ def annotation_source(dst: str, *, connections=None, points=None,
 
     built = annsource.build(enriched, lower_bound=bounds[0], upper_bound=bounds[1],
                             voxel_size_xyz=voxel_size_xyz,
-                            include_partial=include_partial, per_cell=per_cell, **rois)
+                            include_partial=include_partial, per_cell=per_cell,
+                            listed=listed, **rois)
     written = annsource.write(dst, built)
 
     run = {"lines": built["report"]["lines"], "connections": built["report"]["connections"],
            "both_bodies": built["report"]["both_bodies"],
            "one_body": built["report"]["one_body"],
            "include_partial": include_partial, "roi_spec": roi_spec,
+           "listed": None if listed is None else len(listed),
            "levels": len(built["info"]["spatial"]),
            "stride": built["report"]["stride"]}
     if source is not None:

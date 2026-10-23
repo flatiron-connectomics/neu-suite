@@ -38,11 +38,12 @@ NO_ROI = 0
 NO_ROI_LABEL = "<none>"
 
 
-def default_properties(rois: Mapping[str, Mapping[int, str]] | None = None
-                       ) -> list[dict[str, Any]]:
+def default_properties(rois: Mapping[str, Mapping[int, str]] | None = None, *,
+                       listed: bool = False) -> list[dict[str, Any]]:
     """The properties of a synapse line, unsorted: element confidences, body ids truncated
     to uint32 (properties cannot be uint64) and the T-bar's fanout, plus one int16 enum per
-    entry of ``rois`` (``{property id: {value: label}}``)."""
+    entry of ``rois`` (``{property id: {value: label}}``) and, with ``listed``, whether
+    each end's body is one of the listed bodies."""
     props: list[dict[str, Any]] = [
         {"id": "conf_pre", "type": "float32",
          "description": "confidence of the presynaptic element"},
@@ -57,6 +58,11 @@ def default_properties(rois: Mapping[str, Mapping[int, str]] | None = None
          "description": "partners of this line's T-bar in the table; complete when the "
                         "T-bar's body was fetched"},
     ]
+    if listed:
+        props += [{"id": f"{side}_listed", "type": "uint8",
+                   "description": f"1 if the {side}synaptic body is one of the listed "
+                                  f"bodies (meshed, with segment properties), else 0"}
+                  for side in ("pre", "post")]
     for prop_id, labels in (rois or {}).items():
         values = sorted({NO_ROI, *labels})
         props.append({"id": prop_id, "type": "int16",
@@ -240,13 +246,15 @@ def _assign_levels(pre_xyz: np.ndarray, levels: list[dict[str, Any]],
 def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[float],
           voxel_size_xyz: Sequence[float], roi_ids: Mapping[str, int] | None = None,
           top_level: Mapping[str, str] | None = None,
+          listed: Iterable[int] | None = None,
           include_partial: bool = True, per_cell: int = 4_000,
           max_levels: int = 16, seed: int = 0) -> dict[str, Any]:
     """Everything needed to write a source, from a ``connections`` table.
 
     ``roi_ids`` (ROI name to the ROI spec's id) and ``top_level`` (ROI to its top-level
     neuropil) add the ``roi`` and ``neuropil`` properties, from the table's ``pre_roi`` /
-    ``post_roi`` (:func:`roi_values`).
+    ``post_roi`` (:func:`roi_values`). ``listed`` (body ids) adds ``pre_listed`` /
+    ``post_listed``, for hiding synapses on bodies the segmentation does not show.
 
     Returns ``{"info", "by_id", "relationships", "spatial", "report"}`` where the index values
     are ``{key: [(chunk_id, payload)]}`` ready for :func:`neu_vol.sharded.write_all`.
@@ -285,9 +293,15 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
 
     roi_columns, roi_labels = ({}, None) if roi_ids is None else roi_values(
         frame, roi_ids, top_level)
-    props = ann.sort_properties(default_properties(roi_labels))
+    props = ann.sort_properties(default_properties(roi_labels, listed=listed is not None))
     pre_body = frame["pre_body"].fillna(0).astype("uint64").to_numpy()
     post_body = frame["post_body"].fillna(0).astype("uint64").to_numpy()
+    listed_columns: dict[str, np.ndarray] = {}
+    if listed is not None:
+        members = np.unique(np.asarray(list(listed), dtype="uint64"))
+        listed_columns = {
+            "pre_listed": (np.isin(pre_body, members) & have_pre).astype("uint8"),
+            "post_listed": (np.isin(post_body, members) & have_post).astype("uint8")}
 
     # Refuse rather than zero-fill a missing conf column, which would show confidence 0 for
     # every synapse. Confidence comes from elements, via `tables.enrich_connections`.
@@ -305,6 +319,7 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
         "body_post_u32": (post_body & 0xFFFFFFFF).astype("uint32"),
         "tbar_fanout": frame["_tbar_fanout"].to_numpy(dtype="uint16"),
         **roi_columns,
+        **listed_columns,
     }
     frame = frame.drop(columns=["_tbar_fanout"])
 
@@ -379,6 +394,11 @@ def build(connections, *, lower_bound: Sequence[float], upper_bound: Sequence[fl
         "fanout_median": float(np.median(values["tbar_fanout"])),
         "in_roi": int((roi_columns["roi"] != NO_ROI).sum()) if roi_columns else None,
         "rois": len(roi_labels["roi"]) if roi_labels else None,
+        "listed_both": (int((listed_columns["pre_listed"] & listed_columns["post_listed"])
+                            .sum()) if listed_columns else None),
+        "listed_neither": (int((~(listed_columns["pre_listed"].astype(bool)
+                                  | listed_columns["post_listed"].astype(bool))).sum())
+                           if listed_columns else None),
         "by_id_shards": 2 ** by_id_sharding["shard_bits"],
         "levels": [{"grid": lvl["grid_shape"], "cells": len(e), "limit": limits[i]}
                    for i, (lvl, e) in enumerate(zip(levels, spatial_entries))],
@@ -588,6 +608,9 @@ def format_report(report: Mapping[str, Any]) -> list[str]:
     if "fanout_max" in report:
         lines.append(f"  T-bar fanout: median {report['fanout_median']:g}, "
                      f"max {report['fanout_max']}")
+    if report.get("listed_both") is not None:
+        lines.append(f"  both ends on listed bodies: {report['listed_both']:,}   "
+                     f"neither: {report['listed_neither']:,}")
     if report.get("in_roi") is not None:
         lines.append(f"  in an ROI: {report['in_roi']:,} "
                      f"({report['in_roi'] / max(1, report['lines']):.1%}), "

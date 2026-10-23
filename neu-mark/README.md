@@ -187,6 +187,25 @@ dropping earlier turns "the body list did not cover this partner" into "this syn
 not exist", which at low coverage presents a mostly-incomplete connectome as a complete
 one.
 
+### Every synapse: `points --all`
+
+```bash
+neu-mark points --src @synapses --all --out syn/ --connections --dvid-locked
+```
+
+`--all` removes the caveat. It fetches the whole instance by region (DVID's `/blocks`, through
+neuclease's `fetch_synapses_in_batches`) and looks up every element's body in the synced
+labelmap at the same node (`fetch_bodies_for_many_points`: the supervoxel under each point,
+then DVID's whole supervoxel-to-body map), so both ends of every pair are known. Measured on
+a 2.3M-element instance: the fetch takes about 30 s, and 6.6% of its pairs touch no body of
+a ≥10-synapse list, so a body list misses them entirely. An element on background label has
+body 0, which the `connections` table treats as no body. The `points` table keeps each
+element's `sv`, the supervoxel, which makes a later lookup cheaper.
+
+The tables are the same shape as for a body list. `annotation-source --listed BODIES` then
+marks which ends are on the bodies the segmentation shows (`pre_listed` / `post_listed`), so
+the viewer can hide the synapses between fragments.
+
 ## Reading the whole instance
 
 ```bash

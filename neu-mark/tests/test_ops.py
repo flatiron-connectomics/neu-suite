@@ -583,3 +583,84 @@ def test_a_table_path_names_its_directory_name_and_format(path, expected):
 def test_a_table_path_without_a_table_extension_is_refused(path):
     with pytest.raises(ValueError, match="no table extension"):
         io.split_table_path(path)
+
+
+# --------------------------------------------------------------------------- #
+# points --all: the whole instance by region, bodies from the labelmap
+# --------------------------------------------------------------------------- #
+#: Every element of the instance: bodies 1 and 2's, a pair between bodies 7 and 8 that no
+#: body list reaches, and the partner [99, 99, 99] of body 1's T-bar, on background.
+ALL_ELEMENTS = [
+    *ELEMENTS[1], *ELEMENTS[2],
+    {"Pos": [99, 99, 99], "Kind": "PostSyn", "Prop": {"conf": "0.4"},
+     "Rels": [{"Rel": "PostSynTo", "To": [10, 20, 30]}]},
+    {"Pos": [50, 50, 50], "Kind": "PreSyn", "Prop": {"conf": "0.8"},
+     "Rels": [{"Rel": "PreSynTo", "To": [51, 51, 51]}]},
+    {"Pos": [51, 51, 51], "Kind": "PostSyn", "Prop": {},
+     "Rels": [{"Rel": "PostSynTo", "To": [50, 50, 50]}]},
+]
+#: The labelmap's body at each x.
+BODY_AT_X = {10: 1, 11: 2, 99: 0, 50: 7, 51: 8}
+
+
+@pytest.fixture()
+def whole_instance(dvid_server, monkeypatch):
+    import neuclease.dvid.annotation as nda
+    import neuclease.dvid.labelmap as ndl
+
+    calls = {}
+
+    def fetch_synapses_in_batches(server, uuid, instance, *, format, processes, **k):
+        calls["batches"] = (uuid, instance, format, processes)
+        return [json.loads(json.dumps(e)) for e in ALL_ELEMENTS]
+
+    def fetch_bodies_for_many_points(server, uuid, seg_instance, point_df, **k):
+        calls["bodies"] = (uuid, seg_instance)
+        point_df["sv"] = point_df["x"] * 10
+        point_df["body"] = point_df["x"].map(BODY_AT_X).astype("uint64")
+
+    monkeypatch.setattr(nda, "fetch_synapses_in_batches", fetch_synapses_in_batches)
+    monkeypatch.setattr(ndl, "fetch_bodies_for_many_points", fetch_bodies_for_many_points)
+    return calls
+
+
+def test_all_fetches_by_region_and_every_partner_has_its_body(tmp_path, whole_instance,
+                                                              dvid_server):
+    out = str(tmp_path / "o")
+    result = ops.fetch_points(_open(), out, None, write_connections=True)
+    assert not dvid_server, "--all must not fetch per body"
+    assert whole_instance["batches"][1:3] == ("synapses", "json")
+    assert whole_instance["bodies"][1] == "labels"          # the synced labelmap
+    assert whole_instance["batches"][0] == whole_instance["bodies"][0]   # one node
+
+    conns = result["connections"].set_index(["pre_x", "post_x"])
+    assert int(conns.loc[(10, 11), "post_body"]) == 2
+    assert int(conns.loc[(50, 51), "pre_body"]) == 7        # no body list reaches it
+    assert pd.isna(conns.loc[(10, 99), "post_body"])        # background is no body
+    assert result["match"]["pairs"] == 3
+    assert set(result["points"]["body"]) == {0, 1, 2, 7, 8}
+    assert "sv" in result["points"].columns                 # kept for a cheaper re-run
+    record = json.loads((tmp_path / "o" / "provenance.json").read_text())
+    assert record["run"]["scope"] == "all" and "bodies_requested" not in record["run"]
+
+
+def test_complete_tables_take_each_relationships_own_body_from_its_element():
+    from neu_mark import tables
+
+    points, rels = tables.elements_to_frames(ALL_ELEMENTS, 0)
+    points["body"] = points["x"].map(BODY_AT_X)
+    done = tables.complete_tables(points, rels)
+    by_pos = done["relationships"].set_index("x")
+    assert int(by_pos.loc[50, "from_body"]) == 7
+    assert int(by_pos.loc[51, "to_body"]) == 7
+
+
+def test_points_takes_bodies_or_all_not_both(tmp_path):
+    from neu_mark import cli
+
+    with pytest.raises(SystemExit, match="not both"):
+        cli.cmd_points(cli.build_parser().parse_args(
+            ["points", "--src", URL, "--out", str(tmp_path), "--bodies", "1", "--all"]))
+    with pytest.raises(SystemExit, match="--all"):
+        cli.cmd_points(cli.build_parser().parse_args(
+            ["points", "--src", URL, "--out", str(tmp_path)]))

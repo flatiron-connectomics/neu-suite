@@ -71,16 +71,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     q = sub.add_parser(
-        "points", help="point annotations (synapses) for a set of bodies",
+        "points", help="point annotations (synapses) for a set of bodies, or all of them",
         description="Fetch every element of every listed body from a DVID `annotation` "
                     "instance, and write two tables: `points` (one row per element) and "
                     "`relationships` (one row per relationship, with the partner's body "
-                    "resolved where it was fetched).",
+                    "resolved where it was fetched).\n\n"
+                    "--all fetches the WHOLE instance by region instead, and looks up every "
+                    "element's body in the synced labelmap at the same node, so every "
+                    "partner's body is known. A few million elements fetch in under a "
+                    "minute. The body list still chooses what is meshed and named; "
+                    "`annotation-source --listed` marks which synapses touch it.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    _add_common(q, instance_hint="an annotation instance, e.g. 'synapses'")
+    _add_common(q, instance_hint="an annotation instance, e.g. 'synapses'",
+                bodies_required=False)
+    q.add_argument("--all", dest="everything", action="store_true",
+                   help="every element of the instance, with bodies from the labelmap, "
+                        "instead of a body list. Mutually exclusive with --bodies.")
     q.add_argument("--threads", type=int, default=None, metavar="N",
-                   help="concurrent requests (default 8). DVID is a shared service and "
-                        "answers overload with 503; raise this deliberately.")
+                   help="concurrent requests (default 8; processes for --all's region "
+                        "fetch). DVID is a shared service and answers overload with 503; "
+                        "raise this deliberately.")
     q.add_argument("--drop-unmatched", action="store_true",
                    help="drop relationships whose partner body was not resolved. Off by "
                         "default: an unresolved partner and a dangling reference look "
@@ -281,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "are KEPT and undifferentiated: the partner is a real synapse whose "
                         "body simply was not in the fetched set, and the line is still where "
                         "the synapse is.")
+    q.add_argument("--listed", metavar="IDS", default=None,
+                   help="the bodies the segmentation layer shows (meshed and named, e.g. "
+                        "the select-bodies list), in any --bodies form: adds `pre_listed` "
+                        "and `post_listed`, which the synapse shader's hide_unlisted reads. "
+                        "Worth it for tables from `points --all`, where most partners are "
+                        "other bodies.")
     q.add_argument("--roi-spec", metavar="TOML", default=None,
                    help="a roi-layers spec: adds `roi` and `neuropil` properties, each "
                         "synapse's ROI and its top-level neuropil by the spec's ids (the ids "
@@ -571,6 +587,12 @@ def _report_match(match: dict) -> None:
 def cmd_points(args) -> int:
     from . import dvid, ops
 
+    everything = bool(getattr(args, "everything", False))
+    if everything and args.bodies:
+        raise SystemExit("--all fetches every element; pass it or --bodies, not both.")
+    if not everything and not args.bodies:
+        raise SystemExit("--bodies is required, or pass --all to fetch the whole instance.")
+
     # Resolve the node first: the destination name and every request derive from it.
     source = dvid.open_points_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
@@ -586,7 +608,7 @@ def cmd_points(args) -> int:
                                       prefer_locked=bool(args.dvid_locked))
         except ValueError as e:
             raise SystemExit(f"--roi-source: {e}") from None
-    ids = _load_bodies(args)
+    ids = None if everything else _load_bodies(args)
 
     kwargs = {} if args.threads is None else {"threads": args.threads}
     result = ops.fetch_points(source, out, ids, fmt=args.fmt,
@@ -714,6 +736,12 @@ def cmd_annotation_source(args) -> int:
     if args.bounds:
         b = _triple(args.bounds, "--bounds", 6)
         bounds = (b[:3], b[3:])
+    listed = None
+    if args.listed:
+        from . import bodies as _bodies
+
+        listed = _bodies.load(args.listed, column=args.body_column)
+        print(f"listed: {_bodies.summarise(listed)}")
 
     kwargs: dict[str, Any] = {}
     if args.tables:
@@ -751,7 +779,8 @@ def cmd_annotation_source(args) -> int:
             bounds = (corners.min(axis=0), corners.max(axis=0) + 1.0)
         built = annsource.build(frame, lower_bound=bounds[0], upper_bound=bounds[1],
                                 voxel_size_xyz=voxel_size, per_cell=args.per_cell,
-                                include_partial=bool(args.include_partial), **rois)
+                                include_partial=bool(args.include_partial), listed=listed,
+                                **rois)
         for line in annsource.format_report(built["report"]):
             print(line)
         print(f"would write to {dst} (nothing written)")
@@ -759,7 +788,8 @@ def cmd_annotation_source(args) -> int:
 
     result = ops.annotation_source(dst, voxel_size_xyz=voxel_size, bounds=bounds,
                                    include_partial=bool(args.include_partial),
-                                   per_cell=args.per_cell, roi_spec=args.roi_spec, **kwargs)
+                                   per_cell=args.per_cell, roi_spec=args.roi_spec,
+                                   listed=listed, **kwargs)
     for line in annsource.format_report(result["report"]):
         print(line)
     print(f"wrote {', '.join(result['written'])} to {dst}")

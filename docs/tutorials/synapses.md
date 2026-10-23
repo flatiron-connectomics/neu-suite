@@ -28,6 +28,11 @@ neu-mark points --src dvid://dvid.example.org/abc123/synapses \
 `connections` table pairing each T-bar with its partners. The tables are the durable
 record: the next step can be rerun with other settings without refetching.
 
+A partner on a body outside `bodies.csv` is fetched with its synapse, but its body is
+unknown. `--all` in place of `--bodies` fetches every synapse of the instance and looks up
+every element's body, so nothing is missing and every partner is named; pass the body list
+to step 3 as `--listed bodies.csv` to keep telling the two apart.
+
 ## 3. Write the annotation source
 
 ```bash
@@ -57,7 +62,9 @@ alone gives the selected bodies' outputs, `body_post` alone their inputs.
 With `annotation-source --roi-spec SPEC.toml` (and points fetched with `--rois`), the source
 also carries each synapse's ROI and top-level neuropil, and the shader gains
 `color_by_neuropil` and `color_by_neuropil_part`; `color_by_neuron_id` and
-`color_by_tbar_fanout` need nothing extra.
+`color_by_tbar_fanout` need nothing extra. With `--listed`, it gains `hide_unlisted` (hide
+synapses with neither end on a listed body) and `hide_unlisted_partner` (keep only synapses
+between listed bodies).
 
 ## In the viewer
 

@@ -10,6 +10,9 @@ annotation instance is synced to a labelmap; that is checked up front. neuclease
 are fetched on a thread pool (the work is I/O bound), each with retry, and a body that
 still fails is recorded rather than raised. The default of 8 threads is a courtesy to a
 shared server, which answers overload with 503.
+
+:func:`fetch_all_points` reads the whole instance by region instead, with each element's
+body from the synced labelmap, so every partner resolves.
 """
 
 from __future__ import annotations
@@ -147,6 +150,36 @@ def fetch_points(source: Mapping[str, Any], bodies: Sequence[int], *,
     return {"points": points, "relationships": rels, "connections": conns,
             "match": tables.match_rate(conns), "failures": failures,
             "elements": int(len(points))}
+
+
+def fetch_all_points(source: Mapping[str, Any], *, threads: int = DEFAULT_THREADS
+                     ) -> dict[str, Any]:
+    """Every element of the instance, by region, with each one's body from the labelmap.
+
+    The same tables as :func:`fetch_points`, but complete: both ends of every relationship
+    were fetched, so every partner resolves. Elements come from
+    ``neuclease.dvid.annotation.fetch_synapses_in_batches`` (DVID's ``/blocks``, in boxes,
+    ``threads`` processes) and bodies from ``fetch_bodies_for_many_points`` on the synced
+    labelmap at the same node (supervoxel per point, then DVID's whole supervoxel->body
+    map). An element on background has body 0, which ``connections`` treats as no body.
+    """
+    try:
+        from neuclease.dvid.annotation import fetch_synapses_in_batches
+        from neuclease.dvid.labelmap import fetch_bodies_for_many_points
+    except ImportError as exc:
+        raise ImportError(MISSING) from exc
+
+    server, uuid, instance = _vdvid.address(source)
+    labelmap = require_sync(source)[0]
+    elements = fetch_synapses_in_batches(server, uuid, instance, format="json",
+                                         processes=max(1, int(threads)))
+    logger.info("fetched %d elements from %s", len(elements), instance)
+    points, rels = tables.elements_to_frames(elements, 0)
+    del elements
+
+    fetch_bodies_for_many_points(server, uuid, labelmap, points,
+                                 threads=max(1, int(threads)))
+    return tables.complete_tables(points, rels)
 
 
 def fetch_body_annotations(source: Mapping[str, Any], bodies: Sequence[int], *,
