@@ -435,6 +435,26 @@ Run `--dry-run` first: it builds and reports without writing anything, which `--
 does not — that still writes the document. A rule that fires on 2% of bodies looks exactly
 like a facet the data does not have, and only the coverage number tells them apart.
 
+`--table FILE` writes the same build as a table, a row per requested body, dry run or not:
+
+```bash
+neu-mark segment-properties --src … --dst … --bodies bodies.csv --rules rules.py \
+    --dry-run --table work/segprops.parquet
+```
+
+```python
+t = pd.read_parquet("work/segprops.parquet")
+t[t["tag:group"].isna() & t.excluded.isna()][["body", "instance"]]   # what no rule typed
+```
+
+Each row has `label`, the full `tags` list, a `tag:<prefix>` column per facet (a list for a
+`multi` rule, else a value or null), a `flag:<tag>` boolean per bare tag, the counts, and then
+the record the rules read (`instance`, `type`, …; dict values such as the synapse neuropil
+shares as JSON text). Bodies left out of the document stay in the table, with the reason in
+`excluded`: the drop rule's, or `no record`. Parquet carries the run's provenance in its own
+metadata (`neu_mark.io.read_embedded_provenance`), and a `<name>.provenance.json` lands
+beside it.
+
 Two guards, because a bad rule produces a *valid* source that no viewer can use.
 
 `--max-tags` caps the vocabulary and takes either form: **below 1 it is a fraction of the

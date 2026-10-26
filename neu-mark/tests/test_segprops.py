@@ -474,3 +474,58 @@ def test_the_report_carries_the_document_size():
     report = _built()["report"]
     assert report["bytes"] > 0
     assert report["facets"] == ["", "group", "side"]
+
+
+# --------------------------------------------------------------------------- #
+# the table
+# --------------------------------------------------------------------------- #
+def _table(**kw):
+    return _built(table=True, **kw)["table"].set_index("body")
+
+
+def test_the_table_has_a_row_per_body_including_the_excluded_and_the_unrecorded():
+    t = _built(table=True, keep_glia=False, requested=[1, 2, 99])["table"]
+    assert list(t["body"]) == [1, 2, 3, 4, 5, 6, 7, 99]
+    t = t.set_index("body")
+    assert t.loc[5, "excluded"] == "irrelevant" and t.loc[6, "excluded"] == "glia"
+    assert t.loc[99, "excluded"] == segprops.NO_RECORD
+    assert pd.isna(t.loc[1, "excluded"]) and pd.isna(t.loc[5, "label"])
+    # the record the rules read comes along, excluded bodies included
+    assert t.loc[5, "instance"] == "irrelevant"
+    assert t.loc[7, "label"] == "7"                 # labelled with its id, as in the document
+
+
+def test_the_table_splits_tags_into_facet_and_flag_columns():
+    @rule(prefix="col", multi=True)
+    def col(r):
+        return {1: ["A10", "A2"], 3: ["A1"]}.get(int(r["body"]), [])
+
+    t = _table(rules=[col])
+    assert t.loc[1, "tags"] == ["side:L", "group:Tm2", "col:A10", "col:A2"]
+    assert t.loc[1, "tag:col"] == ["A10", "A2"] and t.loc[2, "tag:col"] == []
+    assert t.loc[1, "tag:group"] == "Tm2" and pd.isna(t.loc[2, "tag:group"])
+    assert t.loc[2, "flag:fragment"] and not t.loc[1, "flag:fragment"]
+
+
+def test_the_table_carries_the_documents_numbers():
+    t = _table(counts=COUNTS)
+    assert t.loc[1, ["pre", "post", "syn"]].tolist() == [10, 90, 100]
+    assert t.loc[5, "syn"] == 0                     # absent from the counts, as in the document
+
+
+def test_a_record_column_whose_name_is_taken_is_prefixed_and_dicts_become_json():
+    bodies = BODIES.assign(label="from dvid",
+                           synapse_neuropils=[{"pre": {"ME": 1.0}}] + [None] * 6)
+    t = segprops.build(bodies, table=True)["table"].set_index("body")
+    assert t.loc[1, "label"] == "Tm2_A2(L)" and t.loc[1, "record:label"] == "from dvid"
+    assert t.loc[1, "synapse_neuropils"] == '{"pre": {"ME": 1.0}}'
+
+
+def test_the_table_survives_parquet(tmp_path):
+    from neu_mark import io
+
+    t = _built(table=True, counts=COUNTS)["table"]
+    io.write_table(t, str(tmp_path), "segprops")
+    back = io.read_table(str(tmp_path), "segprops").set_index("body")
+    assert list(back.loc[1, "tags"]) == ["side:L", "group:Tm2"]
+    assert back.loc[3, "flag:nucleated"] and back.loc[1, "syn"] == 100

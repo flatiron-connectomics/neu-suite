@@ -151,7 +151,8 @@ def _resolve_rules(rules=None, *, only: bool = False, keep_glia: bool = True):
 
 def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=None,
           keep_glia: bool = True, max_tags: float = DEFAULT_MAX_TAGS,
-          max_facets: int = MAX_FACETS) -> dict[str, Any]:
+          max_facets: int = MAX_FACETS, table: bool = False,
+          requested: Sequence[int] | None = None) -> dict[str, Any]:
     """The ``segment_properties`` info document, plus a report of what went into it.
 
     ``bodies`` is a frame with ``body`` and whatever property fields exist; ``counts`` an
@@ -165,6 +166,10 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
 
     Returns ``{"info": …, "report": …}``. Check the report's coverage: a facet that fired on
     2% of bodies looks the same in the viewer as one the data does not have.
+
+    ``table=True`` adds ``"table"``, a DataFrame with a row per body (:func:`as_table`);
+    ``requested`` names bodies to list there as ``excluded="no record"`` when ``bodies``
+    has no row for them.
     """
     import json
 
@@ -198,6 +203,8 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     described: dict[str, str] = {}
     excluded: dict[str, int] = {}
     rows = []
+    # (body, excluded reason, label, description, tags) for every record, for the table
+    outcomes = []
 
     for _index, raw in frame.iterrows():
         row = _plain(raw)
@@ -212,6 +219,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
                 break
         if reason is not None:
             excluded[reason] = excluded.get(reason, 0) + 1
+            outcomes.append((int(raw["body"]), reason, None, None, []))
             continue
 
         tags: list[str] = []
@@ -243,6 +251,8 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
             fired["description"] += 1
 
         rows.append((int(raw["body"]), label, description, tags))
+        outcomes.append((int(raw["body"]), None, label or str(int(raw["body"])),
+                         description, tags))
 
     if not rows:
         raise ValueError("every body was excluded; nothing to write")
@@ -304,7 +314,87 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
         "numbers": [p["id"] for p in numbers],
         "untagged": sum(1 for v in per_body if not v),
     }
-    return {"info": info, "report": report}
+    out = {"info": info, "report": report}
+    if table:
+        out["table"] = as_table(bodies, outcomes, ruleset, counts=counts, sizes=sizes,
+                                requested=requested,
+                                described=description_rule is not None)
+    return out
+
+
+#: ``excluded`` in the table for a requested body that has no record.
+NO_RECORD = "no record"
+
+
+def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
+             requested: Sequence[int] | None = None, described: bool = False):
+    """One row per body: what the document says about it, then the record it came from.
+
+    Columns: ``body``, ``label``, ``description`` (when a rule writes one), ``excluded``
+    (the drop rule's reason, ``"no record"``, or null for a segment in the document),
+    ``tags`` (the full list), ``tag:<prefix>`` per facet (a list for a ``multi`` rule, else
+    a value or null), ``flag:<tag>`` per bare tag, the numbers, then every record column.
+    A record column whose name is taken gets ``record:`` in front, and dict values (the
+    synapse neuropil shares) are JSON text.
+    """
+    import json
+
+    import pandas as pd
+
+    from .rules import RESERVED
+
+    multi: dict[str, bool] = {}
+    for r in ruleset.tagged:
+        prefix = normalize_tag((r.prefix or "").rstrip(SEPARATOR))
+        if r.name not in RESERVED and prefix:
+            # Two rules sharing a prefix can give a body two values.
+            multi[prefix] = r.multi or prefix in multi
+
+    outcomes = list(outcomes)
+    seen = {body for body, *_rest in outcomes}
+    outcomes += [(int(b), NO_RECORD, None, None, []) for b in dict.fromkeys(requested or ())
+                 if int(b) not in seen]
+
+    prefixes, flags = set(multi), set()
+    for *_rest, tags in outcomes:
+        for tag in tags:
+            prefix, sep, _value = tag.partition(SEPARATOR)
+            if sep:
+                prefixes.add(prefix)
+            else:
+                flags.add(tag)
+
+    order = [body for body, *_rest in outcomes]
+    columns: dict[str, Any] = {
+        "body": pd.Series(order, dtype="uint64"),
+        "label": pd.Series([o[2] for o in outcomes], dtype="string"),
+    }
+    if described:
+        columns["description"] = pd.Series([o[3] for o in outcomes], dtype="string")
+    columns["excluded"] = pd.Series([o[1] for o in outcomes], dtype="string")
+    columns["tags"] = [list(o[4]) for o in outcomes]
+    for prefix in sorted(prefixes, key=natural_key):
+        start = prefix + SEPARATOR
+        values = [[t[len(start):] for t in o[4] if t.startswith(start)] for o in outcomes]
+        # A prefix no rule declares came from a bare rule's value holding a colon.
+        columns[f"tag:{prefix}"] = (values if multi.get(prefix, True)
+                                    else [v[0] if v else None for v in values])
+    for flag in sorted(flags, key=natural_key):
+        columns[f"flag:{flag}"] = [flag in o[4] for o in outcomes]
+    # The same numbers the document carries (a body absent from the counts is 0 there).
+    for number in _number_properties([str(b) for b in order], counts=counts, sizes=sizes):
+        columns[number["id"]] = pd.Series(number["values"], dtype="uint32")
+
+    out = pd.DataFrame(columns)
+    record = bodies.drop(columns="body").reset_index(drop=True).reindex(range(len(order)))
+    record.index = out.index
+    for name in record.columns:
+        values = record[name]
+        if values.dtype == object and values.map(lambda v: isinstance(v, dict)).any():
+            values = values.map(lambda v: json.dumps(v, sort_keys=True, default=str)
+                                if isinstance(v, dict) else v)
+        out[f"record:{name}" if name in out.columns else name] = values
+    return out
 
 
 def _coverage_report(ruleset, fired: Mapping[str, int], distinct: Mapping[str, set], *,

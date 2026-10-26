@@ -562,6 +562,32 @@ def test_meshed_bodies_refuses_what_it_cannot_list(tmp_path, names, mesh_info, m
         _meshed_bodies(_meshed_volume(tmp_path, names, mesh_info))
 
 
+def test_a_dry_run_writes_only_the_table_with_its_provenance(tmp_path, dvid_server,
+                                                           capsys):
+    from neu_mark.cli import main
+
+    vol = _meshed_volume(tmp_path, [])
+    out = str(tmp_path / "report" / "segprops.parquet")
+    assert main(["segment-properties", "--src", KV_URL, "--dst", vol, "--bodies", "1,2,3",
+                 "--table", out, "--dry-run"]) == 0
+    assert "table: 3 bodies" in capsys.readouterr().out
+    assert not (tmp_path / "seg" / "segment_properties").exists()
+
+    t = pd.read_parquet(out).set_index("body")
+    assert t.loc[1, "instance"] == "CAm(L)" and t.loc[3, "excluded"] == "no record"
+    rec = io.read_embedded_provenance(str(tmp_path / "report"), "segprops")
+    assert rec["run"]["dry_run"] is True and rec["source"]["uuid"] == "d38898"
+    assert (tmp_path / "report" / "segprops.provenance.json").exists()
+
+
+def test_a_table_without_a_table_extension_is_refused_before_any_fetch(tmp_path):
+    from neu_mark.cli import main
+
+    with pytest.raises(SystemExit, match="no table extension"):
+        main(["segment-properties", "--src", KV_URL, "--dst", str(tmp_path), "--bodies", "1",
+              "--table", str(tmp_path / "t.txt")])
+
+
 @pytest.mark.parametrize("which", [["--bodies", "1", "--meshed-bodies"], []])
 def test_segment_properties_takes_exactly_one_body_selection(which):
     from neu_mark.cli import main

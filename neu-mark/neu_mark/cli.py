@@ -238,9 +238,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "respected as given. A rule echoing whole instance strings back "
                         "produces a valid document no viewer can use; raise this when a "
                         "dataset genuinely has that many distinct types.")
+    q.add_argument("--table", metavar="FILE", default=None,
+                   help="also write a row per requested body to FILE (.parquet, .csv or "
+                        ".feather; local or s3://…): its label, tags, one tag:<prefix> "
+                        "column per facet, one flag:<tag> per bare tag, the counts, and "
+                        "the record the rules read. Excluded bodies are kept, with the "
+                        "reason in `excluded`. Written with --dry-run too.")
     q.add_argument("--dry-run", action="store_true",
-                   help="build and report without writing anything. --no-link still writes "
-                        "the document; this writes nothing at all.")
+                   help="build and report without writing anything but --table. --no-link "
+                        "still writes the document; this writes nothing at all.")
     q.add_argument("--drop-glia", action="store_true",
                    help="exclude glia-labelled bodies. By default they are KEPT and carry "
                         "a `glia` tag — not connectome-relevant, but worth seeing.")
@@ -679,8 +685,10 @@ def cmd_select_bodies(args) -> int:
 
 
 def cmd_segment_properties(args) -> int:
-    from . import dvid, ops, segprops
+    from . import dvid, io, ops, segprops
 
+    if args.table:
+        io.split_table_path(args.table)
     bodies_src = dvid.open_bodies_source(_src_spec(args.src),
                                         prefer_locked=bool(args.dvid_locked))
     counts_src = (dvid.open_counts_source(_src_spec(args.counts),
@@ -699,11 +707,13 @@ def cmd_segment_properties(args) -> int:
         bodies_src, dst, ids, counts_source=counts_src, labelmap_source=labelmap_src,
         synapses=args.synapses, roi_spec=args.roi_spec, rules_path=_rules_path(args.rules), rules_only=bool(args.rules_only),
         max_tags=args.max_tags,
-        keep_glia=not args.drop_glia, link=bool(args.link),
+        keep_glia=not args.drop_glia, link=bool(args.link), table=args.table,
         dry_run=bool(args.dry_run))
 
     for line in segprops.format_report(result["report"]):
         print(line)
+    if args.table:
+        print(f"table: {len(result['table'])} bodies -> {args.table}")
     if result.get("dry_run"):
         print(f"DRY RUN — nothing written. {dst} is untouched.")
         return 0

@@ -221,14 +221,17 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
                        rules_path: str | None = None, rules_only: bool = False,
                        max_tags: float | None = None,
                        keep_glia: bool = True, link: bool = True,
-                       dry_run: bool = False) -> dict[str, Any]:
+                       table: str | None = None, dry_run: bool = False) -> dict[str, Any]:
     """Build a ``segment_properties`` source and, by default, link the volume to it.
 
     ``dst`` is the segmentation volume. The document goes to
     ``<dst>/segment_properties/info``, and linking adds a ``"segment_properties"`` key to
     the volume's own ``info``, which is what makes neuroglancer show names and tags.
     ``link=False`` writes the document without touching the volume; ``dry_run`` builds and
-    reports without writing anything.
+    reports without writing anything but the table.
+
+    ``table`` is a path (``.parquet``, ``.csv`` or ``.feather``) for a row per requested
+    body (:func:`neu_mark.segprops.as_table`), written with its provenance, dry run or not.
 
     ``rules_path`` loads a rules module that overrides the builtins by name (``rules_only``
     uses it alone). ``counts_source`` (a labelsz instance) adds ``pre``/``post``/``syn``,
@@ -241,6 +244,8 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
     """
     from . import segprops
 
+    if table is not None:
+        _io.split_table_path(table)          # refuse a bad extension before any fetch
     ruleset = None
     rules_record = None
     if rules_path:
@@ -267,20 +272,19 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
 
     extra = {} if max_tags is None else {"max_tags": float(max_tags)}
     built = segprops.build(frame, rules=ruleset, rules_only=rules_only, counts=counts,
-                           sizes=sizes, keep_glia=keep_glia, **extra)
+                           sizes=sizes, keep_glia=keep_glia, table=table is not None,
+                           requested=bodies, **extra)
 
+    written, linked = [], None
     if dry_run:
         logger.info("dry run: nothing written to %s", str(dst).rstrip("/"))
-        return {**built, "written": [], "linked": None, "record": None, "dry_run": True}
+    else:
+        written.append(segprops.write(dst, built["info"]))
+        if link:
+            from neu_vol.ops.subresources import link_subresources
 
-    written = [segprops.write(dst, built["info"])]
-
-    linked = None
-    if link:
-        from neu_vol.ops.subresources import link_subresources
-
-        linked = link_subresources(dst, segment_properties=segprops.SUBDIR)
-        logger.info("linked %s into %s/info", linked, str(dst).rstrip("/"))
+            linked = link_subresources(dst, segment_properties=segprops.SUBDIR)
+            logger.info("linked %s into %s/info", linked, str(dst).rstrip("/"))
 
     run = {"bodies_requested": len(bodies), "bodies_with_records": int(len(frame)),
            "segments": built["report"]["bodies"], "excluded": built["report"]["excluded"],
@@ -292,12 +296,18 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
            # The rules decide what the document says; see `rules.provenance`.
            "rules": rules_record, "rules_only": bool(rules_only),
            "synapses": synapses, "roi_spec": roi_spec,
-           "linked": linked}
+           "linked": linked, "table": table, "dry_run": True if dry_run else None}
     record = _record(bodies_source, dst, run=run)
-    _io.write_provenance(dst, record, name=f"{segprops.SUBDIR}/provenance")
+    if not dry_run:
+        _io.write_provenance(dst, record, name=f"{segprops.SUBDIR}/provenance")
 
-    return {**built, "written": written, "linked": linked, "record": record,
-            "dry_run": False}
+    if table is not None:
+        directory, name, fmt = _io.split_table_path(table)
+        _io.write_table(built["table"], directory, name, fmt=fmt, metadata=record)
+        _io.write_provenance(directory, record, name=f"{name}.provenance")
+
+    return {**built, "written": written, "linked": linked,
+            "record": None if dry_run else record, "dry_run": bool(dry_run)}
 
 
 def _with_neuropils(frame, synapses: str, roi_spec: str | None):
