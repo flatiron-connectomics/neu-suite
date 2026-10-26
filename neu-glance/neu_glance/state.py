@@ -80,8 +80,12 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
                 projection_scale: float | None = None,
                 selected: str | None = None,
                 show_slices: bool | None = None,
+                projection_orientation: Sequence[float] | None = None,
                 frame: tuple | None = None) -> tuple[dict, str | None]:
     """A viewer state. Coordinates are given zyx and written xyz.
+
+    ``projection_orientation`` is the 3D view's quaternion as neuroglancer writes it
+    (``projectionOrientation``, x, y, z, w).
 
     ``dimensions`` comes from ``voxel_size_zyx`` and ``units``, and must agree with the
     layers or nothing lines up. ``frame``, an ``(extent_zyx, offset_zyx)`` pair, fills in
@@ -110,6 +114,8 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
         state["selectedLayer"] = {"visible": True, "layer": selected}
     if show_slices is not None:
         state["showSlices"] = bool(show_slices)
+    if projection_orientation is not None:
+        state["projectionOrientation"] = [float(v) for v in projection_orientation]
     return state, warning
 
 
@@ -422,7 +428,9 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
                cross_section_scale: float | None = None,
                projection_scale: float | None = None,
                selected: str | None = None,
-               show_slices: bool | None = None) -> tuple[dict, list[str]]:
+               show_slices: bool | None = None,
+               projection_orientation: Sequence[float] | None = None
+               ) -> tuple[dict, list[str]]:
     """``base`` with ``layers`` appended. Returns the state and any notes worth printing.
 
     - The base's ``dimensions``, position and zooms are kept unless overridden here, so
@@ -466,4 +474,6 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
         state["selectedLayer"] = {"visible": True, "layer": selected}
     if show_slices is not None:
         state["showSlices"] = bool(show_slices)
+    if projection_orientation is not None:
+        state["projectionOrientation"] = [float(v) for v in projection_orientation]
     return state, notes

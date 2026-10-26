@@ -331,6 +331,7 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             projection_scale=getattr(args, "projection_scale", None),
             selected=selected_name,
             show_slices=False if getattr(args, "hide_slices", False) else None,
+            projection_orientation=getattr(args, "projection_orientation", None),
         )
         if into and fmt == "url" and _is_cloud_state(into) and not getattr(args, "expand",
                                                                             False):
@@ -770,6 +771,25 @@ def _seg_display(args, layers: list[dict]) -> None:
         segs[name]["pick"] = False
 
 
+def _view_defaults(args, view: dict, names: set[str]) -> None:
+    """Fill the view flags not given from the config's ``[view]``. Its position is xyz, as
+    neuroglancer writes it."""
+    if not view:
+        return
+    if view.get("layout") and view["layout"] not in _LAYOUTS:
+        raise SystemExit(f"config [view] layout {view['layout']!r} is not one of "
+                         f"{', '.join(_LAYOUTS)}")
+    if args.position is None and view.get("position"):
+        args.position = ",".join(str(v) for v in view["position"])
+        args.position_order = "xyz"
+    for key in ("layout", "cross_section_scale", "projection_scale"):
+        if getattr(args, key, None) is None and view.get(key) is not None:
+            setattr(args, key, view[key])
+    if not args.select and not args.select_last and view.get("select") in names:
+        args.select = view["select"]
+    args.projection_orientation = view.get("projection_orientation")
+
+
 def _color_by(args, site: dict, layers: list[dict], volumes: dict[str, str], *,
               file) -> None:
     """Apply ``--color-by`` (or the config's ``color_by``) as each layer's segmentColors."""
@@ -876,6 +896,7 @@ def cmd_gen(args) -> int:
     args.hide = list(dict.fromkeys(
         [*(args.hide or []), *(n for n, s in site["layers"].items()
                                if s.get("hide") and n in names)]))
+    _view_defaults(args, site["view"], names)
 
     # With --into and nothing to add, the state itself is the output: a view file straight
     # to a link, with any of the view options (--layout, --hide-slices, …) applied on the way.

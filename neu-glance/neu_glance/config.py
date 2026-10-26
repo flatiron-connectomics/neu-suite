@@ -12,12 +12,21 @@ on the command line wins over the file.
     [annotations.shader_controls]
     line_color = "#ffff00"      # any #uicontrol of the layer's shader
 
+    [view]                      # as neuroglancer writes them: copy from a saved state
+    position = [6476.7, 4508.8, 5568.2]          # x, y, z, in the state's voxels
+    projection_orientation = [-0.1, 0.715, 0.682, 0.116]   # the 3D view's quaternion
+    projection_scale = 15812.5  # 3D zoom
+    cross_section_scale = 15.8  # 2D zoom
+    layout = "4panel"
+    select = "seg"              # the layer the side panel opens on
+
     [layer.head]                # by layer name
     silhouette = 5              # meshSilhouetteRendering, 0-10
     opacity_2d = 0              # selectedAlpha
     opacity_3d = 1              # objectAlpha
     color = "white"             # segmentDefaultColor: every segment without its own colour
     pick = false                # clicks go through it, to what is inside
+    tab = "segments"            # the side panel's tab for this layer
     hide = true                 # added switched off
     all_segments = true         # every id its segment_properties lists
     color_by = ["col", "group"] # segmentColors by property, first one present (--color-by)
@@ -41,10 +50,15 @@ LAYER_DISPLAY = {
 LAYER_COLORS = {"color": "segmentDefaultColor"}
 #: ``[layer.NAME]`` true/false keys written to the layer as they are.
 LAYER_SWITCHES = {"pick": "pick"}
+#: Side-panel tabs a ``[layer.NAME] tab`` may name (neuroglancer's own ids).
+LAYER_TABS = ("source", "rendering", "annotations", "segments")
 LAYER_FLAGS = ("hide", "all_segments")
 #: Keys the caller applies, as they need a store read or merge with flags.
 CALLER_KEYS = (*LAYER_FLAGS, "color_by")
-_SECTIONS = {"volume", "annotations", "layer"}
+#: ``[view]`` keys: (how many numbers, or None for a string).
+VIEW_KEYS = {"position": 3, "projection_orientation": 4, "projection_scale": 1,
+             "cross_section_scale": 1, "layout": None, "select": None}
+_SECTIONS = {"volume", "annotations", "view", "layer"}
 
 
 class ConfigProblem(ValueError):
@@ -86,11 +100,30 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
         raise ConfigProblem(f"{where}: [annotations] has unknown key(s) {sorted(bad)}")
     controls = dict(annotations.get("shader_controls") or {})
 
+    view = dict(doc.get("view") or {})
+    bad = set(view) - set(VIEW_KEYS)
+    if bad:
+        raise ConfigProblem(f"{where}: [view] has unknown key(s) {sorted(bad)}; known: "
+                            f"{', '.join(VIEW_KEYS)}")
+    for key, value in view.items():
+        size = VIEW_KEYS[key]
+        if size is None:
+            if not isinstance(value, str) or not value:
+                raise ConfigProblem(f"{where}: [view] {key} must be a name")
+            continue
+        values = [value] if size == 1 else value
+        if (not isinstance(values, list) or len(values) != size
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           for v in values)):
+            raise ConfigProblem(f"{where}: [view] {key} must be "
+                                + ("a number" if size == 1 else f"{size} numbers"))
+        view[key] = float(value) if size == 1 else [float(v) for v in values]
+
     layers: dict[str, dict[str, Any]] = {}
     for name, entry in (doc.get("layer") or {}).items():
         if not isinstance(entry, Mapping):
             raise ConfigProblem(f"{where}: layer.{name} must be a table")
-        known = [*LAYER_DISPLAY, *LAYER_COLORS, *LAYER_SWITCHES, *CALLER_KEYS]
+        known = [*LAYER_DISPLAY, *LAYER_COLORS, *LAYER_SWITCHES, "tab", *CALLER_KEYS]
         bad = set(entry) - set(known)
         if bad:
             raise ConfigProblem(
@@ -98,6 +131,12 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
                 f"{', '.join(known)}")
         out: dict[str, Any] = {}
         for key, value in entry.items():
+            if key == "tab":
+                if value not in LAYER_TABS:
+                    raise ConfigProblem(f"{where}: [layer.{name}] tab must be one of "
+                                        f"{', '.join(LAYER_TABS)}, not {value!r}")
+                out["tab"] = value
+                continue
             if key == "color_by":
                 keys = [value] if isinstance(value, str) else value
                 if (not isinstance(keys, list) or not keys
@@ -127,7 +166,7 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
                                     f"{lo:g} and {hi:g}")
             out[state_key] = float(value)
         layers[str(name)] = out
-    return {"volume": volume, "shader_controls": controls, "layers": layers}
+    return {"volume": volume, "shader_controls": controls, "view": view, "layers": layers}
 
 
 def shader_control_names(shader: str) -> set[str]:
@@ -164,9 +203,17 @@ def apply(config: Mapping[str, Any], layers: list[dict]) -> list[str]:
             notes.append(f"config [layer.{name}]: no such layer in this state, skipped")
             continue
         display = {k: v for k, v in settings.items() if k not in CALLER_KEYS}
-        if display and layer["type"] != "segmentation":
+        segmentation_only = sorted(set(display) - {"tab"})
+        if segmentation_only and layer["type"] != "segmentation":
             raise ConfigProblem(f"config [layer.{name}] sets "
-                                f"{', '.join(sorted(display))}, which only a segmentation "
+                                f"{', '.join(segmentation_only)}, which only a segmentation "
                                 f"layer has; {name!r} is a {layer['type']} layer")
+        if display.get("tab") == "segments" and layer["type"] != "segmentation":
+            raise ConfigProblem(f"config [layer.{name}] tab 'segments' exists only on a "
+                                f"segmentation layer; {name!r} is a {layer['type']} layer")
         layer.update(display)
+    view = config.get("view") or {}
+    if view.get("select") and view["select"] not in by_name:
+        notes.append(f"config [view] select {view['select']!r}: no such layer in this state, "
+                     f"skipped")
     return notes

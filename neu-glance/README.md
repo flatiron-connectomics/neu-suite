@@ -55,8 +55,11 @@ neu-glance gen --seg s3://bucket/seg --seg s3://bucket/rois/head \
 
 Choices a site makes for every state go in a TOML file passed as `--config` (read only when
 named, and a flag wins over it). `neu_glance.config` documents the keys: `[volume] bounds`,
-`[annotations.shader_controls]`, and `[layer.NAME]` with `silhouette`, `opacity_2d`,
-`opacity_3d`, `color`, `pick`, `hide`, `all_segments` and `color_by`.
+`[annotations.shader_controls]`, `[view]` (`position`, `projection_orientation`,
+`projection_scale`, `cross_section_scale`, `layout`, `select`, in neuroglancer's own units
+and xyz order, so they can be copied from a saved state), and `[layer.NAME]` with
+`silhouette`, `opacity_2d`, `opacity_3d`, `color`, `pick`, `tab`, `hide`, `all_segments` and
+`color_by`.
 
 **`--color-by LAYER=PROP[,PROP...]` colours bodies by their segment properties**, which a
 segmentation layer cannot do itself (it has no shader). A property is a tag facet (`group`,
