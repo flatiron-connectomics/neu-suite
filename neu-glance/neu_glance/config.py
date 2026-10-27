@@ -26,6 +26,7 @@ on the command line wins over the file.
     opacity_3d = 1              # objectAlpha
     color = "white"             # segmentDefaultColor: every segment without its own colour
     pick = false                # clicks go through it, to what is inside
+    skeletons = false           # the source's skeletons subsource (its Source-tab box)
     tab = "segments"            # the side panel's tab for this layer
     hide = true                 # added switched off
     all_segments = true         # every id its segment_properties lists
@@ -50,6 +51,8 @@ LAYER_DISPLAY = {
 LAYER_COLORS = {"color": "segmentDefaultColor"}
 #: ``[layer.NAME]`` true/false keys written to the layer as they are.
 LAYER_SWITCHES = {"pick": "pick"}
+#: ``[layer.NAME]`` true/false keys switching one of the source's subsources.
+LAYER_SUBSOURCES = ("skeletons",)
 #: Side-panel tabs a ``[layer.NAME] tab`` may name (neuroglancer's own ids).
 LAYER_TABS = ("source", "rendering", "annotations", "segments")
 LAYER_FLAGS = ("hide", "all_segments")
@@ -123,7 +126,8 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
     for name, entry in (doc.get("layer") or {}).items():
         if not isinstance(entry, Mapping):
             raise ConfigProblem(f"{where}: layer.{name} must be a table")
-        known = [*LAYER_DISPLAY, *LAYER_COLORS, *LAYER_SWITCHES, "tab", *CALLER_KEYS]
+        known = [*LAYER_DISPLAY, *LAYER_COLORS, *LAYER_SWITCHES, *LAYER_SUBSOURCES, "tab",
+                 *CALLER_KEYS]
         bad = set(entry) - set(known)
         if bad:
             raise ConfigProblem(
@@ -145,7 +149,7 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
                                         f"name or a list of them")
                 out[key] = keys
                 continue
-            if key in LAYER_FLAGS or key in LAYER_SWITCHES:
+            if key in LAYER_FLAGS or key in LAYER_SWITCHES or key in LAYER_SUBSOURCES:
                 if not isinstance(value, bool):
                     raise ConfigProblem(f"{where}: [layer.{name}] {key} must be true or false")
                 out[LAYER_SWITCHES.get(key, key)] = value
@@ -167,6 +171,19 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
             out[state_key] = float(value)
         layers[str(name)] = out
     return {"volume": volume, "shader_controls": controls, "view": view, "layers": layers}
+
+
+def _set_subsource(layer: dict, subsource: str, on: bool, name: str) -> None:
+    """Switch one subsource of the layer's source, keeping the others as they are."""
+    source = layer.get("source")
+    if isinstance(source, str):
+        source = {"url": source}
+    if not isinstance(source, Mapping):
+        raise ConfigProblem(f"config [layer.{name}] {subsource}: the layer's source is not "
+                            f"one URL, so there is no subsource to switch")
+    source = dict(source)
+    source["subsources"] = {**(source.get("subsources") or {}), subsource: bool(on)}
+    layer["source"] = source
 
 
 def shader_control_names(shader: str) -> set[str]:
@@ -217,6 +234,9 @@ def apply(config: Mapping[str, Any], layers: list[dict], *,
         if display.get("tab") == "segments" and layer["type"] != "segmentation":
             raise ConfigProblem(f"config [layer.{name}] tab 'segments' exists only on a "
                                 f"segmentation layer; {name!r} is a {layer['type']} layer")
+        for key in LAYER_SUBSOURCES:
+            if key in display:
+                _set_subsource(layer, key, display.pop(key), name)
         layer.update(display)
     if untouched:
         notes.append(f"config left the --into state's own layers as they are: "

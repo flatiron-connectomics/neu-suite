@@ -58,7 +58,8 @@ named, and a flag wins over it). `neu_glance.config` documents the keys: `[volum
 `[annotations.shader_controls]`, `[view]` (`position`, `projection_orientation`,
 `projection_scale`, `cross_section_scale`, `layout`, `select`, in neuroglancer's own units
 and xyz order, so they can be copied from a saved state), and `[layer.NAME]` with
-`silhouette`, `opacity_2d`, `opacity_3d`, `color`, `pick`, `tab`, `hide`, `all_segments` and
+`silhouette`, `opacity_2d`, `opacity_3d`, `color`, `pick`, `skeletons` (false leaves the
+source's skeletons unloaded, until ticked in its Source tab), `tab`, `hide`, `all_segments` and
 `color_by`.
 
 **`--color-by LAYER=PROP[,PROP...]` colours bodies by their segment properties**, which a

@@ -47,6 +47,24 @@ def test_colour_and_pick_from_the_config_and_from_flags(tmp_path, capsys):
     assert layers["b"]["pick"] is False
 
 
+@pytest.mark.parametrize("bounds", ["false", "true"])
+def test_skeletons_off_switches_the_subsource_and_keeps_the_others(tmp_path, capsys, bounds):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    state = _gen(tmp_path, capsys, f"[volume]\nbounds = {bounds}\n"
+                                   "[layer.a]\nskeletons = false\n", "--seg", a)
+    source = state["layers"][0]["source"]
+    assert source["url"].startswith("precomputed://")
+    assert source["subsources"] == ({"skeletons": False} if bounds == "true"
+                                    else {"bounds": False, "skeletons": False})
+
+
+def test_skeletons_is_a_switch_on_a_segmentation_layer():
+    with pytest.raises(ConfigProblem, match="true or false"):
+        parse({"layer": {"a": {"skeletons": "off"}}})
+    with pytest.raises(ConfigProblem, match="only a segmentation"):
+        apply(parse({"layer": {"em": {"skeletons": False}}}), [{"name": "em", "type": "image"}])
+
+
 def test_a_colour_neuroglancer_would_ignore_is_refused():
     with pytest.raises(ConfigProblem, match="color"):
         parse({"layer": {"a": {"color": "not-a-colour-at-all"}}})
