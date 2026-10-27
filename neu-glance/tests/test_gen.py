@@ -592,7 +592,7 @@ def test_seg_display_flags_set_one_layer_each(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("flag, value, message", [
-    ("--silhouette", "nope=5", "names no --seg layer"),
+    ("--silhouette", "nope=5", "names no segmentation layer"),
     ("--opacity-2d", "a", "LAYER_NAME=VALUE"),
     ("--opacity-3d", "a=1.5", "between 0 and 1"),
     ("--silhouette", "a=x", "not a number"),

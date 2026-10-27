@@ -94,7 +94,7 @@ def test_the_cli_writes_segment_colors_from_a_flag_or_the_config(tmp_path, capsy
 
 def test_color_by_names_a_seg_layer(tmp_path):
     vol = _with_properties(tmp_path)
-    with pytest.raises(SystemExit, match="names no --seg layer"):
+    with pytest.raises(SystemExit, match="names no segmentation layer"):
         cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--color-by", "other=col"]))
 
 
@@ -140,3 +140,93 @@ def test_a_local_state_is_expanded(tmp_path, capsys):
     path.write_text(json.dumps(STATE))
     cli.cmd_gen(cli._parse_args(["gen", "--into", str(path)]))
     assert parse_url(capsys.readouterr().out.strip())["dimensions"] == STATE["dimensions"]
+
+
+# --------------------------------------------------------------------------- #
+# the layer flags on an --into state's own layers
+# --------------------------------------------------------------------------- #
+def _saved_state(tmp_path, vol, name="seg"):
+    path = tmp_path / "saved.json"
+    path.write_text(json.dumps({**STATE, "layers": [
+        {"type": "segmentation", "name": name,
+         "source": {"url": f"precomputed://{vol}", "subsources": {"bounds": False}}},
+        {"type": "segmentation", "name": "rois", "source": "precomputed://s3://b/rois"}]}))
+    return str(path)
+
+
+def _gen_state(tmp_path, capsys, *argv) -> dict:
+    out = tmp_path / "out.json"
+    assert cli.cmd_gen(cli._parse_args(["gen", *argv, "--format", "state",
+                                        "--out", str(out)])) == 0
+    capsys.readouterr()
+    return {lyr["name"]: lyr for lyr in json.loads(out.read_text())["layers"]}
+
+
+@pytest.mark.parametrize("ref", ["seg", "VOL", "precomputed://VOL/"])
+def test_color_by_reads_an_into_layers_volume_from_its_source(tmp_path, capsys, ref):
+    vol = _with_properties(tmp_path)
+    ref = ref.replace("VOL", vol)
+    layers = _gen_state(tmp_path, capsys, "--into", _saved_state(tmp_path, vol),
+                        "--color-by", f"{ref}=group")
+    assert layers["seg"]["segmentColors"]["1"] == value_color("group:Tm2")
+    assert "segmentColors" not in layers["rois"]
+
+
+def test_display_flags_and_hide_reach_an_into_layer(tmp_path, capsys):
+    vol = _with_properties(tmp_path)
+    layers = _gen_state(tmp_path, capsys, "--into", _saved_state(tmp_path, vol),
+                        "--silhouette", "rois=4", "--no-pick", "s3://b/rois",
+                        "--hide", "seg")
+    assert layers["rois"]["meshSilhouetteRendering"] == 4.0
+    assert layers["rois"]["pick"] is False
+    assert layers["seg"]["visible"] is False
+
+
+def test_an_incoming_layer_is_named_as_the_viewer_will_show_it(tmp_path, capsys):
+    vol = _with_properties(tmp_path)
+    layers = _gen_state(tmp_path, capsys, "--into", _saved_state(tmp_path, vol, name="v"),
+                        "--seg", vol, "--silhouette", "v-2=3")
+    assert layers["v-2"]["meshSilhouetteRendering"] == 3.0
+    assert "meshSilhouetteRendering" not in layers["v"]
+
+
+def test_the_config_leaves_an_into_states_layers_and_view_alone(tmp_path, capsys):
+    vol = _with_properties(tmp_path)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[view]\nprojection_scale = 9.0\n'
+                   '[layer.rois]\nsilhouette = 4\nhide = true\ncolor_by = "group"\n')
+    out = tmp_path / "out.json"
+    cli.cmd_gen(cli._parse_args(["gen", "--into", _saved_state(tmp_path, vol),
+                                 "--config", str(cfg), "--format", "state",
+                                 "--out", str(out)]))
+    err = capsys.readouterr().err
+    state = json.loads(out.read_text())
+    rois = {lyr["name"]: lyr for lyr in state["layers"]}["rois"]
+    assert "meshSilhouetteRendering" not in rois and "visible" not in rois
+    assert "projectionScale" not in state
+    assert "left the --into state's own layers as they are: rois" in err
+    assert "[view] not applied" in err
+
+
+def test_a_short_link_cannot_carry_a_change_to_an_into_layer(tmp_path, monkeypatch):
+    vol = _with_properties(tmp_path)
+    saved = json.loads(open(_saved_state(tmp_path, vol)).read())
+    monkeypatch.setattr(cli, "_load_into", lambda source: json.loads(json.dumps(saved)))
+    with pytest.raises(SystemExit, match="--expand"):
+        cli.cmd_gen(cli._parse_args(["gen", "--into", "s3://my-bucket/states/v1.json",
+                                     "--color-by", "seg=group"]))
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("precomputed://s3://b/v", "s3://b/v"),
+    ({"url": "precomputed://gs://b/v/", "subsources": {}}, "gs://b/v"),
+    ("s3://b/v|neuroglancer-precomputed:", "s3://b/v"),
+    (["precomputed://s3://b/v"], "s3://b/v"),
+    ("zarr://s3://b/v.zarr", None),
+    ("s3://b/v.zarr|zarr2:", None),
+    ("local://annotations", None),
+])
+def test_layer_volume_reads_the_location_out_of_a_source(source, expected):
+    from neu_glance.sources import layer_volume
+
+    assert layer_volume({"source": source}) == expected

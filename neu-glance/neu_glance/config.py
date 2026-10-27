@@ -38,7 +38,7 @@ many states. An unknown key is refused, since neuroglancer ignores what it does 
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 #: ``[layer.NAME]`` display keys and the state key each sets, with its range.
 LAYER_DISPLAY = {
@@ -174,14 +174,17 @@ def shader_control_names(shader: str) -> set[str]:
     return set(re.findall(r"^#uicontrol\s+\w+\s+(\w+)", shader, flags=re.M))
 
 
-def apply(config: Mapping[str, Any], layers: list[dict]) -> list[str]:
+def apply(config: Mapping[str, Any], layers: list[dict], *,
+          kept: Sequence[str] = ()) -> list[str]:
     """Apply ``[annotations]`` and ``[layer.*]`` display settings in place. Returns notes.
 
     ``hide``, ``all_segments`` and ``color_by`` are not applied here: the caller merges them
-    with its flags, and ``color_by`` reads the layer's segment properties.
+    with its flags, and ``color_by`` reads the layer's segment properties. ``kept`` names
+    layers of a state being added to, which a section naming them leaves as they are.
     """
     notes: list[str] = []
     by_name = {lyr["name"]: lyr for lyr in layers}
+    untouched = []
 
     controls = config.get("shader_controls") or {}
     if controls:
@@ -199,6 +202,9 @@ def apply(config: Mapping[str, Any], layers: list[dict]) -> list[str]:
 
     for name, settings in (config.get("layers") or {}).items():
         layer = by_name.get(name)
+        if layer is None and name in kept:
+            untouched.append(name)
+            continue
         if layer is None:
             notes.append(f"config [layer.{name}]: no such layer in this state, skipped")
             continue
@@ -212,6 +218,9 @@ def apply(config: Mapping[str, Any], layers: list[dict]) -> list[str]:
             raise ConfigProblem(f"config [layer.{name}] tab 'segments' exists only on a "
                                 f"segmentation layer; {name!r} is a {layer['type']} layer")
         layer.update(display)
+    if untouched:
+        notes.append(f"config left the --into state's own layers as they are: "
+                     f"{', '.join(untouched)}")
     view = config.get("view") or {}
     if view.get("select") and view["select"] not in by_name:
         notes.append(f"config [view] select {view['select']!r}: no such layer in this state, "

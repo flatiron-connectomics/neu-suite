@@ -123,6 +123,27 @@ def volume_layer(volume: str, *, kind: str | None = None, name: str | None = Non
 
 
 @_quiet
+def layer_volume(layer: Mapping[str, Any]) -> str | None:
+    """The precomputed volume a state's layer reads, as a location: the ``source`` without
+    neuroglancer's scheme (``precomputed://s3://b/v`` or ``s3://b/v|neuroglancer-precomputed:``
+    -> ``s3://b/v``). ``None`` for any other kind of source."""
+    source = layer.get("source")
+    if isinstance(source, list):
+        source = source[0] if source else None
+    if isinstance(source, Mapping):
+        source = source.get("url")
+    if not isinstance(source, str):
+        return None
+    url, pipe, rest = source.partition("|")
+    if pipe and not rest.startswith("neuroglancer-precomputed"):
+        return None
+    if url.startswith("precomputed://"):
+        url = url[len("precomputed://"):]
+    elif not pipe:
+        return None
+    return url.rstrip("/") or None
+
+
 def read_annotation_info(source: str) -> dict:
     """The ``info`` of a precomputed annotation source, refusing anything else."""
     from neu_vol.location import read_json

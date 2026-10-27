@@ -500,6 +500,17 @@ reported: neuroglancer keys a layer by name, so two sharing one is a collision r
 duplicate. `--into` implies `--format url`, and `neu-glance parse` is the inverse when you want
 to read a link rather than extend it.
 
+The layer flags (`--color-by`, `--color`, `--silhouette`, `--opacity-2d`, `--opacity-3d`,
+`--no-pick`, `--hide`) work on the state's own layers as well as the added ones, named as the
+viewer shows them or by their source location:
+
+```bash
+neu-glance gen --into state.json --color-by s3://.../seg=group --format state --out by-group.json
+```
+
+A `--config`, by contrast, applies only to the layers the call adds, since a saved state's
+layers and view hold choices made in the viewer.
+
 `--position` is zyx like every coordinate in these packages. Pass `--position-order xyz`
 to use numbers copied straight out of the viewer, since xyz is what neuroglancer
 displays. Whichever you use is echoed back on every run.

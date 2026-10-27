@@ -422,6 +422,24 @@ def _read_json(path: str, read_bytes=None):
         raise StateProblem(f"{path} is not valid JSON: {e}") from None
 
 
+def unique_names(existing: Sequence[Any], layers: Sequence[dict]) -> list[str]:
+    """Rename, in place, each of ``layers`` whose name ``existing`` or an earlier one of
+    ``layers`` already has, with a ``-2`` suffix. Returns a note per rename."""
+    taken = {lyr.get("name") for lyr in existing if isinstance(lyr, dict)}
+    notes: list[str] = []
+    for layer in layers:
+        name = layer.get("name")
+        if name in taken:
+            suffix = 2
+            while f"{name}-{suffix}" in taken:
+                suffix += 1
+            layer["name"] = f"{name}-{suffix}"
+            notes.append(f"renamed incoming layer {name!r} to {layer['name']!r}: the state "
+                         f"already has a layer by that name")
+        taken.add(layer["name"])
+    return notes
+
+
 def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
                layout: str | None = None,
                position_zyx: Sequence[float] | None = None,
@@ -440,22 +458,8 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
     """
     state = json.loads(json.dumps(dict(base)))      # deep copy; never mutate the caller's
     existing = list(state.get("layers") or [])
-    taken = {lyr.get("name") for lyr in existing if isinstance(lyr, dict)}
-    notes: list[str] = []
-
-    added = []
-    for layer in layers:
-        layer = dict(layer)
-        name = layer.get("name")
-        if name in taken:
-            suffix = 2
-            while f"{name}-{suffix}" in taken:
-                suffix += 1
-            layer["name"] = f"{name}-{suffix}"
-            notes.append(f"renamed incoming layer {name!r} to {layer['name']!r}: the state "
-                         f"already has a layer by that name")
-        taken.add(layer["name"])
-        added.append(layer)
+    added = [dict(layer) for layer in layers]
+    notes = unique_names(existing, added)
 
     state["layers"] = existing + added
     if not state.get("dimensions"):

@@ -94,6 +94,20 @@ state's own `dimensions`, position and zoom are kept, so adding a layer does not
 view, and a layer whose name is already taken is renamed and reported rather than silently
 shadowing the one already there.
 
+The layer flags (`--color-by`, `--color`, `--silhouette`, `--opacity-2d`, `--opacity-3d`,
+`--no-pick`, `--hide`, `--select`) reach the state's own layers too, named as the viewer shows
+them or by their source location (`s3://bucket/seg`, with or without `precomputed://`), so a
+saved scene can be recoloured without rebuilding it:
+
+```bash
+neu-glance gen --into s3://my-bucket/states/v1.json --color-by seg=group \
+    --format state --out s3://my-bucket/states/v1-by-group.json
+```
+
+`--color-by` reads the layer's segment properties from its source. A `--config` applies only
+to the layers the call adds: its `[layer.NAME]` sections and `[view]` leave a saved state's
+layers and view as they are, and say so.
+
 With nothing to add, `gen --into` re-emits the state. For a state file on `s3://` or `gs://`
 the link then **names the file** (`<viewer>/#!s3://bucket/states/v1.json`) and the viewer
 fetches it: the link stays short and follows later rewrites of the file, which must be

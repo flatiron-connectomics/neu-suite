@@ -187,6 +187,8 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                         "one — a neuroglancer URL or a state JSON file. The state's own "
                         "dimensions, position and zoom are kept, so your view does not "
                         "move; a layer whose name is already taken is renamed and reported. "
+                        "The layer flags reach the state's own layers too; --config applies "
+                        "only to the layers added. "
                         "Implies --format url unless --format says otherwise. With nothing "
                         "to add, `gen --into` re-emits the state itself — a view file "
                         "straight to a link. Quote a URL "
@@ -213,7 +215,8 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
         q.add_argument("--hide", action="append", default=None, metavar="LAYER_NAME",
                        help="add this layer switched off, to turn on in the viewer "
                             "(repeatable). For layers that would crowd the view if all were "
-                            "shown at once")
+                            "shown at once. A layer flag names a layer as the viewer shows it, "
+                            "or by its source location, and reaches an --into state's layers")
         q.add_argument("--select", default=None, metavar="LAYER_NAME",
                        help="open the side panel on this layer")
         q.add_argument("--select-last", action="store_true",
@@ -273,6 +276,26 @@ def _is_cloud_state(source: str) -> bool:
     return source.startswith(("s3://", "gs://")) and "#!" not in source
 
 
+def _state_layers(state: dict | None) -> list[dict]:
+    """A state's layer objects, as the same dicts, so changes land in the state."""
+    return [lyr for lyr in (state or {}).get("layers") or [] if isinstance(lyr, dict)]
+
+
+def _layer_named(ref: str, layers: list[dict]) -> str | None:
+    """The name of the layer ``ref`` names: a layer name, else a source location
+    (``s3://b/v``, ``precomputed://s3://b/v``) that exactly one layer reads."""
+    from .sources import layer_volume
+
+    if any(lyr.get("name") == ref for lyr in layers):
+        return ref
+    where = layer_volume({"source": ref}) or ref.rstrip("/")
+    found = [lyr.get("name") for lyr in layers if layer_volume(lyr) == where]
+    if len(found) > 1:
+        raise SystemExit(f"{ref} is the source of {len(found)} layers ({', '.join(found)}); "
+                         f"name one of them instead")
+    return found[0] if found else None
+
+
 def _resolve_format(args) -> str:
     """The format actually being emitted.
 
@@ -291,10 +314,12 @@ def _resolve_format(args) -> str:
 
 
 def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
-          selected: str | None = None) -> int:
+          selected: str | None = None, base: dict | None = None,
+          modified: bool = False) -> int:
     """Serialize ``layers`` per ``--format``/``--into``/``--out``. Returns an exit code.
 
-    Shared by all three producers.
+    Shared by all three producers. ``base`` is the ``--into`` state when the caller has
+    already loaded it, and ``modified`` says whether the caller changed its layers.
     """
     from .layers import render
     from .state import LONG_URL, merge_into, state_url
@@ -310,13 +335,16 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
                 f"--format state to get all of them in a state.")
         text = render(layers[0])
     else:
-        hide = getattr(args, "hide", None) or []
-        unknown = sorted(set(hide) - {lyr["name"] for lyr in layers})
+        if into and base is None:
+            base = _load_into(into)
+        targets = [*_state_layers(base), *layers]
+        hide = [_layer_named(h, targets) or h for h in getattr(args, "hide", None) or []]
+        unknown = sorted(set(hide) - {lyr.get("name") for lyr in targets})
         if unknown:
             raise SystemExit(f"--hide names no layer: {', '.join(unknown)}. The layers are "
-                             f"{', '.join(lyr['name'] for lyr in layers)}")
-        for lyr in layers:
-            if lyr["name"] in hide:
+                             f"{', '.join(str(lyr.get('name')) for lyr in targets)}")
+        for lyr in targets:
+            if lyr.get("name") in hide:
                 lyr["visible"] = False
         selected_name = getattr(args, "select", None) or (
             layers[-1]["name"] if getattr(args, "select_last", False) and layers
@@ -335,24 +363,24 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
         )
         if into and fmt == "url" and _is_cloud_state(into) and not getattr(args, "expand",
                                                                             False):
-            changed = bool(layers or hide) or any(v is not None for v in shaping.values())
+            changed = (bool(layers or hide or modified)
+                       or any(v is not None for v in shaping.values()))
             if changed:
                 raise SystemExit(
                     f"a link to {into} would show the file as it is, without the layers or view "
                     f"options given here. Write the changed state with --format state --out "
                     f"<file> and link that, or pass --expand to put it in the link.")
-            _load_into(into)                      # refuse a file that is not a state
             text = f"{getattr(args, 'viewer', _DEFAULT_VIEWER).rstrip('/')}/#!{into}"
             print(f"  a link to the state file, which the viewer fetches; it must be readable "
                   f"anonymously, with CORS (--expand puts the state in the link)", file=err)
             _deliver(args.out, text)
             return 0
         if into:
-            base = _load_into(into)
             state, notes = merge_into(base, layers, **shaping)
             print(f"added {len(layers)} layer(s) to {len(base.get('layers') or [])} "
                   f"already in {into if '#!' not in into else 'the given URL'}"
-                  + ("" if layers else " — re-emitting it as is"), file=err)
+                  + ("" if layers else " — changing its layers" if modified or hide
+                     else " — re-emitting it as is"), file=err)
             print(f"  kept the existing dimensions, position and zoom", file=err)
             for note in notes:
                 print(f"  {note}", file=err)
@@ -478,23 +506,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="opacity for the --image layers")
     for flag, key, what in _SEG_DISPLAY_FLAGS:
         q.add_argument(flag, action="append", default=None, metavar="LAYER_NAME=VALUE",
-                       help=f"{what} of one --seg layer (repeatable; sets {key})")
+                       help=f"{what} of one segmentation layer (repeatable; sets {key})")
     q.add_argument("--color", action="append", default=None, metavar="LAYER_NAME=COLOR",
-                   help="colour of every segment of one --seg layer that has no colour of its "
-                        "own: a name, #rrggbb (repeatable; sets segmentDefaultColor). Without "
+                   help="colour of every segment of one segmentation layer that has no "
+                        "colour of its own: a name, #rrggbb (repeatable; sets "
+                        "segmentDefaultColor). Without "
                         "it each segment gets its hash colour")
     q.add_argument("--color-by", action="append", default=None,
                    metavar="LAYER_NAME=PROP[,PROP...]",
-                   help="colour each segment of one --seg layer by a segment property, from "
-                        "its segment_properties: a tag facet (col, group), a flag tag, or "
-                        "label. A segment takes the first property it has a value for, so "
+                   help="colour each segment of one segmentation layer by a segment property, "
+                        "from its source's segment_properties: a tag facet (col, group), a "
+                        "flag tag, or label. A segment takes the first property it has a value for, so "
                         "col,group colours by column and falls back to group. Each value gets "
                         "a fixed colour from neuroglancer's segment palette; segments with "
                         "none keep their hash colour. Written as segmentColors, so it is fixed "
                         "when the state is made (repeatable)")
     q.add_argument("--no-pick", action="append", default=None, metavar="LAYER_NAME",
-                   help="make clicks go through this --seg layer (repeatable; sets pick "
-                        "false), for a shell enclosing what you want to select")
+                   help="make clicks go through this segmentation layer (repeatable; sets "
+                        "pick false), for a shell enclosing what you want to select")
     q.add_argument("--config", default=None, metavar="TOML",
                    help="site display defaults: volume bounds, annotation shader controls, "
                         "and per-layer silhouette, opacities, hide and all_segments by layer "
@@ -739,9 +768,10 @@ def _seg_display(args, layers: list[dict]) -> None:
             name, sep, number = value.rpartition("=")
             if not sep or not name:
                 raise SystemExit(f"{flag} wants LAYER_NAME=VALUE, got {value!r}")
+            name = _layer_named(name, list(segs.values())) or name
             if name not in segs:
-                raise SystemExit(f"{flag} names no --seg layer: {name!r}. The segmentation "
-                                 f"layers are {', '.join(segs) or '(none)'}")
+                raise SystemExit(f"{flag} names no segmentation layer: {name!r}. They are "
+                                 f"{', '.join(segs) or '(none)'}")
             try:
                 v = float(number)
             except ValueError:
@@ -757,17 +787,19 @@ def _seg_display(args, layers: list[dict]) -> None:
         name, sep, color = value.rpartition("=")
         if not sep or not name:
             raise SystemExit(f"--color wants LAYER_NAME=COLOR, got {value!r}")
+        name = _layer_named(name, list(segs.values())) or name
         if name not in segs:
-            raise SystemExit(f"--color names no --seg layer: {name!r}. The segmentation "
-                             f"layers are {', '.join(segs) or '(none)'}")
+            raise SystemExit(f"--color names no segmentation layer: {name!r}. They are "
+                             f"{', '.join(segs) or '(none)'}")
         try:
             segs[name]["segmentDefaultColor"] = as_hex_color(color, f"--color {name}")
         except ShaderProblem as e:
             raise SystemExit(str(e)) from None
     for name in args.no_pick or []:
+        name = _layer_named(name, list(segs.values())) or name
         if name not in segs:
-            raise SystemExit(f"--no-pick names no --seg layer: {name!r}. The segmentation "
-                             f"layers are {', '.join(segs) or '(none)'}")
+            raise SystemExit(f"--no-pick names no segmentation layer: {name!r}. They are "
+                             f"{', '.join(segs) or '(none)'}")
         segs[name]["pick"] = False
 
 
@@ -790,23 +822,34 @@ def _view_defaults(args, view: dict, names: set[str]) -> None:
     args.projection_orientation = view.get("projection_orientation")
 
 
-def _color_by(args, site: dict, layers: list[dict], volumes: dict[str, str], *,
-              file) -> None:
-    """Apply ``--color-by`` (or the config's ``color_by``) as each layer's segmentColors."""
-    from .sources import SourceProblem, read_segment_properties
+def _color_by(args, site: dict, layers: list[dict], new: set[str], *, file) -> None:
+    """Apply ``--color-by`` (or the config's ``color_by``) as each layer's segmentColors.
+
+    The flag may name any segmentation layer in ``layers``; the config only the ``new``
+    ones. Each layer's volume is read back from its source.
+    """
+    from .sources import SourceProblem, layer_volume, read_segment_properties
     from .state import StateProblem, colors_by_property
 
+    by_name = {lyr.get("name"): lyr for lyr in layers if lyr.get("type") == "segmentation"}
     wanted = {n: s["color_by"] for n, s in site["layers"].items()
-              if s.get("color_by") and n in volumes}
+              if s.get("color_by") and n in new and n in by_name}
     for value in args.color_by or []:
         name, sep, keys = value.partition("=")
         if not sep or not name or not keys.strip():
             raise SystemExit(f"--color-by wants LAYER_NAME=PROP[,PROP...], got {value!r}")
-        if name not in volumes:
-            raise SystemExit(f"--color-by names no --seg layer: {name!r}. The segmentation "
-                             f"layers are {', '.join(volumes) or '(none)'}")
+        name = _layer_named(name, list(by_name.values())) or name
+        if name not in by_name:
+            raise SystemExit(f"--color-by names no segmentation layer: {name!r}. They are "
+                             f"{', '.join(map(str, by_name)) or '(none)'}")
         wanted[name] = [k for k in keys.replace(" ", "").split(",") if k]
-    by_name = {lyr["name"]: lyr for lyr in layers}
+    volumes = {}
+    for name in wanted:
+        volumes[name] = layer_volume(by_name[name])
+        if volumes[name] is None:
+            raise SystemExit(f"--color-by {name}: its source {by_name[name].get('source')!r} "
+                             f"is not a precomputed volume, so it has no segment properties "
+                             f"to read")
     for name, keys in wanted.items():
         try:
             colors, report = colors_by_property(read_segment_properties(volumes[name]), keys)
@@ -826,11 +869,15 @@ def cmd_gen(args) -> int:
     from .shaders import ShaderProblem
     from .sources import (SourceProblem, annotation_layer, annotation_source_extent,
                           annotation_source_voxel_size, volume_extent, volume_layer)
-    from .state import StateProblem, annotation_extent, load_layer
+    from .state import StateProblem, annotation_extent, load_layer, unique_names
 
     from . import config as _config
 
     err = sys.stderr
+    # The layer flags may name the --into state's layers too, so it is loaded first.
+    base = _load_into(args.into) if args.into else None
+    existing = _state_layers(base)
+    before = json.dumps(existing, sort_keys=True)
     layers: list[dict] = []
     frame_info: dict | None = None
     extents: list[Any] = []
@@ -856,9 +903,7 @@ def cmd_gen(args) -> int:
             layers.append(layer)
             frame_info = frame_info or info
             extents.append(volume_extent(volume, info["format"]))
-        seg_volumes: dict[str, str] = {}
         for i, volume in enumerate(args.seg or []):
-            seg_volumes[volume.rstrip("/").rsplit("/", 1)[-1]] = volume
             picked = args.segments[i] if i < len(args.segments or []) else None
             ids = [int(s) for s in picked.replace(",", " ").split()] if picked else []
             if volume.rstrip("/").rsplit("/", 1)[-1] in everything:
@@ -887,16 +932,25 @@ def cmd_gen(args) -> int:
                                   "format": "annotations"}
         for path in args.layer or []:
             layers.extend(load_layer(path))
-        config_notes = _config.apply(site, layers)
+        # Final names now, so every flag below names a layer as the viewer will show it.
+        config_notes = unique_names(existing, layers)
+        # The config is defaults for the layers added here; a saved state's own layers and
+        # view are left as they are.
+        config_notes += _config.apply({**site, "view": {}} if base else site, layers,
+                                      kept=[lyr.get("name") for lyr in existing])
     except (SourceProblem, ShaderProblem, StateProblem, ValueError,
             json.JSONDecodeError) as e:
         raise SystemExit(str(e)) from None
-    _seg_display(args, layers)
-    names = {lyr["name"] for lyr in layers}
+    targets = [*existing, *layers]
+    _seg_display(args, targets)
+    new = {lyr["name"] for lyr in layers}
     args.hide = list(dict.fromkeys(
         [*(args.hide or []), *(n for n, s in site["layers"].items()
-                               if s.get("hide") and n in names)]))
-    _view_defaults(args, site["view"], names)
+                               if s.get("hide") and n in new)]))
+    if base and site["view"]:
+        config_notes.append("config [view] not applied: --into keeps the state's view")
+    else:
+        _view_defaults(args, site["view"], new)
 
     # With --into and nothing to add, the state itself is the output: a view file straight
     # to a link, with any of the view options (--layout, --hide-slices, …) applied on the way.
@@ -929,10 +983,11 @@ def cmd_gen(args) -> int:
         print(f"  display defaults from {args.config}", file=err)
     for note in config_notes:
         print(f"  {note}", file=err)
-    _color_by(args, site, layers, seg_volumes, file=err)
+    _color_by(args, site, targets, new, file=err)
     _report_bindings(layers, file=err)
 
-    return _emit(args, layers, voxel=voxel, units=units, frame=fit)
+    return _emit(args, layers, voxel=voxel, units=units, frame=fit, base=base,
+                 modified=json.dumps(existing, sort_keys=True) != before)
 
 
 def _report_bindings(layers, *, file) -> None:
