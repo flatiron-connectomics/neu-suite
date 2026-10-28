@@ -73,6 +73,19 @@ def default_view(extent_zyx: Sequence[float],
     return centre, span / NOMINAL_VIEWPORT_PX, span
 
 
+def colored_last(layers: Sequence[Any]) -> list[Any]:
+    """``layers`` with every layer carrying ``segmentColors`` moved to the end, in order.
+
+    Neuroglancer restores layers in order and dispatches a change per stated colour; past
+    ~20k colours that outlasts the URL-hash debounce (400 ms), which then serializes the
+    state mid-restore, and an annotation layer not yet restored throws from ``toJSON``.
+    The colour layer is reported as unparseable and dropped (seen in Chrome). Last, every
+    other layer is restored before its colours are applied.
+    """
+    colored = [lyr for lyr in layers if isinstance(lyr, dict) and lyr.get("segmentColors")]
+    return [lyr for lyr in layers if not any(lyr is c for c in colored)] + colored
+
+
 def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | None = None,
                 position_zyx: Sequence[float] | None = None,
                 layout: str = "4panel",
@@ -94,9 +107,11 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
     ``show_slices=False`` hides the cross-section planes inside the 3D panel, useful for
     meshes and skeletons; the 2D panels need ``layout="3d"`` instead. ``None`` leaves the
     viewer's default (shown).
+
+    Layers carrying ``segmentColors`` go last (:func:`colored_last`).
     """
     dims, warning = output_dimensions(voxel_size_zyx, units)
-    state: dict[str, Any] = {"dimensions": dims, "layers": list(layers),
+    state: dict[str, Any] = {"dimensions": dims, "layers": colored_last(layers),
                              "layout": layout}
 
     fitted = default_view(*frame) if frame else (None, None, None)
@@ -451,6 +466,7 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
                ) -> tuple[dict, list[str]]:
     """``base`` with ``layers`` appended. Returns the state and any notes worth printing.
 
+    - Layers carrying ``segmentColors`` go last (:func:`colored_last`).
     - The base's ``dimensions``, position and zooms are kept unless overridden here, so
       adding a layer does not move the view.
     - Layer names stay unique: neuroglancer keys layers by name, so a clashing incoming
@@ -461,7 +477,7 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
     added = [dict(layer) for layer in layers]
     notes = unique_names(existing, added)
 
-    state["layers"] = existing + added
+    state["layers"] = colored_last(existing + added)
     if not state.get("dimensions"):
         notes.append("the state being added to declares no `dimensions`, so the layers' own "
                      "coordinates may not line up")

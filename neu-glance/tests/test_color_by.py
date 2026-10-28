@@ -6,7 +6,7 @@ import pytest
 
 from neu_glance import cli
 from neu_glance.shaders import segment_color, value_color
-from neu_glance.state import StateProblem, colors_by_property, parse_url
+from neu_glance.state import StateProblem, colored_last, colors_by_property, parse_url
 
 from test_gen import _volume
 
@@ -90,6 +90,39 @@ def test_the_cli_writes_segment_colors_from_a_flag_or_the_config(tmp_path, capsy
     cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--config", str(cfg)]))
     layer = parse_url(capsys.readouterr().out.strip())["layers"][0]
     assert layer["segmentColors"]["1"] == value_color("group:Tm2")
+
+
+def test_colored_layers_go_last_in_order():
+    layers = [{"name": "a", "segmentColors": {"1": "#ffffff"}}, {"name": "b"},
+              {"name": "c", "segmentColors": {"2": "#000000"}}, {"name": "d", "segmentColors": {}}]
+    assert [lyr["name"] for lyr in colored_last(layers)] == ["b", "d", "a", "c"]
+
+
+def test_the_colored_layer_follows_the_annotation_layer(tmp_path, capsys):
+    """Restored first, its colours would serialize the annotation layer before it is
+    restored, and neuroglancer drops the colour layer (Chrome, ~20k colours)."""
+    vol = _with_properties(tmp_path)
+    rois = _volume(tmp_path, "rois", kind="segmentation", dtype="uint64")
+    cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--seg", rois,
+                                 "--layer", _annotation_layer_file(tmp_path),
+                                 "--color-by", "v=group"]))
+    state = parse_url(capsys.readouterr().out.strip())
+    assert [lyr["name"] for lyr in state["layers"]] == ["rois", "syn", "v"]
+
+    out = tmp_path / "into.json"
+    cli.cmd_gen(cli._parse_args(["gen", "--into", _saved_state(tmp_path, vol), "--layer",
+                                 _annotation_layer_file(tmp_path), "--color-by", "seg=group",
+                                 "--format", "state", "--out", str(out)]))
+    capsys.readouterr()
+    assert [lyr["name"] for lyr in json.loads(out.read_text())["layers"]] == [
+        "rois", "syn", "seg"]
+
+
+def _annotation_layer_file(tmp_path):
+    path = tmp_path / "syn.json"
+    path.write_text(json.dumps({"type": "annotation", "name": "syn",
+                                "source": "local://annotations", "annotations": []}))
+    return str(path)
 
 
 def test_color_by_names_a_seg_layer(tmp_path):
