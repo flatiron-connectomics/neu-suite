@@ -111,6 +111,7 @@ guides/rendering
 :caption: Tutorials
 
 tutorials/synapses
+tutorials/segment-properties
 ```
 
 ```{toctree}

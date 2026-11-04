@@ -218,9 +218,9 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
                        counts_source: Mapping[str, Any] | None = None,
                        labelmap_source: Mapping[str, Any] | None = None,
                        synapses: str | None = None, roi_spec: str | None = None,
-                       rules_path: str | None = None, rules_only: bool = False,
-                       max_tags: float | None = None,
-                       keep_glia: bool = True, link: bool = True,
+                       rules_path: str | None = None, label: str | None = None,
+                       drop: Sequence[str] = (), max_tags: float | None = None,
+                       link: bool = True,
                        table: str | None = None, dry_run: bool = False) -> dict[str, Any]:
     """Build a ``segment_properties`` source and, by default, link the volume to it.
 
@@ -233,9 +233,10 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
     ``table`` is a path (``.parquet``, ``.csv`` or ``.feather``) for a row per requested
     body (:func:`neu_mark.segprops.as_table`), written with its provenance, dry run or not.
 
-    ``rules_path`` loads a rules module that overrides the builtins by name (``rules_only``
-    uses it alone). ``counts_source`` (a labelsz instance) adds ``pre``/``post``/``syn``,
-    and ``labelmap_source`` adds ``voxels``.
+    ``rules_path`` loads a rules module (without one the document has labels and numbers
+    only); ``label`` names the label column, overriding the module's ``LABEL``; ``drop``
+    names rules whose bodies are excluded rather than tagged. ``counts_source`` (a labelsz
+    instance) adds ``pre``/``post``/``syn``, and ``labelmap_source`` adds ``voxels``.
 
     ``synapses`` is a directory an earlier ``points --rois`` run wrote; it gives the rules a
     ``synapse_neuropils`` column (:func:`neu_mark.tables.body_neuropil_fractions`), and
@@ -255,6 +256,10 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
         logger.info("loaded %d rule(s) from %s: %s", len(ruleset), rules_path,
                     ", ".join(ruleset.names))
         rules_record = _rules.provenance(ruleset)
+    if drop:
+        from .rules import RuleSet
+
+        (ruleset or RuleSet([])).dropping(drop)       # an unknown name fails before a fetch
 
     frame = _dvid.fetch_body_annotations(bodies_source, bodies)["bodies"]
     logger.info("%d of %d bodies have a property record", len(frame), len(bodies))
@@ -271,8 +276,8 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
         sizes = _dvid.fetch_voxel_counts(labelmap_source, bodies)
 
     extra = {} if max_tags is None else {"max_tags": float(max_tags)}
-    built = segprops.build(frame, rules=ruleset, rules_only=rules_only, counts=counts,
-                           sizes=sizes, keep_glia=keep_glia, table=table is not None,
+    built = segprops.build(frame, rules=ruleset, label=label, drop=tuple(drop),
+                           counts=counts, sizes=sizes, table=table is not None,
                            requested=bodies, **extra)
 
     written, linked = [], None
@@ -292,9 +297,10 @@ def segment_properties(bodies_source: Mapping[str, Any], dst: str,
            "max_tags": built["report"]["max_tags"],
            "facets": built["report"]["facets"], "bytes": built["report"]["bytes"],
            "coverage": built["report"]["coverage"],
-           "numbers": built["report"]["numbers"], "keep_glia": keep_glia,
+           "numbers": built["report"]["numbers"], "label": built["report"]["label"],
+           "drop": list(drop),
            # The rules decide what the document says; see `rules.provenance`.
-           "rules": rules_record, "rules_only": bool(rules_only),
+           "rules": rules_record,
            "synapses": synapses, "roi_spec": roi_spec,
            "linked": linked, "table": table, "dry_run": True if dry_run else None}
     record = _record(bodies_source, dst, run=run)

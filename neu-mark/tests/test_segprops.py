@@ -10,7 +10,9 @@ import re
 import pandas as pd
 import pytest
 
+import wasp_fixture
 from neu_mark import rule, segprops
+from neu_mark.rules import RuleSet
 
 BODIES = pd.DataFrame({
     "body": pd.Series([1, 2, 3, 4, 5, 6, 7], dtype="uint64"),
@@ -26,8 +28,17 @@ COUNTS = pd.DataFrame({
 })
 
 
-def _built(**kw):
-    return segprops.build(BODIES, **kw)
+#: A dataset's rules module, as `--rules` would load it (tests/wasp_fixture.py).
+WASP = RuleSet(wasp_fixture.RULES, label=wasp_fixture.LABEL)
+
+
+def _build(frame, rules=(), **kw):
+    """`build` with the wasp module, plus ``rules`` overriding it by name."""
+    return segprops.build(frame, rules=WASP.override(rules) if rules else WASP, **kw)
+
+
+def _built(rules=(), **kw):
+    return _build(BODIES, rules, **kw)
 
 
 def _props(info):
@@ -35,7 +46,8 @@ def _props(info):
 
 
 def _labels(info):
-    return dict(zip(info["inline"]["ids"], _props(info)["instance"]["values"]))
+    label = next(p for p in info["inline"]["properties"] if p["type"] == "label")
+    return dict(zip(info["inline"]["ids"], label["values"]))
 
 
 def _tags_of(result, body):
@@ -113,17 +125,21 @@ def test_tag_case_is_preserved_and_collisions_are_reported_not_folded():
     assert segprops.case_collisions(["type:Tm2", "side:L"]) == {}
 
 
-def test_the_vocabulary_is_sorted_naturally_and_each_body_keeps_its_tags():
-    """The viewer lists tags in vocabulary order; digits compare as numbers."""
+def test_the_vocabulary_is_in_rule_order_then_flags_and_sorted_naturally_within():
+    """The viewer lists tags in vocabulary order, so a rules module's declaration order is
+    the order its facets are listed in; digits compare as numbers."""
     @rule(prefix="col", multi=True)
     def col(r):
         return {1: ["A10", "A2"], 2: ["b1"], 3: ["A1"]}.get(int(r["body"]), [])
 
     result = _built(rules=[col])
     vocab = _props(result["info"])["tags"]["tags"]
-    assert vocab == sorted(vocab, key=segprops.natural_key)
+    facets = list(dict.fromkeys(t.split(":", 1)[0] if ":" in t else "" for t in vocab))
+    assert facets == ["side", "type", "col", ""]     # builtins, then the module's, then flags
     cols = [t for t in vocab if t.startswith("col:")]
     assert cols == ["col:A1", "col:A2", "col:A10", "col:b1"]
+    flags = [t for t in vocab if ":" not in t]
+    assert flags == sorted(flags, key=segprops.natural_key)
     assert {"col:A2", "col:A10"} <= _tags_of(result, 1)
     assert "col:b1" in _tags_of(result, 2) and "col:A1" in _tags_of(result, 3)
 
@@ -163,7 +179,7 @@ def test_each_facet_lands_on_the_right_body(body, expected):
 ])
 def test_instance_suffixes(instance, label, expected):
     frame = pd.DataFrame({"body": pd.Series([1], dtype="uint64"), "instance": [instance]})
-    result = segprops.build(frame)
+    result = _build(frame)
     assert _props(result["info"])["instance"]["values"] == [label]
     assert _tags_of(result, 1) == expected
 
@@ -184,7 +200,7 @@ def test_noise_is_excluded_entirely_not_merely_untagged():
 def test_everything_excluded_is_an_error_not_an_empty_document():
     frame = pd.DataFrame({"body": pd.Series([1], dtype="uint64"), "instance": ["irrelevant"]})
     with pytest.raises(ValueError, match="every body was excluded"):
-        segprops.build(frame)
+        _build(frame)
 
 
 # --------------------------------------------------------------------------- #
@@ -238,40 +254,64 @@ def test_the_module_never_opens_a_file_directly():
 # --------------------------------------------------------------------------- #
 # rules: adding, overriding, replacing
 # --------------------------------------------------------------------------- #
-def test_a_plugin_rule_is_added_alongside_the_builtins():
+def test_a_rule_is_added_alongside_the_modules_own():
     @rule(multi=True)
     def column(r):
         """optic lobe column"""
         return re.findall(r"_([A-Z]\d+)(?=$|[_(])", r["instance"] or "")
 
-    result = segprops.build(BODIES, rules=[column])
+    result = _build(BODIES, rules=[column])
     assert _tags_of(result, 1) == {"type:Tm2", "side:L", "column:A2"}
     assert "side" in result["report"]["coverage"]
 
 
-def test_a_plugin_rule_overrides_a_builtin_by_name_and_keeps_its_position():
+def test_a_rule_overrides_one_of_the_same_name_and_keeps_its_position():
     @rule
     def side(r):
         """hemisphere, lowercased"""
         m = re.search(r"\((L|R)\)", r["instance"] or "")
         return m.group(1).lower() if m else None
 
-    result = segprops.build(BODIES, rules=[side])
+    result = _build(BODIES, rules=[side])
     assert _tags_of(result, 1) == {"type:Tm2", "side:l"}
     names = result["report"]["rules"]["names"]
     assert names.index("side") == 1 and names.count("side") == 1
 
 
-def test_rules_only_drops_the_builtins():
-    @rule
-    def side(r):
-        """hemisphere"""
-        return "L" if "(L)" in (r["instance"] or "") else None
+def test_without_rules_there_are_no_tags_and_nothing_is_excluded():
+    """Nothing is built in: another dataset's vocabulary would mint plausible tags that
+    fire on almost nothing."""
+    result = segprops.build(BODIES, counts=COUNTS)
+    assert result["report"]["rules"]["names"] == [] and result["report"]["tags"] == 0
+    assert result["report"]["excluded"] == {}
+    assert [p["id"] for p in result["info"]["inline"]["properties"]] == ["pre", "post", "syn"]
+    assert "rules: none" in "\n".join(segprops.format_report(result["report"]))
 
-    result = segprops.build(BODIES, rules=[side], rules_only=True)
-    assert result["report"]["rules"]["names"] == ["side"]
-    assert result["report"]["excluded"] == {}             # `noise` went with the builtins
-    assert "5" in result["info"]["inline"]["ids"]
+
+def test_the_label_column_comes_from_the_rules_or_is_named():
+    """The module's LABEL labels the segments; `label=` overrides it; with neither there
+    is no label property and the viewer shows ids."""
+    assert _labels(_built()["info"])["1"] == "Tm2_A2(L)"
+    by_type = _built(label="type")["info"]
+    assert _props(by_type)["type"]["type"] == "label"
+    assert _labels(by_type)["1"] == "Tm2" and _labels(by_type)["2"] == "2"
+    unlabelled = segprops.build(BODIES, rules=wasp_fixture.RULES)
+    assert "label" not in {p["type"] for p in unlabelled["info"]["inline"]["properties"]}
+    assert unlabelled["report"]["label"] is None
+
+
+def test_a_rule_without_needs_reads_the_label_column():
+    """The records' name field need not be called `instance`."""
+    @rule
+    def first(r):
+        """first letter of the name"""
+        return (r["name"] or "")[:1] or None
+
+    renamed = BODIES.rename(columns={"instance": "name"})
+    result = segprops.build(renamed, rules=[first], label="name")
+    assert "first:T" in _tags_of(result, 1)
+    assert _labels(result["info"])["1"] == "Tm2_A2(L)"
+    assert result["report"]["absent_columns"] == []
 
 
 def test_the_prefix_colon_is_added_once_however_the_rule_spells_it():
@@ -280,7 +320,7 @@ def test_the_prefix_colon_is_added_once_however_the_rule_spells_it():
         """column"""
         return "A2" if "A2" in (r["instance"] or "") else None
 
-    assert "col:A2" in _tags_of(segprops.build(BODIES, rules=[col]), 1)
+    assert "col:A2" in _tags_of(_build(BODIES, rules=[col]), 1)
 
 
 def test_a_drop_rule_excludes_the_body_and_counts_its_reason():
@@ -289,7 +329,7 @@ def test_a_drop_rule_excludes_the_body_and_counts_its_reason():
         """bodies the dataset marks as specks"""
         return "speck" if "PGNG" in (r["instance"] or "") else None
 
-    result = segprops.build(BODIES, rules=[tiny])
+    result = _build(BODIES, rules=[tiny])
     assert "4" not in result["info"]["inline"]["ids"]
     assert result["report"]["excluded"]["speck"] == 1
     assert result["report"]["coverage"]["tiny"]["kind"] == "drop"
@@ -305,26 +345,26 @@ def test_a_dropped_body_never_runs_the_tag_rules():
         seen.append(r["instance"])
         return None
 
-    segprops.build(BODIES, rules=[watcher])
+    _build(BODIES, rules=[watcher])
     assert "irrelevant" not in seen and "Tm2_A2(L)" in seen
 
 
-def test_keep_glia_false_turns_the_glia_rule_into_a_drop():
-    kept, dropped = segprops.build(BODIES), segprops.build(BODIES, keep_glia=False)
+def test_drop_turns_a_named_rule_into_a_drop():
+    kept, dropped = _built(), _built(drop=["glia"])
     assert kept["report"]["coverage"]["glia"]["kind"] == "tag"
     assert dropped["report"]["coverage"]["glia"]["kind"] == "drop"
     assert dropped["report"]["excluded"]["glia"] == 1
     assert "6" not in dropped["info"]["inline"]["ids"]
 
 
-def test_keep_glia_false_drops_whatever_the_current_glia_rule_matches():
+def test_drop_uses_the_modules_own_definition():
     """A dataset that spells glia differently redefines the rule."""
     @rule(prefix="")
     def glia(r):
         """glia, as this dataset spells it"""
         return "glia" if "PGNG" in (r["instance"] or "") else None
 
-    dropped = segprops.build(BODIES, rules=[glia], keep_glia=False)
+    dropped = _build(BODIES, rules=[glia], drop=["glia"])
     assert "4" not in dropped["info"]["inline"]["ids"]
     assert "6" in dropped["info"]["inline"]["ids"]
 
@@ -338,7 +378,7 @@ def test_a_label_rule_names_the_segments():
         """the name a viewer shows"""
         return (r["type"] or None) and f"cell {r['type']}"
 
-    labels = _labels(segprops.build(BODIES, rules=[label])["info"])
+    labels = _labels(_build(BODIES, rules=[label])["info"])
     assert labels["1"] == "cell Tm2"
     assert labels["2"] == "VLNP(R)_fragment"      # falls back to the instance...
     assert labels["7"] == "7"                     # ...and then to the id
@@ -350,7 +390,7 @@ def test_a_label_keeps_its_spaces_because_it_is_not_a_tag():
         """the name a viewer shows"""
         return "LC10 anterior"
 
-    info = segprops.build(BODIES, rules=[label])["info"]
+    info = _build(BODIES, rules=[label])["info"]
     assert _props(info)["instance"]["values"][0] == "LC10 anterior"
 
 
@@ -362,19 +402,23 @@ def test_a_tagged_rule_named_label_is_refused():
             return "x"
 
 
-def test_a_quiet_rule_is_computed_and_reported_but_emits_nothing():
-    """`tag=False` is the seam for a future number or string property."""
+def test_a_quiet_rule_is_reported_and_tabled_but_not_in_the_document():
+    """`tag=False` keeps a value out of the viewer's tag list (a cell type with hundreds of
+    values, say) while the table still carries it."""
     @rule(tag=False)
     def depth(r):
         """soma depth, one day a number property"""
         return 7 if "(L)" in (r["instance"] or "") else None
 
-    result = segprops.build(BODIES, rules=[depth])
+    result = _build(BODIES, rules=[depth], table=True)
     assert result["report"]["coverage"]["depth"] == {
         "bodies": 2, "fraction": 2 / 6, "distinct": 1, "kind": "property",
         "description": "soma depth, one day a number property"}
     assert not [t for t in _props(result["info"])["tags"]["tags"] if "depth" in t]
     assert [p["id"] for p in result["info"]["inline"]["properties"]] == ["instance", "tags"]
+    t = result["table"].set_index("body")
+    assert t.loc[1, "depth"] == 7 and t.loc[2, "depth"] is None
+    assert t.loc[5, "depth"] is None                 # excluded bodies get no value
 
 
 def test_tag_descriptions_come_from_the_rule_that_minted_the_tag():
@@ -386,7 +430,7 @@ def test_tag_descriptions_come_from_the_rule_that_minted_the_tag():
 
 def test_a_rule_needing_an_absent_column_warns_rather_than_raising():
     """A list where nobody has a `type` has no `type` column at all, which is normal."""
-    result = segprops.build(BODIES.drop(columns=["type"]))
+    result = _build(BODIES.drop(columns=["type"]))
     assert result["report"]["absent_columns"] == ["type"]
     assert result["report"]["coverage"]["type"]["bodies"] == 0
 
@@ -417,20 +461,20 @@ def test_a_rule_echoing_the_instance_string_is_refused_by_name():
     """A chip per body is spec-legal and unusable. The message names the rule and how the
     limit was computed."""
     with pytest.raises(ValueError, match=r"'echo' with 2000 distinct") as caught:
-        segprops.build(_many(2000), rules=[echo])
+        _build(_many(2000), rules=[echo])
     assert "10% of 2000, floored at 100" in str(caught.value)
 
 
 def test_raising_the_fraction_admits_a_genuinely_diverse_dataset():
     """`coarse` is 50% distinct: refused at the 10% default, admitted at 60%."""
     with pytest.raises(ValueError, match="'coarse' with 1000 distinct"):
-        segprops.build(_many(2000), rules=[coarse])
-    report = segprops.build(_many(2000), rules=[coarse], max_tags=0.6)["report"]
+        _build(_many(2000), rules=[coarse])
+    report = _build(_many(2000), rules=[coarse], max_tags=0.6)["report"]
     assert (report["tags"], report["tag_limit"], report["max_tags"]) == (1000, 1200, 0.6)
 
 
 def test_a_short_list_is_not_judged_by_the_fraction():
-    result = segprops.build(_many(40), rules=[echo])
+    result = _build(_many(40), rules=[echo])
     assert result["report"]["tags"] == 40
     assert result["report"]["tag_limit"] == segprops.MIN_TAG_ALLOWANCE
 
@@ -459,15 +503,15 @@ def test_a_non_positive_limit_is_refused(bad):
 
 def test_an_absolute_count_caps_the_vocabulary():
     with pytest.raises(ValueError, match="explicit count of 25"):
-        segprops.build(_many(2000), rules=[echo], max_tags=25)
-    assert segprops.build(_many(2000), rules=[echo], max_tags=5000)["report"]["tags"] == 2000
+        _build(_many(2000), rules=[echo], max_tags=25)
+    assert _build(_many(2000), rules=[echo], max_tags=5000)["report"]["tags"] == 2000
 
 
 def test_too_many_facets_is_refused_even_though_the_vocabulary_is_tiny():
     """Many facets of one tag each: a small vocabulary, and nothing to group on."""
     rules = [rule(lambda r, _i=i: "x", name=f"facet{i}") for i in range(segprops.MAX_FACETS + 2)]
     with pytest.raises(ValueError, match="distinct tag facets"):
-        segprops.build(BODIES, rules=rules)
+        _build(BODIES, rules=rules)
 
 
 def test_the_report_carries_the_document_size():
@@ -484,7 +528,7 @@ def _table(**kw):
 
 
 def test_the_table_has_a_row_per_body_including_the_excluded_and_the_unrecorded():
-    t = _built(table=True, keep_glia=False, requested=[1, 2, 99])["table"]
+    t = _built(table=True, drop=["glia"], requested=[1, 2, 99])["table"]
     assert list(t["body"]) == [1, 2, 3, 4, 5, 6, 7, 99]
     t = t.set_index("body")
     assert t.loc[5, "excluded"] == "irrelevant" and t.loc[6, "excluded"] == "glia"
@@ -516,7 +560,7 @@ def test_the_table_carries_the_documents_numbers():
 def test_a_record_column_whose_name_is_taken_is_prefixed_and_dicts_become_json():
     bodies = BODIES.assign(label="from dvid",
                            synapse_neuropils=[{"pre": {"ME": 1.0}}] + [None] * 6)
-    t = segprops.build(bodies, table=True)["table"].set_index("body")
+    t = _build(bodies, table=True)["table"].set_index("body")
     assert t.loc[1, "label"] == "Tm2_A2(L)" and t.loc[1, "record:label"] == "from dvid"
     assert t.loc[1, "synapse_neuropils"] == '{"pre": {"ME": 1.0}}'
 

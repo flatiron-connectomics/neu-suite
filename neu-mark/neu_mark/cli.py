@@ -182,15 +182,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Build a `segment_properties` source from the per-body records and "
                     "write it INTO a precomputed segmentation volume, so one neuroglancer "
                     "layer shows each body's name, its tags and its synapse counts.\n\n"
-                    "`label` is the raw `instance` string — which is what lets this run "
-                    "before a cell-type parse is settled. Tags carry a facet prefix "
-                    "(type:, side:) because the format allows only ONE tags "
-                    "property, so every facet has to pool into it.\n\n"
-                    "Facets come from rules. The built-in set covers side, curated type "
-                    "and the flags; --rules loads a module of your own whose rules "
-                    "override the builtins by name, which is where anything "
-                    "dataset-specific belongs — optic lobe column, glomerulus, cell type. "
-                    "Run --dry-run first to see what each rule fired on.",
+                    "The label is a field of the records, raw — the rules module's LABEL, "
+                    "or --label — which is what lets this run before a cell-type parse is "
+                    "settled. Tags carry a facet prefix (type:, side:) because the format "
+                    "allows only ONE tags property, so every facet has to pool into it.\n\n"
+                    "Facets come from the rules module --rules loads; nothing is built in, "
+                    "since what a name's parts mean (side, column, glomerulus, cell type) "
+                    "depends on the dataset. Without --rules the document carries labels "
+                    "and numbers only. Run --dry-run first to see what each rule fired on.",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     q.add_argument("--src", required=True, metavar="URL",
                    help=_SRC_HELP + "For this command INSTANCE is the keyvalue instance "
@@ -225,12 +224,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "the same shares grouped by the spec's top-level neuropils.")
     q.add_argument("--rules", metavar="PATH", default=None,
                    help="a Python module of @rule functions, or @name for one configured "
-                        "under [rule_sets]. Its rules override the built-in ones of the "
-                        "same name and any others are added, so a module adding one "
-                        "glomerulus rule need not redeclare the rest.")
-    q.add_argument("--rules-only", action="store_true",
-                   help="use only the module's rules, dropping the built-in ones. For a "
-                        "dataset whose annotation strings share nothing with these.")
+                        "under [rule_sets]: its RULES, or every @rule at module level in "
+                        "declaration order, which is also the order the viewer lists the "
+                        "facets in. Its LABEL names the label field.")
+    q.add_argument("--label", metavar="FIELD", default=None,
+                   help="the record field to label segments with, overriding the module's "
+                        "LABEL. With neither, segments are known by id.")
+    q.add_argument("--drop", metavar="RULE", action="append", default=None,
+                   help="exclude the bodies this rule fires on, rather than tagging them "
+                        "(repeatable), using the module's own definition — e.g. --drop "
+                        "glia. An unknown rule name is refused.")
     q.add_argument("--max-tags", metavar="N", type=float, default=None,
                    help="cap the tag vocabulary. Below 1 this is a fraction of the segments "
                         "written (the default is 0.10, floored at 100 tags so short lists "
@@ -247,9 +250,6 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--dry-run", action="store_true",
                    help="build and report without writing anything but --table. --no-link "
                         "still writes the document; this writes nothing at all.")
-    q.add_argument("--drop-glia", action="store_true",
-                   help="exclude glia-labelled bodies. By default they are KEPT and carry "
-                        "a `glia` tag — not connectome-relevant, but worth seeing.")
     q.add_argument("--no-link", dest="link", action="store_false",
                    help="write the source WITHOUT adding the key to the volume's info. Use "
                         "this to inspect the output before touching a published volume; "
@@ -705,10 +705,9 @@ def cmd_segment_properties(args) -> int:
 
     result = ops.segment_properties(
         bodies_src, dst, ids, counts_source=counts_src, labelmap_source=labelmap_src,
-        synapses=args.synapses, roi_spec=args.roi_spec, rules_path=_rules_path(args.rules), rules_only=bool(args.rules_only),
-        max_tags=args.max_tags,
-        keep_glia=not args.drop_glia, link=bool(args.link), table=args.table,
-        dry_run=bool(args.dry_run))
+        synapses=args.synapses, roi_spec=args.roi_spec, rules_path=_rules_path(args.rules),
+        label=args.label, drop=args.drop or (), max_tags=args.max_tags,
+        link=bool(args.link), table=args.table, dry_run=bool(args.dry_run))
 
     for line in segprops.format_report(result["report"]):
         print(line)

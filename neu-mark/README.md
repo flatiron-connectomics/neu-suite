@@ -285,10 +285,10 @@ out, no printing and no I/O, so it is meant for a notebook:
 ```python
 from neu_mark import explore as ex
 
-ex.instances(bodies)                        # distinct strings -> body counts
-ex.tokens(bodies, drop=r"\((L|R)\)")        # the suffix vocabulary, side removed
-ex.variants(bodies)                         # what normalization repaired ('truncated?')
-ex.near(ex.tokens(bodies), "fragment")      # fuzzy candidates for misspellings
+ex.instances(bodies, "instance")                     # distinct strings -> body counts
+ex.tokens(bodies, "instance", drop=r"\((L|R)\)")     # the suffix vocabulary, side removed
+ex.variants(bodies, "instance")                      # what normalization repaired ('truncated?')
+ex.near(ex.tokens(bodies, "instance"), "fragment")   # fuzzy candidates for misspellings
 ```
 
 `near` and `variants` catch different things and you want both: whitespace and a trailing
@@ -303,8 +303,8 @@ guesses = {"cell_type": lambda r: (r["instance"] or "").split("_")[0] or None}
 
 ex.apply_rules(bodies, guesses)                  # one column per rule
 ex.coverage(bodies, guesses)                     # bodies, coverage, distinct, top
-ex.unparsed(bodies, guesses, "cell_type")        # what it missed, ranked by bodies
-ex.compare(bodies, "type", guesses["cell_type"]) # curated field vs your parse, row by row
+ex.unparsed(bodies, guesses, "cell_type", column="instance")   # what it missed, by bodies
+ex.compare(bodies, "type", guesses["cell_type"], column="instance")   # curated vs your parse
 ```
 
 A rule takes one row (a Series, with missing values as `None`) and returns a scalar, a
@@ -316,13 +316,17 @@ rather than becoming an error.
 
 A dict of lambdas is right for the first five minutes and wrong for anything you publish
 from. `neu_mark.rules` is the same contract with the declarations added, and a
-dataset-specific `RuleSet` is loaded by path from a module living with the dataset:
+dataset-specific `RuleSet` is loaded by path from a module living with the dataset. Nothing
+is built in. The
+[segment-properties tutorial](https://flatiron-connectomics.github.io/neu-suite/tutorials/segment-properties.html)
+walks through a whole module.
 
 ```python
 # wasp_rules.py
 import re
 from neu_mark import explore as ex, rule
 
+LABEL = "instance"                   # the field naming each body; rules read it by default
 KEEP = ["instance", "type"]          # explicit; nothing else reaches a viewer
 
 @rule
@@ -336,9 +340,9 @@ def column(r):
     """Column labels; genuinely multi-valued."""
     return re.findall(r"_([A-Z]\d+)(?=$|[_(])", str(r["instance"] or ""))
 
-@rule(drop=True)                     # `noise` is a builtin, so this REPLACES its
-def noise(r):                        # vocabulary rather than adding to it — name it
-    """Bodies this dataset marks as not real data."""   # something else to have both
+@rule(drop=True)
+def noise(r):
+    """Bodies this dataset marks as not real data."""
     tokens = {t.lower() for t in ex.split_tokens(r["instance"])}
     return next((t for t in ("irrelevant", "block") if t in tokens), None)
 ```
@@ -352,12 +356,12 @@ What a declaration buys you, beyond the bare function:
 
 | | |
 |---|---|
-| `needs` | the columns it reads, checked up front — a missing one is an error naming the rule, not an `AttributeError` 8,000 rows in |
+| `needs` | the columns it reads, checked up front — a missing one is an error naming the rule, not an `AttributeError` 8,000 rows in. Left out, the rule reads the module's `LABEL` field |
 | `multi` | checked, not decorative: a single-valued rule returning two values raises, which catches `re.findall` where `re.search` was meant |
 | `prefix` | the facet namespace, defaulting to the rule's name — `glomerulus` gives `glomerulus:VA1v` with nothing declared. `prefix=""` mints a bare tag, right for a flag. The colon is added for you |
 | `drop` | the rule **excludes** the body it fires on and returns the reason, which is counted in the report |
 | `consumes` | which tokens of the instance this rule accounts for, so `RuleSet.remainder` can hand you what no rule recognized. Derived from the returned values by default — declare it only where a rule normalizes an alias (`NCL` → `nucleated`) |
-| `tag=False` | produces something other than a tag. `label` and `description` are reserved and set those properties; anything else is computed and reported but emits nothing |
+| `tag=False` | produces something other than a tag. `label` and `description` are reserved and set those properties; anything else is computed, reported and written as a column of the `--table` output, but not put in the document |
 | the docstring | becomes the description — in the coverage report, and on every tag the rule mints, so the viewer explains itself |
 
 Testing one rule, or all of them, on one string:
@@ -399,11 +403,13 @@ has identified — so making a facet out of one needs a vocabulary that can tell
 
 ## Publishing rules as segment properties
 
-`segment-properties` runs a built-in set of rules — side, the curated `type`, and the
-flags. Your module's rules **override the built-in ones by name** and any others are added,
-so adding one glomerulus rule does not mean restating the rest; `--rules-only` uses yours
-alone. There is deliberately no built-in column or cell-type parse: the pattern that finds
-`_A2` also eats part of a cell type, and which is which is a fact about your dataset.
+`segment-properties` runs the rules of the module `--rules` names: its `RULES`, or every
+`@rule` at module level in declaration order. **Nothing is built in** — not side, not a
+fragment flag — because which part of a name means what is a fact about your dataset, and
+another dataset's vocabulary would mint plausible tags that fire on almost nothing. Without
+`--rules` the document carries labels and numbers only. The label is the module's `LABEL`
+field (or `--label FIELD`); with neither, segments are known by id. `--drop RULE` excludes
+the bodies a rule fires on instead of tagging them, using the module's own definition.
 
 ```console
 $ neu-mark segment-properties --src @bodies --dst ./seg --bodies sel/bodies.csv \
@@ -425,8 +431,9 @@ DRY RUN — nothing written. ./seg is untouched.
 the properties cover what `neu-morpho run` meshed into that volume. It reads unsharded
 meshes only; for a sharded source, pass `--bodies`.
 
-The tag vocabulary is written **sorted**, because the viewer lists tags in vocabulary order:
-facets group by prefix, case is ignored, and numbers compare as numbers (`col:A2` before
+The tag vocabulary is written in **rule order**, because the viewer lists tags in vocabulary
+order: each facet's values together, facets in the order their rules are declared, bare flags
+last, and within a facet case is ignored and numbers compare as numbers (`col:A2` before
 `col:A10`). In the Segments tab's query box, `#side:L` keeps a tag and `-#fragment` drops
 one, `/Tm[0-9]` matches the label as a regular expression, `syn>=100` constrains a number,
 `>syn` sorts by it descending (`<` ascending), and `|post` adds it as a column.
@@ -511,9 +518,12 @@ different layers. The spec (TOML) declares:
 
 - **layers**: `rois = [...]` for a list of ROIs; `tree = "top"` and `tree = "parts"` for
   the top-level neuropils of its `[neuropils]` tree and their parts; `from = LAYER` for
-  one label covering another layer, smoothed by `close_blocks`. A `parts` layer is cut
-  from the `top` layer's regions, so the two nest exactly; with `fill_gaps`, blocks no part
-  claims keep the top-level id.
+  one label covering another layer. A `parts` layer is cut from the `top` layer's regions,
+  so the two nest exactly; with `fill_gaps`, blocks no part claims keep the top-level id.
+  A one-label layer (`from`, or `rois` naming one ROI) can be cleaned up before it is
+  written and meshed: `open_blocks` (an opening by a ball of that radius in ROI blocks,
+  dropping specks and thin spurs), then `close_blocks` (a closing, bridging gaps and
+  dents), then `fill_holes = true` (enclosed cavities filled).
 - **`[neuropils]`**: each top-level neuropil and the ROIs that make it up. One with parts
   is their union, plus its own ROI where the node has one.
 - **`[ids]`**, shared by every layer, so saved states keep meaning the same segments after

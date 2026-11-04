@@ -7,10 +7,12 @@ know which rules mint tags, which exclude a body, and what each facet is called.
 with plain callables; publish with a :class:`RuleSet`.
 
 A rules module is dataset content (which prefixes are neuropils, which suffixes mark
-completeness), kept with the body lists and loaded by path with :func:`from_module`.
-:meth:`RuleSet.override` merges a dataset module over the builtins by name.
+completeness), kept with the body lists and loaded by path with :func:`from_module`. Nothing
+is built in. The module names its label column once (``LABEL = "instance"``); a rule that
+declares no ``needs`` reads that column, and ``test``, ``remainder`` and ``explain`` fill it.
 
-    >>> side.test("Tm2_A2(L)")
+    >>> RULES = RuleSet([side, column], label="instance")
+    >>> RULES["side"].test("Tm2_A2(L)")
     'L'
     >>> RULES.explain("LN_C5(L)_NCL")
     {'side': 'L', ...}
@@ -20,6 +22,7 @@ completeness), kept with the body lists and loaded by path with :func:`from_modu
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import logging
 import sys
@@ -33,12 +36,9 @@ from . import explore
 
 logger = logging.getLogger(__name__)
 
-#: Default column a rule reads, and the one `test` fills when given a bare string.
-DEFAULT_COLUMN = "instance"
-
 #: Reserved rule names, which set a segment property rather than a tag (declared
-#: ``tag=False``; see :mod:`neu_mark.segprops`). Any other ``tag=False`` rule is evaluated
-#: and coverage-reported but emits nothing.
+#: ``tag=False``; see :mod:`neu_mark.segprops`). Any other ``tag=False`` rule is evaluated,
+#: coverage-reported and written to the table, but not to the document.
 RESERVED = ("label", "description")
 
 
@@ -52,7 +52,11 @@ class Rule:
                  consumes: Iterable[str] | Callable | None = None):
         self.func = func
         self.name = name or getattr(func, "__name__", "rule")
-        self.needs = tuple(needs) if needs else (DEFAULT_COLUMN,)
+        self._needs = tuple(needs) if needs else None
+        #: The label column of the :class:`RuleSet` this rule is bound into: what an
+        #: undeclared ``needs`` means, what :meth:`consumed` tokenises, what :meth:`test`
+        #: fills.
+        self.label: str | None = None
         self.multi = bool(multi)
         #: Which tokens of the source string this rule accounts for, for :meth:`remainder`.
         #: ``None`` uses the returned values; declare it where the rule normalizes an alias
@@ -78,6 +82,30 @@ class Rule:
         self.description = description or (func.__doc__ or "").strip().split("\n")[0]
         self.__doc__ = func.__doc__
         self.__name__ = self.name
+
+    @property
+    def needs(self) -> tuple[str, ...]:
+        """The columns the rule reads: those it declares, else the label column."""
+        if self._needs is not None:
+            return self._needs
+        return (self.label,) if self.label else ()
+
+    def bound(self, label: str | None) -> "Rule":
+        """A copy reading ``label`` as the label column; this rule is left as it is."""
+        out = copy.copy(self)
+        out.label = label
+        return out
+
+    def _column(self) -> str:
+        """The column a bare string fills: the label column, or the one declared need."""
+        if self.label:
+            return self.label
+        if self._needs is not None and len(self._needs) == 1:
+            return self._needs[0]
+        raise ValueError(
+            f"rule {self.name!r} has no label column to put a bare string in. Bind it with "
+            f"RuleSet([...], label=...) (a rules module's LABEL does this), declare one "
+            f"column in needs, or pass the fields by name: .test(instance=...).")
 
     def set_kwargs(self, **kwargs) -> Self:
         """Bind keyword arguments of the rule's function, in place. Returns the rule."""
@@ -144,11 +172,10 @@ class Rule:
     def consumed(self, row) -> tuple[str, ...]:
         """The tokens of the source string this rule accounts for.
 
-        A rule that does not read the source string (``instance`` is not in ``needs``)
-        consumes nothing, so a rule returning the curated ``type`` cannot remove the token
-        a cell-type remainder wants to keep.
+        A rule that does not read the label column consumes nothing, so a rule returning
+        the curated ``type`` cannot remove the token a cell-type remainder wants to keep.
         """
-        if DEFAULT_COLUMN not in self.needs:
+        if not self.label or self.label not in self.needs:
             return ()
         if self._consumes is None:
             candidates = self.values(row)
@@ -157,29 +184,29 @@ class Rule:
         else:
             candidates = tuple(self._consumes)
         wanted = {str(c).lower() for c in candidates}
-        return tuple(t for t in explore.split_tokens(row[DEFAULT_COLUMN])
+        return tuple(t for t in explore.split_tokens(row[self.label])
                      if t.lower() in wanted)
 
     def remainder(self, _value: str | None = None, /, **fields) -> str | None:
-        """The source string with this rule's tokens removed, rejoined with ``_``.
+        """The label string with this rule's tokens removed, rejoined with ``_``.
 
         Removal is by token (the strings are ``_``- and parenthesis-delimited), not by
         substring, so ``side``'s ``"L"`` does not eat the ``L`` of ``LC10``.
         """
-        row = _row({DEFAULT_COLUMN: _value, **fields} if _value is not None else fields,
+        column = self._column()
+        row = _row({column: _value, **fields} if _value is not None else fields,
                    needs=self.needs)
         drop = {t.lower() for t in self.consumed(row)}
-        kept = [t for t in explore.split_tokens(row[DEFAULT_COLUMN])
-                if t.lower() not in drop]
+        kept = [t for t in explore.split_tokens(row[column]) if t.lower() not in drop]
         return "_".join(kept) or None
 
     def test(self, _value: str | None = None, /, **fields) -> Any:
-        """Evaluate on one synthetic row; ``rule.test("Tm2_A2(L)")`` fills ``instance``.
+        """Evaluate on one synthetic row; ``rule.test("Tm2_A2(L)")`` fills the label column.
 
         Returns the rule's own return value. Missing fields arrive as ``None``, as in a run.
         """
         if _value is not None:
-            fields = {DEFAULT_COLUMN: _value, **fields}
+            fields = {self._column(): _value, **fields}
         row = _row(fields, needs=self.needs)
         return self._invoke(row)
 
@@ -190,7 +217,8 @@ def rule(func: Callable | None = None, /, *, needs: Sequence[str] | None = None,
          drop: bool = False, consumes: Iterable[str] | Callable | None = None):
     """Declare a function as a rule. Usable bare (``@rule``) or called (``@rule(...)``).
 
-    - ``needs``: the columns the rule reads (default ``instance``), checked up front.
+    - ``needs``: the columns the rule reads, checked up front. Left out, the rule reads the
+      label column of the :class:`RuleSet` it is bound into.
     - ``multi``: whether the facet can have several values. A single-valued rule that
       returns several raises, which catches ``re.findall`` used where ``re.search`` was meant.
     - ``prefix``: the tag namespace, defaulting to the rule's name (``glomerulus:VA1v``);
@@ -221,7 +249,8 @@ class RuleSet:
     """An ordered collection of rules, plus the reports for iterating on them."""
 
     def __init__(self, rules: Iterable[Rule] | Mapping[str, Callable],
-                 *, keep: Sequence[str] | None = None, source: str | None = None):
+                 *, keep: Sequence[str] | None = None, source: str | None = None,
+                 label: str | None = None):
         if isinstance(rules, Mapping):
             items = [r if isinstance(r, Rule) else Rule(r, name=n)
                      for n, r in rules.items()]
@@ -234,6 +263,16 @@ class RuleSet:
         duplicated = {n for n in names if names.count(n) > 1}
         if duplicated:
             raise ValueError(f"duplicate rule names: {', '.join(sorted(duplicated))}")
+        if label is None:
+            # Rules already bound to one label column bring it with them.
+            shared = {r.label for r in items if r.label}
+            label = shared.pop() if len(shared) == 1 else None
+            items = [r.bound(label) if label and r.label is None else r for r in items]
+        else:
+            items = [r.bound(label) for r in items]
+        #: The column holding each body's name: the segment label, and what a rule that
+        #: declares no ``needs`` reads. ``None`` labels segments by id.
+        self.label = label
         self.rules = items
         #: Source columns kept in a published layer (an allow-list).
         self.keep = tuple(keep) if keep is not None else ()
@@ -243,7 +282,8 @@ class RuleSet:
         """The rules in evaluation order, one per line, aligned into columns.
         :meth:`describe` gives the same information as a DataFrame."""
         where = f", from {self.source}" if self.source else ""
-        header = f"<RuleSet {len(self.rules)} rules{where}>"
+        on = f", label {self.label!r}" if self.label else ""
+        header = f"<RuleSet {len(self.rules)} rules{on}{where}>"
         rows = [r._parts() for r in self.rules]
         if not rows:
             return header
@@ -305,7 +345,27 @@ class RuleSet:
             logger.info("rules module overrides the builtin rule(s): %s",
                         ", ".join(replaced))
         return RuleSet(merged, keep=incoming.keep or self.keep,
-                       source=incoming.source or self.source)
+                       source=incoming.source or self.source,
+                       label=incoming.label or self.label)
+
+    def dropping(self, names: Iterable[str]) -> "RuleSet":
+        """This set with the named rules turned into drop rules, keeping their own test.
+
+        Each is replaced in place by a rule with the same function and ``needs``, so the
+        body it fires on is excluded rather than tagged. An unknown name is refused.
+        """
+        names = list(dict.fromkeys(names))
+        unknown = [n for n in names if n not in self.names]
+        if unknown:
+            raise ValueError(f"no rule named {', '.join(map(repr, unknown))} to drop by; "
+                             f"the rules are {', '.join(self.names) or 'none'}")
+        droppers = []
+        for n in names:
+            current = self[n]
+            dropper = Rule(current.func, name=n, needs=current._needs, drop=True,
+                           description=f"{current.description} (excluded)")
+            droppers.append(dropper)
+        return self.override(droppers)
 
     def as_mapping(self) -> dict[str, Callable]:
         """``{name: callable}``, for the :mod:`neu_mark.explore` functions."""
@@ -354,14 +414,26 @@ class RuleSet:
         return out.merge(meta, on="rule", how="left")
 
     def unparsed(self, frame: pd.DataFrame, name: str, *,
-                 column: str = DEFAULT_COLUMN) -> pd.DataFrame:
-        """The strings one rule did not fire on, ranked by bodies. The iteration loop."""
+                 column: str | None = None) -> pd.DataFrame:
+        """The strings one rule did not fire on, ranked by bodies. The iteration loop.
+        ``column`` defaults to the label column."""
         self.require(frame)
-        return explore.unparsed(frame, self.as_mapping(), name, column=column)
+        return explore.unparsed(frame, self.as_mapping(), name,
+                                column=column or self._column())
+
+    def _column(self) -> str:
+        if not self.label:
+            raise ValueError("this RuleSet has no label column, so a bare string has "
+                             "nowhere to go: give it one (RuleSet(..., label=...), or LABEL "
+                             "in a rules module), or pass the fields by name")
+        return self.label
+
+    def _fields(self, value: str | None, fields: Mapping[str, Any]) -> dict:
+        return {self._column(): value, **fields} if value is not None else dict(fields)
 
     def consumed(self, _value: str | None = None, /, **fields) -> dict[str, tuple]:
         """``{rule: tokens}`` for every rule that accounted for part of the string."""
-        row = _row({DEFAULT_COLUMN: _value, **fields} if _value is not None else fields,
+        row = _row(self._fields(_value, fields),
                    needs={c for r in self.rules for c in r.needs})
         return {r.name: got for r in self.rules if (got := r.consumed(row))}
 
@@ -373,18 +445,17 @@ class RuleSet:
         result is a residue, not a cell type: often a bare neuropil name for an unidentified
         body.
         """
-        fields = {DEFAULT_COLUMN: _value, **fields} if _value is not None else fields
-        row = _row(fields, needs={c for r in self.rules for c in r.needs})
+        column = self._column()
+        row = _row(self._fields(_value, fields),
+                   needs={c for r in self.rules for c in r.needs})
         drop = {t.lower() for r in self.rules for t in r.consumed(row)}
-        kept = [t for t in explore.split_tokens(row[DEFAULT_COLUMN])
-                if t.lower() not in drop]
+        kept = [t for t in explore.split_tokens(row[column]) if t.lower() not in drop]
         return "_".join(kept) or None
 
     def explain(self, _value: str | None = None, /, **fields) -> dict:
         """Every rule's output for one synthetic row: a scalar for single-valued rules, a
         tuple for multi-valued ones."""
-        if _value is not None:
-            fields = {DEFAULT_COLUMN: _value, **fields}
+        fields = self._fields(_value, fields)
         needs = {c for r in self.rules for c in r.needs}
         row = _row(fields, needs=needs)
         out = {}
@@ -489,7 +560,8 @@ def from_module(path: str | Path, *, variable: str = "RULES") -> RuleSet:
     """Load a rules module by file path.
 
     Uses the module's ``RULES`` if it defines one; otherwise every ``@rule`` at module
-    level, in declaration order.
+    level, in declaration order. The module's ``LABEL`` names its label column (see
+    :class:`RuleSet`); a ``RULES`` that names a different one is refused.
     """
     path = Path(path).expanduser()
     if not path.is_file():
@@ -506,15 +578,20 @@ def from_module(path: str | Path, *, variable: str = "RULES") -> RuleSet:
         sys.modules.pop(spec.name, None)
         raise
 
+    label = getattr(module, "LABEL", None)
     declared = getattr(module, variable, None)
     if isinstance(declared, RuleSet):
-        declared.source = str(path)
-        return declared
+        if label and declared.label and declared.label != label:
+            raise ValueError(f"{path}: LABEL is {label!r} but {variable} was built with "
+                             f"label={declared.label!r}")
+        return RuleSet(declared.rules, keep=declared.keep, source=str(path),
+                       label=declared.label or label)
     if declared is not None:
-        return RuleSet(declared, keep=getattr(module, "KEEP", None), source=str(path))
+        return RuleSet(declared, keep=getattr(module, "KEEP", None), source=str(path),
+                       label=label)
     found = [v for v in vars(module).values() if isinstance(v, Rule)]
     if not found:
         raise ValueError(
             f"{path} defines no rules: expected a `{variable}` list/RuleSet, or functions "
             f"decorated with @rule at module level.")
-    return RuleSet(found, keep=getattr(module, "KEEP", None), source=str(path))
+    return RuleSet(found, keep=getattr(module, "KEEP", None), source=str(path), label=label)

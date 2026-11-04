@@ -27,7 +27,7 @@ def test_normalize_strips_whitespace_and_doubt_marks(raw, expected):
 
 
 def test_instances_counts_bodies_and_drops_missing():
-    out = ex.instances(BODIES)
+    out = ex.instances(BODIES, "instance")
     assert list(out.columns) == ["instance", "bodies"]
     # 6 distinct after normalization; the None row is not counted
     assert int(out["bodies"].sum()) == 6
@@ -35,36 +35,36 @@ def test_instances_counts_bodies_and_drops_missing():
 
 
 def test_tokens_trailing_finds_the_suffix_vocabulary():
-    out = ex.tokens(BODIES).set_index("token")["bodies"].to_dict()
+    out = ex.tokens(BODIES, "instance").set_index("token")["bodies"].to_dict()
     assert out["fragment"] == 1 and out["truncated"] == 1
     assert out["NCL"] == 1 and out["CV"] == 1
 
 
 def test_dropping_the_side_stops_it_burying_the_suffixes():
     """A parenthesized side is the trailing token of any string ending in one."""
-    with_side = ex.tokens(BODIES).set_index("token")["bodies"].to_dict()
+    with_side = ex.tokens(BODIES, "instance").set_index("token")["bodies"].to_dict()
     assert with_side.get("L") == 1                       # 'Tm2_A2(L)' ends with (L)
-    without = ex.tokens(BODIES, drop=r"\((L|R)\)").set_index("token")["bodies"].to_dict()
+    without = ex.tokens(BODIES, "instance", drop=r"\((L|R)\)").set_index("token")["bodies"].to_dict()
     assert "L" not in without and "R" not in without
     assert without["A2"] == 1                            # the real trailing token
 
 
 def test_tokens_positions():
-    lead = ex.tokens(BODIES, position="leading").set_index("token")["bodies"].to_dict()
+    lead = ex.tokens(BODIES, "instance", position="leading").set_index("token")["bodies"].to_dict()
     assert lead["VLNP"] == 1 and lead["PGNG"] == 1
-    every = ex.tokens(BODIES, position="all").set_index("token")["bodies"].to_dict()
+    every = ex.tokens(BODIES, "instance", position="all").set_index("token")["bodies"].to_dict()
     assert every["Tm2"] == 1 and every["A2"] == 1        # both tokens of one string
 
 
 def test_tokens_reports_distinct_strings_as_well_as_bodies():
     """A suffix on many distinct strings is vocabulary; on one string it is a name."""
-    out = ex.tokens(BODIES).set_index("token")
+    out = ex.tokens(BODIES, "instance").set_index("token")
     assert out.loc["fragment", "strings"] == 1
 
 
 def test_an_unknown_position_is_refused():
     with pytest.raises(ValueError, match="trailing, leading or all"):
-        ex.tokens(BODIES, position="sideways")
+        ex.tokens(BODIES, "instance", position="sideways")
 
 
 def test_a_missing_column_names_what_is_there():
@@ -74,7 +74,7 @@ def test_a_missing_column_names_what_is_there():
 
 def test_variants_shows_what_normalization_repaired():
     """These vanish from every other view, so they get their own report."""
-    out = ex.variants(BODIES)
+    out = ex.variants(BODIES, "instance")
     pairs = dict(zip(out["raw"], out["normalized"]))
     assert pairs["Tm(R)_truncated?"] == "Tm(R)_truncated"
     assert pairs["irrelevant "] == "irrelevant"
@@ -84,12 +84,12 @@ def test_variants_shows_what_normalization_repaired():
 
 def test_near_finds_a_misspelling_and_excludes_the_exact_token_unless_asked():
     frame = pd.DataFrame({"instance": ["X_fragmnet", "Y_fragment", "Z_fragment"]})
-    out = ex.near(ex.tokens(frame), "fragment")
+    out = ex.near(ex.tokens(frame, "instance"), "fragment")
     assert out["token"].tolist() == ["fragmnet"] and out["bodies"].tolist() == [1]
 
     exact = pd.DataFrame({"instance": ["Y_fragment"]})
-    assert ex.near(ex.tokens(exact), "fragment").empty
-    assert not ex.near(ex.tokens(exact), "fragment", include_exact=True).empty
+    assert ex.near(ex.tokens(exact, "instance"), "fragment").empty
+    assert not ex.near(ex.tokens(exact, "instance"), "fragment", include_exact=True).empty
 
 
 # --------------------------------------------------------------------------- #
@@ -149,14 +149,14 @@ def test_coverage_reports_the_number_to_watch():
 def test_unparsed_ranks_what_to_fix_next_by_body_count():
     frame = pd.DataFrame({"instance": ["AGNG"] * 5 + ["VLNP(L)"] * 2 + ["Tm2(L)"]})
     rules = {"side": lambda r: ("L" if "(L)" in str(r["instance"] or "") else None)}
-    out = ex.unparsed(frame, rules, "side")
+    out = ex.unparsed(frame, rules, "side", column="instance")
     assert out.iloc[0]["instance"] == "AGNG" and out.iloc[0]["bodies"] == 5
-    assert ex.unparsed(BODIES, {"all": lambda r: "x"}, "all").empty
+    assert ex.unparsed(BODIES, {"all": lambda r: "x"}, "all", column="instance").empty
 
 
 def test_unparsed_names_the_rules_it_has():
     with pytest.raises(KeyError, match="no rule named 'zzz'"):
-        ex.unparsed(BODIES, {"a": lambda r: None}, "zzz")
+        ex.unparsed(BODIES, {"a": lambda r: None}, "zzz", column="instance")
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +166,7 @@ def test_compare_classifies_the_relation_without_judging_it():
     """A `type` coarser than the parse is a difference of grain, not an error, so the
     relation is reported and the judgment left to whoever knows the dataset."""
     core = lambda r: str(r["instance"] or "").split("(")[0] or None
-    out = ex.compare(BODIES, "type", core)
+    out = ex.compare(BODIES, "type", core, column="instance")
     rel = dict(zip(out["body"], out["relation"]))
     assert rel[1] == "derived_is_longer"       # type=Tm2, derived=Tm2_A2
     assert rel[3] == "exact"                   # type=Tm, derived=Tm
@@ -176,7 +176,7 @@ def test_compare_classifies_the_relation_without_judging_it():
 
 def test_compare_keeps_the_raw_string_for_reading_the_disagreements():
     core = lambda r: "ZZZ"
-    out = ex.compare(BODIES, "type", core)
+    out = ex.compare(BODIES, "type", core, column="instance")
     row = out[out["body"] == 1].iloc[0]
     assert row["relation"] == "unrelated"
     assert row["instance"] == "Tm2_A2(L)"      # so it can be eyeballed

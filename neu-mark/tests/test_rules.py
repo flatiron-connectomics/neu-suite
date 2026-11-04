@@ -39,6 +39,10 @@ def nucleated(r):
     return "nucleated" if lowered & {"ncl", "nucleus"} else None
 
 
+# As a rules module with LABEL = "instance" binds them.
+side, column, nucleated = (r.bound("instance") for r in (side, column, nucleated))
+
+
 # --------------------------------------------------------------------------- #
 # declaration
 # --------------------------------------------------------------------------- #
@@ -54,6 +58,25 @@ def test_declaration_bare_and_called():
         return None
 
     assert both.needs == ("instance", "type")
+
+
+def test_a_rule_declaring_no_needs_reads_the_label_column_it_is_bound_to():
+    @rule
+    def first(r):
+        """the name's first letter"""
+        return (r["name"] or "")[:1] or None
+
+    assert first.needs == () and first.label is None
+    with pytest.raises(ValueError, match="no label column"):
+        first.test("Tm2")
+    named = first.bound("name")
+    assert named.needs == ("name",) and named.test("Tm2") == "T"
+    assert first.label is None                          # binding copies
+    rs = RuleSet([first], label="name")
+    assert rs["first"].needs == ("name",) and rs.explain("Mi1") == {"first": "M"}
+    assert RuleSet([first]).label is None
+    with pytest.raises(ValueError, match="no label column"):
+        RuleSet([first]).explain("Mi1")
 
 
 # --------------------------------------------------------------------------- #
@@ -75,8 +98,8 @@ def test_test_takes_other_fields_by_keyword_and_passes_missing_ones_as_none():
         seen["type"] = r["type"]
         return r["type"]
 
-    assert curated.test("anything", type="Tm2") == "Tm2"
-    curated.test("X")
+    assert curated.test(instance="anything", type="Tm2") == "Tm2"
+    curated.test(instance="X")
     assert seen["type"] is None
 
 
@@ -119,6 +142,7 @@ def test_a_ruleset_keeps_declaration_order():
     rs = RuleSet([side, column])
     assert rs.names == ["side", "column"] and len(rs) == 2
     assert rs["side"] is side
+    assert rs.label == "instance"                       # what its rules are bound to
 
 
 @pytest.mark.parametrize("twin", [side, rule(lambda r: None, name="side")],
@@ -134,7 +158,7 @@ def test_an_undecorated_function_is_refused_with_the_fix():
 
 
 def test_a_plain_mapping_is_accepted():
-    rs = RuleSet({"x": lambda r: "v"})
+    rs = RuleSet({"x": lambda r: "v"}, label="instance")
     assert rs.names == ["x"] and rs.explain("anything") == {"x": "v"}
 
 
@@ -146,9 +170,9 @@ def test_reading_an_undeclared_column_names_the_rule_and_the_fix():
         return r["type"]
 
     with pytest.raises(KeyError, match=r"does not declare"):
-        group.test("Tm2_A2\\(L\\)")
+        group.bound("instance").test("Tm2_A2\\(L\\)")
     with pytest.raises(KeyError, match=r"needs=\['instance', 'type'\]"):
-        RuleSet([group]).explain("Tm2")
+        RuleSet([group], label="instance").explain("Tm2")
 
 
 def test_a_declared_column_that_is_missing_raises_the_original_error():
@@ -184,7 +208,7 @@ def test_a_ruleset_repr_aligns_its_rules_into_columns():
     """`side` declares no extras, so its line also checks padding is kept."""
     text = repr(RuleSet([side, column, nucleated], source="wasp_rules.py"))
     header, *lines = text.splitlines()
-    assert header == "<RuleSet 3 rules, from wasp_rules.py>"
+    assert header == "<RuleSet 3 rules, label 'instance', from wasp_rules.py>"
     assert [line.split()[0] for line in lines] == ["side", "column", "nucleated"]
     assert len({line.index("needs=") for line in lines}) == 1
     assert len({line.index("—") for line in lines}) == 1
@@ -253,6 +277,7 @@ MODULE = '''
 import re
 from neu_mark import rule
 
+LABEL = "instance"
 KEEP = ["instance", "type"]
 
 @rule
@@ -275,7 +300,23 @@ def test_a_module_of_decorated_functions_needs_no_rules_variable(tmp_path):
     assert rs.names == ["side", "column"]
     assert rs.keep == ("instance", "type")
     assert rs.source == str(path)
+    assert rs.label == "instance"
     assert rs.explain("Tm2_A2(L)") == {"side": "L", "column": ("A2",)}
+
+
+def test_a_module_without_label_leaves_segments_known_by_id(tmp_path):
+    path = tmp_path / "r.py"
+    path.write_text(MODULE.replace('LABEL = "instance"\n', ""))
+    rs = rules.from_module(str(path))
+    assert rs.label is None and rs["side"].needs == ()
+
+
+def test_a_rules_set_built_on_another_label_is_refused(tmp_path):
+    path = tmp_path / "r.py"
+    path.write_text(MODULE + "\nfrom neu_mark.rules import RuleSet\n"
+                    "RULES = RuleSet([side], label='name')\n")
+    with pytest.raises(ValueError, match="LABEL is 'instance'"):
+        rules.from_module(str(path))
 
 
 def test_an_explicit_rules_list_wins(tmp_path):
@@ -377,7 +418,7 @@ def test_consumes_accepts_a_callable_for_anything_irregular():
         """fires on x, accounts for `weird`"""
         return "x" if "x" in (r["instance"] or "") else None
 
-    assert odd.remainder("x_weird_Tm2") == "x_Tm2"
+    assert odd.bound("instance").remainder("x_weird_Tm2") == "x_Tm2"
 
 
 # --------------------------------------------------------------------------- #
@@ -444,10 +485,28 @@ def test_provenance_embeds_the_source_and_what_each_rule_declared(tmp_path):
     assert declared["side"]["needs"] == ["instance"]
 
 
-def test_provenance_skips_the_builtins():
-    from neu_mark.segprops_rules import BUILTIN
+def test_provenance_skips_files_inside_the_package():
+    """A rule wrapping one of neu-mark's own functions pins nothing: the package version
+    already identifies it."""
+    from neu_mark.explore import normalize
 
-    assert rules.provenance(BUILTIN)["files"] == []
+    assert rules.provenance(RuleSet([Rule(normalize, name="norm")]))["files"] == []
+
+
+# --------------------------------------------------------------------------- #
+# dropping
+# --------------------------------------------------------------------------- #
+def test_dropping_turns_a_rule_into_a_drop_in_place():
+    rs = RuleSet([side, column, nucleated]).dropping(["nucleated"])
+    assert rs.names == ["side", "column", "nucleated"]
+    assert rs["nucleated"].drop and not rs["nucleated"].tag
+    assert rs["nucleated"].description.endswith("(excluded)")
+    assert rs.label == "instance"
+
+
+def test_dropping_an_unknown_rule_is_refused():
+    with pytest.raises(ValueError, match="no rule named 'glia'"):
+        RuleSet([side]).dropping(["glia"])
 
 
 def test_provenance_can_omit_the_text_and_says_when_it_did(tmp_path):

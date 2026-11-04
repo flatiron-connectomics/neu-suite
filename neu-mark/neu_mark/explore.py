@@ -54,14 +54,14 @@ def _series(frame: pd.DataFrame, column: str) -> pd.Series:
     return frame[column].map(normalize)
 
 
-def instances(frame: pd.DataFrame, column: str = "instance") -> pd.DataFrame:
+def instances(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     """Distinct strings and how many bodies carry each, most common first. The first
     thing to look at: typically a few thousand strings, a reviewable vocabulary."""
     counts = _series(frame, column).value_counts(dropna=True)
     return (counts.rename("bodies").rename_axis(column).reset_index())
 
 
-def tokens(frame: pd.DataFrame, column: str = "instance", *,
+def tokens(frame: pd.DataFrame, column: str, *,
            position: str = "trailing", drop: str | None = None) -> pd.DataFrame:
     """Token frequency, for hunting controlled vocabulary and its misspellings.
 
@@ -118,7 +118,7 @@ def near(token_frame: pd.DataFrame, target: str, *, cutoff: float = 0.72,
         ["bodies", "ratio"], ascending=False, ignore_index=True)
 
 
-def variants(frame: pd.DataFrame, column: str = "instance") -> pd.DataFrame:
+def variants(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     """Raw strings that :func:`normalize` repaired, and what they became.
 
     Whitespace and trailing ``?`` are repaired before :func:`tokens` and :func:`near` see
@@ -208,7 +208,7 @@ def coverage(frame: pd.DataFrame, rules: Mapping[str, Callable],
 
 
 def unparsed(frame: pd.DataFrame, rules: Mapping[str, Callable], rule: str, *,
-             column: str = "instance") -> pd.DataFrame:
+             column: str) -> pd.DataFrame:
     """The strings a given rule did not fire on, ranked by how many bodies they cover.
 
     The top of this list is the next rule to write, or the missing vocabulary entry.
@@ -248,7 +248,7 @@ def _relation(field: str | None, derived: str | None) -> str:
 
 
 def compare(frame: pd.DataFrame, field: str, against: Callable, *,
-            key: str = "body", column: str = "instance") -> pd.DataFrame:
+            column: str, key: str = "body") -> pd.DataFrame:
     """Row-by-row: how a curated field relates to what a rule derives.
 
     One row per body with a ``relation`` from :data:`RELATIONS`; summarise with

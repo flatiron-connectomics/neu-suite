@@ -10,9 +10,10 @@ spec allows shapes it:
   case-insensitive, so values differing only in case show as one chip in the viewer
   (:func:`case_collisions` reports them); case is preserved.
 
-Facets come from rules (:class:`neu_mark.rules.Rule`): the builtins in
-:mod:`neu_mark.segprops_rules`, overridden by name by a dataset's rules module. The
-``label`` defaults to the raw ``instance`` string; a reserved ``label`` rule replaces it.
+Facets come from a dataset's rules module (:class:`neu_mark.rules.Rule`); nothing is
+built in, so with no rules the document carries labels and numbers only. The label is the
+rules' label column (a module's ``LABEL``, or ``label=``); a reserved ``label`` rule
+replaces it, and with neither, segments are known by id.
 
 The document is inline, so every viewer downloads all of it: ``max_tags`` and ``max_facets``
 refuse a vocabulary large enough to make the layer unusable (:func:`resolve_tag_limit`).
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,24 @@ def natural_key(tag: str) -> tuple:
     return (tuple((0, int(p)) if p.isdigit() else (1, p) for p in parts), tag)
 
 
+def facet_order(rules: Iterable[Any]) -> Callable[[str], tuple]:
+    """A sort key for tags: facets in the order their rules are declared, a prefix no rule
+    declares after those, bare flags last, and :func:`natural_key` within each."""
+    rank: dict[str, int] = {}
+    for r in rules:
+        prefix = normalize_tag((getattr(r, "prefix", "") or "").rstrip(SEPARATOR))
+        if prefix:
+            rank.setdefault(prefix, len(rank))
+
+    def key(tag: str) -> tuple:
+        prefix, sep, _value = tag.partition(SEPARATOR)
+        if not sep:
+            return (len(rank) + 1, natural_key(tag))
+        return (rank.get(prefix, len(rank)), natural_key(tag))
+
+    return key
+
+
 def case_collisions(vocabulary: Iterable[str]) -> dict[str, list[str]]:
     """``{lowercased: [tags]}`` for tags that differ only in case.
 
@@ -94,19 +113,13 @@ def tag_for(rule, value: Any) -> str | None:
     return normalize_tag(text)
 
 
-def facets(record: Mapping[str, Any], ruleset=None) -> dict[str, list[str]]:
-    """Every facet for one body, as ``{rule name: [tags]}``, already tag-normalized.
-
-    Uses the built-in rules unless given a :class:`~neu_mark.rules.RuleSet`, used as is.
-    Drop rules are not consulted; exclusion happens in :func:`build`.
+def facets(record: Mapping[str, Any], ruleset) -> dict[str, list[str]]:
+    """Every facet ``ruleset`` gives one body, as ``{rule name: [tags]}``, already
+    tag-normalized. Drop rules are not consulted; exclusion happens in :func:`build`.
     """
     from .explore import _plain
     from .rules import RESERVED
 
-    if ruleset is None:
-        from .segprops_rules import BUILTIN
-
-        ruleset = BUILTIN
     row = _plain(_as_series(record))
     out: dict[str, list[str]] = {}
     for r in ruleset.tagged:
@@ -126,31 +139,21 @@ def _as_series(record: Mapping[str, Any]):
                                                                   dtype="object")
 
 
-def _resolve_rules(rules=None, *, only: bool = False, keep_glia: bool = True):
-    """The rules to run: the builtins, the builtins overridden by name by ``rules``, or
-    (``only=True``) ``rules`` alone."""
-    from .rules import Rule, RuleSet
-    from .segprops_rules import BUILTIN, DROP_GLIA
+def _resolve_rules(rules=None, *, label: str | None = None, drop: Sequence[str] = ()):
+    """The rules to run: ``rules`` as a :class:`~neu_mark.rules.RuleSet` (none if
+    ``None``), on ``label`` if given, with the rules named in ``drop`` excluding the bodies
+    they fire on rather than tagging them."""
+    from .rules import RuleSet
 
-    if rules is None:
-        resolved = BUILTIN
-    elif only:
-        resolved = rules if isinstance(rules, RuleSet) else RuleSet(rules)
-    else:
-        resolved = BUILTIN.override(rules)
-    if not keep_glia:
-        # Turn whichever rule is currently named `glia` (possibly a dataset's own) into a
-        # drop rule, so --drop-glia uses the same definition of glia as the tags.
-        current = next((r for r in resolved if r.name == "glia"), None)
-        dropper = DROP_GLIA if current is None else Rule(
-            current.func, name="glia", drop=True, needs=current.needs,
-            description=f"{current.description} (excluded)")
-        resolved = resolved.override([dropper])
-    return resolved
+    resolved = rules if isinstance(rules, RuleSet) else RuleSet(rules or [])
+    if label is not None and label != resolved.label:
+        resolved = RuleSet(resolved.rules, keep=resolved.keep, source=resolved.source,
+                           label=label)
+    return resolved.dropping(drop) if drop else resolved
 
 
-def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=None,
-          keep_glia: bool = True, max_tags: float = DEFAULT_MAX_TAGS,
+def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] = (),
+          counts=None, sizes=None, max_tags: float = DEFAULT_MAX_TAGS,
           max_facets: int = MAX_FACETS, table: bool = False,
           requested: Sequence[int] | None = None) -> dict[str, Any]:
     """The ``segment_properties`` info document, plus a report of what went into it.
@@ -159,10 +162,12 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     optional frame with ``body``/``pre``/``post``/``syn``; ``sizes`` an optional
     ``{body: voxels}``.
 
-    ``rules`` is a :class:`~neu_mark.rules.RuleSet` (or anything it accepts) overriding the
-    builtins by name; ``rules_only=True`` uses it alone. Evaluation order: drop rules,
-    then tag rules, then the reserved ``label``/``description`` rules, then any other
-    ``tag=False`` rule (reported, emits nothing).
+    ``rules`` is a :class:`~neu_mark.rules.RuleSet` (or anything it accepts); without it
+    the document has labels and numbers only. ``label`` names the label column, overriding
+    the rules' own; ``drop`` names rules whose bodies are excluded rather than tagged.
+    Evaluation order: drop rules, then tag rules, then the reserved
+    ``label``/``description`` rules, then any other ``tag=False`` rule (reported, and a
+    column of the table, but not in the document).
 
     Returns ``{"info": …, "report": …}``. Check the report's coverage: a facet that fired on
     2% of bodies looks the same in the viewer as one the data does not have.
@@ -180,7 +185,10 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     if "body" not in frame.columns:
         raise KeyError("bodies frame needs a 'body' column")
 
-    ruleset = _resolve_rules(rules, only=rules_only, keep_glia=keep_glia)
+    ruleset = _resolve_rules(rules, label=label, drop=drop)
+    label_column = ruleset.label
+    if not ruleset.tagged:
+        logger.warning("no tagging rules: the document carries labels and numbers only")
 
     # A declared column absent from every record (e.g. `type` on a list where no body has
     # one) is filled with None and reported, rather than refused.
@@ -203,7 +211,8 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     described: dict[str, str] = {}
     excluded: dict[str, int] = {}
     rows = []
-    # (body, excluded reason, label, description, tags) for every record, for the table
+    # (body, excluded reason, label, description, tags, {quiet rule: values}) for every
+    # record, for the table
     outcomes = []
 
     for _index, raw in frame.iterrows():
@@ -219,7 +228,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
                 break
         if reason is not None:
             excluded[reason] = excluded.get(reason, 0) + 1
-            outcomes.append((int(raw["body"]), reason, None, None, []))
+            outcomes.append((int(raw["body"]), reason, None, None, [], {}))
             continue
 
         tags: list[str] = []
@@ -232,8 +241,10 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
             described.update(dict.fromkeys(minted, r.description))
             tags.extend(minted)
 
+        quiet: dict[str, tuple] = {}
         for r in quiet_rules:
             values = r.values(row)
+            quiet[r.name] = values
             if values:
                 fired[r.name] += 1
                 distinct[r.name].update(str(v) for v in values)
@@ -242,8 +253,8 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
         label = normalize(label_rule.scalar(row)) if label_rule is not None else None
         if label is not None:
             fired["label"] += 1
-        else:
-            label = normalize(row.get("instance"))
+        elif label_column:
+            label = normalize(row.get(label_column))
 
         description = (normalize(description_rule.scalar(row))
                        if description_rule is not None else None)
@@ -252,7 +263,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
 
         rows.append((int(raw["body"]), label, description, tags))
         outcomes.append((int(raw["body"]), None, label or str(int(raw["body"])),
-                         description, tags))
+                         description, tags, quiet))
 
     if not rows:
         raise ValueError("every body was excluded; nothing to write")
@@ -261,9 +272,10 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
     # A segment with no label is labelled with its id.
     labels = [label if label else str(body) for body, label, _d, _t in rows]
 
-    # The viewer lists tags in vocabulary order, so sort it: facets group by prefix, and
-    # numbers within a tag compare as numbers (col:A2 before col:A10).
-    vocabulary = sorted({tag for *_rest, tags in rows for tag in tags}, key=natural_key)
+    # The viewer lists tags in vocabulary order: facets in rule order, then bare flags, and
+    # numbers within a facet compare as numbers (col:A2 before col:A10).
+    vocabulary = sorted({tag for *_rest, tags in rows for tag in tags},
+                        key=facet_order(tag_rules))
     index_of = {tag: i for i, tag in enumerate(vocabulary)}
     # The spec requires the indices of one segment in increasing order.
     per_body = [sorted({index_of[tag] for tag in tags}) for *_rest, tags in rows]
@@ -274,17 +286,18 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
                              max_tags=max_tags, max_facets=max_facets,
                              facets=facet_names)
 
-    properties: list[dict[str, Any]] = [
-        {"id": "instance", "type": "label", "values": labels},
-    ]
+    properties: list[dict[str, Any]] = []
+    if label_column or label_rule is not None:
+        properties.append({"id": label_column or "label", "type": "label", "values": labels})
     if description_rule is not None:
         properties.append({"id": "description", "type": "description",
                            "values": [d or "" for _b, _l, d, _t in rows]})
-    properties.append(
-        {"id": "tags", "type": "tags", "tags": vocabulary,
-         # Parallel to `tags`: the description of the rule that minted each.
-         "tag_descriptions": [described.get(tag, tag) for tag in vocabulary],
-         "values": per_body})
+    if tag_rules:
+        properties.append(
+            {"id": "tags", "type": "tags", "tags": vocabulary,
+             # Parallel to `tags`: the description of the rule that minted each.
+             "tag_descriptions": [described.get(tag, tag) for tag in vocabulary],
+             "values": per_body})
 
     numbers = _number_properties(ids, counts=counts, sizes=sizes)
     properties.extend(numbers)
@@ -310,6 +323,7 @@ def build(bodies, *, rules=None, rules_only: bool = False, counts=None, sizes=No
         "coverage": _coverage_report(ruleset, fired, distinct, segments=len(ids),
                                      total=len(frame)),
         "rules": {"source": ruleset.source, "names": ruleset.names},
+        "label": label_column,
         "absent_columns": absent,
         "numbers": [p["id"] for p in numbers],
         "untagged": sum(1 for v in per_body if not v),
@@ -332,8 +346,9 @@ def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
 
     Columns: ``body``, ``label``, ``description`` (when a rule writes one), ``excluded``
     (the drop rule's reason, ``"no record"``, or null for a segment in the document),
-    ``tags`` (the full list), ``tag:<prefix>`` per facet (a list for a ``multi`` rule, else
-    a value or null), ``flag:<tag>`` per bare tag, the numbers, then every record column.
+    ``tags`` (the full list), ``tag:<prefix>`` per facet in rule order (a list for a
+    ``multi`` rule, else a value or null), ``flag:<tag>`` per bare tag, a column per
+    ``tag=False`` rule named after it, the numbers, then every record column.
     A record column whose name is taken gets ``record:`` in front, and dict values (the
     synapse neuropil shares) are JSON text.
     """
@@ -352,11 +367,11 @@ def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
 
     outcomes = list(outcomes)
     seen = {body for body, *_rest in outcomes}
-    outcomes += [(int(b), NO_RECORD, None, None, []) for b in dict.fromkeys(requested or ())
-                 if int(b) not in seen]
+    outcomes += [(int(b), NO_RECORD, None, None, [], {})
+                 for b in dict.fromkeys(requested or ()) if int(b) not in seen]
 
     prefixes, flags = set(multi), set()
-    for *_rest, tags in outcomes:
+    for *_rest, tags, _quiet in outcomes:
         for tag in tags:
             prefix, sep, _value = tag.partition(SEPARATOR)
             if sep:
@@ -365,6 +380,7 @@ def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
                 flags.add(tag)
 
     order = [body for body, *_rest in outcomes]
+    tag_order = facet_order(r for r in ruleset.tagged if r.name not in RESERVED)
     columns: dict[str, Any] = {
         "body": pd.Series(order, dtype="uint64"),
         "label": pd.Series([o[2] for o in outcomes], dtype="string"),
@@ -373,7 +389,7 @@ def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
         columns["description"] = pd.Series([o[3] for o in outcomes], dtype="string")
     columns["excluded"] = pd.Series([o[1] for o in outcomes], dtype="string")
     columns["tags"] = [list(o[4]) for o in outcomes]
-    for prefix in sorted(prefixes, key=natural_key):
+    for prefix in sorted(prefixes, key=lambda p: tag_order(p + SEPARATOR)):
         start = prefix + SEPARATOR
         values = [[t[len(start):] for t in o[4] if t.startswith(start)] for o in outcomes]
         # A prefix no rule declares came from a bare rule's value holding a colon.
@@ -381,6 +397,12 @@ def as_table(bodies, outcomes, ruleset, *, counts=None, sizes=None,
                                     else [v[0] if v else None for v in values])
     for flag in sorted(flags, key=natural_key):
         columns[f"flag:{flag}"] = [flag in o[4] for o in outcomes]
+    for r in ruleset:
+        if r.tag or r.drop or r.name in RESERVED:
+            continue
+        values = [o[5].get(r.name, ()) for o in outcomes]
+        columns[r.name] = pd.Series([list(v) if r.multi else (v[0] if v else None)
+                                     for v in values], dtype="object")
     # The same numbers the document carries (a body absent from the counts is 0 there).
     for number in _number_properties([str(b) for b in order], counts=counts, sizes=sizes):
         columns[number["id"]] = pd.Series(number["values"], dtype="uint32")
@@ -513,6 +535,10 @@ def format_report(report: Mapping[str, Any]) -> list[str]:
     lines = [head]
     if (report.get("rules") or {}).get("source"):
         lines.append(f"rules: {report['rules']['source']}")
+    elif not (report.get("rules") or {}).get("names"):
+        lines.append("rules: none — the document carries labels and numbers only")
+    lines.append(f"label: {report['label']}" if report.get("label")
+                 else "label: none — segments are known by id")
     if report.get("absent_columns"):
         lines.append(f"absent from the records: {', '.join(report['absent_columns'])} — "
                      f"rules needing them cannot fire")

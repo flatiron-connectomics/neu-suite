@@ -57,7 +57,7 @@ def test_every_body_gets_the_columns_and_a_rule_can_tag_by_them(tmp_path):
         shares = r["synapse_neuropils_top"]["all"]
         return next(iter(shares), None) if shares and max(shares.values()) > 0.5 else None
 
-    built = segprops.build(frame, rules=[region], rules_only=True)
+    built = segprops.build(frame, rules=[region])
     props = {p["id"]: p for p in built["info"]["inline"]["properties"]}
     vocab = props["tags"]["tags"]
     tags = [{vocab[i] for i in v} for v in props["tags"]["values"]]
