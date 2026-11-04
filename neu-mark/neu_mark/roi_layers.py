@@ -12,7 +12,12 @@ one id table shared by all layers:
 - ``tree = "parts"``: each top-level neuropil's region divided among its parts; with
   ``fill_gaps`` the blocks no part claims keep the top-level id. It is cut from the
   ``top`` layer's regions, so the two nest exactly.
-- ``from = LAYER``: the union of another layer as one label, closed by ``close_blocks``.
+- ``from = LAYER``: the union of another layer as one label.
+
+A one-label layer (``from``, or ``rois`` naming one ROI) may be cleaned up before writing,
+in this order: ``open_blocks`` (an opening, which drops specks and thin spurs),
+``close_blocks`` (a closing, which bridges gaps and dents) and ``fill_holes`` (enclosed
+cavities filled). Radii are in ROI blocks, by a ball.
 
 ``overlap = "split"`` gives a contested block to the ROI it lies deepest inside (a distance
 transform of each ROI's own mask, ties to the ROI listed first); ``"order"`` to the ROI
@@ -46,8 +51,8 @@ DEFAULT_MAX_OVERLAP = 0.2
 CHUNK = (64, 64, 64)
 
 _SPEC_KEYS = {"build", "layer", "neuropils", "ignore", "names", "ids"}
-_LAYER_KEYS = {"name", "rois", "tree", "from", "label", "close_blocks", "fill_gaps",
-               "overlap"}
+_LAYER_KEYS = {"name", "rois", "tree", "from", "label", "open_blocks", "close_blocks",
+               "fill_holes", "fill_gaps", "overlap"}
 _SIDE = re.compile(r"^(.*)\((L|R)\)$")
 
 
@@ -69,7 +74,9 @@ class Layer:
     tree: str | None = None
     source: str | None = None
     label: str | None = None
+    open_blocks: int = 0
     close_blocks: int = 0
+    fill_holes: bool = False
     fill_gaps: bool = False
     overlap: str = "split"
 
@@ -77,6 +84,10 @@ class Layer:
     def kind(self) -> str:
         return ("rois" if self.rois else f"tree:{self.tree}" if self.tree
                 else f"from:{self.source}")
+
+    @property
+    def cleans(self) -> bool:
+        return bool(self.open_blocks or self.close_blocks or self.fill_holes)
 
 
 @dataclass(frozen=True)
@@ -160,7 +171,9 @@ def parse_spec(raw: Mapping[str, Any], *, where: str = "spec") -> Spec:
                             f"from; it has {kinds or 'none'}")
         lay = Layer(name=str(name), rois=tuple(map(str, entry.get("rois") or ())),
                     tree=entry.get("tree"), source=entry.get("from"),
-                    label=entry.get("label"), close_blocks=int(entry.get("close_blocks", 0)),
+                    label=entry.get("label"), open_blocks=int(entry.get("open_blocks", 0)),
+                    close_blocks=int(entry.get("close_blocks", 0)),
+                    fill_holes=bool(entry.get("fill_holes", False)),
                     fill_gaps=bool(entry.get("fill_gaps", False)),
                     overlap=entry.get("overlap", default_overlap))
         if lay.overlap not in POLICIES:
@@ -177,6 +190,13 @@ def parse_spec(raw: Mapping[str, Any], *, where: str = "spec") -> Spec:
         if lay.fill_gaps and lay.tree != "parts":
             raise SpecError(f"{where}: layer {name!r}: fill_gaps applies to a tree = "
                             f"'parts' layer only")
+        if lay.open_blocks < 0 or lay.close_blocks < 0:
+            raise SpecError(f"{where}: layer {name!r}: open_blocks and close_blocks must "
+                            f"be >= 0")
+        if lay.cleans and not (lay.source is not None or len(lay.rois) == 1):
+            raise SpecError(f"{where}: layer {name!r}: open_blocks, close_blocks and "
+                            f"fill_holes apply to a one-label layer only (from = LAYER, or "
+                            f"rois naming one ROI)")
         layers.append(lay)
     names_seen = [lay.name for lay in layers]
     dup = sorted({n for n in names_seen if names_seen.count(n) > 1})
@@ -398,7 +418,13 @@ def resolve(spec: Spec, regions: Mapping[str, Region],
         if name in out:
             return out[name]
         lay = spec.layer(name)
-        if lay.rois:
+        if lay.rois and lay.cleans:                         # one ROI, so no overlaps
+            [roi] = lay.rois
+            mask = np.zeros(grid.shape, dtype=bool)
+            grid.view(mask, regions[roi])[...] = regions[roi].mask
+            labels = np.where(_clean(mask, lay), np.uint32(spec.ids[roi]), np.uint32(0))
+            out[name] = {"labels": labels, "overlaps": []}
+        elif lay.rois:
             labels, pairs = paint(grid, [(r, spec.ids[r], regions[r]) for r in lay.rois],
                                   policy=lay.overlap, max_overlap=spec.max_overlap,
                                   what=f"layer {name!r}")
@@ -431,9 +457,7 @@ def resolve(spec: Spec, regions: Mapping[str, Region],
                 pairs += sub_pairs
             out[name] = {"labels": labels, "overlaps": pairs}
         else:
-            src = layer(lay.source)["labels"] != 0
-            if lay.close_blocks > 0:
-                src = _close(src, lay.close_blocks)
+            src = _clean(layer(lay.source)["labels"] != 0, lay)
             labels = np.where(src, np.uint32(spec.ids[lay.label]), np.uint32(0))
             out[name] = {"labels": labels, "overlaps": []}
         return out[name]
@@ -444,14 +468,31 @@ def resolve(spec: Spec, regions: Mapping[str, Region],
     return grid, {n: v for n, v in out.items() if only is None or n in only}
 
 
+def _ball(r: int) -> np.ndarray:
+    z, y, x = np.ogrid[-r:r + 1, -r:r + 1, -r:r + 1]
+    return (z * z + y * y + x * x) <= r * r
+
+
+def _clean(mask: np.ndarray, lay: Layer) -> np.ndarray:
+    """The layer's opening, closing and hole filling, in that order."""
+    from scipy.ndimage import binary_fill_holes, binary_opening
+
+    if lay.open_blocks > 0:
+        # Outside the grid is outside every ROI, so the edge erodes like background.
+        mask = binary_opening(mask, structure=_ball(lay.open_blocks))
+    if lay.close_blocks > 0:
+        mask = _close(mask, lay.close_blocks)
+    if lay.fill_holes:
+        mask = binary_fill_holes(mask)
+    return mask
+
+
 def _close(mask: np.ndarray, radius: int) -> np.ndarray:
     """Morphological closing by a ball, padded so the grid's edge does not erode it."""
     from scipy.ndimage import binary_closing
 
     r = int(radius)
-    z, y, x = np.ogrid[-r:r + 1, -r:r + 1, -r:r + 1]
-    ball = (z * z + y * y + x * x) <= r * r
-    closed = binary_closing(np.pad(mask, r), structure=ball)
+    closed = binary_closing(np.pad(mask, r), structure=_ball(r))
     return closed[r:-r, r:-r, r:-r] | mask
 
 

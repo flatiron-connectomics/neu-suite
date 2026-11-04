@@ -55,6 +55,12 @@ def test_ranges_decode_with_an_inclusive_end():
      "tree = 'parts' layer only"),
     ({"layer": [{"name": "a", "rois": ["A"], "overlap": "last"}], "ids": {"A": 1}},
      "overlap must be one of"),
+    ({"layer": [{"name": "a", "rois": ["A", "B"], "fill_holes": True}],
+      "ids": {"A": 1, "B": 2}}, "one-label layer only"),
+    ({"layer": [{"name": "a", "rois": ["A", "B"], "close_blocks": 1}],
+      "ids": {"A": 1, "B": 2}}, "one-label layer only"),
+    ({"layer": [{"name": "a", "rois": ["A"], "open_blocks": -1}], "ids": {"A": 1}},
+     "must be >= 0"),
 ])
 def test_a_malformed_spec_is_refused(raw, match):
     with pytest.raises(rl.SpecError, match=match):
@@ -162,6 +168,44 @@ def test_a_layer_built_from_another_is_one_closed_label(tree):
     assert np.unique(every).tolist() == [0, 9]
     assert out["top"]["labels"][6, 6, 12] == 0 and every[6, 6, 12] == 9
     assert np.all(every[out["top"]["labels"] != 0] == 9)
+
+
+def _head():
+    """A 10-block cube with a 2-block cavity inside, and a 1-block speck beside it."""
+    m = np.zeros((10, 10, 15), bool)
+    m[0:10, 0:10, 0:10] = True
+    m[4:6, 4:6, 4:6] = False
+    m[5, 5, 14] = True
+    return m
+
+
+@pytest.mark.parametrize("keys, speck, cavity", [
+    ({}, True, False),
+    ({"fill_holes": True}, True, True),
+    ({"open_blocks": 1}, False, False),
+    ({"open_blocks": 1, "fill_holes": True}, False, True),
+])
+def test_a_one_roi_layer_is_opened_and_its_holes_filled(keys, speck, cavity):
+    m = _head()
+    spec = _spec(layer=[{"name": "h", "rois": ["H"], **keys}], ids={"H": 5})
+    _grid, out = rl.resolve(spec, {"H": rl.region_from_ranges(_ranges(m))})
+    labels = out["h"]["labels"]
+    assert np.unique(labels).tolist() == [0, 5]
+    assert (labels[5, 5, 14] == 5) == speck
+    assert (labels[4, 4, 4] == 5) == cavity
+    assert labels[0, 5, 5] == 5                    # opening keeps the cube's faces
+
+
+def test_a_built_layer_is_opened_and_its_holes_filled():
+    m = _head()
+    spec = _spec(layer=[{"name": "top", "tree": "top"},
+                        {"name": "all", "from": "top", "label": "every", "open_blocks": 1,
+                         "close_blocks": 1, "fill_holes": True}],
+                 neuropils={"T": []}, ids={"T": 1, "every": 9})
+    _grid, out = rl.resolve(spec, {"T": rl.region_from_ranges(_ranges(m))})
+    every = out["all"]["labels"]
+    assert out["top"]["labels"][5, 5, 14] == 1 and every[5, 5, 14] == 0   # speck dropped
+    assert out["top"]["labels"][4, 4, 4] == 0 and every[4, 4, 4] == 9     # cavity filled
 
 
 # --------------------------------------------------------------------------- #
