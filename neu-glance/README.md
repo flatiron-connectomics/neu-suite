@@ -16,8 +16,13 @@ neu-glance gen --image s3://bucket/em --seg s3://bucket/seg_v1 \
 
 A synapse source becomes **one** layer, filtered on both relationships, so it shows the
 selected bodies' inputs and outputs with a line from each T-bar to its partner. The `synapse`
-shader's `show_pre` / `show_post` boxes show either end alone, and the layer's
-**Annotations** tab turns the filter on or off per relationship.
+shader's `show_pre` / `show_post` boxes show either end alone, `show_line` turns the line
+off, and the layer's **Annotations** tab turns the filter on or off per relationship.
+
+That layer also draws the partners' end of each synapse. `--presyn-postsyn` adds a `presyn`
+and a `postsyn` layer, filtered on `body_pre` and `body_post` and each showing only that
+end, so together they mark where the selected bodies' outputs and inputs are and nothing
+on the partners — clearer in 3D, where the meshes are what you are looking at.
 
 The shader gets a `color_by_*` box for each colouring the source has the properties for
 (`neu-glance shaders` lists them); the first one ticked wins:

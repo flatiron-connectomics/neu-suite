@@ -56,8 +56,13 @@ neu-glance gen --seg s3://my-bucket/seg --annotations s3://my-bucket/seg/synapse
 One layer shows the selected bodies' synapses, inputs and outputs together. The `synapse`
 shader colours presynaptic sites red-orange and postsynaptic sites blue, with a yellow line
 between them. Its `show_pre` / `show_post` boxes show either end alone (without the line),
-and the layer's **Annotations** tab filters on each relationship separately: `body_pre`
-alone gives the selected bodies' outputs, `body_post` alone their inputs.
+`show_line` turns the line off, and the layer's **Annotations** tab filters on each
+relationship separately: `body_pre` alone gives the selected bodies' outputs, `body_post`
+alone their inputs.
+
+Add `--presyn-postsyn` for two more layers, `presyn` and `postsyn`, each filtered on one
+relationship and showing only that end. Together they mark the selected bodies' own output
+and input sites without the partners' ends, which is what you usually want in the 3D view.
 
 With `annotation-source --roi-spec SPEC.toml` (and points fetched with `--rois`), the source
 also carries each synapse's ROI and top-level neuropil, and the shader gains

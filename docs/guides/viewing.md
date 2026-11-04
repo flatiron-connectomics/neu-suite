@@ -243,6 +243,10 @@ the layer's **Annotations** tab.
 Filtering on both relationships shows the selected body's inputs and outputs in one layer;
 unticking one relationship in the Annotations tab leaves only the outputs (`body_pre`) or the
 inputs (`body_post`), and the shader's `show_pre` / `show_post` boxes show one end alone.
+Neither shows both of a body's own ends without its partners' — a line carries both ends,
+and hiding the post ends hides the body's input sites too. `--presyn-postsyn` adds that as
+two more layers on the same source, `presyn` (filtered on `body_pre`, pre end only) and
+`postsyn` (`body_post`, post end only).
 
 ### The shader
 
@@ -257,6 +261,7 @@ only when the source declares what it reads. Its core:
 ```glsl
 #uicontrol bool show_pre checkbox(default=true)
 #uicontrol bool show_post checkbox(default=true)
+#uicontrol bool show_line checkbox(default=true)
 #uicontrol float pre_size slider(min=0.0, max=20.0, default=6.0)
 #uicontrol float post_size slider(min=0.0, max=20.0, default=4.0)
 #uicontrol vec3 pre_color color(default="#ff2000")
@@ -271,7 +276,7 @@ void main() {
   setEndpointMarkerColor(vec4(pre_color, 1.0), vec4(post_color, 1.0));
   setLineColor(line_color);
   if (show_pre && show_post) {
-    setLineWidth(1.0);
+    setLineWidth(show_line ? 1.0 : 0.0);
     setEndpointMarkerSize(pre_size, post_size);
   } else if (show_pre) {
     setLineWidth(0.0);

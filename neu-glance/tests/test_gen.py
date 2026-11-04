@@ -641,6 +641,45 @@ def test_filtering_is_on_by_default_even_with_nothing_selected(tmp_path, capsys)
     assert "opens EMPTY" in out.err
 
 
+def test_presyn_postsyn_adds_one_layer_per_end_after_the_combined_one(tmp_path, capsys):
+    """Each end layer filters on one relationship and shows only that end, so the selected
+    bodies' own sites appear without their partners'."""
+    vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
+    cli.cmd_gen(cli._parse_args(
+        ["gen", "--seg", vol, "--annotations", _annotation_source(tmp_path),
+         "--presyn-postsyn"]))
+    ann = [lyr for lyr in parse_url(capsys.readouterr().out.strip())["layers"]
+           if lyr["type"] == "annotation"]
+    assert [lyr["name"] for lyr in ann] == ["syn", "presyn", "postsyn"]
+    assert [lyr["filterBySegmentation"] for lyr in ann] == [
+        ["body_pre", "body_post"], ["body_pre"], ["body_post"]]
+    assert "shaderControls" not in ann[0]
+    assert ann[1]["shaderControls"] == {"show_pre": True, "show_post": False}
+    assert ann[2]["shaderControls"] == {"show_pre": False, "show_post": True}
+    for lyr in ann:
+        assert lyr["linkedSegmentationLayer"] == {"body_pre": "v", "body_post": "v"}
+        assert lyr["source"] == ann[0]["source"] and lyr["shader"] == ann[0]["shader"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--no-filter-by-segmentation"]])
+def test_presyn_postsyn_needs_the_filter(tmp_path, extra):
+    """Unfiltered, each end layer would show that end of every synapse."""
+    seg = ["--seg", _volume(tmp_path, "v", kind="segmentation", dtype="uint64")] if extra else []
+    with pytest.raises(SystemExit, match="--presyn-postsyn needs"):
+        cli.cmd_gen(cli._parse_args(
+            ["gen", *seg, "--annotations", _annotation_source(tmp_path), "--presyn-postsyn",
+             *extra]))
+
+
+def test_show_line_turns_the_line_off_and_keeps_both_ends():
+    from neu_glance.shaders import synapse_shader
+
+    shader = synapse_shader({"conf_pre", "conf_post"})
+    assert "#uicontrol bool show_line checkbox(default=true)" in shader
+    assert ("if (show_pre && show_post) {\n    setLineWidth(show_line ? 1.0 : 0.0);\n"
+            "    setEndpointMarkerSize(pre_size, post_size);") in shader
+
+
 def test_no_filter_by_segmentation_overrides_a_selection(tmp_path, capsys):
     vol = _volume(tmp_path, "v", kind="segmentation", dtype="uint64")
     cli.cmd_gen(cli._parse_args(

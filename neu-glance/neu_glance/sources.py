@@ -32,6 +32,14 @@ def _scheme_map() -> dict[str, str]:
 #: The `@type` a precomputed annotation source declares.
 ANNOTATION_TYPE = "neuroglancer_annotations_v1"
 
+#: ``(layer name, relationship, shaderControls)`` for the end layers of a synapse source:
+#: each is filtered on one relationship and shows only that end, so the selected bodies'
+#: own sites appear and their partners' do not.
+END_LAYERS = (
+    ("presyn", "body_pre", {"show_pre": True, "show_post": False}),
+    ("postsyn", "body_post", {"show_pre": False, "show_post": True}),
+)
+
 
 class SourceProblem(RuntimeError):
     """A named volume or annotation source could not be used as a layer source."""
@@ -208,6 +216,21 @@ def annotation_layer(source: str, *, name: str | None = None,
             layer["filterBySegmentation"] = picked
 
     return layer, {"info": info, "shader": why, "relationships": relationships}
+
+
+def end_layers(source: str, *, linked_segmentation: str, shader: str | None = None,
+               info: Mapping[str, Any] | None = None) -> list[dict]:
+    """The ``presyn`` and ``postsyn`` layers of a synapse source (:data:`END_LAYERS`).
+
+    A layer filtered on both relationships draws both ends of every synapse touching the
+    selected bodies, so the partners' ends come too; these show only the ends that lie on
+    the selected bodies.
+    """
+    return [annotation_layer(source, name=name, shader=shader,
+                             linked_segmentation=linked_segmentation,
+                             filter_relationships=[relationship], controls=controls,
+                             info=info)[0]
+            for name, relationship, controls in END_LAYERS]
 
 
 @_quiet

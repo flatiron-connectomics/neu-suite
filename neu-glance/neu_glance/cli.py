@@ -485,6 +485,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "--seg layer, which is what makes 'only this body's synapses' work. "
                         "The synapse shader's show_pre / show_post checkboxes show either end "
                         "alone, and the Annotations tab toggles the filter per relationship")
+    q.add_argument("--presyn-postsyn", action="store_true",
+                   help="also add each synapse source as a 'presyn' and a 'postsyn' layer, "
+                        "filtered on body_pre and body_post and showing only that end: the "
+                        "selected bodies' own output and input sites, without their "
+                        "partners' ends")
     q.add_argument("--annotation-shader", default=None, metavar="NAME_OR_PATH",
                    help="GLSL for the annotation layers: a built-in name ("
                         + ", ".join(_SHADER_NAMES) + "), a file, or 'none'. Default picks a "
@@ -868,7 +873,8 @@ def cmd_gen(args) -> int:
     """A viewer state from volumes, annotation sources and layer files."""
     from .shaders import ShaderProblem
     from .sources import (SourceProblem, annotation_layer, annotation_source_extent,
-                          annotation_source_voxel_size, volume_extent, volume_layer)
+                          annotation_source_voxel_size, end_layers, volume_extent,
+                          volume_layer)
     from .state import StateProblem, annotation_extent, load_layer, unique_names
 
     from . import config as _config
@@ -918,11 +924,17 @@ def cmd_gen(args) -> int:
         linked_layer = next((lyr for lyr in layers if lyr["type"] == "segmentation"), None)
         linked = linked_layer["name"] if linked_layer else None
         filtering = bool(args.filter_by_segmentation)
+        if args.presyn_postsyn and not (linked and filtering):
+            raise SystemExit("--presyn-postsyn needs a --seg layer to filter on, and the "
+                             "filter on: without it each layer shows every synapse's end")
         for source in args.annotations or []:
             layer, info = annotation_layer(
                 source, shader=args.annotation_shader, linked_segmentation=linked,
                 filter_by_segmentation=filtering)
             layers.append(layer)
+            if args.presyn_postsyn:
+                layers.extend(end_layers(source, linked_segmentation=linked,
+                                         shader=args.annotation_shader, info=info["info"]))
             shader_notes.append(f"{layer['name']}: {info['shader'] or 'no shader'}")
             extents.append(annotation_source_extent(info["info"]))
             if frame_info is None:

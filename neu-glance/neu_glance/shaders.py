@@ -43,6 +43,7 @@ SYNAPSE_FILTERS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 _SYNAPSE_CONTROLS = """\
 #uicontrol bool show_pre checkbox(default=true)
 #uicontrol bool show_post checkbox(default=true)
+#uicontrol bool show_line checkbox(default=true)
 
 #uicontrol float pre_size slider(min=0.0, max=20.0, default=6.0)
 #uicontrol float post_size slider(min=0.0, max=20.0, default=4.0)
@@ -123,7 +124,7 @@ void main() {
   // The line is only meaningful when both ends are shown; otherwise it points at something
   // deliberately hidden.
   if (show_pre && show_post) {
-    setLineWidth(1.0);
+    setLineWidth(show_line ? 1.0 : 0.0);
     setEndpointMarkerSize(pre_size, post_size);
   } else if (show_pre) {
     setLineWidth(0.0);
@@ -155,7 +156,7 @@ def synapse_shader(declared: Iterable[str] = ()) -> str:
     """The synapse shader for a source whose properties are ``declared``.
 
     ``show_pre`` / ``show_post`` toggle the two endpoint markers, and the line is drawn only
-    when both are on. A ``color_by_*`` checkbox is added for each colouring the properties
+    when both are on and ``show_line`` is ticked. A ``color_by_*`` checkbox is added for each colouring the properties
     allow; the first one ticked wins.
 
     The confidence test must stay **discard-if-below**. An unknown confidence is NaN, which
