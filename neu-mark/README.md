@@ -444,7 +444,7 @@ neu-mark segment-properties --src … --dst … --bodies bodies.csv --rules rule
 
 ```python
 t = pd.read_parquet("work/segprops.parquet")
-t[t["tag:group"].isna() & t.excluded.isna()][["body", "instance"]]   # what no rule typed
+t[t["tag:type"].isna() & t.excluded.isna()][["body", "instance"]]   # what no rule typed
 ```
 
 Each row has `label`, the full `tags` list, a `tag:<prefix>` column per facet (a list for a

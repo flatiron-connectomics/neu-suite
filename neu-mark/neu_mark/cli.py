@@ -184,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "layer shows each body's name, its tags and its synapse counts.\n\n"
                     "`label` is the raw `instance` string — which is what lets this run "
                     "before a cell-type parse is settled. Tags carry a facet prefix "
-                    "(group:, side:) because the format allows only ONE tags "
+                    "(type:, side:) because the format allows only ONE tags "
                     "property, so every facet has to pool into it.\n\n"
                     "Facets come from rules. The built-in set covers side, curated type "
                     "and the flags; --rules loads a module of your own whose rules "

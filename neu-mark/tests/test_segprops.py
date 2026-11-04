@@ -47,15 +47,15 @@ def _tags_of(result, body):
 # --------------------------------------------------------------------------- #
 # the pd.NA trap
 # --------------------------------------------------------------------------- #
-def test_a_missing_type_produces_no_group_tag():
+def test_a_missing_type_produces_no_type_tag():
     """`str(pd.NA)` is the truthy "<NA>"; a hand-rolled check once tagged every body
-    `group-<na>`, reading as full coverage of a field populated on 5%."""
+    `type-<na>`, reading as full coverage of a field populated on 5%."""
     result = _built()
     tags = _props(result["info"])["tags"]["tags"]
     assert not [t for t in tags if "na" == t or "<na>" in t or "nan" in t]
-    assert "group:Tm2" in tags and "group:LN" in tags
-    assert sum(1 for t in tags if t.startswith("group:")) == 2
-    assert result["report"]["coverage"]["group"]["bodies"] == 2
+    assert "type:Tm2" in tags and "type:LN" in tags
+    assert sum(1 for t in tags if t.startswith("type:")) == 2
+    assert result["report"]["coverage"]["type"]["bodies"] == 2
 
 
 @pytest.mark.parametrize("missing", [pd.NA, None, float("nan"), "   "])
@@ -107,10 +107,10 @@ def test_tag_case_is_preserved_and_collisions_are_reported_not_folded():
     """Matching is case-insensitive, so two tags differing in case are one viewer chip.
     Folding would be lossy; the collisions are reported instead."""
     tags = _props(_built()["info"])["tags"]["tags"]
-    assert "group:Tm2" in tags
-    assert segprops.case_collisions(["group:Tm2", "group:TM2", "side:L"]) == {
-        "group:tm2": ["group:Tm2", "group:TM2"]}
-    assert segprops.case_collisions(["group:Tm2", "side:L"]) == {}
+    assert "type:Tm2" in tags
+    assert segprops.case_collisions(["type:Tm2", "type:TM2", "side:L"]) == {
+        "type:tm2": ["type:Tm2", "type:TM2"]}
+    assert segprops.case_collisions(["type:Tm2", "side:L"]) == {}
 
 
 def test_the_vocabulary_is_sorted_naturally_and_each_body_keeps_its_tags():
@@ -131,7 +131,7 @@ def test_the_vocabulary_is_sorted_naturally_and_each_body_keeps_its_tags():
 def test_facet_tags_use_a_colon_and_flags_stay_bare():
     """With a hyphen, a facet value is indistinguishable from a standalone flag."""
     tags = _props(_built()["info"])["tags"]["tags"]
-    assert {t.split(":", 1)[0] for t in tags if ":" in t} == {"group", "side"}
+    assert {t.split(":", 1)[0] for t in tags if ":" in t} == {"side", "type"}
     for flag in ("fragment", "truncated", "nucleated", "cervical", "glia"):
         assert all(":" not in t for t in tags if t == flag)
 
@@ -147,9 +147,9 @@ def test_the_label_is_the_raw_instance_string_or_the_id(body, label):
 
 
 @pytest.mark.parametrize("body, expected", [
-    (1, {"group:Tm2", "side:L"}),
+    (1, {"type:Tm2", "side:L"}),
     (2, {"side:R", "fragment"}),
-    (3, {"group:LN", "side:L", "nucleated"}),
+    (3, {"type:LN", "side:L", "nucleated"}),
     (4, {"cervical"}),
     (6, {"glia"}),                                 # glia are kept and tagged by default
 ])
@@ -245,7 +245,7 @@ def test_a_plugin_rule_is_added_alongside_the_builtins():
         return re.findall(r"_([A-Z]\d+)(?=$|[_(])", r["instance"] or "")
 
     result = segprops.build(BODIES, rules=[column])
-    assert _tags_of(result, 1) == {"group:Tm2", "side:L", "column:A2"}
+    assert _tags_of(result, 1) == {"type:Tm2", "side:L", "column:A2"}
     assert "side" in result["report"]["coverage"]
 
 
@@ -257,7 +257,7 @@ def test_a_plugin_rule_overrides_a_builtin_by_name_and_keeps_its_position():
         return m.group(1).lower() if m else None
 
     result = segprops.build(BODIES, rules=[side])
-    assert _tags_of(result, 1) == {"group:Tm2", "side:l"}
+    assert _tags_of(result, 1) == {"type:Tm2", "side:l"}
     names = result["report"]["rules"]["names"]
     assert names.index("side") == 1 and names.count("side") == 1
 
@@ -388,7 +388,7 @@ def test_a_rule_needing_an_absent_column_warns_rather_than_raising():
     """A list where nobody has a `type` has no `type` column at all, which is normal."""
     result = segprops.build(BODIES.drop(columns=["type"]))
     assert result["report"]["absent_columns"] == ["type"]
-    assert result["report"]["coverage"]["group"]["bodies"] == 0
+    assert result["report"]["coverage"]["type"]["bodies"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -473,7 +473,7 @@ def test_too_many_facets_is_refused_even_though_the_vocabulary_is_tiny():
 def test_the_report_carries_the_document_size():
     report = _built()["report"]
     assert report["bytes"] > 0
-    assert report["facets"] == ["", "group", "side"]
+    assert report["facets"] == ["", "side", "type"]
 
 
 # --------------------------------------------------------------------------- #
@@ -501,9 +501,9 @@ def test_the_table_splits_tags_into_facet_and_flag_columns():
         return {1: ["A10", "A2"], 3: ["A1"]}.get(int(r["body"]), [])
 
     t = _table(rules=[col])
-    assert t.loc[1, "tags"] == ["side:L", "group:Tm2", "col:A10", "col:A2"]
+    assert t.loc[1, "tags"] == ["side:L", "type:Tm2", "col:A10", "col:A2"]
     assert t.loc[1, "tag:col"] == ["A10", "A2"] and t.loc[2, "tag:col"] == []
-    assert t.loc[1, "tag:group"] == "Tm2" and pd.isna(t.loc[2, "tag:group"])
+    assert t.loc[1, "tag:type"] == "Tm2" and pd.isna(t.loc[2, "tag:type"])
     assert t.loc[2, "flag:fragment"] and not t.loc[1, "flag:fragment"]
 
 
@@ -527,5 +527,5 @@ def test_the_table_survives_parquet(tmp_path):
     t = _built(table=True, counts=COUNTS)["table"]
     io.write_table(t, str(tmp_path), "segprops")
     back = io.read_table(str(tmp_path), "segprops").set_index("body")
-    assert list(back.loc[1, "tags"]) == ["side:L", "group:Tm2"]
+    assert list(back.loc[1, "tags"]) == ["side:L", "type:Tm2"]
     assert back.loc[3, "flag:nucleated"] and back.loc[1, "syn"] == 100

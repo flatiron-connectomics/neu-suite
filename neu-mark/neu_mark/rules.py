@@ -23,8 +23,9 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Self, Sequence
 
 import pandas as pd
 
@@ -77,6 +78,12 @@ class Rule:
         self.description = description or (func.__doc__ or "").strip().split("\n")[0]
         self.__doc__ = func.__doc__
         self.__name__ = self.name
+
+    def set_kwargs(self, **kwargs) -> Self:
+        """Bind keyword arguments of the rule's function, in place. Returns the rule."""
+        if kwargs:
+            self.func = partial(self.func, **kwargs)
+        return self
 
     def _parts(self) -> tuple[str, str, str, str, str]:
         """``(name, kind, needs, extras, description)``, the fields of a rule's repr, also

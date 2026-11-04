@@ -99,6 +99,19 @@ def test_a_multi_valued_rule_may_return_any_number():
     assert column.values(pd.Series({"instance": "AGNG"})) == ()
 
 
+def test_set_kwargs_binds_a_rules_keyword_arguments():
+    @rule
+    def letter(r, upper=False):
+        v = str(r["instance"])[0]
+        return v.upper() if upper else v
+
+    row = pd.Series({"instance": "abc"})
+    assert letter.values(row) == ("a",)
+    assert letter.set_kwargs(upper=True) is letter
+    assert letter.values(row) == ("A",)
+    assert letter.set_kwargs().values(row) == ("A",)
+
+
 # --------------------------------------------------------------------------- #
 # RuleSet
 # --------------------------------------------------------------------------- #

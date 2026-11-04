@@ -44,8 +44,8 @@ def side(r):
     return m.group(1) if m else None
 
 
-@rule(needs=["type"])
-def group(r):
+@rule(name="type", needs=["type"])
+def cell_type(r):
     """cell type, from the curated `type` field"""
     return normalize(r["type"])
 
@@ -96,5 +96,5 @@ DROP_GLIA = Rule(lambda r: glia.func(r), name="glia", drop=True,
                  description="glia rather than a neuron (excluded)")
 
 #: Evaluated in declaration order, drops first. Override by name; see :meth:`RuleSet.override`.
-BUILTIN = RuleSet([noise, side, group, nucleated, cervical, glia, fragment, truncated],
+BUILTIN = RuleSet([noise, side, cell_type, nucleated, cervical, glia, fragment, truncated],
                   source="neu_mark.segprops_rules.BUILTIN")

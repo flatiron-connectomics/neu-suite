@@ -4,7 +4,7 @@ The format is one inline JSON document, written through ``neu_vol.location``. Wh
 spec allows shapes it:
 
 - At most one ``label``, one ``description`` and one ``tags`` property, so every facet
-  pools into the one ``tags`` property as ``prefix:value`` (``side:L``, ``group:Mi1``).
+  pools into the one ``tags`` property as ``prefix:value`` (``side:L``, ``type:Mi1``).
 - A segment's ``tags`` values are indices into the ``tags`` array, in increasing order.
 - A tag may contain no spaces (they are hyphenated here) and no leading ``#``. Matching is
   case-insensitive, so values differing only in case show as one chip in the viewer
@@ -44,7 +44,7 @@ DEFAULT_MAX_TAGS = 0.10
 #: Floor under a fractional limit only (10% of 40 bodies is too small to mean anything).
 MIN_TAG_ALLOWANCE = 100
 
-#: Cap on distinct facets (`side:`, `group:`, ..., plus one for bare flags), which catches
+#: Cap on distinct facets (`side:`, `type:`, ..., plus one for bare flags), which catches
 #: rules minting a separate facet per value.
 MAX_FACETS = 24
 
@@ -74,7 +74,7 @@ def natural_key(tag: str) -> tuple:
 def case_collisions(vocabulary: Iterable[str]) -> dict[str, list[str]]:
     """``{lowercased: [tags]}`` for tags that differ only in case.
 
-    The viewer matches tags case-insensitively, so ``group:Tm2`` and ``group:TM2`` show as
+    The viewer matches tags case-insensitively, so ``type:Tm2`` and ``type:TM2`` show as
     one chip while remaining two values in the table.
     """
     seen: dict[str, list[str]] = {}
