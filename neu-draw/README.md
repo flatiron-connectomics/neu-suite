@@ -307,6 +307,15 @@ view = neu_draw.show(scene, viewpoint="last")     # or "saved", or a ViewState y
 An empty slot just means the figure keeps its own framing, so that is safe in the first
 cell of a session.
 
+The store lasts one session. To keep an angle across kernel restarts, write a slot to a
+JSON file and read it back later:
+
+```python
+neu_draw.save_view_file("views/dorsal.json", "dorsal")   # overwrite=False to refuse
+neu_draw.load_view_file("views/dorsal.json", "dorsal")   # into views["dorsal"]
+state = neu_draw.ViewState.load("views/dorsal.json")    # or hold the state yourself
+```
+
 **Reset is not Center.** `center()` fits *what is visible now*, so after hiding half the
 bodies it frames the remainder; `reset()` un-hides whatever you hid, drops every highlight,
 and returns to the camera the figure opened at — including a `viewpoint=` it was opened
