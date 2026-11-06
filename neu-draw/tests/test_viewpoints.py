@@ -94,6 +94,84 @@ def test_slots_are_independent(has_gpu):
 
 
 # --------------------------------------------------------------------------- #
+# files
+# --------------------------------------------------------------------------- #
+
+def _state(**camera):
+    """A state shaped like ``Camera.get_state()``: numpy vectors beside plain values."""
+    camera = {"position": np.array([1.5, -2.0, 3.25]),
+              "rotation": np.array([0.0, 0, 0, 1]), "fov": 50.0, "zoom": np.float32(1.5), "maintain_aspect": True,
+              "depth_range": None, **camera}
+    return viewstate.ViewState(camera=camera, size=(640, 480))
+
+
+def test_a_viewpoint_survives_a_file_round_trip(tmp_path):
+    loaded = viewstate.ViewState.load(_state().save(tmp_path / "view.json"))
+
+    assert loaded.size == (640, 480)
+    assert loaded.camera["position"] == [1.5, -2.0, 3.25]
+    assert loaded.camera["rotation"] == [0.0, 0.0, 0.0, 1.0]
+    assert loaded.camera["zoom"] == 1.5
+    assert loaded.camera["maintain_aspect"] is True
+    assert loaded.camera["depth_range"] is None
+
+
+def test_saving_creates_the_directory_and_writes_a_file(tmp_path):
+    path = tmp_path / "new" / "dir" / "view.json"
+    assert _state().save(path) == path
+    assert path.is_file()
+
+
+def test_saving_without_overwrite_refuses_and_keeps_the_file(tmp_path):
+    path = tmp_path / "view.json"
+    path.write_text("keep me")
+    with pytest.raises(FileExistsError):
+        _state().save(path, overwrite=False)
+    assert path.read_text() == "keep me"
+
+
+def test_a_failed_save_does_not_truncate_the_existing_file(tmp_path):
+    """Serialization happens before the file is opened."""
+    path = tmp_path / "view.json"
+    path.write_text("keep me")
+    with pytest.raises(TypeError, match="object is not JSON serializable"):
+        _state(extra=object()).save(path)
+    assert path.read_text() == "keep me"
+
+
+def test_the_slot_functions_round_trip_through_the_store(tmp_path):
+    viewstate.views["a"] = _state()
+    path = viewstate.save_view_file(tmp_path / "view.json", "a")
+    viewstate.views.clear()
+
+    loaded = viewstate.load_view_file(path, "b")
+    assert viewstate.views == {"b": loaded}
+    assert loaded.camera["position"] == [1.5, -2.0, 3.25]
+
+
+def test_saving_an_empty_slot_names_the_slot(tmp_path):
+    viewstate.views["a"] = _state()
+    with pytest.raises(KeyError, match="'missing'.*'a'"):
+        viewstate.save_view_file(tmp_path / "view.json", "missing")
+
+
+def test_a_viewpoint_loaded_from_a_file_restores_the_camera(has_gpu, tmp_path):
+    """Loaded vectors are lists, which ``Camera.set_state`` takes as it does arrays."""
+    first = _view(size=(120, 90))
+    first.camera.local.position = (11.0, 22.0, 33.0)
+    path = first.save_view().save(tmp_path / "view.json")
+    first.close()
+
+    view = _view()
+    try:
+        view.restore_view(viewstate.ViewState.load(path))
+        assert np.allclose(view.camera.local.position, (11.0, 22.0, 33.0))
+        assert view.logical_size() == (120, 90)
+    finally:
+        view.close()
+
+
+# --------------------------------------------------------------------------- #
 # the camera actions
 # --------------------------------------------------------------------------- #
 

@@ -23,7 +23,7 @@ from typing import Any
 from . import cache, layout, logs, sources, viewstate
 from .colors import assign_colors, to_rgba
 from .logs import install_quiet_stores, quiet_stores, remove_quiet_stores
-from .viewstate import ViewState, views
+from .viewstate import ViewState, load_view_file, save_view_file, views
 from neu_lib import (BBox, Frame, Mesh, Skeleton, Vec3, box_predicate,
                      mask_predicate, skeleton_tube, to_xyz, union)
 from .scene import (Camera, Legend, LinesDrawable, MeshDrawable, PointsDrawable,
@@ -50,7 +50,7 @@ __all__ = [
     "Scene", "build_scene", "MeshDrawable", "LinesDrawable", "PointsDrawable",
     "Camera", "Legend", "label_of",
     "assign_colors", "to_rgba",
-    "ViewState", "views", "viewstate",
+    "ViewState", "load_view_file", "save_view_file", "views", "viewstate",
     "cache", "layout", "logs", "sources",
     "quiet_stores", "install_quiet_stores", "remove_quiet_stores",
     "body_mesh", "body_meshes", "body_skeleton", "body_skeletons",
