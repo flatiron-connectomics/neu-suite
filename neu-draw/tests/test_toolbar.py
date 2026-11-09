@@ -30,9 +30,11 @@ def has_gpu():
 def clean_globals():
     viewstate.views.clear()
     toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
+    toolbar_mod.last_view_file = "view.json"
     yield
     viewstate.views.clear()
     toolbar_mod.last_prefix, toolbar_mod.last_suffix = None, ".png"
+    toolbar_mod.last_view_file = "view.json"
 
 
 def _mesh(name="body"):
@@ -81,7 +83,8 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     """`toolbar="auto"` is the default."""
     assert isinstance(view.ui, toolbar_mod.Toolbar)
     bar, entry, panels, opacity, stage = view.ui.widget.children
-    assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"])
+    assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"],
+                               view.ui.view_file["panel"])
     assert [b.description for b in bar.children] == [
         "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Animate",
         "Close"]
@@ -174,6 +177,70 @@ def test_the_format_dropdown_and_the_paths_extension_follow_each_other(view):
     assert view.ui.path.value == "figs/fig.pdf"
     view.ui.path.value = "figs/other.svg"
     assert view.ui.options["format"].value == "svg"
+
+
+def test_the_layers_dropdown_is_only_live_for_a_vector_format(view):
+    view.ui.path.value = "fig.png"
+    assert view.ui.options["layers"].disabled
+    view.ui.options["format"].value = "svg"
+    assert not view.ui.options["layers"].disabled
+
+
+def test_capture_nests_layers_as_the_dropdown_says(view, tmp_path):
+    pytest.importorskip("imageio")
+    view.scene_data.export_groups = lambda d: ("cell",)
+    view.ui.options["layers"].value = "group"
+    view.ui.path.value = str(tmp_path / "fig.svg")
+    view.ui._capture()
+    text = (tmp_path / "fig.svg").read_text()
+    assert text.index('inkscape:label="cell"') < text.index('inkscape:label="meshes"')
+
+
+# --------------------------------------------------------------------------- #
+# view files
+# --------------------------------------------------------------------------- #
+
+def test_a_view_file_round_trips_through_the_buttons(view, tmp_path):
+    path = tmp_path / "views" / "angle.json"
+    view.ui.view_file["path"].value = str(path)
+    view.camera.local.position = (11.0, 22.0, 33.0)
+    view.ui._save_view_file()
+    assert path.is_file() and "written" in view.ui.status.value
+
+    view.camera.local.position = (900.0, 900.0, 900.0)
+    viewstate.views.clear()
+    view.ui._load_view_file()
+    assert np.allclose(view.camera.local.position, (11.0, 22.0, 33.0))
+    assert viewstate.SAVED in viewstate.views and "loaded" in view.ui.status.value
+
+
+def test_saving_a_view_file_refuses_to_overwrite_unless_asked(view, tmp_path):
+    path = tmp_path / "angle.json"
+    path.write_text("keep me")
+    view.ui.view_file["path"].value = str(path)
+    view.ui._save_view_file()
+    assert "overwrite" in view.ui.status.value and path.read_text() == "keep me"
+    assert viewstate.SAVED not in viewstate.views         # the slot is left alone too
+
+    view.ui.view_file["overwrite"].value = True
+    view.ui._save_view_file()
+    assert path.read_text() != "keep me"
+
+
+def test_the_next_toolbar_offers_the_last_view_file(view, has_gpu, tmp_path):
+    view.ui.view_file["path"].value = str(tmp_path / "angle.json")
+    view.ui._save_view_file()
+    second = backend.show(Scene().add_mesh(_mesh()), size=(120, 90), canvas="jupyter")
+    try:
+        assert second.ui.view_file["path"].value == str(tmp_path / "angle.json")
+    finally:
+        second.close()
+
+
+def test_loading_a_missing_view_file_reports_it(view, tmp_path):
+    view.ui.view_file["path"].value = str(tmp_path / "nothing.json")
+    view.ui._guarded(view.ui._load_view_file)
+    assert "FileNotFoundError" in view.ui.status.value
 
 
 def test_capture_honours_the_options(view, tmp_path):

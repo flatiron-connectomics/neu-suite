@@ -225,6 +225,37 @@ def test_legend_rows_nest_the_way_their_drawables_do(cells):
         "B : Mi1", "B : Mi2"]
 
 
+def _children(root, *path):
+    """The group labels directly under ``root`` / ``path``, each step a direct child."""
+    group = root
+    for name in path:
+        group = next(g for g in group if g.tag == f"{SVG}g" and g.get(LABEL) == name)
+    return [g.get(LABEL) for g in group if g.tag == f"{SVG}g"]
+
+
+def test_by_group_the_groups_come_first_and_the_kinds_inside(cells):
+    """The meshes have no group, so they keep a kind layer at the top, painted first."""
+    root = _svg(cells, group_by="group")
+    assert _children(root) == ["background", "meshes", "A", "B", "legend"]
+    assert _children(root, "A") == ["points"]
+    assert _children(root, "A", "points") == ["A : Mi1", "A : Mi2"]
+
+
+def test_by_group_the_legend_rows_nest_the_same_way(cells):
+    root = _svg(cells, group_by="group")
+    assert _children(root, "legend", "rows") == ["meshes", "A", "B"]
+    assert _children(root, "legend", "rows", "B") == ["points"]
+
+
+def test_by_kind_is_the_default(cells):
+    assert _children(_svg(cells)) == ["background", "meshes", "points", "legend"]
+
+
+def test_an_unknown_group_by_is_refused(cells):
+    with pytest.raises(ValueError, match="group_by"):
+        vector.figure(cells, group_by="cell")
+
+
 def test_an_explicit_groups_function_overrides_the_scenes(cells):
     root = _svg(cells, groups=lambda d: ())
     assert [g.get(LABEL) for g in _layers(root, "points")][:1] == ["A : Mi1"]

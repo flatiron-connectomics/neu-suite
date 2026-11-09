@@ -11,8 +11,13 @@ Each drawable is its own group, optionally nested deeper by a ``groups`` functio
 
     view.save("fig.svg", groups=lambda d: (d.name.split(" : ")[0],))
 
+``group_by="group"`` turns that around: the ``groups`` path comes first and the kind under
+it (``A / meshes``, ``A / points``), so each cell's layers sit together. Paint order then
+follows the groups, back to front by each one's farthest mesh, so one group's mesh can
+cover another's points.
+
 The legend splits into ``panel``, ``group rows`` and ``rows``, the rows nested by kind and
-by the same function applied to each row's first member.
+by the same function applied to each row's first member, in the same order.
 
 **Occlusion between groups is lost.** Meshes are stacked back to front by centre depth and
 every vector sits above every mesh, so points behind an opaque mesh show through it; this
@@ -36,6 +41,12 @@ from .legend import GAP, GLYPH_WIDTH
 DEFAULT_BACKGROUND = (0.0, 0.0, 0.0, 1.0)
 #: The top-level group each drawable kind goes in.
 KIND_GROUPS = {MeshDrawable: "meshes", LinesDrawable: "skeletons", PointsDrawable: "points"}
+#: How layers nest: by kind and then by the groups path, or the other way round.
+GROUP_BY = ("kind", "group")
+
+
+def _layer_path(kind: str, path: Sequence[str], group_by: str) -> list[str]:
+    return [kind, *path] if group_by == "kind" else [*path, kind]
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +226,8 @@ def _mesh(view, index: int, camera, rect, pixel_ratio: float,
 # --------------------------------------------------------------------------- #
 
 def _legend(legend, size: Sequence[float], strip: Sequence[float],
-            path_of: Callable[[Any], Sequence[str]]) -> Optional[Group]:
+            path_of: Callable[[Any], Sequence[str]], group_by: str = "kind"
+            ) -> Optional[Group]:
     """The strip as rects, glyphs and text, in the canvas's own layout.
 
     Positions come from the entries' laid-out transforms and the fit-to-strip scale
@@ -268,7 +280,8 @@ def _legend(legend, size: Sequence[float], strip: Sequence[float],
         else:
             kinds = {KIND_GROUPS.get(type(d), "other") for d in entry.drawables}
             kind = kinds.pop() if len(kinds) == 1 else "mixed"
-            parent = root.nested(["rows", kind, *path_of(entry.drawables[0])])
+            parent = root.nested(["rows", *_layer_path(kind, path_of(entry.drawables[0]),
+                                                       group_by)])
         parent.children.append(row)
     return root
 
@@ -279,15 +292,19 @@ def _legend(legend, size: Sequence[float], strip: Sequence[float],
 
 def figure(view, *, pixel_ratio: float = 2.0, legend: bool = True,
            size: Optional[tuple[int, int]] = None,
-           groups: Optional[Callable[[Any], Sequence[str]]] = None
-           ) -> tuple[Group, int, int]:
+           groups: Optional[Callable[[Any], Sequence[str]]] = None,
+           group_by: str = "kind") -> tuple[Group, int, int]:
     """``(tree, width, height)`` for the view. See the module docstring for the tree.
 
     ``pixel_ratio`` sets the mesh images' resolution (2, the default, is twice the logical
     size, as the canvas renders). ``size`` defaults to the view's logical size. ``groups``
     maps a drawable to a tuple of group names to nest it under; it defaults to the scene's
-    ``export_groups``. Only visible drawables are exported; the legend keeps every row.
+    ``export_groups``. ``group_by`` is ``"kind"`` (kind, then groups path) or ``"group"``
+    (groups path, then kind). Only visible drawables are exported; the legend keeps every
+    row.
     """
+    if group_by not in GROUP_BY:
+        raise ValueError(f"group_by must be one of {GROUP_BY}, not {group_by!r}")
     width, height = (int(v) for v in (size or view.logical_size()))
     if view.legend is not None and legend:
         main, strip = view.legend.rects_for((width, height))
@@ -303,8 +320,9 @@ def figure(view, *, pixel_ratio: float = 2.0, legend: bool = True,
 
     background = _rgba(view.scene_data.background or DEFAULT_BACKGROUND)
     root = Group("figure", [Group("background", [Rect(0, 0, width, height, background)])])
-    for name in KIND_GROUPS.values():
-        root.child(name)
+    if group_by == "kind":
+        for name in KIND_GROUPS.values():               # fixed order: meshes underneath
+            root.child(name)
 
     pairs = [(i, d, o) for i, (d, o) in
              enumerate(zip(view.scene_data.drawables, view.group.children)) if d.visible]
@@ -327,11 +345,14 @@ def figure(view, *, pixel_ratio: float = 2.0, legend: bool = True,
         if shape is None:
             continue
         name = drawable.name or f"{KIND_GROUPS[type(drawable)]} {i}"
-        parent = root.child(KIND_GROUPS[type(drawable)]).nested(path_of(drawable))
+        # by group, a group is placed where its first drawable falls in this loop: the
+        # farthest mesh first, then groups holding only vectors
+        parent = root.nested(_layer_path(KIND_GROUPS[type(drawable)], path_of(drawable),
+                                         group_by))
         parent.children.append(Group(str(name), [shape]))
 
     if strip is not None:
-        drawn = _legend(view.legend, (width, height), strip, path_of)
+        drawn = _legend(view.legend, (width, height), strip, path_of, group_by)
         if drawn is not None:
             root.children.append(drawn)
     return root.prune(), width, height

@@ -307,8 +307,12 @@ view = neu_draw.show(scene, viewpoint="last")     # or "saved", or a ViewState y
 An empty slot just means the figure keeps its own framing, so that is safe in the first
 cell of a session.
 
-The store lasts one session. To keep an angle across kernel restarts, write a slot to a
-JSON file and read it back later:
+The store lasts one session. To keep an angle across kernel restarts, the collapsed
+**View file** panel under the buttons writes the current viewpoint to a JSON file
+(**To file**, refusing an existing file unless "overwrite" is ticked) and reads one back
+(**From file**, going to it). Both go through `views["saved"]`, so Restore and
+`viewpoint="saved"` reach a loaded file, and the next figure offers the same path. From a
+cell:
 
 ```python
 neu_draw.save_view_file("views/dorsal.json", "dorsal")   # overwrite=False to refuse
@@ -348,10 +352,23 @@ The legend splits into `panel`, `group rows`, and `rows` nested by kind and by t
 function, so a cell's rows sit together as its drawables do; each row groups its plate,
 glyph and text.
 
-**Capture options** (collapsed, under the path box) set the format, the resolution, the
-width and height, and whether the legend is included; the same are keywords on
-`view.save(path, size=, pixel_ratio=, legend=, groups=)`, and `save_svg` / `save_pdf`
-refuse the other extension.
+`group_by="group"` turns the nesting around, putting each `export_groups` group at the
+top with its kinds inside — one layer per cell, holding its mesh, skeleton and points:
+
+```python
+view.save("fig.svg", group_by="group")
+# T4a 78044864 / meshes, T4a 78044864 / points / T4a 78044864 : Mi1 (17)
+```
+
+Paint order then follows the groups (back to front by each one's farthest mesh), so one
+cell's faint mesh can sit over another cell's points; by kind, every vector is above every
+mesh.
+
+**Capture options** (collapsed, under the path box) set the format, the layer nesting
+("layers by", for SVG and PDF), the resolution, the width and height, and whether the
+legend is included; the same are keywords on
+`view.save(path, size=, pixel_ratio=, legend=, groups=, group_by=)`, and `save_svg` /
+`save_pdf` refuse the other extension.
 
 Two things to know. **Occlusion between groups is gone**: every vector sits above every
 mesh, and meshes stack back to front by their centres — right for the faint meshes this

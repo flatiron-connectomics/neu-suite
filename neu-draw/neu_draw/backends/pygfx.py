@@ -396,17 +396,19 @@ class View:
 
     def save(self, path: str, size: Optional[tuple[int, int]] = None, *,
              pixel_ratio: Optional[float] = None, legend: bool = True,
-             groups: Optional[Any] = None) -> str:
+             groups: Optional[Any] = None, group_by: str = "kind") -> str:
         """Write the figure to ``path``: PNG, or by extension ``.svg`` / ``.pdf``.
 
         ``pixel_ratio`` is the PNG's supersampling, or the mesh images' resolution in a
-        vector file (default 2). ``legend=False`` drops the strip. ``groups`` applies to
-        vector files only (see :meth:`save_svg`). PNGs are written without alpha.
+        vector file (default 2). ``legend=False`` drops the strip. ``groups`` and
+        ``group_by`` apply to vector files only (see :meth:`save_svg`). PNGs are written
+        without alpha.
         """
         if str(path).lower().endswith((".svg", ".pdf")):
             from .vector import save as save_vector
 
             return save_vector(self, path, size=size, legend=legend, groups=groups,
+                               group_by=group_by,
                                pixel_ratio=2.0 if pixel_ratio is None else pixel_ratio)
         try:
             from imageio import v3 as iio
@@ -425,7 +427,8 @@ class View:
         is a transparent image; points, skeletons and the legend are vectors.
 
         ``groups`` maps a drawable to a tuple of group names to nest it under, e.g.
-        ``lambda d: (d.name.split(" : ")[0],)``; defaults to ``scene.export_groups``. See
+        ``lambda d: (d.name.split(" : ")[0],)``; defaults to ``scene.export_groups``.
+        ``group_by="group"`` puts those names above the kinds instead of below. See
         :mod:`neu_draw.backends.vector` for what is lost (occlusion between groups).
         """
         if not str(path).lower().endswith(".svg"):

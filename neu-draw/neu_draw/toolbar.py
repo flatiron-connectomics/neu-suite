@@ -4,7 +4,8 @@ The buttons: **Center** the camera on what is visible, **Reset** to the opening 
 **Refresh** after editing the scene in a cell, **Save** a viewpoint and **Restore** it, go
 to where the **Last** closed figure was, **Capture** a PNG, SVG or PDF, **Animate** an
 orbit, and **Close** the figure, leaving its last image in place of the canvas. Capture
-and Animate read collapsible options panels.
+and Animate read collapsible options panels; a third, View file, writes the viewpoint to
+a JSON file or reads one back.
 
 Save/Restore and Last are separate slots on purpose ("the angle I chose" against "where I
 was"). ``View.close`` writes the ``last`` slot, so re-running a cell and pressing Last, or
@@ -18,9 +19,10 @@ pre-filled as ``<prefix>_<timestamp>.png``, the prefix being the last one used.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
-from .viewstate import LAST, SAVED
+from .viewstate import LAST, SAVED, load_view_file, save_view_file
 
 #: ``strftime`` pattern for the timestamp in a capture filename; sorts lexicographically.
 TS_FORMAT = "%Y-%m-%d_%H-%M-%S"
@@ -38,6 +40,10 @@ FORMATS = {
 last_prefix: Optional[str] = None
 #: …and its extension, so capturing one ``.svg`` keeps the next default an ``.svg``.
 last_suffix: str = ".png"
+
+#: The view file last saved or loaded through any toolbar, pre-filled in the next one so
+#: a new figure loads it in one click.
+last_view_file: str = "view.json"
 
 
 def default_path(prefix: Optional[str] = None) -> str:
@@ -131,6 +137,7 @@ class Toolbar:
         self.sliders = self._opacity_sliders()
         self.options = self._capture_options()
         self.animation = self._animation_options()
+        self.view_file = self._view_file_options()
 
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
         self._stage = widgets.Box([canvas])
@@ -139,7 +146,8 @@ class Toolbar:
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             widgets.HBox([self.path, self.status]),
-            widgets.HBox([self.options["panel"], self.animation["panel"]],
+            widgets.HBox([self.options["panel"], self.animation["panel"],
+                          self.view_file["panel"]],
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             *([widgets.HBox(list(self.sliders.values()),
                             layout=widgets.Layout(flex_flow="row wrap", width="100%"))]
@@ -159,7 +167,8 @@ class Toolbar:
         return button
 
     def _capture_options(self) -> dict:
-        """The collapsed "Capture options" panel: format, resolution, size, legend.
+        """The collapsed "Capture options" panel: format, layer nesting, resolution, size,
+        legend.
 
         The path's extension decides the format, and the dropdown edits it: choosing
         ``svg`` rewrites the extension, and typing ``fig.pdf`` moves the dropdown.
@@ -183,6 +192,14 @@ class Toolbar:
                                    description="height", style=style,
                                    layout=widgets.Layout(width="180px"))
         legend = widgets.Checkbox(value=True, description="legend", indent=False)
+        layers = widgets.Dropdown(
+            options=[("kind, then export group", "kind"),
+                     ("export group, then kind", "group")],
+            value="kind", description="layers by", style=style, layout=wide,
+            tooltip="how an .svg / .pdf nests its layers: meshes / skeletons / points at "
+                    "the top, or each scene.export_groups group (a cell, say) at the top "
+                    "with its meshes, skeletons and points inside")
+        layers.disabled = fmt.value == "png"
         reset = widgets.Button(description="canvas size", icon="expand",
                                tooltip="set width and height back to the canvas's",
                                layout=widgets.Layout(width="130px"))
@@ -190,6 +207,7 @@ class Toolbar:
         syncing = {"on": False}
 
         def on_format(change) -> None:
+            layers.disabled = change["new"] == "png"
             if syncing["on"]:
                 return
             syncing["on"] = True
@@ -220,13 +238,36 @@ class Toolbar:
 
         body = widgets.VBox([
             fmt,
+            layers,
             widgets.HBox([resolution, legend]),
             widgets.HBox([w, h, reset]),
         ])
         panel = widgets.Accordion(children=[body], selected_index=None)
         panel.set_title(0, "Capture options")
-        return {"panel": panel, "format": fmt, "resolution": resolution,
+        return {"panel": panel, "format": fmt, "layers": layers, "resolution": resolution,
                 "width": w, "height": h, "legend": legend}
+
+    def _view_file_options(self) -> dict:
+        """The collapsed "View file" panel: a viewpoint written to or read from JSON, so it
+        survives a kernel restart. Both go through :data:`views[SAVED] <neu_draw.views>`,
+        so Restore and ``viewpoint="saved"`` reach a loaded file too."""
+        widgets = self._widgets
+        path = widgets.Text(value=last_view_file, placeholder="view.json",
+                            description="file", style={"description_width": "40px"},
+                            layout=widgets.Layout(width="330px"))
+        overwrite = widgets.Checkbox(value=False, description="overwrite", indent=False,
+                                     layout=widgets.Layout(width="100px"))
+        save = self._button("To file", "download",
+                            f"save this viewpoint as views[{SAVED!r}] and write it to the "
+                            f"file", self._save_view_file)
+        load = self._button("From file", "upload",
+                            f"read the file into views[{SAVED!r}] and go to it",
+                            self._load_view_file)
+        body = widgets.VBox([path, widgets.HBox([save, load, overwrite])])
+        panel = widgets.Accordion(children=[body], selected_index=None)
+        panel.set_title(0, "View file")
+        return {"panel": panel, "path": path, "overwrite": overwrite, "save": save,
+                "load": load}
 
     def _animation_options(self) -> dict:
         """The collapsed "Animation options" panel, read by the Animate button.
@@ -372,6 +413,32 @@ class Toolbar:
         else:
             self._say("restored the saved viewpoint")
 
+    def _view_file_path(self) -> Optional[str]:
+        global last_view_file
+        path = self.view_file["path"].value.strip()
+        if not path:
+            self._say("type a view file name first", error=True)
+            return None
+        last_view_file = path
+        return path
+
+    def _save_view_file(self) -> None:
+        if (path := self._view_file_path()) is None:
+            return
+        if Path(path).expanduser().exists() and not self.view_file["overwrite"].value:
+            self._say(f"{path} exists — tick 'overwrite' to replace it", error=True)
+            return
+        self.view.save_view()
+        written = save_view_file(path)
+        self._say(f"viewpoint saved and written to {written}")
+
+    def _load_view_file(self) -> None:
+        if (path := self._view_file_path()) is None:
+            return
+        load_view_file(path)
+        self.view.restore_view()
+        self._say(f"loaded {path} into views[{SAVED!r}] and went to it")
+
     def _restore_last(self) -> None:
         """Go to the viewpoint 'Close' recorded for the last closed figure."""
         if self.view.restore_view(LAST) is None:
@@ -389,7 +456,7 @@ class Toolbar:
         written = self.view.save(
             path, size=(int(options["width"].value), int(options["height"].value)),
             pixel_ratio=float(options["resolution"].value),
-            legend=bool(options["legend"].value))
+            legend=bool(options["legend"].value), group_by=options["layers"].value)
         remember_prefix(written)
         self.path.value = default_path()
         self._say(f"wrote {written}")
