@@ -67,7 +67,9 @@ def test_the_mesh_worker_retries_a_transient_read(flaky, tmp_path):
 def test_a_persistent_error_still_fails_the_block(flaky):
     from neu_morpho.ops.index_segments import _index_block
 
-    be = flaky(failures=99)
+    # not DNS, which neu_vol.retry retries for a time budget rather than 5 attempts
+    be = flaky(failures=99, message="UNAVAILABLE: CURL error Connection reset by peer "
+                                    "[curl_code='35']")
     with pytest.raises(ValueError, match="UNAVAILABLE"):
         _index_block(_block(), seg_spec={}, fullres_factor=(1, 1, 1))
     assert be.reads == 5

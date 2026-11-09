@@ -76,6 +76,59 @@ def test_raises_the_last_error_when_attempts_run_out():
     assert len(calls) == 3
 
 
+# requests' form of the same failure, as a DVID read would raise it.
+REQUESTS_DNS = (
+    "HTTPConnectionPool(host='dvid.example.org', port=80): Max retries exceeded with url: "
+    "/api/node/abc123/labels/info (Caused by NameResolutionError(\"<urllib3.connection."
+    "HTTPConnection object at 0x7f>: Failed to resolve 'dvid.example.org' ([Errno -2] "
+    "Name or service not known)\"))"
+)
+
+
+@pytest.mark.parametrize("message, outage", [
+    (REAL_DNS, True),
+    (REQUESTS_DNS, True),
+    (REAL_TRANSIENT, False),
+    (REAL_PERMANENT, False),
+    # permanent still wins over a lookup failure in the same message
+    ("PERMISSION_DENIED: Access Denied; Could not resolve host", False),
+])
+def test_dns_failures_are_outages(message, outage):
+    from neu_vol.retry import is_outage
+
+    assert is_outage(ValueError(message)) is outage
+
+
+def test_an_outage_retries_past_attempts_until_its_budget(monkeypatch):
+    waits = []
+    monkeypatch.setattr("neu_vol.retry.time.sleep", waits.append)
+    calls = []
+
+    def no_dns():
+        calls.append(1)
+        raise ValueError(REAL_DNS)
+
+    with pytest.raises(ValueError, match="Could not resolve host"):
+        with_retry(no_dns, attempts=5, base_delay=1.0, max_delay=30.0, jitter=False,
+                   outage_budget=120.0)
+    assert waits == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0], waits
+    assert len(calls) == 9
+
+
+def test_an_outage_that_clears_within_its_budget_succeeds(monkeypatch):
+    monkeypatch.setattr("neu_vol.retry.time.sleep", lambda *_: None)
+    calls = []
+
+    def dns_back_after_seven():
+        calls.append(1)
+        if len(calls) <= 7:
+            raise ValueError(REAL_DNS)
+        return "ok"
+
+    assert with_retry(dns_back_after_seven, attempts=5) == "ok"
+    assert len(calls) == 8
+
+
 def test_backoff_grows_and_is_bounded(monkeypatch):
     waits = []
     monkeypatch.setattr("neu_vol.retry.time.sleep", waits.append)

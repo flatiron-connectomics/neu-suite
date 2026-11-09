@@ -9,6 +9,10 @@ and ``UNAVAILABLE`` as ``ValueError``. Permanent markers are checked first and w
 403 fails at once, and an unrecognized error is permanent, so a new failure mode
 surfaces promptly.
 
+A failed hostname lookup is the node's resolver rather than the store, and such an
+outage outlasts the ~15 s the default attempts cover, so it is retried until
+``outage_budget`` seconds of backoff have been spent instead.
+
 Only wrap operations that are safe to repeat: writing a block to the same region is;
 appending to a manifest is not.
 """
@@ -63,6 +67,21 @@ TRANSIENT_MARKERS = (
 )
 
 
+# Transient, but retried for longer: DNS, through curl (tensorstore) or requests (DVID).
+OUTAGE_MARKERS = (
+    "Could not resolve host",
+    "curl_code='6'",
+    "NameResolutionError",
+    "Temporary failure in name resolution",
+    "Name or service not known",
+)
+
+
+def is_outage(exc: BaseException) -> bool:
+    """Is this a transient failure of the kind that lasts (a DNS lookup)?"""
+    return is_transient(exc) and any(m in str(exc) for m in OUTAGE_MARKERS)
+
+
 def is_transient(exc: BaseException) -> bool:
     """Would retrying this error plausibly succeed?
 
@@ -75,24 +94,32 @@ def is_transient(exc: BaseException) -> bool:
 
 
 def with_retry(fn: Callable[[], T], *, attempts: int = 5, base_delay: float = 1.0,
-               max_delay: float = 30.0, label: str = "", jitter: bool = True) -> T:
+               max_delay: float = 30.0, label: str = "", jitter: bool = True,
+               outage_budget: float = 120.0) -> T:
     """Call ``fn``, retrying transient failures with exponential backoff.
 
     Raises the last exception once ``attempts`` is exhausted, and re-raises a
-    permanent error immediately. ``jitter`` spreads retries across concurrent workers,
-    so many workers hitting one throttle do not all return at once.
+    permanent error immediately. An outage (see ``OUTAGE_MARKERS``) keeps retrying past
+    ``attempts`` until the backoff waited reaches ``outage_budget`` seconds. ``jitter``
+    spreads retries across concurrent workers, so many workers hitting one throttle do
+    not all return at once.
     """
-    delay = base_delay
-    for attempt in range(1, attempts + 1):
+    delay, waited, attempt = base_delay, 0.0, 0
+    while True:
+        attempt += 1
         try:
             return fn()
         except Exception as exc:                    # noqa: BLE001 - classified below
-            if not is_transient(exc) or attempt == attempts:
+            if not is_transient(exc):
+                raise
+            outage = is_outage(exc)
+            if attempt >= attempts and not (outage and waited < outage_budget):
                 raise
             wait = delay * (random.uniform(0.5, 1.5) if jitter else 1.0)
-            logger.warning("transient failure%s (attempt %d/%d), retrying in %.1fs: %s",
-                           f" on {label}" if label else "", attempt, attempts, wait,
-                           str(exc)[:200])
+            budget = (f"{waited:.0f}s of {outage_budget:.0f}s waited" if outage
+                      else f"attempt {attempt}/{attempts}")
+            logger.warning("transient failure%s (%s), retrying in %.1fs: %s",
+                           f" on {label}" if label else "", budget, wait, str(exc)[:200])
             time.sleep(wait)
+            waited += wait
             delay = min(delay * 2, max_delay)
-    raise AssertionError("unreachable")             # pragma: no cover
