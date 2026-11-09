@@ -51,6 +51,27 @@ _NAMED.update({f"tab:{n}": QUALITATIVE[i] for i, n in enumerate(
      "brown", "pink", "gray", "olive", "cyan"))})
 
 
+#: Swatch sets offered by the toolbar's Legend row panel. Embedded, so no colormap library
+#: is needed; each entry is what a recolour line says, a name where one exists.
+SWATCHES: dict[str, tuple[str, ...]] = {
+    "tab10": tuple(f"tab:{n}" for n in ("blue", "orange", "green", "red", "purple",
+                                          "brown", "pink", "gray", "olive", "cyan")),
+    "tab20": ("#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c", "#98df8a",
+              "#d62728", "#ff9896", "#9467bd", "#c5b0d5", "#8c564b", "#c49c94",
+              "#e377c2", "#f7b6d2", "#7f7f7f", "#c7c7c7", "#bcbd22", "#dbdb8d",
+              "#17becf", "#9edae5"),
+    # Okabe & Ito's colour-blind-safe set
+    "Okabe-Ito": ("#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2", "#d55e00",
+                  "#cc79a7", "#000000"),
+    "Set1": ("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00", "#ffff33",
+             "#a65628", "#f781bf", "#999999"),
+    "Dark2": ("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e", "#e6ab02",
+              "#a6761d", "#666666"),
+    "named": ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta",
+              "gray", "black", "white"),
+}
+
+
 def to_rgba(color: Any, alpha: Optional[float] = None) -> RGBA:
     """Normalise a colour to ``(r, g, b, a)`` floats in ``[0, 1]``.
 

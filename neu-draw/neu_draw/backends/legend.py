@@ -3,7 +3,8 @@ every snapshot and saved figure.
 
 One row per label (a plate, a glyph for the kind of drawable, and the text); a row may
 stand for many drawables. Left-click a row to hide or show it, right-click to highlight
-it. Hidden rows are dimmed, not removed, and a partly hidden group has a third look. The
+it, Shift+left-click to pick it (the toolbar's Legend row panel then recolours it).
+Hidden rows are dimmed, not removed, and a partly hidden group has a third look. The
 highlight is a display override: ``drawable.color`` is never changed.
 
 How it works:
@@ -315,6 +316,7 @@ class LegendOverlay:
 
         self.scene = pygfx.Scene()
         self.scene.add(self.backdrop)
+        self._pick_handlers: list = []
         self.entries: list[LegendEntry] = []
         self._structure_at: tuple = ()
         self._state_at: tuple = ()
@@ -531,9 +533,15 @@ class LegendOverlay:
     # -- interaction -----------------------------------------------------------
 
     def _bind(self, entry: LegendEntry) -> None:
-        """Left-click a row to hide or show it; right-click to highlight it."""
+        """Left-click a row to hide or show it; right-click to highlight it;
+        Shift+left-click to pick it (:meth:`on_pick`). Not Shift+right-click: the notebook
+        canvas lets that through to the browser's context menu."""
         def on_click(event) -> None:
             button = getattr(event, "button", 1)
+            if button == 1 and "Shift" in (getattr(event, "modifiers", None) or ()):
+                for handler in list(self._pick_handlers):
+                    handler(entry.text)
+                return
             if button == 1:
                 entry.toggle()
             elif button == 2:
@@ -544,6 +552,11 @@ class LegendOverlay:
             self._request_draw()
 
         entry.plate.add_event_handler(on_click, "click")
+
+    def on_pick(self, handler: Any) -> Any:
+        """Call ``handler(label)`` when a row is Shift+clicked. Returns the handler."""
+        self._pick_handlers.append(handler)
+        return handler
 
     def _request_draw(self) -> None:
         request = getattr(self.renderer, "request_draw", None)
@@ -595,12 +608,43 @@ class LegendOverlay:
         self._request_draw()
         return self
 
-    def recolor(self, label: str, color: Any) -> "LegendOverlay":
-        """Recolour every drawable on a row. On a highlighted row the new colour appears
-        when the highlight comes off."""
-        rgba = to_rgba(color)
-        for drawable in self.entry(label).drawables:
-            drawable.color = rgba
+    def members(self, label: str, only: Any = None) -> list:
+        """A row's drawables; with ``only``, just those currently that colour (alpha
+        ignored), such as a cell group's mesh and skeleton without its synapses."""
+        drawables = self.entry(label).drawables
+        if only is None:
+            return list(drawables)
+        rgb = np.asarray(to_rgba(only)[:3])
+        chosen = [d for d in drawables
+                  if np.allclose(to_rgba(d.color)[:3], rgb, atol=1.0 / 510)]
+        if not chosen:
+            raise ValueError(f"no member of legend row {label!r} is coloured {only!r}")
+        return chosen
+
+    def recolor(self, label: str, color: Any, *, only: Any = None) -> "LegendOverlay":
+        """Recolour every drawable on a row, or with ``only`` those of that colour (see
+        :meth:`members`). On a highlighted row the new colour appears when the highlight
+        comes off."""
+        return self.restyle(self.members(label, only), color=color)
+
+    def set_alpha(self, label: str, alpha: float, *, only: Any = None) -> "LegendOverlay":
+        """Opacity for every drawable on a row, or with ``only`` those of that colour: each
+        one's ``alpha``, which multiplies its colour's own."""
+        return self.restyle(self.members(label, only), alpha=alpha)
+
+    def restyle(self, drawables: Sequence[Any], *, color: Any = None,
+                alpha: Optional[float] = None) -> "LegendOverlay":
+        """Set colour and/or opacity on these drawables and repaint."""
+        rgba = None if color is None else to_rgba(color)
+        if alpha is not None:
+            alpha = float(alpha)
+            if not 0.0 <= alpha <= 1.0:
+                raise ValueError(f"alpha must be in [0, 1], got {alpha!r}")
+        for drawable in drawables:
+            if rgba is not None:
+                drawable.color = rgba
+            if alpha is not None:
+                drawable.alpha = alpha
         self._refresh_all()
         self._request_draw()
         return self

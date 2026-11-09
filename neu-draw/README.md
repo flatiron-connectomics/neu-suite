@@ -99,9 +99,20 @@ Each row is a glyph saying what kind of thing it holds, and a label.
   rather than removed, since a hidden drawable with no row is one nobody can turn back on.
 - **Right-click a row to highlight it** — those bodies turn white in the scene and the row
   lights up, until you right-click again.
+- **Shift+click a row to recolour it.** The toolbar's **Legend row** panel opens with a
+  colour picker, a row of swatches (tab10, tab20, Okabe-Ito, Set1, Dark2 or basic named
+  colours, built in — no matplotlib) and an opacity slider for that row, and the status
+  line shows the
+  `view.legend.recolor(...)` / `.set_alpha(...)` line to paste into the notebook so the
+  change survives a re-run. The swatch, and the picker's starting colour, is the row's
+  first member's colour. On a row whose members differ in colour (a group row holding a
+  cell's mesh, skeleton and synapses, say), **"only members coloured like the swatch"** is
+  ticked, so the cell changes and its synapses keep their colours; untick it to set every
+  member to one value. Opacities that still differ among the members changed are warned
+  of.
 
-Those are the two questions a crowded scene raises: *what does it look like without this*,
-and *which one of these is this*.
+Hiding and highlighting answer the two questions a crowded scene raises: *what does it look
+like without this*, and *which one of these is this*.
 
 It is on by default and docked to the right. From a notebook:
 
@@ -109,6 +120,8 @@ It is on by default and docked to the right. From a notebook:
 view.legend.relabel("1401 mesh", "MeCN-01 (L)")  # change what a row says
 view.legend.relabel({"a": "Tm2", "b": "Tm2"})    # a mapping — and this MERGES the two rows
 view.legend.recolor("Tm2", "tab:pink")           # every body on the row, and its swatch
+view.legend.set_alpha("Tm2", 0.35)               # opacity, likewise
+view.legend.recolor("Mi1", "gold", only="#1f77b4")  # only the members of that colour
 view.legend.toggle("presyn")                     # what left-clicking the row does
 view.legend.set_visible("presyn", False)
 

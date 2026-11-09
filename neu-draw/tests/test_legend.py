@@ -43,12 +43,12 @@ def _scene(n=3):
     return build_scene(meshes=[_mesh(f"body {i}", i * 300.0) for i in range(n)])
 
 
-def _click(view, x, y, button=1):
+def _click(view, x, y, button=1, modifiers=()):
     """A full press-and-release at a canvas position, through the renderer's own path."""
     def event(kind, stamp):
         return dict(event_type=kind, x=float(x), y=float(y), button=button,
-                    buttons=(button,), modifiers=(), pointer_id=1, ntouches=0,
-                    touches={}, time_stamp=stamp)
+                    buttons=(button,), modifiers=tuple(modifiers), pointer_id=1,
+                    ntouches=0, touches={}, time_stamp=stamp)
 
     view.renderer.convert_event(event("pointer_down", 1.0))
     view.renderer.convert_event(event("pointer_up", 1.05))
@@ -498,6 +498,68 @@ def test_a_middle_click_does_nothing(has_gpu):
         _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 0.5, button=3)
         assert view.scene_data.get("body 0").visible is True
         assert view.legend.highlighted == []
+    finally:
+        view.close()
+
+
+def test_shift_clicking_a_row_picks_it_and_toggles_nothing(has_gpu):
+    view = backend.show(_scene(3), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        view.snapshot()
+        strip = view.legend.rects_for(view.logical_size())[1]
+        picked = []
+        assert view.legend.on_pick(picked.append) is not None
+
+        _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 1.5,
+               modifiers=("Shift",))
+        assert picked == ["body 1"]
+        assert all(d.visible for d in view.scene_data)
+        assert view.legend.highlighted == []
+    finally:
+        view.close()
+
+
+def test_a_shift_click_with_no_one_listening_does_nothing(has_gpu):
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen", pixel_ratio=1.0)
+    try:
+        view.snapshot()
+        strip = view.legend.rects_for(view.logical_size())[1]
+        _click(view, strip[0] + strip[2] / 2, view.legend.row_height * 0.5,
+               modifiers=("Shift",))
+        assert all(d.visible for d in view.scene_data)
+    finally:
+        view.close()
+
+
+def test_set_alpha_sets_a_rows_opacity_and_repaints_it(has_gpu):
+    view = backend.show(_scene(2), size=(400, 300), canvas="offscreen")
+    try:
+        before = view.scene_data.get("body 0").alpha
+        view.legend.set_alpha("body 1", 0.25)
+        assert [d.alpha for d in view.scene_data] == [before, pytest.approx(0.25)]
+        assert tuple(view.group.children[1].material.color)[3] == pytest.approx(0.25)
+        with pytest.raises(ValueError, match="alpha"):
+            view.legend.set_alpha("body 1", 1.5)
+    finally:
+        view.close()
+
+
+def test_only_restricts_a_rows_restyle_to_members_of_that_colour(has_gpu):
+    scene = (Scene().add_mesh(_mesh("m"), color="#00ff00")
+             .add_mesh(_mesh("p", 300.0), color="#ff0000")
+             .add_mesh(_mesh("q", 600.0), color="#00ff00"))
+    for drawable in scene:
+        drawable.label = "cell"
+    view = backend.show(scene, size=(400, 300), canvas="offscreen")
+    try:
+        assert [d.name for d in view.legend.members("cell", only="lime")] == ["m", "q"]
+        view.legend.recolor("cell", "blue", only="#00ff00")
+        view.legend.set_alpha("cell", 0.3, only="blue")
+        assert [scene.get(n).color[:3] for n in "mpq"] == [(0, 0, 1), (1, 0, 0), (0, 0, 1)]
+        assert [scene.get(n).alpha for n in "mq"] == [pytest.approx(0.3)] * 2
+        assert scene.get("p").alpha != pytest.approx(0.3)
+        with pytest.raises(ValueError, match="no member"):
+            view.legend.recolor("cell", "white", only="#00ff00")   # none are green now
     finally:
         view.close()
 

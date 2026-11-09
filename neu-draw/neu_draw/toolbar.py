@@ -5,7 +5,8 @@ The buttons: **Center** the camera on what is visible, **Reset** to the opening 
 to where the **Last** closed figure was, **Capture** a PNG, SVG or PDF, **Animate** an
 orbit, and **Close** the figure, leaving its last image in place of the canvas. Capture
 and Animate read collapsible options panels; a third, View file, writes the viewpoint to
-a JSON file or reads one back.
+a JSON file or reads one back; a fourth, Legend row, sets the colour and opacity of the
+legend row last Shift+clicked.
 
 Save/Restore and Last are separate slots on purpose ("the angle I chose" against "where I
 was"). ``View.close`` writes the ``last`` slot, so re-running a cell and pressing Last, or
@@ -70,6 +71,25 @@ def remember_prefix(path: str) -> str:
             stem = "_".join(parts[:-2])
     last_prefix = stem or DEFAULT_PREFIX
     return last_prefix
+
+
+def _hex(color: Any) -> str:
+    """``#rrggbb`` for a colour, alpha dropped: what a ``ColorPicker`` shows."""
+    from .colors import to_rgba
+
+    r, g, b, _ = to_rgba(color)
+    return "#{:02x}{:02x}{:02x}".format(*(round(v * 255) for v in (r, g, b)))
+
+
+def _quiet(text: str) -> str:
+    return f"<span style='color:#666'>{text}</span>" if text else ""
+
+
+def _code(text: str) -> str:
+    """A line to paste into the notebook, so a change made here survives a re-run."""
+    import html
+
+    return f"to keep it: <code>{html.escape(text)}</code>"
 
 
 class Toolbar:
@@ -138,16 +158,25 @@ class Toolbar:
         self.options = self._capture_options()
         self.animation = self._animation_options()
         self.view_file = self._view_file_options()
+        #: The legend row the Legend row panel edits; None until one is Shift+clicked, and
+        #: while the panel loads a row's values, so loading them changes nothing.
+        self._row: Optional[str] = None
+        #: …the colour ``only=`` selects its members by, if any, and those members.
+        self._only: Optional[str] = None
+        self._targets: list = []
+        self.legend_row = self._legend_row_options()
 
         # The canvas sits in a box of its own so closing can swap it for the snapshot.
         self._stage = widgets.Box([canvas])
+        panels = [self.options["panel"], self.animation["panel"], self.view_file["panel"]]
+        if self.legend_row:
+            panels.append(self.legend_row["panel"])
         # Buttons wrap rather than clip on a narrow canvas; the path box has its own row.
         self.widget = widgets.VBox([
             widgets.HBox(list(self._buttons.values()),
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             widgets.HBox([self.path, self.status]),
-            widgets.HBox([self.options["panel"], self.animation["panel"],
-                          self.view_file["panel"]],
+            widgets.HBox(panels,
                          layout=widgets.Layout(flex_flow="row wrap", width="100%")),
             *([widgets.HBox(list(self.sliders.values()),
                             layout=widgets.Layout(flex_flow="row wrap", width="100%"))]
@@ -268,6 +297,88 @@ class Toolbar:
         panel.set_title(0, "View file")
         return {"panel": panel, "path": path, "overwrite": overwrite, "save": save,
                 "load": load}
+
+    def _legend_row_options(self) -> dict:
+        """The collapsed "Legend row" panel: Shift+click a legend row, then set its colour
+        and opacity here. Empty for a view without a legend.
+
+        The legend is drawn inside the canvas, so the controls cannot sit beside the row;
+        picking one opens this panel instead.
+        """
+        legend = getattr(self.view, "legend", None)
+        if legend is None or not hasattr(legend, "on_pick"):
+            return {}
+        widgets = self._widgets
+        style = {"description_width": "60px"}
+        row = widgets.HTML(_quiet("Shift+click a legend row to pick it"))
+        color = widgets.ColorPicker(value="#ffffff", description="colour", concise=False,
+                                    disabled=True, style=style,
+                                    layout=widgets.Layout(width="230px"))
+        alpha = widgets.FloatSlider(value=1.0, min=0.0, max=1.0, step=0.02,
+                                    description="opacity", readout_format=".2f",
+                                    continuous_update=True, disabled=True, style=style,
+                                    layout=widgets.Layout(width="300px"))
+        matching = widgets.Checkbox(
+            value=False, disabled=True, indent=False,
+            description="only members coloured like the swatch",
+            tooltip="on a row whose members differ in colour (a cell's group row: mesh, "
+                    "skeleton and synapses), change only those coloured like its swatch")
+        color.observe(lambda change: self._guarded(lambda: self._recolor_row(change["new"])),
+                      names="value")
+        alpha.observe(lambda change: self._guarded(lambda: self._set_row_alpha(change["new"])),
+                      names="value")
+        matching.observe(lambda change: self._guarded(lambda: self._repick(change["new"])),
+                         names="value")
+        legend.on_pick(lambda label: self._guarded(lambda: self._pick_row(label)))
+
+        from .colors import SWATCHES
+
+        palette = widgets.Dropdown(options=list(SWATCHES), value="tab10",
+                                   description="swatches", style=style,
+                                   layout=widgets.Layout(width="200px"))
+        swatches = widgets.Box(layout=widgets.Layout(flex_flow="row wrap", width="330px"))
+        palette.observe(lambda change: self._guarded(lambda: self._show_swatches()),
+                        names="value")
+
+        body = widgets.VBox([row, widgets.HBox([color, alpha]),
+                             widgets.HBox([palette, swatches]), matching])
+        panel = widgets.Accordion(children=[body], selected_index=None)
+        panel.set_title(0, "Legend row")
+        controls = {"panel": panel, "row": row, "color": color, "alpha": alpha,
+                    "palette": palette, "swatches": swatches, "matching": matching}
+        self.legend_row = controls
+        self._show_swatches()
+        return controls
+
+    def _show_swatches(self) -> None:
+        """One small button per colour of the chosen swatch set, enabled once a row is
+        picked."""
+        from .colors import SWATCHES
+
+        widgets = self._widgets
+        c = self.legend_row
+        buttons = []
+        for value in SWATCHES[c["palette"].value]:
+            button = widgets.Button(
+                description="", tooltip=value, disabled=c["color"].disabled,
+                style={"button_color": _hex(value)},
+                layout=widgets.Layout(width="22px", height="22px", padding="0",
+                                      margin="1px"))
+            button.on_click(lambda _b, v=value: self._guarded(lambda: self._swatch(v)))
+            buttons.append(button)
+        c["swatches"].children = tuple(buttons)
+
+    def _swatch(self, value: str) -> None:
+        """A swatch clicked: recolour as the picker would, and move the picker to match
+        without it recolouring again (the paste line keeps the swatch's name)."""
+        if self._row is None:
+            return
+        self._recolor_row(value)
+        row, self._row = self._row, None
+        try:
+            self.legend_row["color"].value = _hex(value)
+        finally:
+            self._row = row
 
     def _animation_options(self) -> dict:
         """The collapsed "Animation options" panel, read by the Animate button.
@@ -439,6 +550,76 @@ class Toolbar:
         self.view.restore_view()
         self._say(f"loaded {path} into views[{SAVED!r}] and went to it")
 
+    def _pick_row(self, label: str, matching: Optional[bool] = None) -> None:
+        """Load a Shift+clicked row into the Legend row panel and open it.
+
+        The swatch is the row's first member's colour. On a row whose members differ in
+        colour, "only members coloured like the swatch" is offered and ticked unless
+        ``matching`` says otherwise. The members the controls act on are fixed here, so
+        dragging the picker keeps changing the same ones. Mixed colours or opacities among
+        them are warned of: a change sets them all to one value.
+        """
+        import html
+
+        legend = self.view.legend
+        everyone = legend.entry(label).drawables
+        swatch = _hex(everyone[0].color)
+        mixed_colours = len({_hex(d.color) for d in everyone}) > 1
+        if matching is None:
+            matching = mixed_colours
+        only = swatch if matching and mixed_colours else None
+        targets = legend.members(label, only)
+        alphas = sorted({round(float(d.alpha), 3) for d in targets})
+
+        c = self.legend_row
+        self._row = None                      # loading the values below changes nothing
+        c["matching"].value = bool(matching and mixed_colours)
+        c["matching"].disabled = not mixed_colours
+        c["color"].value = swatch
+        c["alpha"].value = alphas[-1]
+        c["color"].disabled = c["alpha"].disabled = False
+        for button in c["swatches"].children:
+            button.disabled = False
+        n = len(everyone)
+        scope = (f" — {len(targets)} of {n} drawables" if only
+                 else f" — {n} drawables" if n > 1 else "")
+        c["row"].value = f"<b>{html.escape(label)}</b>" + _quiet(scope)
+        c["panel"].selected_index = 0
+        self._row, self._only, self._targets = label, only, targets
+
+        mixed = []
+        if not only and mixed_colours:
+            mixed.append(f"{len({_hex(d.color) for d in targets})} colours")
+        if len(alphas) > 1:
+            mixed.append(f"opacities {alphas[0]:g}–{alphas[-1]:g}")
+        if mixed:
+            self._say(f"'{html.escape(label)}' mixes {' and '.join(mixed)}: a change sets "
+                      f"{'them' if only else 'every member'} to one value", error=True)
+        else:
+            self._say(f"picked '{html.escape(label)}' — set its colour and opacity in "
+                      f"Legend row")
+
+    def _repick(self, matching: bool) -> None:
+        """The checkbox changed: reload the row with the other set of members."""
+        if self._row is not None:
+            self._pick_row(self._row, matching=matching)
+
+    def _only_arg(self) -> str:
+        return f", only={self._only!r}" if self._only else ""
+
+    def _recolor_row(self, value: str) -> None:
+        if self._row is None:
+            return
+        self.view.legend.restyle(self._targets, color=value)
+        self._say(_code(f"view.legend.recolor({self._row!r}, {value!r}{self._only_arg()})"))
+
+    def _set_row_alpha(self, value: float) -> None:
+        if self._row is None:
+            return
+        self.view.legend.restyle(self._targets, alpha=value)
+        self._say(_code(f"view.legend.set_alpha({self._row!r}, {value:.2f}"
+                        f"{self._only_arg()})"))
+
     def _restore_last(self) -> None:
         """Go to the viewpoint 'Close' recorded for the last closed figure."""
         if self.view.restore_view(LAST) is None:
@@ -515,10 +696,13 @@ class Toolbar:
             button.disabled = True
         for slider in self.sliders.values():
             slider.disabled = True
-        for panel in (self.options, self.animation):
+        for panel in (self.options, self.animation, self.view_file, self.legend_row):
             for key, control in panel.items():
-                if key != "panel":
+                if key != "panel" and hasattr(control, "disabled"):
                     control.disabled = True
+        if self.legend_row:
+            for button in self.legend_row["swatches"].children:
+                button.disabled = True
         self.path.disabled = True
         self._say(f"closed. The viewpoint is in views[{LAST!r}] — press 'Last' in the next "
                   f"figure, or open it with show(scene, viewpoint='{LAST}')")

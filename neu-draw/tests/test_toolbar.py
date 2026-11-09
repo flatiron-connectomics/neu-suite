@@ -84,7 +84,7 @@ def test_a_notebook_canvas_gets_a_toolbar_with_no_one_asking(view):
     assert isinstance(view.ui, toolbar_mod.Toolbar)
     bar, entry, panels, opacity, stage = view.ui.widget.children
     assert panels.children == (view.ui.options["panel"], view.ui.animation["panel"],
-                               view.ui.view_file["panel"])
+                               view.ui.view_file["panel"], view.ui.legend_row["panel"])
     assert [b.description for b in bar.children] == [
         "Center", "Reset", "Refresh", "Save", "Restore", "Last", "Capture", "Animate",
         "Close"]
@@ -351,6 +351,161 @@ def test_a_slider_starts_at_the_largest_alpha_and_moving_it_sets_them_all(has_gp
         assert [d.alpha for d in scene] == [pytest.approx(0.2)] * 2
         assert [tuple(o.material.color)[3] for o in view.group.children] == [
             pytest.approx(0.2)] * 2
+    finally:
+        view.close()
+
+
+# --------------------------------------------------------------------------- #
+# the Legend row panel
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def two_rows(has_gpu):
+    """Rows "a" (one mesh) and "pair": b and d green (the swatch) at opacities 0.2 and
+    0.6, c blue at 0.8."""
+    scene = (Scene().add_mesh(_mesh("a"), color="#ff0000", alpha=0.5)
+             .add_mesh(_mesh("b"), color="#00ff00", alpha=0.2)
+             .add_mesh(_mesh("c"), color="#0000ff", alpha=0.8)
+             .add_mesh(_mesh("d"), color="#00ff00", alpha=0.6))
+    for name in "bcd":
+        scene.get(name).label = "pair"
+    view = backend.show(scene, size=(200, 120), canvas="jupyter")
+    yield view
+    view.close()
+
+
+def test_the_legend_row_controls_wait_for_a_pick(two_rows):
+    c = two_rows.ui.legend_row
+    assert c["color"].disabled and c["alpha"].disabled
+    assert "Shift+click" in c["row"].value
+
+
+def test_picking_a_row_loads_its_colour_and_opacity_and_opens_the_panel(two_rows):
+    ui = two_rows.ui
+    ui._pick_row("a")
+    c = ui.legend_row
+    assert c["color"].value == "#ff0000" and c["alpha"].value == pytest.approx(0.5)
+    assert not c["color"].disabled and not c["alpha"].disabled
+    assert c["panel"].selected_index == 0 and "a" in c["row"].value
+    # loading the values changed nothing
+    assert two_rows.scene_data.get("a").alpha == pytest.approx(0.5)
+    assert "#b00" not in ui.status.value
+
+
+def test_the_controls_recolour_the_picked_row_and_say_how_to_keep_it(two_rows):
+    ui = two_rows.ui
+    ui._pick_row("a")
+    ui.legend_row["color"].value = "#336699"
+    assert two_rows.scene_data.get("a").color[:3] == pytest.approx(
+        (0x33 / 255, 0x66 / 255, 0x99 / 255))
+    assert "view.legend.recolor(&#x27;a&#x27;, &#x27;#336699&#x27;)" in ui.status.value
+
+    ui.legend_row["alpha"].value = 0.3
+    assert two_rows.scene_data.get("a").alpha == pytest.approx(0.3)
+    assert "view.legend.set_alpha(&#x27;a&#x27;, 0.30)" in ui.status.value
+    assert two_rows.scene_data.get("b").alpha == pytest.approx(0.2)   # other rows alone
+
+
+def test_a_single_colour_row_offers_no_matching_checkbox(two_rows):
+    two_rows.ui._pick_row("a")
+    m = two_rows.ui.legend_row["matching"]
+    assert m.disabled and not m.value
+
+
+def test_a_mixed_row_changes_only_the_swatch_coloured_members_by_default(two_rows):
+    ui, get = two_rows.ui, two_rows.scene_data.get
+    ui._pick_row("pair")
+    assert ui.legend_row["matching"].value and not ui.legend_row["matching"].disabled
+    assert "2 of 3" in ui.legend_row["row"].value
+    # b and d still differ in opacity, so that is warned of; colours are not
+    assert "0.2–0.6" in ui.status.value and "colours" not in ui.status.value
+    assert ui.legend_row["alpha"].value == pytest.approx(0.6)
+
+    ui.legend_row["color"].value = "#336699"
+    ui.legend_row["color"].value = "#ffcc00"     # the same members, though now recoloured
+    assert get("b").color == get("d").color != get("c").color
+    assert get("b").color[:3] == pytest.approx((1.0, 0xcc / 255, 0.0))
+    assert "only=&#x27;#00ff00&#x27;" in ui.status.value
+
+    ui.legend_row["alpha"].value = 0.4
+    assert [get(n).alpha for n in "bcd"] == [pytest.approx(0.4), pytest.approx(0.8),
+                                              pytest.approx(0.4)]
+
+
+def test_unticking_matching_acts_on_every_member_with_a_warning(two_rows):
+    ui, get = two_rows.ui, two_rows.scene_data.get
+    ui._pick_row("pair")
+    ui.legend_row["matching"].value = False
+    assert "2 colours" in ui.status.value and "0.2–0.8" in ui.status.value
+    assert "3 drawables" in ui.legend_row["row"].value
+    assert [get(n).alpha for n in "bcd"] == [pytest.approx(0.2), pytest.approx(0.8),
+                                              pytest.approx(0.6)]   # nothing yet
+
+    ui.legend_row["color"].value = "#ffffff"
+    assert get("b").color == get("c").color == get("d").color
+    assert "only=" not in ui.status.value
+
+
+def test_the_toolbar_listens_for_the_legends_pick(two_rows):
+    """The Shift+click itself is tested in test_legend; a notebook canvas is 1x1 until a
+    browser lays it out, so here the legend's pick is fired directly."""
+    for handler in two_rows.legend._pick_handlers:
+        handler("pair")
+    assert two_rows.ui._row == "pair"
+    assert two_rows.ui.legend_row["panel"].selected_index == 0
+
+
+def test_every_swatch_is_a_colour_neu_draw_understands():
+    from neu_draw.colors import SWATCHES, to_rgba
+    for values in SWATCHES.values():
+        for value in values:
+            to_rgba(value)
+
+
+def test_swatches_wait_for_a_pick_then_recolour_by_name(two_rows):
+    ui, c = two_rows.ui, two_rows.ui.legend_row
+    assert c["palette"].value == "tab10"
+    assert all(b.disabled for b in c["swatches"].children)
+
+    ui._pick_row("pair")                                # matching ticked: b and d
+    assert not any(b.disabled for b in c["swatches"].children)
+    orange = next(b for b in c["swatches"].children if b.tooltip == "tab:orange")
+    orange.click()
+    get = two_rows.scene_data.get
+    assert get("b").color[:3] == get("d").color[:3] == pytest.approx(
+        (1.0, 0.498, 0.0549), abs=1e-3)
+    assert get("c").color[:3] == (0.0, 0.0, 1.0)
+    assert c["color"].value == "#ff7f0e"
+    # the paste line names the swatch, not the picker's hex
+    assert "&#x27;tab:orange&#x27;, only=&#x27;#00ff00&#x27;" in ui.status.value
+
+
+def test_choosing_another_swatch_set_shows_its_colours(two_rows):
+    from neu_draw.colors import SWATCHES
+    c = two_rows.ui.legend_row
+    two_rows.ui._pick_row("a")
+    c["palette"].value = "Okabe-Ito"
+    assert [b.tooltip for b in c["swatches"].children] == list(SWATCHES["Okabe-Ito"])
+    assert not any(b.disabled for b in c["swatches"].children)
+
+
+def test_closing_disables_the_legend_row_and_view_file_controls(two_rows):
+    pytest.importorskip("imageio")
+    two_rows.ui._pick_row("a")
+    two_rows.ui._close()
+    assert two_rows.ui.legend_row["color"].disabled
+    assert two_rows.ui.legend_row["alpha"].disabled
+    assert all(b.disabled for b in two_rows.ui.legend_row["swatches"].children)
+    assert two_rows.ui.view_file["save"].disabled and two_rows.ui.view_file["load"].disabled
+
+
+def test_a_view_without_a_legend_has_no_legend_row_panel(has_gpu):
+    view = backend.show(Scene().add_mesh(_mesh()), size=(120, 90), canvas="jupyter",
+                        legend=False)
+    try:
+        assert view.ui.legend_row == {}
+        _, _, panels, *_ = view.ui.widget.children
+        assert len(panels.children) == 3
     finally:
         view.close()
 
