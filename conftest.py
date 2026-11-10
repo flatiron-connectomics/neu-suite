@@ -1,6 +1,6 @@
 """Stop a whole-repository pytest run before it collects anything.
 
-The nine suites are run one package at a time (``make test``, or ``pytest`` inside a
+The suites are run one package at a time (``make test``, or ``pytest`` inside a
 package directory), because each has its own pytest settings and ``tests/conftest.py``,
 and test files share names across packages. Run from here, pytest would report dozens
 of import errors that say nothing about the code. This file is only loaded when pytest's

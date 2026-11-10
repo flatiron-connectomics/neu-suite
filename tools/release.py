@@ -1,11 +1,11 @@
-"""Lockstep versions for the nine packages.
+"""Lockstep versions for every package.
 
     python tools/release.py --check     # CI: every version literal agrees
     python tools/release.py 0.2.0       # bump all of them, commit, tag v0.2.0
 
 Each package carries its version twice, as ``version`` in ``pyproject.toml`` and as
 ``__version__`` in its ``__init__.py``; both are literals, so ``pip install
-git+...#subdirectory=<pkg>`` needs no build hook. A release rewrites all eighteen, moves
+git+...#subdirectory=<pkg>`` needs no build hook. A release rewrites all of them, moves
 ``CHANGELOG.md``'s ``## Unreleased`` heading under the new version if there is one, then
 commits and tags. It never pushes.
 """
@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = ["neu-lib", "blockrun", "neu-vol", "neu-morpho", "neu-mark", "neu-glance",
-            "neu-draw", "neu-proc", "neu-eval"]
+            "neu-draw", "neu-proc", "neu-eval", "neu-recipe"]
 PYPROJECT_RE = re.compile(r'^version = "([^"]+)"$', re.M)
 INIT_RE = re.compile(r'^__version__ = "([^"]+)"$', re.M)
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")

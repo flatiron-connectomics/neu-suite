@@ -18,10 +18,12 @@ the cheat sheet if you just need to remember a flag.
 | [neu-proc](neu-proc/) | array processing: filters, label tools, distance transforms. Library only, no command. |
 | [neu-draw](neu-draw/) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
 | [neu-eval](neu-eval/) | comparison metrics against a reference labeling, and the `neu-eval` command |
+| [neu-recipe](neu-recipe/) | recipes of the other commands, run in order with a record of every run, the volume library they name volumes from, and the `neu-recipe` command. Standard library only. |
 
 The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
 {neu-morpho, neu-mark, neu-glance, neu-proc} ← {neu-draw, neu-eval}` — and they depend on
-each other by relative `../sibling` path:
+each other by relative `../sibling` path. `neu-recipe` imports none of them (it runs their
+commands), except neu-vol for `library --check`.
 
 ```text
 neu-suite/
@@ -33,7 +35,8 @@ neu-suite/
 ├── neu-glance/
 ├── neu-proc/
 ├── neu-draw/
-└── neu-eval/
+├── neu-eval/
+└── neu-recipe/
 ```
 
 `neu-lib` and `blockrun` sit side by side at the bottom and know nothing about each

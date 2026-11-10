@@ -27,6 +27,8 @@ neu-vol             volume I/O: tensorstore backends, storage profiles,
            ↑
         neu-draw      local 3D rendering in a notebook, on pygfx
         neu-eval      comparing a segmentation against a reference labeling
+
+neu-recipe          runs the commands above as a recipe, recording every run
 ```
 
 Nothing lower may import from anything higher, and consumers **at the same tier** do not
@@ -34,7 +36,7 @@ import each other.
 
 ## Which one do I want?
 
-You almost certainly want a **command**, and there are five:
+You almost certainly want a **command**, and there are six:
 
 ::::{grid} 2
 :::{grid-item-card} `neu-vol`
@@ -60,6 +62,11 @@ write data and know nothing about neuroglancer.
 How good is a segmentation? Variation of information, adapted Rand, matching and
 completeness against a reference labeling — and a ranked, located list of where the two
 disagree, which round-trips so you can record that the *reference* was the wrong one.
+:::
+:::{grid-item-card} `neu-recipe`
+The other commands, run as a recipe: steps in order, resumable from any step, over
+volumes named in a library — and a record of every run, down to the commit of each
+repository and the exact environment.
 :::
 ::::
 
@@ -128,4 +135,5 @@ _generated/neu-glance-readme
 _generated/neu-draw-readme
 _generated/neu-proc-readme
 _generated/neu-eval-readme
+_generated/neu-recipe-readme
 ```

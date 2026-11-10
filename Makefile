@@ -1,7 +1,8 @@
 # Development tasks for the whole suite. Run from the repository root, inside the
 # environment built from environment.yml.
 
-PACKAGES := neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw neu-proc neu-eval
+PACKAGES := neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw neu-proc neu-eval \
+            neu-recipe
 PYTHON ?= python
 
 .PHONY: install test docs check-versions $(addprefix test-,$(PACKAGES))

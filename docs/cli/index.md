@@ -14,4 +14,5 @@ neu-morpho
 neu-mark
 neu-glance
 neu-eval
+neu-recipe
 ```

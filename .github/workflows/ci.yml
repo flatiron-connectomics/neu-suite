@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: All nine packages carry the same version
+      - name: All packages carry the same version
         run: python tools/release.py --check
 
   # Each package installed the way a user without conda would: from PyPI, with its
@@ -53,6 +53,8 @@ jobs:
           - {pkg: neu-draw,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol"}
           - {pkg: neu-proc,   python: "3.12", deps: "../neu-lib"}
           - {pkg: neu-eval,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol ../neu-proc", extras: ",report"}
+          - {pkg: neu-recipe, python: "3.11", deps: ""}
+          - {pkg: neu-recipe, python: "3.12", deps: ""}
     defaults:
       run:
         shell: bash
@@ -118,6 +120,7 @@ jobs:
       - {name: neu-draw,   run: make test-neu-draw}
       - {name: neu-proc,   run: make test-neu-proc}
       - {name: neu-eval,   run: make test-neu-eval}
+      - {name: neu-recipe, run: make test-neu-recipe}
       - name: neu-morpho package checks
         working-directory: neu-morpho
         run: bash ../.github/smoke/neu-morpho.sh
@@ -138,7 +141,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
           pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
-                      ./neu-proc ./neu-eval ./neu-glance
+                      ./neu-proc ./neu-eval ./neu-glance ./neu-recipe
       # -W because the CLI reference is generated: a warning means a parser or a
       # docstring stopped rendering.
       - name: Build

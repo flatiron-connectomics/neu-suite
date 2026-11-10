@@ -32,6 +32,8 @@ COMMANDS = [
     ("neu-glance", "neu_glance.cli", "neuroglancer states, annotation layers and links"),
     ("neu-eval", "neu_eval.cli", "comparison metrics against a reference labeling, and "
                                       "a located list of the disagreements"),
+    ("neu-recipe", "neu_recipe.cli", "run a recipe of these commands, with a record of "
+                                          "every run, over volumes named in a library"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
@@ -47,6 +49,7 @@ INCLUDED = [
     ("neu-draw/README.md", "neu-draw-readme.md"),
     ("neu-proc/README.md", "neu-proc-readme.md"),
     ("neu-eval/README.md", "neu-eval-readme.md"),
+    ("neu-recipe/README.md", "neu-recipe-readme.md"),
 ]
 
 
@@ -88,6 +91,10 @@ PACKAGES = [
     ("neu-draw", "neu_draw",
      "Local 3D rendering in a notebook, on pygfx.",
      "`show`, `build_scene`, `Scene`, `sources`, `Legend`"),
+    ("neu-recipe", "neu_recipe",
+     "Recipes of commands, run in order with a record of every run, and the volume "
+     "library they name volumes from.",
+     "`recipe.load`, `runner.run`, `library`"),
 ]
 
 
@@ -187,6 +194,9 @@ def write_api_index(path: Path) -> None:
         ("neu_draw", "draw meshes and skeletons in a notebook",
          "{doc}`neu_draw.scene <../api/neu_draw/scene/index>` — `build_scene`, `Scene` "
          "— then `neu_draw.show`"),
+        ("neu_recipe", "look a volume up by its library name",
+         "{doc}`neu_recipe.library <../api/neu_recipe/library/index>` — `load`, `get`, "
+         "`location`"),
     ]
     here = {pkg for _repo, pkg, _b, _e in present}
     out += [
@@ -333,6 +343,11 @@ def neu_eval_parser() -> argparse.ArgumentParser:
     return documented_parser("neu_eval.cli")
 
 
+def neu_recipe_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the neu-recipe page."""
+    return documented_parser("neu_recipe.cli")
+
+
 def write_cheatsheet(path: Path) -> None:
     """One page listing every subcommand with its synopsis.
 
@@ -344,7 +359,7 @@ def write_cheatsheet(path: Path) -> None:
     out = [
         "# Cheat sheet",
         "",
-        "Every subcommand of all four commands, with its synopsis. Generated from the "
+        "Every subcommand of every command, with its synopsis. Generated from the "
         "argparse parsers at build time, so it always matches `--help`.",
         "",
     ]

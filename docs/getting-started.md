@@ -11,6 +11,7 @@ neu-vol --help          # the volumes themselves
 neu-morpho --help       # meshes and skeletons
 neu-mark --help         # DVID annotations into tables
 neu-glance --help       # neuroglancer states, layers and links
+neu-recipe --help       # run a recipe of these commands, with a record of every run
 ```
 
 Building one from scratch, from a clone of the repository:
@@ -20,7 +21,7 @@ git clone https://github.com/flatiron-connectomics/neu-suite.git
 cd neu-suite
 mamba env create -n neu-env -f environment.yml    # or micromamba; plain conda is slow
 conda activate neu-env
-make install                                     # pip install --no-deps -e for all nine
+make install                                     # pip install --no-deps -e for every package
 ```
 
 ```{warning}
