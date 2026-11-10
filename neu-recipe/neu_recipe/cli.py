@@ -63,7 +63,24 @@ def build_parser() -> argparse.ArgumentParser:
     lb.add_argument("--check", action="store_true",
                     help="probe each location for its metadata object")
     _library_arg(lb, "")
+
+    h = sub.add_parser(
+        "help", help="what `--help` prints, as a subcommand",
+        description="Print the help for the tool, or for one of its subcommands.\n\n"
+                    "`neu-recipe help run` and `neu-recipe run --help` are the same thing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    h.add_argument("topic", nargs="*", metavar="COMMAND",
+                   help="the subcommand to describe (default: the whole tool)")
     return p
+
+
+def _help(args) -> int:
+    """Re-parse as ``--help``, so the text is whatever the flag prints."""
+    try:
+        build_parser().parse_args([*args.topic, "--help"])
+    except SystemExit as e:                      # what --help always does
+        return int(e.code or 0)
+    return 0
 
 
 def _run(args, argv) -> int:
@@ -130,6 +147,8 @@ def main(argv=None) -> int:
     if args.command == "status":
         from .runner import status
         return status(args.recipe.resolve())
+    if args.command == "help":
+        return _help(args)
     return _library(args)
 
 

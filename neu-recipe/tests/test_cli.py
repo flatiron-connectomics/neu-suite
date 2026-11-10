@@ -11,9 +11,23 @@ from neu_recipe import library as lib
 from neu_recipe.cli import build_parser, main
 
 
-def test_the_parser_has_the_three_subcommands():
+def test_the_parser_has_its_subcommands():
     sub = next(a for a in build_parser()._actions if a.dest == "command")
-    assert list(sub.choices) == ["run", "status", "library"]
+    assert list(sub.choices) == ["run", "status", "library", "help"]
+
+
+def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
+    assert main(["help"]) == 0
+    assert "usage: neu-recipe" in capsys.readouterr().out
+
+    assert main(["help", "run"]) == 0
+    printed = capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main(["run", "--help"])
+    assert capsys.readouterr().out == printed
+
+    assert main(["help", "nosuch"]) == 2
+    assert "invalid choice: 'nosuch'" in capsys.readouterr().err
 
 
 def test_help_runs_without_importing_the_runner():
