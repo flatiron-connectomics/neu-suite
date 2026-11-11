@@ -21,6 +21,7 @@ on the command line wins over the file.
     select = "seg"              # the layer the side panel opens on
 
     [layer.head]                # by layer name
+    name = "Head"               # the name the viewer shows (gen --rename)
     silhouette = 5              # meshSilhouetteRendering, 0-10
     opacity_2d = 0              # selectedAlpha
     opacity_3d = 1              # objectAlpha
@@ -32,8 +33,10 @@ on the command line wins over the file.
     all_segments = true         # every id its segment_properties lists
     color_by = ["col", "group"] # segmentColors by property, first one present (--color-by)
 
-A ``[layer.NAME]`` the state has no layer for is reported, not refused: one site file serves
-many states. An unknown key is refused, since neuroglancer ignores what it does not know.
+A layer is named by the last component of its path. ``name`` renames it after everything
+else is applied, so the other sections, ``[view] select`` and the flags keep using the path's
+name. A ``[layer.NAME]`` the state has no layer for is reported, not refused: one site file
+serves many states. An unknown key is refused, since neuroglancer ignores what it does not know.
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ LAYER_SUBSOURCES = ("skeletons",)
 LAYER_TABS = ("source", "rendering", "annotations", "segments")
 LAYER_FLAGS = ("hide", "all_segments")
 #: Keys the caller applies, as they need a store read or merge with flags.
-CALLER_KEYS = (*LAYER_FLAGS, "color_by")
+CALLER_KEYS = (*LAYER_FLAGS, "color_by", "name")
 #: ``[view]`` keys: (how many numbers, or None for a string).
 VIEW_KEYS = {"position": 3, "projection_orientation": 4, "projection_scale": 1,
              "cross_section_scale": 1, "layout": None, "select": None}
@@ -141,6 +144,12 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
                                         f"{', '.join(LAYER_TABS)}, not {value!r}")
                 out["tab"] = value
                 continue
+            if key == "name":
+                if not isinstance(value, str) or not value.strip():
+                    raise ConfigProblem(f"{where}: [layer.{name}] name must be a non-empty "
+                                        f"string")
+                out["name"] = value
+                continue
             if key == "color_by":
                 keys = [value] if isinstance(value, str) else value
                 if (not isinstance(keys, list) or not keys
@@ -195,8 +204,9 @@ def apply(config: Mapping[str, Any], layers: list[dict], *,
           kept: Sequence[str] = ()) -> list[str]:
     """Apply ``[annotations]`` and ``[layer.*]`` display settings in place. Returns notes.
 
-    ``hide``, ``all_segments`` and ``color_by`` are not applied here: the caller merges them
-    with its flags, and ``color_by`` reads the layer's segment properties. ``kept`` names
+    ``hide``, ``all_segments``, ``color_by`` and ``name`` are not applied here: the caller
+    merges them with its flags, ``color_by`` reads the layer's segment properties, and
+    ``name`` comes last. ``kept`` names
     layers of a state being added to, which a section naming them leaves as they are.
     """
     notes: list[str] = []

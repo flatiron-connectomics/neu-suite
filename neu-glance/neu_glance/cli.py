@@ -529,11 +529,15 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--no-pick", action="append", default=None, metavar="LAYER_NAME",
                    help="make clicks go through this segmentation layer (repeatable; sets "
                         "pick false), for a shell enclosing what you want to select")
+    q.add_argument("--rename", action="append", default=None, metavar="LAYER_NAME=NEW_NAME",
+                   help="the name the viewer shows for a layer, which is otherwise the last "
+                        "component of its path (repeatable). Applied last, so the other "
+                        "flags and the config still name the layer by its path")
     q.add_argument("--config", default=None, metavar="TOML",
                    help="site display defaults: volume bounds, annotation shader controls, "
-                        "and per-layer silhouette, opacities, hide and all_segments by layer "
-                        "name (see neu_glance.config). Read only when named; a flag here "
-                        "wins over the file")
+                        "and per-layer silhouette, opacities, hide, all_segments and name by "
+                        "layer name (see neu_glance.config). Read only when named; a flag "
+                        "here wins over the file")
     q.add_argument("--voxel-size", default=None, metavar="Z,Y,X",
                    help="level-0 voxel size in nm, overriding what the volumes record. "
                         "Required when every layer comes from --layer, since a layer file "
@@ -869,13 +873,31 @@ def _color_by(args, site: dict, layers: list[dict], new: set[str], *, file) -> N
                   f"the first", file=file)
 
 
+def _renames(args, site: dict, layers: list[dict], new: set[str]) -> dict[str, str]:
+    """``--rename`` and the config's ``name``, as ``{name: new name}``. The flag may name
+    any layer in ``layers`` and wins; the config only the ``new`` ones."""
+    names = [lyr.get("name") for lyr in layers]
+    out = {n: s["name"] for n, s in site["layers"].items() if s.get("name") and n in new}
+    for value in args.rename or []:
+        name, sep, to = value.rpartition("=")
+        if not sep or not name or not to.strip():
+            raise SystemExit(f"--rename wants LAYER_NAME=NEW_NAME, got {value!r}")
+        name = _layer_named(name, layers) or name
+        if name not in names:
+            raise SystemExit(f"--rename names no layer: {name!r}. They are "
+                             f"{', '.join(map(str, names)) or '(none)'}")
+        out[name] = to
+    return out
+
+
 def cmd_gen(args) -> int:
     """A viewer state from volumes, annotation sources and layer files."""
     from .shaders import ShaderProblem
     from .sources import (SourceProblem, annotation_layer, annotation_source_extent,
                           annotation_source_voxel_size, end_layers, volume_extent,
                           volume_layer)
-    from .state import StateProblem, annotation_extent, load_layer, unique_names
+    from .state import (StateProblem, annotation_extent, load_layer, rename_layers,
+                        unique_names)
 
     from . import config as _config
 
@@ -996,6 +1018,18 @@ def cmd_gen(args) -> int:
     for note in config_notes:
         print(f"  {note}", file=err)
     _color_by(args, site, targets, new, file=err)
+    # Last, so every flag and config section above named the layers by their paths.
+    renames = _renames(args, site, targets, new)
+    try:
+        for note in rename_layers(targets, renames):
+            print(f"  {note}", file=err)
+    except StateProblem as e:
+        raise SystemExit(str(e)) from None
+    args.hide = [renames.get(h, h) for h in args.hide]
+    args.select = renames.get(args.select, args.select)
+    selected = (base or {}).get("selectedLayer")
+    if isinstance(selected, dict) and selected.get("layer") in renames:
+        selected["layer"] = renames[selected["layer"]]
     _report_bindings(layers, file=err)
 
     return _emit(args, layers, voxel=voxel, units=units, frame=fit, base=base,

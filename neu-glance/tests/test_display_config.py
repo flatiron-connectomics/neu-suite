@@ -1,10 +1,12 @@
 """`gen --config`: site display defaults, checked before they reach a state."""
 
+import json
+
 import pytest
 
 from neu_glance import cli
 from neu_glance.config import ConfigProblem, apply, parse
-from neu_glance.state import parse_url
+from neu_glance.state import parse_url, unique_names
 
 from test_gen import _annotation_source, _volume
 
@@ -166,6 +168,99 @@ def test_view_flags_win_over_the_config(tmp_path, capsys):
 def test_a_view_or_tab_neuroglancer_would_ignore_is_refused(doc, message):
     with pytest.raises(ConfigProblem, match=message):
         parse(doc)
+
+
+def test_a_layer_is_renamed_last_from_the_config_or_a_flag(tmp_path, capsys):
+    em = _volume(tmp_path, "em")
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    state = _gen(tmp_path, capsys, """
+[view]
+select = "a"
+[layer.em]
+name = "EM"
+[layer.a]
+name = "neurons"
+tab = "segments"
+hide = true
+[layer.b]
+name = "from the config"
+""", "--image", em, "--seg", a, "--seg", b, "--rename", "b=from the flag",
+                 "--opacity-3d", "a=0.5")
+    assert [lyr["name"] for lyr in state["layers"]] == ["EM", "neurons", "from the flag"]
+    neurons = state["layers"][1]
+    # the other settings still named the layer by its path
+    assert neurons["tab"] == "segments" and neurons["objectAlpha"] == 0.5
+    assert neurons["visible"] is False
+    assert state["selectedLayer"] == {"visible": True, "layer": "neurons"}
+
+
+def test_an_annotation_layer_follows_its_renamed_segmentation(tmp_path, capsys):
+    seg = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    src = _annotation_source(tmp_path)
+    state = _gen(tmp_path, capsys, "", "--seg", seg, "--annotations", src,
+                 "--presyn-postsyn", "--rename", "a=neurons")
+    linked = [lyr["linkedSegmentationLayer"] for lyr in state["layers"]
+              if lyr["type"] == "annotation"]
+    assert len(linked) == 3
+    assert all(set(links.values()) == {"neurons"} for links in linked)
+
+
+def test_renaming_a_layer_of_an_into_state_keeps_it_selected(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    saved = tmp_path / "state.json"
+    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--select", "a", "--format",
+                                        "state", "--out", str(saved)])) == 0
+    assert cli.cmd_gen(cli._parse_args(["gen", "--into", str(saved), "--rename", "a=A",
+                                        "--format", "state"])) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert [lyr["name"] for lyr in state["layers"]] == ["A"]
+    assert state["selectedLayer"]["layer"] == "A"
+
+
+def test_annotations_added_into_a_state_follow_their_suffixed_segmentation(tmp_path, capsys):
+    """The state has a layer `a`, so the incoming `a` becomes `a-2`, and the synapses
+    added with it link to it, not to the state's own."""
+    first = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    (tmp_path / "other").mkdir()
+    second = _volume(tmp_path / "other", "a", kind="segmentation", dtype="uint64")
+    src = _annotation_source(tmp_path)
+    saved = tmp_path / "state.json"
+    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", first, "--format", "state",
+                                        "--out", str(saved)])) == 0
+    assert cli.cmd_gen(cli._parse_args(["gen", "--into", str(saved), "--seg", second,
+                                        "--annotations", src, "--format", "state"])) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert [lyr["name"] for lyr in state["layers"]] == ["a", "a-2", "syn"]
+    assert set(state["layers"][2]["linkedSegmentationLayer"].values()) == {"a-2"}
+
+
+def test_a_link_to_the_first_of_two_incoming_layers_stays_on_it():
+    existing = [{"name": "x"}]
+    incoming = [{"name": "x"}, {"name": "x"}, {"name": "syn",
+                                               "linkedSegmentationLayer": {"pre": "x"}}]
+    unique_names(existing, incoming)
+    assert [lyr["name"] for lyr in incoming] == ["x-2", "x-3", "syn"]
+    assert incoming[2]["linkedSegmentationLayer"] == {"pre": "x-2"}
+
+    incoming = [{"name": "y"}, {"name": "y"}, {"name": "syn",
+                                               "linkedSegmentationLayer": {"pre": "y"}}]
+    unique_names(existing, incoming)
+    assert [lyr["name"] for lyr in incoming] == ["y", "y-2", "syn"]
+    assert incoming[2]["linkedSegmentationLayer"] == {"pre": "y"}
+
+
+def test_a_rename_that_names_no_layer_or_clashes_is_refused(tmp_path):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    with pytest.raises(SystemExit, match="--rename names no layer"):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--rename", "c=C"]))
+    with pytest.raises(SystemExit, match="LAYER_NAME=NEW_NAME"):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--rename", "a="]))
+    with pytest.raises(SystemExit, match="more than one layer named 'b'"):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--seg", b, "--rename", "a=b"]))
+    with pytest.raises(ConfigProblem, match="non-empty string"):
+        parse({"layer": {"a": {"name": ""}}})
 
 
 def test_the_segments_tab_is_refused_on_an_image_layer():

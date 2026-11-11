@@ -437,10 +437,26 @@ def _read_json(path: str, read_bytes=None):
         raise StateProblem(f"{path} is not valid JSON: {e}") from None
 
 
+def _relink(layers: Sequence[dict], renames: Mapping[str, str]) -> None:
+    """Point each of ``layers``' ``linkedSegmentationLayer`` at the renamed layers."""
+    for layer in layers:
+        links = layer.get("linkedSegmentationLayer")
+        if isinstance(links, dict):
+            layer["linkedSegmentationLayer"] = {r: renames.get(t, t) for r, t in links.items()}
+        elif isinstance(links, str):
+            layer["linkedSegmentationLayer"] = renames.get(links, links)
+
+
 def unique_names(existing: Sequence[Any], layers: Sequence[dict]) -> list[str]:
     """Rename, in place, each of ``layers`` whose name ``existing`` or an earlier one of
-    ``layers`` already has, with a ``-2`` suffix. Returns a note per rename."""
+    ``layers`` already has, with a ``-2`` suffix. Returns a note per rename.
+
+    A link in ``layers`` to a name ``existing`` has follows the first of ``layers`` that
+    took that name, since layers added together link to each other.
+    """
     taken = {lyr.get("name") for lyr in existing if isinstance(lyr, dict)}
+    clashed = set(taken)
+    moved: dict[str, str] = {}
     notes: list[str] = []
     for layer in layers:
         name = layer.get("name")
@@ -449,10 +465,33 @@ def unique_names(existing: Sequence[Any], layers: Sequence[dict]) -> list[str]:
             while f"{name}-{suffix}" in taken:
                 suffix += 1
             layer["name"] = f"{name}-{suffix}"
+            if name in clashed:
+                moved.setdefault(name, layer["name"])
             notes.append(f"renamed incoming layer {name!r} to {layer['name']!r}: the state "
                          f"already has a layer by that name")
         taken.add(layer["name"])
+    _relink(layers, moved)
     return notes
+
+
+def rename_layers(layers: Sequence[dict], renames: Mapping[str, str]) -> list[str]:
+    """Rename, in place, each of ``layers`` that ``renames`` maps, and every
+    ``linkedSegmentationLayer`` naming it. Returns a note per rename.
+
+    Raises :class:`StateProblem` when two layers would end up with one name.
+    """
+    renames = {old: new for old, new in renames.items() if old != new}
+    if not renames:
+        return []
+    final = [renames.get(lyr.get("name"), lyr.get("name")) for lyr in layers]
+    clash = sorted({n for n in final if n is not None and final.count(n) > 1})
+    if clash:
+        raise StateProblem(f"renaming would leave more than one layer named "
+                           f"{', '.join(map(repr, clash))}")
+    for layer, name in zip(layers, final):
+        layer["name"] = name
+    _relink(layers, renames)
+    return [f"renamed layer {old!r} to {new!r}" for old, new in renames.items()]
 
 
 def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
