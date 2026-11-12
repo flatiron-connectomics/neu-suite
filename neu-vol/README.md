@@ -337,6 +337,13 @@ All-fill (e.g. all-zero) chunks are **elided** (not written) and recorded as
 `empty`, so sparse segmentations stay small and resume never reprocesses them.
 `verify=True` instead checks storage authoritatively per block.
 
+The manifest of a local destination sits beside it (`<volume>.progress.jsonl`). A remote
+one is written to `$NEU_PROGRESS_DIR` if set, else the working directory, named after
+the destination with a digest of its whole location (`seg.4f2a91c7.progress.jsonl`);
+`convert` logs the full path. A resume whose manifest records finished tasks but whose
+destination has no level-0 metadata is refused, since it would skip those tasks and
+write nothing: delete the manifest, or pass `--fresh`.
+
 ## The `neu-vol` command
 
 Installing the package provides **`neu-vol`** (equivalently `python -m neu_vol`):

@@ -615,6 +615,7 @@ def _expand_dst(args, dst: str) -> str:
 def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int:
     """The shared body of ``convert`` and ``copy``: block-map the copy per target."""
     from neu_vol import convert
+    from neu_vol.ops._multiscale import StaleManifest
 
     # Before the targets, manifest name and resume check derive from it.
     dst = _expand_dst(args, args.dst.rstrip("/"))
@@ -627,28 +628,31 @@ def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int
             # Before the run: a remote destination's manifest name carries a digest.
             from neu_vol.location import default_progress_path
 
-            log.info("progress: %s", default_progress_path(target))
-            summary = convert(
-                args.src, target, voxel_size=voxel,
-                src_format=getattr(args, "src_format", None),
-                src_level=getattr(args, "src_level", None),
-                dtype=getattr(args, "dtype", None),
-                profile=profile, kind=kind, chunk=chunk,
-                crop_start=crop_start, crop_stop=crop_stop,
-                mask_boxes=[[lo, hi] for lo, hi in masks],
-                mask_value=args.mask_value,
-                background=(_int_list(args.background, "background")
-                            if args.background else None),
-                supervoxels=getattr(args, "dvid_supervoxels", False),
-                prefer_locked=getattr(args, "dvid_locked", False),
-                wk_mapping=getattr(args, "wk_mapping", None),
-                crop_to_data=not getattr(args, "wk_full_extent", False),
-                factors=_factor_list(args.factors), max_levels=args.max_levels,
-                min_dim=args.min_dim, multiscale=not args.single_level,
-                sparse=args.sparse,
-                client=client, resume=not args.fresh, delete_existing=args.fresh,
-                validate=not args.no_validate,
-            )
+            log.info("progress: %s", os.path.abspath(default_progress_path(target)))
+            try:
+                summary = convert(
+                    args.src, target, voxel_size=voxel,
+                    src_format=getattr(args, "src_format", None),
+                    src_level=getattr(args, "src_level", None),
+                    dtype=getattr(args, "dtype", None),
+                    profile=profile, kind=kind, chunk=chunk,
+                    crop_start=crop_start, crop_stop=crop_stop,
+                    mask_boxes=[[lo, hi] for lo, hi in masks],
+                    mask_value=args.mask_value,
+                    background=(_int_list(args.background, "background")
+                                if args.background else None),
+                    supervoxels=getattr(args, "dvid_supervoxels", False),
+                    prefer_locked=getattr(args, "dvid_locked", False),
+                    wk_mapping=getattr(args, "wk_mapping", None),
+                    crop_to_data=not getattr(args, "wk_full_extent", False),
+                    factors=_factor_list(args.factors), max_levels=args.max_levels,
+                    min_dim=args.min_dim, multiscale=not args.single_level,
+                    sparse=args.sparse,
+                    client=client, resume=not args.fresh, delete_existing=args.fresh,
+                    validate=not args.no_validate,
+                )
+            except StaleManifest as e:
+                raise SystemExit(str(e)) from None
             log.info("done %s: %d levels, status=%s", target,
                      summary["num_levels"], summary.get("status_counts"))
     return 0

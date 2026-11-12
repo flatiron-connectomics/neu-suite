@@ -211,15 +211,20 @@ def write_json(location: str | Mapping[str, Any], obj: Any, *parts: str,
     write_bytes(location, json.dumps(obj, indent=indent).encode("utf-8"), *parts)
 
 
-def default_progress_path(dst: str | Mapping[str, Any]) -> str:
-    """Default manifest path for a destination (local: alongside it; remote: cwd).
+#: Directory for remote destinations' manifests; the working directory when unset.
+PROGRESS_DIR_ENV = "NEU_PROGRESS_DIR"
 
-    A manifest is appended to and fsynced, so for a remote destination it lands in the
-    working directory. Its name then carries a digest of the whole location beside the
-    last component (``seg.4f2a91c7.progress.jsonl``), so two destinations ending in the
-    same word never share a manifest, which would make each resume skip the other's
-    blocks. The digest covers driver, bucket and path only, trailing slash removed, so one
-    destination always maps to one manifest.
+
+def default_progress_path(dst: str | Mapping[str, Any]) -> str:
+    """Default manifest path for a destination (local: alongside it; remote: see below).
+
+    A manifest is appended to and fsynced, so for a remote destination it lands in
+    ``$NEU_PROGRESS_DIR`` (neu-recipe sets it), else the working directory. Its name then
+    carries a digest of the whole location beside the last component
+    (``seg.4f2a91c7.progress.jsonl``), so two destinations ending in the same word never
+    share a manifest, which would make each resume skip the other's blocks. The digest
+    covers driver, bucket and path only, trailing slash removed, so one destination always
+    maps to one manifest.
     """
     kv = to_kvstore(dst)
     if kv.get("driver") == "file":
@@ -228,4 +233,6 @@ def default_progress_path(dst: str | Mapping[str, Any]) -> str:
     name = path.split("/")[-1] or str(kv.get("bucket", "volume"))
     identity = f"{kv.get('driver', '')}|{kv.get('bucket', '')}|{path}"
     digest = hashlib.blake2b(identity.encode(), digest_size=4).hexdigest()
-    return f"{name}.{digest}.progress.jsonl"
+    filename = f"{name}.{digest}.progress.jsonl"
+    directory = os.environ.get(PROGRESS_DIR_ENV)
+    return os.path.join(directory, filename) if directory else filename

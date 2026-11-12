@@ -87,6 +87,49 @@ def test_resume_precomputed_via_manifest(tmp_path):
     np.testing.assert_array_equal(s0.read_region(tuple(slice(0, s) for s in s0.shape)), seg)
 
 
+@pytest.mark.parametrize("profile, kind, rel", [
+    ("local", None, "0"),
+    ("s3-neuroglancer", "segmentation", "."),
+])
+def test_a_resume_whose_destination_was_deleted_is_refused(tmp_path, profile, kind, rel):
+    import shutil
+
+    from neu_vol.ops._multiscale import StaleManifest
+
+    seg = np.random.default_rng(14).integers(1, 9, (16, 16, 16), dtype=np.uint64)
+    src = str(tmp_path / "seg.zarr")
+    _make_zarr(src, seg)
+    dst = str(tmp_path / "out")
+    kw = dict(voxel_size=(8, 8, 8), profile=profile, kind=kind, chunk=(8, 8, 8), min_dim=8)
+
+    first = convert(src, dst, resume=True, **kw)
+    shutil.rmtree(dst)
+    with pytest.raises(StaleManifest, match="Delete the manifest, or pass --fresh"):
+        convert(src, dst, resume=True, **kw)
+
+    # --fresh starts over; so does a resume once the manifest is gone
+    convert(src, dst, resume=False, delete_existing=True, **kw)
+    shutil.rmtree(dst)
+    os.remove(first["progress_path"])
+    convert(src, dst, resume=True, **kw)
+    be = open_backend({"backend": "zarr3", "path": os.path.join(dst, "0")} if rel == "0" else
+                      {"backend": "neuroglancer_precomputed", "path": dst, "scale_index": 0})
+    np.testing.assert_array_equal(_full(be), seg)
+
+
+def test_an_interrupted_run_still_resumes(tmp_path):
+    """The guard needs the destination gone: a manifest beside one that exists resumes."""
+    seg = np.random.default_rng(15).integers(1, 9, (16, 16, 16), dtype=np.uint64)
+    src = str(tmp_path / "seg.zarr")
+    _make_zarr(src, seg)
+    dst = str(tmp_path / "out.precomputed")
+    kw = dict(voxel_size=(8, 8, 8), profile="s3-neuroglancer", kind="segmentation",
+              chunk=(8, 8, 8), min_dim=8, resume=True)
+    convert(src, dst, **kw)
+    summary = convert(src, dst, **kw)
+    assert summary["status_counts"]
+
+
 def test_verify_precomputed_object_check(tmp_path):
     # verify=True uses the kvstore chunk-existence check (is_region_stored) for precomputed
     seg = np.random.default_rng(13).integers(1, 9, (8, 8, 8), dtype=np.uint64)

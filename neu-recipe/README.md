@@ -77,6 +77,12 @@ The repositories recorded are the one holding the recipe and every one holding a
 editable install in the running environment: together, the code a step can run. Each
 gets its commit, branch and the tracked files with uncommitted changes.
 
+Steps and `progress` commands run with `$NEU_PROGRESS_DIR` set to `runs/progress/`,
+where neu-vol keeps the progress manifest of a remote destination (a local one sits
+beside its volume). It is shared by every run, not kept per run, so a run started with
+`--from` resumes where the last one stopped. To redo a step from scratch, delete that
+destination's manifest there, or pass the tool's own `--fresh`.
+
 Stopping the runner (Ctrl-C, or `kill` on its pid) stops the running step too, rather
 than leaving a driver and its cluster running unrecorded. `status` then reports the run
 as stopped. Logs are written line by line; `--log-flush N` writes them every N seconds

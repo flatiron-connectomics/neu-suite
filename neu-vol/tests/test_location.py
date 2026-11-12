@@ -41,10 +41,23 @@ def test_spec_kvstore_forms():
         spec_kvstore({"backend": "zarr3"})
 
 
+@pytest.fixture(autouse=True)
+def _no_progress_dir(monkeypatch):
+    monkeypatch.delenv("NEU_PROGRESS_DIR", raising=False)
+
+
 def test_default_progress_path():
     assert default_progress_path("/a/vol.zarr") == "/a/vol.zarr.progress.jsonl"
     remote = default_progress_path("s3://b/data/seg")
     assert remote.startswith("seg.") and remote.endswith(".progress.jsonl")
+
+
+def test_a_remote_manifest_goes_in_the_progress_dir_when_one_is_set(monkeypatch, tmp_path):
+    name = default_progress_path("s3://b/data/seg")
+    monkeypatch.setenv("NEU_PROGRESS_DIR", str(tmp_path / "progress"))
+    assert default_progress_path("s3://b/data/seg") == str(tmp_path / "progress" / name)
+    assert default_progress_path("/a/vol.zarr") == "/a/vol.zarr.progress.jsonl", \
+        "a local destination keeps its manifest beside it"
 
 
 def test_remote_manifests_do_not_collide_on_the_last_path_component():

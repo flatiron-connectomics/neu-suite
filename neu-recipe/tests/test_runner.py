@@ -95,6 +95,22 @@ run = "{PY} -c 'import os; print(os.getcwd())'"
     assert code == 0 and log.read_text().splitlines()[-1] == str(tmp_path.resolve())
 
 
+def test_every_run_shares_one_progress_dir(tmp_path, quick, monkeypatch):
+    monkeypatch.delenv(runner.PROGRESS_DIR_ENV, raising=False)
+    show = f'''
+[[step]]
+name = "show"
+run = "{PY} -c 'import os; print(os.environ[\\"NEU_PROGRESS_DIR\\"])'"
+'''
+    run_recipe(tmp_path, show)
+    code, found = run_recipe(tmp_path, show)
+    want = str((tmp_path / "pipelines" / "runs" / "progress").resolve())
+    assert code == 0 and len(found) == 2
+    for run_dir in found:
+        assert (run_dir / "steps" / "1-show.log").read_text().splitlines()[-1] == want
+        assert json.loads((run_dir / "record.json").read_text())["progress_dir"] == want
+
+
 def test_a_dry_run_runs_and_writes_nothing(tmp_path, quick, capsys):
     marker = tmp_path / "ran"
     code, found = run_recipe(tmp_path, f'''
@@ -278,6 +294,20 @@ def test_status_shows_the_running_step_its_log_and_its_progress(tmp_path, monkey
     assert "[1] first            done, 1.5 min" in out
     assert "[2] second           running" in out and "[3] third            pending" in out
     assert "last line" in out and "halfway" in out
+
+
+def test_a_progress_command_reads_the_runs_progress_dir(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv(runner.PROGRESS_DIR_ENV, raising=False)
+    monkeypatch.setattr(runner, "_runner_alive", lambda record: True)
+    recipe = fake_run(tmp_path, [{"name": "first", "started": T0}])
+    record_path = next((recipe.parent / "runs").glob("demo_*")) / "record.json"
+    record = json.loads(record_path.read_text())
+    record["recipe_steps"][0]["progress"] = [
+        PY, "-c", "import os; print('dir', os.environ['NEU_PROGRESS_DIR'])"]
+    record_path.write_text(json.dumps(record))
+    assert main(["status", str(recipe)]) == 0
+    want = (recipe.parent / "runs" / "progress").resolve()
+    assert f"dir {want}" in capsys.readouterr().out
 
 
 def test_status_says_when_the_runner_died_mid_step(tmp_path, monkeypatch, capsys):

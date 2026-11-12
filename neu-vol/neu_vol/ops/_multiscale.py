@@ -25,6 +25,7 @@ import functools
 import itertools
 import logging
 import math
+import os
 import time
 from typing import Any, Callable, Sequence
 
@@ -34,13 +35,20 @@ from blockrun import Block, Manifest, block_map, iter_blocks
 
 from ..backends.base import Region, open_backend
 from ..backends.tensorstore import TensorStoreBackend
-from ..location import default_progress_path, join, to_kvstore
+from ..location import default_progress_path, exists, join, to_kvstore
 from ..ngff import build_dataset, build_multiscales_attrs, ome_unit, validate_attrs, write_group_metadata
 from ..profiles import get_profile, precomputed_create_spec, zarr3_create_spec
 from ..pyramid import cumulative_factors, downsample_schedule, get_reducer, level_scale_translation
 from ..retry import with_retry
 
 logger = logging.getLogger(__name__)
+
+
+class StaleManifest(RuntimeError):
+    """A resume whose manifest records tasks done at a destination that no longer exists.
+
+    Resuming would skip every recorded task and report success over a volume with no data.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -275,6 +283,7 @@ def _run_multiscale(
     open_level: Callable[[int, Sequence[int], Sequence[int]], TensorStoreBackend] | None = None,
     sparse: bool = False,
     stored_cells: Callable[[int, tuple[int, ...]], set] | None = None,
+    destination_exists: Callable[[], bool] | None = None,
 ) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]], dict[str, int]]:
     """Create + fill each level. Returns (level_shapes, cumulative_factors, status_counts).
 
@@ -292,6 +301,10 @@ def _run_multiscale(
     ``sparse`` skips pyramid tasks whose input holds no stored chunk (exact; see
     :func:`_sparse_skip`), for levels 1..L only: level 0's source is foreign, so its
     emptiness is not ours to know.
+
+    ``destination_exists`` reports whether level 0's metadata is stored. A conversion
+    resuming from a manifest that records tasks raises :class:`StaleManifest` when it is
+    not, before level 0 is created again.
     """
     src_shape = tuple(int(s) for s in src_shape)
     identity = tuple([1] * n_spatial)
@@ -321,6 +334,14 @@ def _run_multiscale(
     manifest = Manifest(progress_path)
     if resume:
         manifest.load()
+        recorded = sum(manifest.counts().values())
+        if (recorded and seed_level is None and destination_exists is not None
+                and not destination_exists()):
+            raise StaleManifest(
+                f"the progress manifest {os.path.abspath(progress_path)} records "
+                f"{recorded} tasks done, but the destination has no level-0 metadata: it "
+                f"was deleted or moved since that run. Resuming would skip those tasks "
+                f"and write nothing. Delete the manifest, or pass --fresh.")
     else:
         manifest.reset()
 
@@ -434,6 +455,7 @@ def materialize_zarr_multiscale(
         resume=resume, verify=verify, progress_path=progress_path,
         seed_level=seed_level, open_level=open_level, sparse=sparse,
         stored_cells=_stored_cells_fn(dst, "zarr3"),
+        destination_exists=lambda: exists(join(base_kv, "0"), "zarr.json"),
     )
 
     datasets, scales = [], []
@@ -516,6 +538,7 @@ def materialize_precomputed_multiscale(
         resume=resume, verify=verify, progress_path=progress_path,
         seed_level=seed_level, open_level=open_level, sparse=sparse,
         stored_cells=_stored_cells_fn(dst, "neuroglancer_precomputed"),
+        destination_exists=lambda: exists(base_kv, "info"),
     )
     scales = [[float(v * c) for v, c in zip(voxel_size, F)] for F in cum]
     logger.info("wrote precomputed multiscale info: %d scales (encoding=%s)", len(level_shapes), encoding)

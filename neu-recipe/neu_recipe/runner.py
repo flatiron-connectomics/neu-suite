@@ -17,6 +17,9 @@ Each run (not a dry run) writes ``runs/<recipe>_<YYYYmmddTHHMM>/`` beside the re
                      written line by line, or every N seconds with --log-flush N
     configs/         a copy of every file a step passed as --config
 
+Steps run with ``$NEU_PROGRESS_DIR`` set to ``runs/progress/``, shared by every run, where
+neu-vol keeps the manifest of a remote destination; a later run resumes from it.
+
 The repositories recorded are the one holding the recipe and every one holding an
 editable install in the running environment, which together are the code a step can
 run. Nothing here submits a Slurm job: a step's ``--config`` decides where its workers run.
@@ -132,6 +135,21 @@ def runs_dir(recipe: Path) -> Path:
     return recipe.parent / "runs"
 
 
+#: Set for every step and ``progress`` command: where neu-vol keeps the manifest of a
+#: remote destination, so it outlives the run that wrote it and the next run resumes.
+PROGRESS_DIR_ENV = "NEU_PROGRESS_DIR"
+
+
+def progress_dir(recipe: Path) -> Path:
+    return runs_dir(recipe) / "progress"
+
+
+def step_env(recipe: Path) -> dict[str, str]:
+    """The environment a step or ``progress`` command runs in."""
+    return {**os.environ, "PYTHONUNBUFFERED": "1",
+            PROGRESS_DIR_ENV: str(progress_dir(recipe).resolve())}
+
+
 def _new_run_dir(recipe: Path) -> Path:
     base = runs_dir(recipe) / f"{recipe.stem}_{datetime.now():%Y%m%dT%H%M}"
     run_dir, n = base, 1
@@ -171,9 +189,10 @@ class _StepLog:
             self._file.close()
 
 
-def stream(argv: list[str], log_path: Path, *, cwd: Path, flush_every: float = 0.0) -> int:
+def stream(argv: list[str], log_path: Path, *, cwd: Path, env: dict[str, str] | None = None,
+           flush_every: float = 0.0) -> int:
     """Run one command from ``cwd``, teeing its output to the terminal and a log."""
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    env = env or {**os.environ, "PYTHONUNBUFFERED": "1"}
     with _StepLog(log_path, flush_every) as log:
         log.write(f"$ {shlex.join(argv)}\n")
         try:
@@ -211,6 +230,7 @@ def run(recipe: Path, resolved: dict, steps: list[dict], argv: list[str], *,
     record = {
         "recipe": str(recipe), "runner_argv": argv, "host": socket.gethostname(),
         "pid": os.getpid(), "started": _now(), "cwd": str(cwd),
+        "progress_dir": str(progress_dir(recipe).resolve()),
         "library": None if resolved["library"] is None else str(resolved["library"]),
         "git": repositories(recipe),
         "volumes": resolved["volumes"], "vars": resolved["vars"],
@@ -235,7 +255,8 @@ def run(recipe: Path, resolved: dict, steps: list[dict], argv: list[str], *,
         entry["started"] = _now()
         save()
         t = time.time()
-        code = stream(step["argv"], log_path, cwd=cwd, flush_every=log_flush)
+        code = stream(step["argv"], log_path, cwd=cwd, env=step_env(recipe),
+                      flush_every=log_flush)
         entry.update(finished=_now(), minutes=round((time.time() - t) / 60, 2),
                      exit_code=code, log=str(log_path.relative_to(run_dir)))
         save()
@@ -347,8 +368,8 @@ def status(recipe: Path) -> int:
         if focus.get("progress"):
             print(f"\n--- $ {shlex.join(focus['progress'])}")
             try:
-                r = subprocess.run(focus["progress"], cwd=cwd, capture_output=True,
-                                   text=True)
+                r = subprocess.run(focus["progress"], cwd=cwd, env=step_env(recipe),
+                                   capture_output=True, text=True)
                 text = r.stdout + r.stderr
             except FileNotFoundError as e:
                 text = str(e)
