@@ -130,6 +130,64 @@ def test_an_interrupted_run_still_resumes(tmp_path):
     assert summary["status_counts"]
 
 
+PRECOMPUTED = dict(voxel_size=(8, 8, 8), profile="s3-neuroglancer", kind="segmentation",
+                   chunk=(8, 8, 8), min_dim=8)
+
+
+def test_a_resume_from_another_source_is_refused(tmp_path):
+    from neu_vol.ops._multiscale import StaleManifest
+
+    rng = np.random.default_rng(16)
+    old, new = (rng.integers(1, 9, (16, 16, 16), dtype=np.uint64) for _ in range(2))
+    _make_zarr(str(tmp_path / "old.zarr"), old)
+    _make_zarr(str(tmp_path / "new.zarr"), new)
+    dst = str(tmp_path / "out.precomputed")
+
+    convert(str(tmp_path / "old.zarr"), dst, resume=True, **PRECOMPUTED)
+    with pytest.raises(StaleManifest, match="from another source"):
+        convert(str(tmp_path / "new.zarr"), dst, resume=True, **PRECOMPUTED)
+    with pytest.raises(StaleManifest, match="from another source"):
+        convert(str(tmp_path / "old.zarr"), dst, resume=True, crop_stop=(8, 16, 16),
+                **PRECOMPUTED)
+
+    convert(str(tmp_path / "new.zarr"), dst, delete_existing=True, **PRECOMPUTED)
+    convert(str(tmp_path / "new.zarr"), dst, resume=True, **PRECOMPUTED)
+    s0 = open_backend({"backend": "neuroglancer_precomputed", "path": dst, "scale_index": 0})
+    np.testing.assert_array_equal(_full(s0), new)
+
+
+def test_a_manifest_from_before_sources_were_recorded_resumes_and_records_one(tmp_path):
+    import json
+
+    from neu_vol.ops._multiscale import SOURCE_GROUP, StaleManifest
+
+    seg = np.random.default_rng(17).integers(1, 9, (16, 16, 16), dtype=np.uint64)
+    _make_zarr(str(tmp_path / "a.zarr"), seg)
+    _make_zarr(str(tmp_path / "b.zarr"), seg + 1)
+    dst = str(tmp_path / "out.precomputed")
+    path = convert(str(tmp_path / "a.zarr"), dst, resume=True, **PRECOMPUTED)["progress_path"]
+    with open(path) as f:
+        lines = [ln for ln in f if json.loads(ln).get("group") != SOURCE_GROUP]
+    with open(path, "w") as f:
+        f.writelines(lines)
+
+    convert(str(tmp_path / "a.zarr"), dst, resume=True, **PRECOMPUTED)
+    with pytest.raises(StaleManifest, match="from another source"):
+        convert(str(tmp_path / "b.zarr"), dst, resume=True, **PRECOMPUTED)
+
+
+def test_a_source_is_identified_by_what_is_read_not_how_it_is_spelled():
+    from neu_vol.ops._multiscale import source_identity as ident
+
+    assert ident({"backend": "zarr3", "path": "s3://b/v/"}) == ident(
+        {"backend": "zarr3", "kvstore": {"driver": "s3", "bucket": "b", "path": "v"}})
+    node = {"backend": "dvid", "server": "h", "uuid": "abc", "instance": "labels"}
+    assert ident({**node, "requested_ref": "abc:main", "ancestors_walked": 0}) == ident(
+        {**node, "requested_ref": "abc", "ancestors_walked": 2})
+    assert ident(node) != ident({**node, "uuid": "def"})
+    assert ident(node) != ident({**node, "supervoxels": True})
+
+
 def test_verify_precomputed_object_check(tmp_path):
     # verify=True uses the kvstore chunk-existence check (is_region_stored) for precomputed
     seg = np.random.default_rng(13).integers(1, 9, (8, 8, 8), dtype=np.uint64)

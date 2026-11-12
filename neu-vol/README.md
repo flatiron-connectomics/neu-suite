@@ -340,9 +340,12 @@ All-fill (e.g. all-zero) chunks are **elided** (not written) and recorded as
 The manifest of a local destination sits beside it (`<volume>.progress.jsonl`). A remote
 one is written to `$NEU_PROGRESS_DIR` if set, else the working directory, named after
 the destination with a digest of its whole location (`seg.4f2a91c7.progress.jsonl`);
-`convert` logs the full path. A resume whose manifest records finished tasks but whose
-destination has no level-0 metadata is refused, since it would skip those tasks and
-write nothing: delete the manifest, or pass `--fresh`.
+`convert` logs the full path. The manifest belongs to the destination, not the source,
+so it also records the source it was written from: the resolved spec, a DVID branch as
+the node it resolved to, with any crop, mask or background. A resume whose manifest
+records finished tasks is refused when the destination has no level-0 metadata (it
+would write nothing) or the source differs (it would keep the old source's data in
+those tasks): delete the manifest, or pass `--fresh`.
 
 ## The `neu-vol` command
 

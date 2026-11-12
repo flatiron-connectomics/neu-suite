@@ -25,6 +25,7 @@ import functools
 import itertools
 import logging
 import math
+import numbers
 import os
 import time
 from typing import Any, Callable, Sequence
@@ -45,10 +46,54 @@ logger = logging.getLogger(__name__)
 
 
 class StaleManifest(RuntimeError):
-    """A resume whose manifest records tasks done at a destination that no longer exists.
+    """A resume whose manifest does not describe this run: its destination no longer
+    exists, or it was written from another source.
 
-    Resuming would skip every recorded task and report success over a volume with no data.
+    Resuming would skip every recorded task and report success over a volume holding no
+    data, or the other source's.
     """
+
+
+def _canonical(identity: Any) -> str:
+    import json
+
+    return json.dumps(identity, sort_keys=True)
+
+
+#: Manifest group recording the source a conversion reads.
+SOURCE_GROUP = "source"
+#: Spec keys saying how a source was resolved or reached, not what it is: a branch ref
+#: resolving to the same node reads the same data.
+_RESOLUTION_KEYS = frozenset({"requested_ref", "ancestors_walked", "context"})
+
+
+def source_identity(spec: Any) -> Any:
+    """``spec`` reduced to what decides the data read, comparable across runs.
+
+    A ``path`` or ``kvstore``, in any of its forms, becomes one ``location`` string.
+    Wrappers (crop, mask, background, mapping) are kept, since they change the data too.
+    """
+    if isinstance(spec, dict):
+        out = {}
+        for key, value in spec.items():
+            if key in _RESOLUTION_KEYS:
+                continue
+            if key in ("path", "kvstore") and isinstance(value, (str, dict)):
+                kv = to_kvstore(value)
+                out["location"] = (f"{kv.get('driver', '')}|{kv.get('bucket', '')}|"
+                                   f"{str(kv.get('path', '')).rstrip('/')}")
+            else:
+                out[key] = source_identity(value)
+        return out
+    if isinstance(spec, (list, tuple, np.ndarray)):
+        return [source_identity(v) for v in spec]
+    if isinstance(spec, (str, bool, type(None))):
+        return spec
+    if isinstance(spec, numbers.Integral):
+        return int(spec)
+    if isinstance(spec, numbers.Real):
+        return float(spec)
+    return str(spec)
 
 
 # --------------------------------------------------------------------------- #
@@ -304,7 +349,9 @@ def _run_multiscale(
 
     ``destination_exists`` reports whether level 0's metadata is stored. A conversion
     resuming from a manifest that records tasks raises :class:`StaleManifest` when it is
-    not, before level 0 is created again.
+    not, before level 0 is created again, or when the manifest records another source
+    (compared by :func:`source_identity`). A manifest from before sources were recorded
+    resumes, and records this one.
     """
     src_shape = tuple(int(s) for s in src_shape)
     identity = tuple([1] * n_spatial)
@@ -332,18 +379,29 @@ def _run_multiscale(
         cum.append(tuple(c * x for c, x in zip(cum[-1], f)))
 
     manifest = Manifest(progress_path)
+    source = source_identity(src_spec) if seed_level is None else None
     if resume:
         manifest.load()
         recorded = sum(manifest.counts().values())
-        if (recorded and seed_level is None and destination_exists is not None
-                and not destination_exists()):
-            raise StaleManifest(
-                f"the progress manifest {os.path.abspath(progress_path)} records "
-                f"{recorded} tasks done, but the destination has no level-0 metadata: it "
-                f"was deleted or moved since that run. Resuming would skip those tasks "
-                f"and write nothing. Delete the manifest, or pass --fresh.")
+        where = f"the progress manifest {os.path.abspath(str(progress_path))}"
+        remedy = "Delete the manifest, or pass --fresh."
+        if recorded and seed_level is None:
+            if destination_exists is not None and not destination_exists():
+                raise StaleManifest(
+                    f"{where} records {recorded} tasks done, but the destination has no "
+                    f"level-0 metadata: it was deleted or moved since that run. Resuming "
+                    f"would skip those tasks and write nothing. {remedy}")
+            before = manifest.meta(SOURCE_GROUP).get("spec")
+            if before is not None and _canonical(before) != _canonical(source):
+                raise StaleManifest(
+                    f"{where} records {recorded} tasks done from another source. "
+                    f"Resuming would skip those tasks and leave that source's data in "
+                    f"them.\n  recorded: {_canonical(before)}\n  now:      "
+                    f"{_canonical(source)}\n{remedy}")
     else:
         manifest.reset()
+    if source is not None:
+        manifest.record_meta(SOURCE_GROUP, spec=source)
 
     try:
         if seed_level is None:

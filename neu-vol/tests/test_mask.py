@@ -6,6 +6,7 @@ can address) a destination that already holds the region.
 """
 
 import json
+import os
 
 import numpy as np
 import pytest
@@ -193,10 +194,17 @@ def test_masking_a_destination_that_exists_warns_about_the_elision(tmp_path, fil
                      "zarr", "--voxel-size", "8,8,8", "--single-level",
                      "--chunk", "8,8,8"]) == 0
 
+    masked = ["convert", "--src", src, "--dst", dst, "--serial", "--format", "zarr",
+              "--voxel-size", "8,8,8", "--single-level", "--chunk", "8,8,8",
+              "--mask-bbox", "0,0,0,8,8,8"]
+    # resuming the unmasked run's manifest would skip every block, mask and all
+    with pytest.raises(SystemExit, match="from another source"):
+        cli.main(masked)
+
+    # without the manifest every block runs again, and the masked one is elided
+    os.remove(dst + ".progress.jsonl")
     with caplog.at_level("WARNING"):
-        cli.main(["convert", "--src", src, "--dst", dst, "--serial", "--format", "zarr",
-                  "--voxel-size", "8,8,8", "--single-level", "--chunk", "8,8,8",
-                  "--mask-bbox", "0,0,0,8,8,8"])
+        cli.main(masked)
     assert "--fresh" in caplog.text and "ELIDED" in caplog.text
     # and the warning is telling the truth: the region really did survive
     assert _read(dst)[0:8, 0:8, 0:8].any()
