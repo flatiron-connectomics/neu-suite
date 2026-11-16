@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neu-movie"
+version = "0.1.0"
+description = "Animations of EM neurons and neuropils, from a TOML spec to a rendered movie, through neuVid and Blender."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# In the shared conda env these come from conda-forge, so install with
+# `pip install --no-deps -e .`.
+dependencies = [
+    "numpy",
+    "scipy",        # mesh smoothing and connected components
+    "neu-vol",      # mesh readback
+    "neu-glance",   # view states, segment properties and set queries, inspection links
+    "neu-recipe",   # library names for volumes
+]
+# Not Python dependencies: Blender and neuVid (https://github.com/connectome-neuprint/neuVid),
+# which are run as programs, and ffmpeg. Their locations come from the site config.
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+neu-movie = "neu_movie.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["neu_movie"]
