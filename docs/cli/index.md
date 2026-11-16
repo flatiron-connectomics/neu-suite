@@ -15,4 +15,5 @@ neu-mark
 neu-glance
 neu-eval
 neu-recipe
+neu-movie
 ```

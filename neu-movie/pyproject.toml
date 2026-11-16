@@ -30,3 +30,6 @@ neu-movie = "neu_movie.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["neu_movie"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

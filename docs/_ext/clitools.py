@@ -34,6 +34,8 @@ COMMANDS = [
                                       "a located list of the disagreements"),
     ("neu-recipe", "neu_recipe.cli", "run a recipe of these commands, with a record of "
                                           "every run, over volumes named in a library"),
+    ("neu-movie", "neu_movie.cli", "animations of neurons and neuropils, from a TOML spec "
+                                        "to a movie rendered in Blender"),
 ]
 
 # Markdown that lives in the repos and is included here verbatim, so it is written and
@@ -50,6 +52,7 @@ INCLUDED = [
     ("neu-proc/README.md", "neu-proc-readme.md"),
     ("neu-eval/README.md", "neu-eval-readme.md"),
     ("neu-recipe/README.md", "neu-recipe-readme.md"),
+    ("neu-movie/README.md", "neu-movie-readme.md"),
 ]
 
 
@@ -95,6 +98,10 @@ PACKAGES = [
      "Recipes of commands, run in order with a record of every run, and the volume "
      "library they name volumes from.",
      "`recipe.load`, `runner.run`, `library`"),
+    ("neu-movie", "neu_movie",
+     "Animations of neurons and neuropils: a TOML spec in, a movie rendered with neuVid "
+     "and Blender out.",
+     "`spec.load`, `compose`, `build`"),
 ]
 
 
@@ -197,6 +204,9 @@ def write_api_index(path: Path) -> None:
         ("neu_recipe", "look a volume up by its library name",
          "{doc}`neu_recipe.library <../api/neu_recipe/library/index>` — `load`, `get`, "
          "`location`"),
+        ("neu_movie", "render an animation in Blender, from a spec",
+         "{doc}`neu_movie.spec <../api/neu_movie/spec/index>` — the format — then the "
+         "`neu-movie` command"),
     ]
     here = {pkg for _repo, pkg, _b, _e in present}
     out += [
@@ -346,6 +356,11 @@ def neu_eval_parser() -> argparse.ArgumentParser:
 def neu_recipe_parser() -> argparse.ArgumentParser:
     """Target of the ``argparse`` directive on the neu-recipe page."""
     return documented_parser("neu_recipe.cli")
+
+
+def neu_movie_parser() -> argparse.ArgumentParser:
+    """Target of the ``argparse`` directive on the neu-movie page."""
+    return documented_parser("neu_movie.cli")
 
 
 def write_cheatsheet(path: Path) -> None:

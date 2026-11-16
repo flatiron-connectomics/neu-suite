@@ -2,7 +2,7 @@
 # environment built from environment.yml.
 
 PACKAGES := neu-lib blockrun neu-vol neu-morpho neu-mark neu-glance neu-draw neu-proc neu-eval \
-            neu-recipe
+            neu-recipe neu-movie
 PYTHON ?= python
 
 .PHONY: install test docs check-versions $(addprefix test-,$(PACKAGES))

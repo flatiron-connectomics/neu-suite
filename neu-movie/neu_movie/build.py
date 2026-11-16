@@ -1,5 +1,5 @@
-"""Builds: a folder per invocation of a spec, `<renders>/<spec name>_<YYYYmmddTHHMM>/`, beside
-the spec unless the spec's folder says otherwise. It holds:
+"""Builds: a folder per invocation of a spec, `renders/<spec name>_<YYYYmmddTHHMM>/` beside
+the spec. It holds::
 
     spec.toml, <view>.json     copies of what it was made from
     sets.json                  each set's body ids and colour, as resolved

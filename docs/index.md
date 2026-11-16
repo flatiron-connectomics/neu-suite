@@ -29,6 +29,7 @@ neu-vol             volume I/O: tensorstore backends, storage profiles,
         neu-eval      comparing a segmentation against a reference labeling
 
 neu-recipe          runs the commands above as a recipe, recording every run
+neu-movie           animations from a spec, rendered in Blender (above neu-glance)
 ```
 
 Nothing lower may import from anything higher, and consumers **at the same tier** do not
@@ -36,7 +37,7 @@ import each other.
 
 ## Which one do I want?
 
-You almost certainly want a **command**, and there are six:
+You almost certainly want a **command**, and there are seven:
 
 ::::{grid} 2
 :::{grid-item-card} `neu-vol`
@@ -67,6 +68,11 @@ disagree, which round-trips so you can record that the *reference* was the wrong
 The other commands, run as a recipe: steps in order, resumable from any step, over
 volumes named in a library — and a record of every run, down to the commit of each
 repository and the exact environment.
+:::
+:::{grid-item-card} `neu-movie`
+A movie of neurons: a TOML spec names the view, the sets of cells to show beat by beat
+and how the camera moves; the command makes the meshes and Blender files, renders on a
+GPU node with neuVid, labels each frame and encodes the video.
 :::
 ::::
 
@@ -136,4 +142,5 @@ _generated/neu-draw-readme
 _generated/neu-proc-readme
 _generated/neu-eval-readme
 _generated/neu-recipe-readme
+_generated/neu-movie-readme
 ```

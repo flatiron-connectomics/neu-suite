@@ -41,7 +41,7 @@ def _check(args):
     return 0
 
 
-def main(argv=None):
+def build_parser():
     ap = argparse.ArgumentParser(prog="neu-movie", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -80,8 +80,11 @@ def main(argv=None):
     p = sub.add_parser("finish", help="label a build's frames and encode the movie")
     p.add_argument("build")
     p.add_argument("--processes", type=int, default=4, help="label passes side by side")
+    return ap
 
-    args = ap.parse_args(argv)
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     try:
         if args.command == "check":
             return _check(args)

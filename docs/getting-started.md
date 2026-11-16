@@ -12,6 +12,7 @@ neu-morpho --help       # meshes and skeletons
 neu-mark --help         # DVID annotations into tables
 neu-glance --help       # neuroglancer states, layers and links
 neu-recipe --help       # run a recipe of these commands, with a record of every run
+neu-movie --help        # animations of neurons, rendered in Blender
 ```
 
 Building one from scratch, from a clone of the repository:

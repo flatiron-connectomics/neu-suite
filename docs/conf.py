@@ -110,7 +110,9 @@ autoapi_root = "api"
 # opposite things: RST needs `::` before an indented example, and `--help` then prints a
 # bare `::` to the terminal. The help text is written for the terminal first, so the
 # reference is what gives way.
-autoapi_ignore = ["*/cli.py", "*/__main__.py"]
+autoapi_ignore = ["*/cli.py", "*/__main__.py",
+                  # Scripts Blender runs (they import bpy), not modules anyone imports.
+                  "*/neu_movie/blender/*"]
 # The generated tree is cited by hand from `index.md`, so it sits under Reference with
 # everything else rather than being appended to the sidebar on its own.
 autoapi_add_toctree_entry = False

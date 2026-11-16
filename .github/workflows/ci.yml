@@ -55,6 +55,8 @@ jobs:
           - {pkg: neu-eval,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol ../neu-proc", extras: ",report"}
           - {pkg: neu-recipe, python: "3.11", deps: ""}
           - {pkg: neu-recipe, python: "3.12", deps: ""}
+          - {pkg: neu-movie,  python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol ../neu-glance ../neu-recipe"}
+          - {pkg: neu-movie,  python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol ../neu-glance ../neu-recipe"}
     defaults:
       run:
         shell: bash
@@ -121,6 +123,7 @@ jobs:
       - {name: neu-proc,   run: make test-neu-proc}
       - {name: neu-eval,   run: make test-neu-eval}
       - {name: neu-recipe, run: make test-neu-recipe}
+      - {name: neu-movie,  run: make test-neu-movie}
       - name: neu-morpho package checks
         working-directory: neu-morpho
         run: bash ../.github/smoke/neu-morpho.sh
@@ -141,7 +144,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
           pip install ./neu-lib ./blockrun ./neu-vol ./neu-morpho ./neu-mark \
-                      ./neu-proc ./neu-eval ./neu-glance ./neu-recipe
+                      ./neu-proc ./neu-eval ./neu-glance ./neu-recipe ./neu-movie
       # -W because the CLI reference is generated: a warning means a parser or a
       # docstring stopped rendering.
       - name: Build

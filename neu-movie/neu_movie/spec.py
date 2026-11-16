@@ -1,5 +1,5 @@
 """A movie spec: one TOML file per animation. Every key is checked, so a typo fails loudly
-instead of quietly falling back to a default.
+instead of quietly falling back to a default::
 
     view = "frontal_view.json"   # the opening camera, and the layers volumes are read from
     mode = "replace"             # or "accumulate"

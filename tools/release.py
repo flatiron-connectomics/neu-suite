@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = ["neu-lib", "blockrun", "neu-vol", "neu-morpho", "neu-mark", "neu-glance",
-            "neu-draw", "neu-proc", "neu-eval", "neu-recipe"]
+            "neu-draw", "neu-proc", "neu-eval", "neu-recipe", "neu-movie"]
 PYPROJECT_RE = re.compile(r'^version = "([^"]+)"$', re.M)
 INIT_RE = re.compile(r'^__version__ = "([^"]+)"$', re.M)
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")

@@ -64,7 +64,10 @@ def main():
     image_size = cl.get_image_size(args.frames)
     labels = cl.parse_labels(args.labels, image_size)
     labels_scene = cl.setup_labels_scene(labels)
-    labels_scene.render.engine = "BLENDER_EEVEE_NEXT"
+    try:
+        labels_scene.render.engine = "BLENDER_EEVEE_NEXT"     # Blender 4.2 to 4.5
+    except TypeError:
+        labels_scene.render.engine = "BLENDER_EEVEE"          # other versions' name for it
     labels_scene.eevee.taa_render_samples = args.samples
     comp_scene = cl.setup_comp_scene(os.path.join(args.output, ""))
     cl.comp_labels(labels_scene, comp_scene, args.frames, image_size, args.start, args.end)

@@ -19,11 +19,13 @@ the cheat sheet if you just need to remember a flag.
 | [neu-draw](neu-draw/) | local 3D rendering in Jupyter, on pygfx. Library only, no command. |
 | [neu-eval](neu-eval/) | comparison metrics against a reference labeling, and the `neu-eval` command |
 | [neu-recipe](neu-recipe/) | recipes of the other commands, run in order with a record of every run, the volume library they name volumes from, and the `neu-recipe` command. Standard library only. |
+| [neu-movie](neu-movie/) | animations of neurons and neuropils, from a TOML spec to a movie rendered with neuVid in Blender, and the `neu-movie` command |
 
 The dependency order is one-way — `{neu-lib, blockrun} ← neu-vol ←
 {neu-morpho, neu-mark, neu-glance, neu-proc} ← {neu-draw, neu-eval}` — and they depend on
 each other by relative `../sibling` path. `neu-recipe` imports none of them (it runs their
-commands), except neu-vol for `library --check`.
+commands), except neu-vol for `library --check`. `neu-movie` sits above neu-glance,
+whose view states and segment queries it builds on.
 
 ```text
 neu-suite/
@@ -36,7 +38,8 @@ neu-suite/
 ├── neu-proc/
 ├── neu-draw/
 ├── neu-eval/
-└── neu-recipe/
+├── neu-recipe/
+└── neu-movie/
 ```
 
 `neu-lib` and `blockrun` sit side by side at the bottom and know nothing about each
