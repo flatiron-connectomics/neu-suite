@@ -50,14 +50,22 @@ def compose(spec, ids, colours, end, region_colours=None):
     lab, fade = spec["labels"], spec["timing"]["fade"]
     region_colours = region_colours or {}
     if lab["neuropil_legend"] and spec["neuropils"] and region_colours:
-        amount = spec["neuropils"]["mute"]
+        amount, np_header = spec["neuropils"]["mute"], lab["neuropil_header"]
 
-        def region_label(start, gone, region, row, rows):
-            return _label(start, gone, region, _row(lab, row, rows, right=True),
-                          lab["legend_size"],
-                          linear_hex(mute(region_colours[region], amount)), fade, "right")
+        def region_legend(starts, gone):
+            """The right-hand column: `starts` maps each region to when it appears."""
+            if not starts:
+                return []
+            rows = len(starts) + bool(np_header)
+            out = [_label(min(starts.values()), gone, np_header, _row(lab, 0, rows, right=True),
+                          lab["legend_size"], WHITE, fade, "right")] if np_header else []
+            return out + [_label(start, gone, region, _row(lab, row, rows, right=True),
+                                 lab["legend_size"],
+                                 linear_hex(mute(region_colours[region], amount)), fade, "right")
+                          for row, (region, start) in enumerate(starts.items(),
+                                                                start=bool(np_header))]
     else:
-        region_label = None
+        region_legend = None
     header = lab["legend_header"] if lab["legend"] else ""
     beats = spec["beats"]
     out = []
@@ -77,10 +85,9 @@ def compose(spec, ids, colours, end, region_colours=None):
                 for row, name in enumerate(shown, start=rows - len(shown)):
                     out.append(_label(start, gone, name, _row(lab, row, rows),
                                       lab["legend_size"], linear_hex(colours[name]), fade))
-            if region_label:
-                regions = [r for r in _regions(spec, shown) if r in region_colours]
-                out += [region_label(start, gone, r, row, len(regions))
-                        for row, r in enumerate(regions)]
+            if region_legend:
+                out += region_legend({r: start for r in _regions(spec, shown)
+                                      if r in region_colours}, gone)
     else:
         gone = end + fade                      # fade-out falls after the last frame
         if lab["titles"]:
@@ -100,14 +107,13 @@ def compose(spec, ids, colours, end, region_colours=None):
                 out.append(_label(schedule.beat_start(spec, i), gone, name,
                                   _row(lab, row, rows), lab["legend_size"],
                                   linear_hex(colours[name]), fade))
-        if region_label:
+        if region_legend:
             first = {}
             for i, name in order:
                 for r in _regions(spec, [name]):
                     if r in region_colours:
-                        first.setdefault(r, i)
-            out += [region_label(schedule.beat_start(spec, i), gone, r, row, len(first))
-                    for row, (r, i) in enumerate(first.items())]
+                        first.setdefault(r, schedule.beat_start(spec, i))
+            out += region_legend(first, gone)
     return {"fps": spec["fps"], "animation": commands(out)}
 
 

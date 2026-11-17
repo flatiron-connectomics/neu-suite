@@ -61,13 +61,14 @@ pass with its own `start` and `tail`, so the seam between passes matches a loop'
 or a `volume` URL, and a `path` under it (the head's defaults to `rois/head`).
 
 **Camera.** `orbit`: frames the head (`frame = "sets"`, or without a head: every set) and
-turns about the screen's vertical from `orbit_at` until the last fade ends. With `loop = true` it turns from the first frame
-to the last at constant speed instead, so the movie loops without a seam. `follow`: each
-beat dollies to frame its sets with the previous `window - 1` beats', then the camera
-returns to the opening view and orbits for `orbit_seconds`. `glide`: opens framed on the
-first beat and makes one slow move, from the first beat's start until the last beat has
-faded in, to frame every set, then orbits for `orbit_seconds`. A positive `orbit_degrees`
-moves the camera to its right, so the scene turns to the left. `up = [x, y, z]` keeps the
+turns about the screen's vertical from `orbit_at` for `orbit_seconds`, by default until the
+last fade ends. With `loop = true` it turns from the first frame to the last at constant
+speed instead, so the movie loops without a seam. `follow`: each beat dollies to frame its
+sets with the previous `window - 1` beats', then the camera returns to the opening view and
+orbits for `orbit_seconds` (default 12). `glide`: opens framed on the first beat and makes
+one slow move, from the first beat's start until the last beat has faded in, to frame every
+set, then orbits for `orbit_seconds` (default 12). A positive `orbit_degrees` moves the
+camera to its right, so the scene turns to the left. `up = [x, y, z]` keeps the
 view direction but stands it upright about that vertical, so the orbit turns about it
 rather than about the opening view's: for `follow` it levels the return, for `orbit` and
 `glide` the whole movie.
@@ -105,10 +106,10 @@ SECTIONS = {
                "tail": 1.5, "repeat": 1},
     "camera": {"style": "orbit", "scale": 1.0, "orbit_degrees": 360.0, "orbit_at": 1.0,
                "loop": False, "window": 2, "move_seconds": None, "pullback_seconds": 4.0,
-               "orbit_seconds": 12.0, "up": None, "frame": "head"},
+               "orbit_seconds": None, "up": None, "frame": "head"},
     "light": {"fill": 2.0},
     "labels": {"titles": True, "legend": True, "neuropil_legend": True,
-               "legend_header": "", "title_size": 0.06,
+               "legend_header": "", "neuropil_header": "", "title_size": 0.06,
                "legend_size": 0.045, "legend_x": 0.04, "legend_bottom": 0.06,
                "legend_step": 0.065},
 }
@@ -211,6 +212,14 @@ def parse(raw, path):
                         f"{CAMERA_STYLES}")
     if cam["loop"] and cam["style"] != "orbit":
         raise SpecError(f"{where} [camera]: `loop` is for the orbit camera")
+    if cam["loop"] and cam["orbit_seconds"] is not None:
+        raise SpecError(f"{where} [camera]: a looping orbit lasts the whole movie, so it takes "
+                        f"no `orbit_seconds`")
+    if cam["orbit_seconds"] is None and cam["style"] != "orbit":
+        cam["orbit_seconds"] = 12.0
+    o = cam["orbit_seconds"]
+    if o is not None and (isinstance(o, bool) or not isinstance(o, (int, float)) or o <= 0):
+        raise SpecError(f"{where} [camera]: `orbit_seconds` must be a number above 0")
     if cam["frame"] not in FRAMES:
         raise SpecError(f"{where} [camera]: frame {cam['frame']!r} is not one of {FRAMES}")
     if cam["up"] is not None:

@@ -126,11 +126,10 @@ def compose(spec, scene):
     smooth = None
     beat_expr = [" + ".join(expr[n] for n in b["sets"] if n in expr) for b in spec["beats"]]
     if cam["style"] == "orbit":
-        end = content_end + t["tail"]
         # A loop turns over the whole movie: keyed at frames 1 and frames + 1, so the frame
         # after the last is the first again.
-        orbit_at = 0.0 if cam["loop"] else cam["orbit_at"]
-        orbit_end = end if cam["loop"] else content_end
+        orbit_at, orbit_end = orbit_span(spec)
+        end = max(content_end, orbit_end) + (0 if cam["loop"] else t["tail"])
         if cam["orbit_degrees"]:
             events.append((orbit_at, ["orbitCamera", {
                 "localAxis": "y", "endingRelativeAngle": cam["orbit_degrees"],
@@ -193,15 +192,26 @@ def orbit_degrees_at(spec, when):
     """How far an orbit camera has turned at `when` (seconds), or None for another camera.
     A loop turns at constant speed over the whole movie; otherwise neuVid eases in and out,
     approximated by a smoothstep."""
-    cam, t = spec["camera"], spec["timing"]
+    cam = spec["camera"]
     if cam["style"] != "orbit":
         return None
+    start, stop = orbit_span(spec)
+    if cam["loop"]:
+        return cam["orbit_degrees"] * when / stop
+    f = min(max((when - start) / (stop - start), 0.0), 1.0) if stop > start else 1.0
+    return cam["orbit_degrees"] * f * f * (3 - 2 * f)
+
+
+def orbit_span(spec):
+    """``(start, end)`` of an orbit camera's turn, in seconds: a loop's is the whole movie;
+    otherwise from `orbit_at` for `orbit_seconds`, or until the last fade ends."""
+    cam, t = spec["camera"], spec["timing"]
     content_end = schedule.content_end(spec)
     if cam["loop"]:
-        return cam["orbit_degrees"] * when / (content_end + t["tail"])
-    span = content_end - cam["orbit_at"]
-    f = min(max((when - cam["orbit_at"]) / span, 0.0), 1.0) if span > 0 else 1.0
-    return cam["orbit_degrees"] * f * f * (3 - 2 * f)
+        return 0.0, content_end + t["tail"]
+    if cam["orbit_seconds"] is not None:
+        return cam["orbit_at"], cam["orbit_at"] + cam["orbit_seconds"]
+    return cam["orbit_at"], content_end
 
 
 def turned(q, degrees):

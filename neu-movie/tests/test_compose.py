@@ -322,3 +322,30 @@ def test_a_replace_beats_neuropils_come_and_go_with_it(replace_spec):
         (11.0, "LA(L)", [0.96, 0.06])]
     la = next(a for t, c, a in at(doc["animation"])[0] if a["text"] == "LA(L)")
     assert la["duration"] == 4.0                                         # as C's own label
+
+
+def test_an_orbit_can_outlast_the_beats():
+    spec = make_spec([{"name": "A", "ids": [1]}, {"name": "B", "ids": [2]}], mode="accumulate",
+                     timing={"start": 0.5, "every": 2.0, "fade": 1.0},
+                     camera={"orbit_at": 1.0, "orbit_seconds": 20.0})
+    doc, _, info = compose_mod.compose(spec, scene(spec))
+    events, end = at(doc["animation"])
+    assert next((t, a["duration"]) for t, c, a in events if c == "orbitCamera") == (1.0, 20.0)
+    assert end == info["seconds"] == 21.0 + 1.5                # the orbit's end, then the tail
+    assert compose_mod.orbit_degrees_at(spec, 11.0) == pytest.approx(180.0)   # half way
+
+
+def test_the_neuropil_legend_can_have_a_header():
+    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)"]},
+                      {"name": "C", "ids": [3], "regions": ["ME(L)"]}],
+                     mode="accumulate", neuropils={"library": "lib", "path": "rois"},
+                     labels={"neuropil_header": "Neuropil regions:"},
+                     timing={"start": 0.5, "every": 2.0, "fade": 1.5})
+    ids = {"A": ["1"], "C": ["3"]}
+    doc = labels.compose(spec, ids, dict.fromkeys(ids, "#ff0000"), 20.0,
+                         {"LA(L)": "#1b9e77", "ME(L)": "#e6ab02"})
+    rows = [(t, text, pos) for t, text, pos, _ in neuropil_rows(doc)]
+    assert rows == [(0.5, "Neuropil regions:", [0.96, 0.19]), (0.5, "LA(L)", [0.96, 0.125]),
+                    (2.5, "ME(L)", [0.96, 0.06])]
+    header = next(a for t, c, a in at(doc["animation"])[0] if a["text"] == "Neuropil regions:")
+    assert header["color"] == "#ffffff"

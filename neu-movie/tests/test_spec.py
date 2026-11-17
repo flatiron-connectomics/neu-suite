@@ -77,6 +77,8 @@ def test_repeating_an_identical_definition_is_allowed():
     ({"view": {"position": [1, 2, 3], "height": 1, "orientation": [0, 0, 1]}}, None,
      "`orientation` must be 4 numbers"),
     ({"camera": {"up": [0, 1]}}, None, r"`up` must be 3 numbers"),
+    ({"camera": {"loop": True, "orbit_seconds": 10}}, None, "takes no `orbit_seconds`"),
+    ({"camera": {"orbit_seconds": 0}}, None, "`orbit_seconds` must be a number above 0"),
     ({"neuropils": {"library": "l"}}, [{"name": "Z", "ids": [9], "regions": ["LA"]}],
      "with `library`, give `path`"),
     ({}, [{"name": "Z", "ids": [9], "regions": ["LA"]}], "no \\[neuropils\\] section"),

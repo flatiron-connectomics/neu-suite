@@ -137,14 +137,15 @@ from the front and once from behind.
 
 **Camera.** `[view]` is the opening camera. `orbit` frames the head (with
 `frame = "sets"`, or without a head, every set) and turns once about the screen's vertical
-from `orbit_at` until the last fade ends. With `loop = true` it turns at constant speed
-from the first frame to the last instead, and the frame after the last is
-the first, so the movie plays on a loop without a seam. `follow` moves to frame each beat's
-sets together with the previous `window - 1` beats', in one continuous path, then pulls back
-to the opening view and orbits for `orbit_seconds`. `glide` opens framed on the first
+from `orbit_at`, for `orbit_seconds` or else until the last fade ends; a longer orbit runs
+on after the beats, and the movie with it. With `loop = true` it turns at constant speed
+from the first frame to the last instead, and the frame after the last is the first, so
+the movie plays on a loop without a seam. `follow` moves to frame each beat's sets together
+with the previous `window - 1` beats', in one continuous path, then pulls back to the
+opening view and orbits for `orbit_seconds` (default 12). `glide` opens framed on the first
 beat and makes one slow move, from the first beat's start until the last beat has faded in,
-to frame every set, then orbits for `orbit_seconds`. A positive `orbit_degrees` moves the
-camera to its right, so the scene turns to the left. When the opening view is tilted, the
+to frame every set, then orbits for `orbit_seconds` (default 12). A positive
+`orbit_degrees` moves the camera to its right, so the scene turns to the left. When the opening view is tilted, the
 orbit is too; `up = [x, y, z]` names the vertical to turn about instead (`neu-movie camera`
 prints a view's). `follow` pulls back to the opening direction levelled to it; `orbit` and
 `glide` are levelled throughout.
@@ -157,8 +158,9 @@ and no ambient light, so a camera that orbits round to the back sees black surfa
 **Labels.** Each beat's `title` shows at the top. A legend of the sets on screen, each name
 in its set's colour, sits at the bottom left, with an optional `legend_header` line above
 it. The neuropils have their own legend at the bottom right, right-aligned, each name in the
-colour its neuropil is drawn in. Labels fade with their cells. In `replace` the legends are
-per beat; in `accumulate` they grow a row per set and per neuropil.
+colour its neuropil is drawn in, under an optional `neuropil_header`. Labels fade with
+their cells. In `replace` the legends are per beat; in `accumulate` they grow a row per set
+and per neuropil.
 
 Every key, with its default:
 
@@ -171,9 +173,9 @@ Every key, with its default:
 | `[head]` | `library` or `volume`, `id`, `path = "rois/head"`, `lod = 0`, `alpha = 0.035`, `color = "#808080"`, `exponent = 7.0`, `offset = 4.0`, `intro_at = 1.0`, `intro_seconds = 0.0` (above 0, the head starts solid in `lit_color` and fades to the shell), `lit_color = "#d9d9d9"` |
 | `[meshes]` | `smooth = 10` (Taubin iterations) |
 | `[timing]` | `start = 0.5`, `every = 5.5`, `fade = 1.5`, `hold = 4.0`, `alpha = 1.0`, `tail = 1.5` (seconds after the content ends), `repeat = 1` |
-| `[camera]` | `style = "orbit"`, `scale = 1.0` (framing margin), `orbit_degrees = 360.0`, `orbit_at = 1.0`, `loop = false`, `window = 2`, `move_seconds` (defaults to `every`), `pullback_seconds = 4.0`, `orbit_seconds = 12.0`, `up` (a vertical), `frame = "head"` (or `"sets"`; orbit) |
+| `[camera]` | `style = "orbit"`, `scale = 1.0` (framing margin), `orbit_degrees = 360.0`, `orbit_at = 1.0`, `loop = false`, `window = 2`, `move_seconds` (defaults to `every`), `pullback_seconds = 4.0`, `orbit_seconds` (orbit: until the last fade ends; follow and glide: 12), `up` (a vertical), `frame = "head"` (or `"sets"`; orbit) |
 | `[light]` | `fill = 2.0` |
-| `[labels]` | `titles = true`, `legend = true`, `neuropil_legend = true`, `legend_header = ""`, `title_size = 0.06`, `legend_size = 0.045`, `legend_x = 0.04`, `legend_bottom = 0.06`, `legend_step = 0.065` (sizes and positions are fractions of the frame height) |
+| `[labels]` | `titles = true`, `legend = true`, `neuropil_legend = true`, `legend_header = ""`, `neuropil_header = ""`, `title_size = 0.06`, `legend_size = 0.045`, `legend_x = 0.04`, `legend_bottom = 0.06`, `legend_step = 0.065` (sizes and positions are fractions of the frame height) |
 
 ## The build
 
