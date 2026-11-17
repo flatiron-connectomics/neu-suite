@@ -526,6 +526,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "a fixed colour from neuroglancer's segment palette; segments with "
                         "none keep their hash colour. Written as segmentColors, so it is fixed "
                         "when the state is made (repeatable)")
+    q.add_argument("--color-palette", choices=("hash", "spaced", "rainbow"), default="hash",
+                   help="how --color-by picks each value's colour. hash (default): from the "
+                        "value alone, so it is the same in every state, but neighbouring "
+                        "values (A2, A3) may come out alike. spaced: by the value's place in "
+                        "its property's sorted values, so neighbours, and the last and first, "
+                        "are far apart in hue. rainbow: red to violet in sorted order, so the "
+                        "order reads as a gradient. Both of those change colours when the "
+                        "property's values do")
     q.add_argument("--no-pick", action="append", default=None, metavar="LAYER_NAME",
                    help="make clicks go through this segmentation layer (repeatable; sets "
                         "pick false), for a shell enclosing what you want to select")
@@ -861,13 +869,15 @@ def _color_by(args, site: dict, layers: list[dict], new: set[str], *, file) -> N
                              f"to read")
     for name, keys in wanted.items():
         try:
-            colors, report = colors_by_property(read_segment_properties(volumes[name]), keys)
+            colors, report = colors_by_property(read_segment_properties(volumes[name]), keys,
+                                                palette=args.color_palette)
         except (SourceProblem, StateProblem) as e:
             raise SystemExit(f"--color-by {name}: {e}") from None
         by_name[name]["segmentColors"] = colors
         counts = ", ".join(f"{k} {n}" for k, n in report["by_key"].items())
         print(f"  {name}: coloured {report['colored']} of {report['segments']} segments by "
-              f"{','.join(keys)} ({counts}; {report['values']} values)", file=file)
+              f"{','.join(keys)} ({counts}; {report['values']} values, "
+              f"{args.color_palette} palette)", file=file)
         if report["several_values"]:
             print(f"    {report['several_values']} had several values for a facet and took "
                   f"the first", file=file)

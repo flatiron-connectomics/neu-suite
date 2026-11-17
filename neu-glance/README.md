@@ -79,7 +79,12 @@ segmentation layer cannot do itself (it has no shader). A property is a tag face
 colour from neuroglancer's segment palette, the same in every state, written into
 `segmentColors` — so it is fixed when the state is made (regenerate after the properties
 change), adds ~25 bytes per coloured body to the state, and has no legend. Bodies with no
-value keep their hash colour. A layer the state does not have is skipped with a
+value keep their hash colour. Hashed colours can make neighbouring values (columns `A2`, `A3`)
+look alike. Two palettes colour each value by its place in the property's sorted values
+instead, so a value's colour changes when the property's values do: `--color-palette spaced`
+spreads the hues evenly and puts neighbours, and the last and first, ~137° apart;
+`--color-palette rainbow` runs red to violet in order, for when the order should read as a
+gradient. A layer the state does not have is skipped with a
 note, so one file serves many states; an unknown key or a shader control the shader does not
 declare is refused, since neuroglancer would ignore it.
 

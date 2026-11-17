@@ -5,7 +5,7 @@ import json
 import pytest
 
 from neu_glance import cli
-from neu_glance.shaders import segment_color, value_color
+from neu_glance.shaders import segment_color, spaced_color, spaced_stride, value_color
 from neu_glance.state import StateProblem, colored_last, colors_by_property, parse_url
 
 from test_gen import _volume
@@ -59,6 +59,61 @@ def test_what_cannot_colour_is_refused(key, message):
         colors_by_property(_props(numbers={"post": [1, 2, 3, 4]}), [key])
 
 
+def _hue(hex_color):
+    import colorsys
+    rgb = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    return colorsys.rgb_to_hsv(*rgb)[0]
+
+
+def _hue_gap(a, b):
+    d = abs(_hue(a) - _hue(b)) % 1.0
+    return min(d, 1.0 - d)
+
+
+def _column_colors(n, palette):
+    rows = [(str(i), f"x{i}", (f"col:A{i}",)) for i in range(1, n + 1)]
+    colors, _ = colors_by_property(_props(rows), ["col"], palette=palette)
+    return [colors[str(i)] for i in range(1, n + 1)]
+
+
+@pytest.mark.parametrize("n", range(2, 41))
+def test_a_spaced_palette_keeps_neighbours_and_the_ends_apart_and_hues_even(n):
+    colors = _column_colors(n, "spaced")
+    tol = 0.005                               # hex rounding
+    # consecutive values, and the last and the first, are one stride apart ...
+    neighbours = [_hue_gap(a, b) for a, b in zip(colors, colors[1:] + colors[:1])]
+    assert max(neighbours) - min(neighbours) < tol
+    # ... which is over 0.3 of a turn, except where n has too few strides to choose from
+    assert min(neighbours) > (0.3 if n not in (4, 6) else 1 / n) - tol
+    # and the hues are evenly spaced, so no two values are closer than 1/n
+    assert min(_hue_gap(a, b) for i, a in enumerate(colors) for b in colors[i + 1:]) > 1 / n - tol
+
+
+def test_the_spaced_stride_visits_every_slot():
+    from math import gcd
+    assert all(gcd(spaced_stride(n), n) == 1 for n in range(2, 200))
+
+
+def test_a_spaced_palette_ranks_in_natural_order_and_by_key():
+    colors, _ = colors_by_property(_props(), ["col", "group"], palette="spaced")
+    assert colors["1"] == spaced_color("col", 0, 2)    # A2 before A10
+    assert colors["2"] == spaced_color("col", 1, 2)
+    assert colors["3"] == spaced_color("group", 0, 2)  # LN before Tm2, its own circle
+    assert spaced_color("col", 0, 2) != spaced_color("group", 0, 2)
+
+
+def test_a_rainbow_runs_red_to_violet_in_order():
+    colors = _column_colors(12, "rainbow")
+    hues = [_hue(c) for c in colors]
+    assert colors[0] == "#ff0000"
+    assert hues == sorted(hues) and abs(hues[-1] - 0.8) < 0.01
+
+
+def test_an_unknown_palette_is_refused():
+    with pytest.raises(StateProblem, match="unknown palette"):
+        colors_by_property(_props(), ["col"], palette="viridis")
+
+
 def _with_properties(tmp_path, name="v"):
     vol = _volume(tmp_path, name, kind="segmentation", dtype="uint64")
     info_path = f"{vol}/info"
@@ -90,6 +145,13 @@ def test_the_cli_writes_segment_colors_from_a_flag_or_the_config(tmp_path, capsy
     cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--config", str(cfg)]))
     layer = parse_url(capsys.readouterr().out.strip())["layers"][0]
     assert layer["segmentColors"]["1"] == value_color("group:Tm2")
+
+    cli.cmd_gen(cli._parse_args(["gen", "--seg", vol, "--color-by", "v=col",
+                                 "--color-palette", "spaced"]))
+    out = capsys.readouterr()
+    layer = parse_url(out.out.strip())["layers"][0]
+    assert layer["segmentColors"]["2"] == spaced_color("col", 1, 2)
+    assert "spaced palette" in out.err
 
 
 def test_colored_layers_go_last_in_order():

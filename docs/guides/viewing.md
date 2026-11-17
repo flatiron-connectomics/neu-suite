@@ -513,6 +513,10 @@ viewer shows them or by their source location:
 neu-glance gen --into state.json --color-by s3://.../seg=group --format state --out by-group.json
 ```
 
+`--color-palette spaced` gives values that sort next to each other (columns `A2`, `A3`)
+colours far apart in hue, and `--color-palette rainbow` runs red to violet in sorted order; the
+default `hash` keeps each value's colour the same in every state.
+
 A `--config`, by contrast, applies only to the layers the call adds, since a saved state's
 layers and view hold choices made in the viewer.
 

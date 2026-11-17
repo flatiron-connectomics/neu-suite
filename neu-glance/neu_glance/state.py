@@ -12,6 +12,7 @@ Pure: :func:`build_state` takes plain layer dicts and never reads a store.
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from typing import Any, Mapping, Sequence
 
@@ -358,19 +359,39 @@ def subset_layers(state: Mapping[str, Any], layer: str,
     return out, created, notes
 
 
+#: ``--color-palette`` choices: ``hash`` colours each value on its own, ``spaced`` and
+#: ``rainbow`` by its rank among the property's values.
+PALETTES = ("hash", "spaced", "rainbow")
+
+
+def _natural_key(value: str) -> list[tuple[int, int, str]]:
+    """Sort key putting ``A2`` before ``A10``."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p)
+            for p in re.split(r"(\d+)", value) if p]
+
+
 def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
-                       seed: int = 0) -> tuple[dict[str, str], dict[str, Any]]:
+                       seed: int = 0, palette: str = "hash"
+                       ) -> tuple[dict[str, str], dict[str, Any]]:
     """``({segment_id: "#rrggbb"}, report)``: each segment coloured by the first of ``keys``
     it has a value for, for a segmentation layer's ``segmentColors``.
 
     ``properties`` is what :func:`neu_glance.sources.read_segment_properties` returns. A key
     is ``label``, or a tag facet (``col`` or ``col:``, taking the value after the colon), or
     a bare flag tag (``glia``). A segment with several values for a facet takes the first.
-    Each ``key:value`` gets a fixed colour (:func:`neu_glance.shaders.value_color`), so a
-    value is the same colour in every state. Segments with no value keep their hash colour.
-    """
-    from .shaders import value_color
+    Segments with no value keep their hash colour.
 
+    ``palette="hash"`` colours each ``key:value`` on its own
+    (:func:`neu_glance.shaders.value_color`), so a value is the same colour in every state.
+    The others colour it by its rank among the key's values in natural order, so its colour
+    changes when the key's values do: ``spaced`` puts consecutive values (``A2``, ``A3``),
+    and the last and first, far apart (:func:`neu_glance.shaders.spaced_color`); ``rainbow``
+    runs red to violet in order (:func:`neu_glance.shaders.rainbow_color`).
+    """
+    from .shaders import rainbow_color, spaced_color, value_color
+
+    if palette not in PALETTES:
+        raise StateProblem(f"unknown palette {palette!r}: one of {', '.join(PALETTES)}")
     ids = list(properties.get("ids") or [])
     vocabulary = list(properties.get("vocabulary") or [])
     numbers = set((properties.get("numbers") or {}))
@@ -397,6 +418,16 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
 
     labels = list(properties.get("labels") or [])
     tags = list(properties.get("tags") or [()] * len(ids))
+    ranks: dict[str, dict[str, int]] = {}
+    if palette != "hash":
+        for key, kind in resolved:
+            if kind == "label":
+                present = {lbl for i, lbl in enumerate(labels) if lbl and lbl != ids[i]}
+            elif kind == "facet":
+                present = {t.split(":", 1)[1] for t in vocabulary if t.startswith(f"{key}:")}
+            else:
+                present = {key}
+            ranks[key] = {v: r for r, v in enumerate(sorted(present, key=_natural_key))}
     colors: dict[str, str] = {}
     by_key = {key: 0 for key, _ in resolved}
     values: set[str] = set()
@@ -415,7 +446,12 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
                 continue
             several += len(found) > 1
             value = f"{key}:{found[0]}"
-            colors[sid] = value_color(value, seed)
+            if palette == "hash":
+                colors[sid] = value_color(value, seed)
+            elif palette == "spaced":
+                colors[sid] = spaced_color(key, ranks[key][found[0]], len(ranks[key]), seed)
+            else:
+                colors[sid] = rainbow_color(ranks[key][found[0]], len(ranks[key]))
             values.add(value)
             by_key[key] += 1
             break

@@ -432,6 +432,52 @@ def value_color(value: str, seed: int = 0) -> str:
     return segment_color(int.from_bytes(digest, "little"), seed)
 
 
+#: The golden angle as a fraction of a turn: the target hue step between consecutive values
+#: of a spaced palette.
+GOLDEN_TURN = (3 - 5 ** 0.5) / 2
+
+#: How far round the hue circle a rainbow palette goes: red to violet, stopping short of
+#: the magenta that would bring the last value back towards red.
+RAINBOW_TURN = 0.8
+
+
+def spaced_stride(n: int) -> int:
+    """The step, in hue slots, between consecutive values of an ``n``-value spaced palette:
+    the one nearest the golden angle that shares no factor with ``n``, so the walk visits
+    every slot once and comes back to the start one step after the last value."""
+    from math import gcd
+
+    if n <= 2:
+        return 1
+    return min((k for k in range(1, n // 2 + 1) if gcd(k, n) == 1),
+               key=lambda k: abs(k - n * GOLDEN_TURN))
+
+
+def spaced_color(key: str, rank: int, n: int, seed: int = 0) -> str:
+    """``#rrggbb`` for the ``rank``-th of ``n`` values of property ``key``, spaced.
+
+    The ``n`` hues are evenly spaced and visited :func:`spaced_stride` slots apart, so
+    consecutive values, and the last and the first, are all ~137 degrees apart, and no two
+    values are closer than 360/n. The circle's start is hashed from ``key``, so two
+    properties do not share colours, and saturation alternates 1.0 / 0.6 by rank as a
+    second cue.
+    """
+    import hashlib
+
+    digest = hashlib.blake2b(f"{seed}:{key}".encode(), digest_size=8).digest()
+    slot = rank * spaced_stride(n) % max(n, 1)
+    hue = (int.from_bytes(digest, "little") / 2 ** 64 + slot / max(n, 1)) % 1.0
+    return _hex_from_rgb(_hsv_to_rgb(hue, 1.0 if rank % 2 == 0 else 0.6, 1.0), 255.0)
+
+
+def rainbow_color(rank: int, n: int) -> str:
+    """``#rrggbb`` for the ``rank``-th of ``n`` ordered values: hue runs from red (first)
+    to violet (last) over :data:`RAINBOW_TURN`, so the order reads as a gradient and
+    neighbours are deliberately alike."""
+    hue = RAINBOW_TURN * rank / (n - 1) if n > 1 else 0.0
+    return _hex_from_rgb(_hsv_to_rgb(hue, 1.0, 1.0), 255.0)
+
+
 def _hex_from_rgb(values: Sequence[float], scale: float) -> str:
     channels = [int(round(min(255.0, max(0.0, v * scale)))) for v in values]
     return "#" + "".join(f"{c:02x}" for c in channels)
