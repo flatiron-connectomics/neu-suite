@@ -1,8 +1,9 @@
-"""The neuVid input and the labels for a spec. Pure: everything read from a store or the
-view arrives in `scene` (see `build.gather`), so this runs in milliseconds and can be rerun
-from a build's own records.
+"""The neuVid input and the labels for a spec. Pure: everything read from a store arrives
+in `scene` (see `build.gather`), so this runs in milliseconds and can be rerun from a
+build's own records.
 
-neuVid's units are 8 nm voxels, its camera distances are scaled to match neuroglancer's, and
+neuVid's unit is the neuron volume's voxel (`scene["unit"]` nm), its camera distances are
+scaled to match neuroglancer's, and
 its commands run on a clock that only moves forward, so commands are collected as
 ``(time, command)`` and emitted in time order with `advanceTime` between them.
 """
@@ -16,18 +17,18 @@ from neu_movie import schedule
 from neu_movie.meshes import safe_name
 from neu_movie.palette import linear_hex, mute
 
-#: neuVid's camera sits at 1.3 x `projectionScale` with a 50 degree HORIZONTAL field of view,
-#: which frames ~1.45x tighter than neuroglancer at 16:9 (measured on the head's width in the
-#: opening frame of both renders). Applied to every `poseCamera` distance.
+#: neuVid's camera sits at 1.3 x the view's height with a 50 degree HORIZONTAL field of
+#: view, which frames ~1.45x tighter than neuroglancer at 16:9 (measured on the head's width
+#: in the opening frame of both renders). Applied to every `poseCamera` distance.
 DISTANCE_SCALE = 1.45
 
 
 def compose(spec, scene):
     """``(neuvid doc, labels doc, info)``. `info` has the duration, frame count, for a
-    follow camera the frame range `smooth_camera` joins into one path, and whether there is
-    an orbit and whether it loops (both for `blender/orbit.py`)."""
+    follow camera the frame range `smooth_camera` joins into one path, whether there is
+    an orbit and whether it loops (both for `blender/orbit.py`), and the fill light's
+    strength (for `blender/fill_light.py`)."""
     t, cam, head = spec["timing"], spec["camera"], spec["head"]
-    view_state = scene["view"]
     ids, colours = scene["ids"], scene["colours"]
     shown = [b for b in spec["beats"] if any(n in ids for n in b["sets"])]
     if len(shown) != len(spec["beats"]):
@@ -66,12 +67,14 @@ def compose(spec, scene):
 
     # -- the opening -------------------------------------------------------------- #
     events = []
-    view = {"target": view_state["position"],
-            "orientation": view_state.get("projectionOrientation", [0, 0, 0, 1]),
-            "distance": view_state.get("projectionScale", 12000) * DISTANCE_SCALE}
+    view = {"target": [v / scene["unit"] for v in spec["view"]["position"]],
+            "orientation": opening_orientation(spec),
+            "distance": spec["view"]["height"] / scene["unit"] * DISTANCE_SCALE}
+    level = cam["up"]
     events.append((0.0, ["poseCamera", dict(view)]))
     if cam["style"] == "orbit":
-        bound = "rois.head" if head else " + ".join(expr.values())
+        bound = ("rois.head" if head and cam["frame"] == "head"
+                 else " + ".join(expr.values()))
         if not bound:
             raise ValueError("an orbit camera frames the head or the sets, and there are neither")
         events.append((0.0, ["frameCamera", {"bound": bound, "scale": cam["scale"],
@@ -121,6 +124,7 @@ def compose(spec, scene):
     # -- the camera ---------------------------------------------------------------- #
     content_end = schedule.content_end(spec)
     smooth = None
+    beat_expr = [" + ".join(expr[n] for n in b["sets"] if n in expr) for b in spec["beats"]]
     if cam["style"] == "orbit":
         end = content_end + t["tail"]
         # A loop turns over the whole movie: keyed at frames 1 and frames + 1, so the frame
@@ -131,21 +135,34 @@ def compose(spec, scene):
             events.append((orbit_at, ["orbitCamera", {
                 "localAxis": "y", "endingRelativeAngle": cam["orbit_degrees"],
                 "duration": round(orbit_end - orbit_at, 3)}]))
+    elif cam["style"] == "glide":
+        # One move, eased in and out, from the first beat's framing to everything's: it
+        # starts as the first beat does and ends as the last has faded in. The orientation
+        # never changes, so the orbit after it turns about the opening view's vertical.
+        last = len(spec["beats"]) - 1
+        glide_at, orbit_at = schedule.beat_start(spec, 0), schedule.beat_end(spec, last)
+        events.append((0.0, ["frameCamera", {"bound": beat_expr[0], "scale": cam["scale"],
+                                             "duration": 0}]))
+        events.append((glide_at, ["frameCamera", {
+            "bound": " + ".join(beat_expr), "scale": cam["scale"],
+            "duration": round(orbit_at - glide_at, 3)}]))
+        events.append((orbit_at, ["orbitCamera", {
+            "localAxis": "y", "endingRelativeAngle": cam["orbit_degrees"],
+            "duration": cam["orbit_seconds"]}]))
+        end = orbit_at + cam["orbit_seconds"] + t["tail"]
     else:
         # Each beat frames its sets with the previous ones in the window. Moves run back to
         # back; neuVid keys each as its own ease-in/ease-out, and smooth_camera (run after
         # addAnimation) joins them into one continuous path.
         move = round(t["every"] if cam["move_seconds"] is None else cam["move_seconds"], 3)
-        beat_expr = [" + ".join(expr[n] for n in b["sets"] if n in expr)
-                     for b in spec["beats"]]
         for i in range(len(spec["beats"])):
             window = " + ".join(beat_expr[max(0, i + 1 - cam["window"]):i + 1])
             events.append((schedule.beat_start(spec, i), ["frameCamera", {
                 "bound": window, "scale": cam["scale"], "duration": move}]))
         settle = schedule.beat_start(spec, len(spec["beats"]) - 1) + t["every"]
         back = dict(view)
-        if scene.get("level"):
-            back["orientation"] = level_orientation(view["orientation"], scene["level"])
+        if level:
+            back["orientation"] = level_orientation(view["orientation"], level)
         events.append((settle, ["poseCamera", dict(back, duration=cam["pullback_seconds"])]))
         orbit_at = settle + cam["pullback_seconds"]
         events.append((orbit_at, ["orbitCamera", {
@@ -159,8 +176,59 @@ def compose(spec, scene):
            "animation": timeline(events, end)}
     orbit = any(cmd[0] == "orbitCamera" for _, cmd in events)
     info = {"seconds": end, "frames": round(end * spec["fps"]), "smooth": smooth,
-            "orbit": orbit, "loop": orbit and cam["style"] == "orbit" and cam["loop"]}
-    return doc, labels_mod.compose(spec, ids, colours, end), info
+            "orbit": orbit, "loop": orbit and cam["style"] == "orbit" and cam["loop"],
+            "fill": spec["light"]["fill"]}
+    return doc, labels_mod.compose(spec, ids, colours, end, scene["region_colours"]), info
+
+
+def opening_orientation(spec):
+    """The movie's first orientation: the view's, levelled about `[camera] up` for an orbit
+    or a glide (a follow camera levels only its return)."""
+    q, up = spec["view"]["orientation"], spec["camera"]["up"]
+    return level_orientation(q, up) if up and spec["camera"]["style"] in ("orbit", "glide") \
+        else q
+
+
+def orbit_degrees_at(spec, when):
+    """How far an orbit camera has turned at `when` (seconds), or None for another camera.
+    A loop turns at constant speed over the whole movie; otherwise neuVid eases in and out,
+    approximated by a smoothstep."""
+    cam, t = spec["camera"], spec["timing"]
+    if cam["style"] != "orbit":
+        return None
+    content_end = schedule.content_end(spec)
+    if cam["loop"]:
+        return cam["orbit_degrees"] * when / (content_end + t["tail"])
+    span = content_end - cam["orbit_at"]
+    f = min(max((when - cam["orbit_at"]) / span, 0.0), 1.0) if span > 0 else 1.0
+    return cam["orbit_degrees"] * f * f * (3 - 2 * f)
+
+
+def turned(q, degrees):
+    """Orientation `q` after the camera has orbited `degrees` about its own vertical, as
+    neuVid's orbitCamera turns it (positive: the camera moves to its right). neuroglancer's
+    view y points down the screen, so the camera's up is minus its y column."""
+    m = _matrix(q)
+    axis = -m[:, 1]
+    a = np.radians(degrees)
+    k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    rotation = np.eye(3) + np.sin(a) * k + (1 - np.cos(a)) * k @ k
+    return _quaternion(rotation @ m)
+
+
+def view_from_state(state):
+    """A `[view]` (position and height in nm, orientation) and the `up` of a neuroglancer
+    state, for pasting into a spec."""
+    dims = state["dimensions"]
+    nm = [float(dims[a][0]) * {"m": 1e9, "nm": 1.0}[dims[a][1]] for a in "xyz"]
+    if len(set(nm)) != 1:
+        raise ValueError(f"anisotropic dimensions {dims}: the zoom has no single unit")
+    q = state.get("projectionOrientation", [0, 0, 0, 1])
+    up = -_matrix(q)[:, 1]
+    return {"position": [round(p * n, 1) for p, n in zip(state["position"], nm)],
+            "orientation": [round(float(v), 6) for v in q],
+            "height": round(float(state.get("projectionScale", 1)) * nm[0], 1),
+            "up": [round(float(v), 6) + 0.0 for v in up]}      # + 0.0: no "-0"
 
 
 def _matrix(q):
@@ -186,17 +254,17 @@ def _quaternion(m):
     return [float(v) for v in q / np.linalg.norm(q)]
 
 
-def level_orientation(q, reference):
-    """`q` turned upright in `reference`: the same view direction swung into the plane
-    level in `reference`, with `reference`'s vertical as its own. An orbit about the
-    result's vertical (neuVid's local y) then turns about `reference`'s."""
+def level_orientation(q, up):
+    """`q` turned upright about the direction `up`: the same view direction swung into the
+    plane square to `up`, with `up` as its vertical. An orbit about the result's vertical
+    (neuVid's local y) then turns about `up`."""
     r = _matrix(q)
-    up = _matrix(reference)[:, 1]
+    up = np.asarray(up, float) / np.linalg.norm(up)
     if r[:, 1] @ up < 0:
         up = -up
     d = r[:, 2] - (r[:, 2] @ up) * up
     if np.linalg.norm(d) < 1e-6:
-        raise ValueError("the view looks straight along the level view's vertical")
+        raise ValueError("the view looks straight along `up`")
     d /= np.linalg.norm(d)
     return _quaternion(np.column_stack([np.cross(up, d), up, d]))
 

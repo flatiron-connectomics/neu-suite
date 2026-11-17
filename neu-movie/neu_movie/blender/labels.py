@@ -11,6 +11,9 @@ neuVid's `compLabels.py`, with two of its functions replaced rather than forked:
 - label materials BLEND rather than dither, so a half-faded label is clean at a few EEVEE
   samples. compLabels renders at Blender's default 64, ~10x slower for flat text.
 
+and one added: `align = "right"` puts a label's right end at its position, for the
+neuropil legend down the right edge.
+
 Labels live in `<name>_labels.json` beside the build's neuVid input, never inside it:
 addAnimation exits on a `label` argument it does not know, such as `fade`.
 """
@@ -27,13 +30,21 @@ import compLabels as cl  # noqa: E402
 from utilsMaterials import insertMaterialKeyframe, setMaterialValue  # noqa: E402
 
 _process_label = cl.process_label
+_make_text_object = cl.make_text_object
 
 
 def process_label(cmd, time, fps, image_size):
     label = _process_label(cmd, time, fps, image_size)
     if label is not None:
         label["fade_frames"] = cmd[1].get("fade", 4 / fps) * fps
+        label["align"] = cmd[1].get("align", "left")
     return label
+
+
+def make_text_object(name, label, z):
+    obj = _make_text_object(name, label, z)
+    obj.data.align_x = label["align"].upper()
+    return obj
 
 
 def setup_label_animation(obj, label):
@@ -48,6 +59,7 @@ def setup_label_animation(obj, label):
 
 cl.process_label = process_label
 cl.setup_label_animation = setup_label_animation
+cl.make_text_object = make_text_object
 
 
 def main():

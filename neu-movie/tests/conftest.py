@@ -53,7 +53,8 @@ import pytest  # noqa: E402
 
 from neu_movie import spec as spec_mod  # noqa: E402
 
-BASE = {"view": "view.json", "neurons": {"layer": "seg"}}
+#: The opening camera at (1, 2, 3) and 1000 units tall, in 8 nm units (`scene`'s `unit`).
+BASE = {"view": {"position": [8, 16, 24], "height": 8000}, "neurons": {"library": "lib/seg"}}
 
 
 def make_spec(beats, tmp=Path("/specs"), **raw):
@@ -69,7 +70,7 @@ def replace_spec():
         [{"title": "one", "sets": [{"name": "A", "ids": [1, 2]}]},
          {"title": "two", "sets": [{"name": "A"}, {"name": "B", "label": "^B"}]},
          {"title": "three", "name": "C", "ids": [5], "regions": ["LA(L)"]}],
-        neuropils={"layer": "rois"},
+        neuropils={"library": "lib/seg", "path": "rois"},
         timing={"start": 1.0, "every": 5.0, "fade": 1.0, "hold": 2.0})
 
 

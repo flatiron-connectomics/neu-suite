@@ -43,7 +43,7 @@ def resolve(spec, **kw):
 
 def test_a_query_uses_the_spec_defaults(meshes):
     spec = make_spec([{"name": "Tm", "label": "^Tm"}],
-                     neurons={"layer": "seg", "query": {"without": ["fragment"]}})
+                     neurons={"library": "lib", "query": {"without": ["fragment"]}})
     assert resolve(spec)[0] == {"Tm": ["10", "11", "13"]}
 
 
@@ -117,3 +117,44 @@ def test_linear_hex_round_trips_through_the_srgb_curve(colour):
 def test_mute_moves_toward_grey():
     assert palette.mute("#ff0000", 0) == "#ff0000"
     assert palette.mute("#ff0000", 1) == palette.to_hex([0.6, 0.6, 0.6])
+
+
+def test_delta_e_tells_the_same_colour_from_a_different_one():
+    assert palette.delta_e("#1f77b4", "#1f77b4") == 0
+    assert palette.delta_e("#d95f02", "#ff7f0e") < palette.MIN_DELTA_E     # two oranges
+    assert palette.delta_e("#1b9e77", "#ff7f0e") > palette.MIN_DELTA_E     # teal, orange
+
+
+def test_neuropils_keep_given_colours_and_prefer_ones_apart_from_the_sets():
+    neurons = palette.SETS[:8]
+    regions = [f"R{i}" for i in range(12)]
+    # Given colours are kept.
+    out = palette.neuropil_colours(regions, {"R0": "#d62728", "R1": "#17becf"}, neurons)
+    assert out["R0"] == "#d62728" and out["R1"] == "#17becf"
+    # The rest use each fitting colour once before any twice, those apart from every set
+    # first; Set2's green and tan are too grey once muted.
+    rest = [out[r] for r in regions[2:]]
+    clear = ["#1b9e77", "#e7298a", "#e6ab02", "#a6761d", "#fc8d62"]
+    assert rest[:5] == clear
+    assert len(set(rest)) == len(rest) and "#66c2a5" not in rest
+
+
+def test_a_neuropil_is_neither_grey_nor_in_its_own_neurons_hue():
+    blue, orange = "#1f77b4", "#ff7f0e"
+    own = {"LA": [blue], "ME": [blue], "LO": [blue], "AOTU": [orange]}
+    out = palette.neuropil_colours(list(own), {"LO": "#ffa21f"}, [blue, orange], own)
+    for region, colour in out.items():
+        muted = palette.mute(colour, 0.5)
+        assert palette.chroma(muted) >= palette.MIN_CHROMA          # not the head's grey
+        assert all(palette.hue_gap(muted, c) >= palette.MIN_OWN_HUE for c in own[region])
+    assert out["LO"] == "#ffa21f"             # given, so ME, chosen first, avoids its hue
+    optic = [out[r] for r in ("LA", "ME", "LO")]
+    assert all(palette.hue_gap(a, b) >= palette.MIN_SIBLING_HUE
+               for i, a in enumerate(optic) for b in optic[i + 1:])
+    assert palette.chroma(palette.mute("#8c564b", 0.5)) < palette.MIN_CHROMA   # muted brown
+    assert palette.hue_gap(palette.mute("#17becf", 0.5), blue) < palette.MIN_OWN_HUE  # cyan
+
+
+def test_a_given_neuropil_colour_is_kept_even_where_it_would_not_be_chosen():
+    out = palette.neuropil_colours(["ME"], {"ME": "#17becf"}, ["#1f77b4"], {"ME": ["#1f77b4"]})
+    assert out == {"ME": "#17becf"}

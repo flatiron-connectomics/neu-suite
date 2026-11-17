@@ -1,4 +1,5 @@
-"""Meshes for neuVid: OBJ files in the view's voxel units, smoothed, with vertex normals.
+"""Meshes for neuVid: OBJ files in neuVid's units (the neuron volume's voxel), smoothed, with
+vertex normals.
 
 They are cached by source volume, smoothing and level of detail, and reused by every build.
 A volume rewritten at the SAME location needs `force` (the cache cannot tell).

@@ -11,7 +11,7 @@ from neu_movie.spec import SpecError
 
 
 def test_the_docstring_example_parses():
-    example = re.search(r"\n\n(    view = .*?)\n\n\*\*Modes", spec_mod.__doc__, re.S).group(1)
+    example = re.search(r"\n\n(    mode = .*?)\n\n\*\*Modes", spec_mod.__doc__, re.S).group(1)
     raw = tomllib.loads("\n".join(line[4:] for line in example.splitlines()))
     spec = spec_mod.parse(raw, "/specs/example.toml")
     assert [b["sets"] for b in spec["beats"]] == [["LA", "Tm"], ["R7p"]]
@@ -19,17 +19,19 @@ def test_the_docstring_example_parses():
     assert spec["sets"]["LA"]["query"] == {"without": ["fragment"], "label": "^L[1-9]"}
 
 
-def test_defaults_name_and_view_path(tmp_path):
+def test_defaults_name_and_view(tmp_path):
     spec = make_spec([{"name": "A", "ids": [1]}], tmp=tmp_path)
     assert spec["name"] == "movie"
-    assert spec["view"] == str(tmp_path / "view.json")
+    assert spec["view"] == {"position": [8.0, 16.0, 24.0], "orientation": [0.0, 0.0, 0.0, 1.0],
+                            "height": 8000.0}
     assert spec["timing"]["fade"] == 1.5 and spec["camera"]["style"] == "orbit"
     assert spec["head"] is None and spec["neuropils"] is None
 
 
 def test_load_reads_toml(tmp_path):
     path = tmp_path / "pop.toml"
-    path.write_text('view = "v.json"\n[neurons]\nlayer = "seg"\n'
+    path.write_text('[view]\nposition = [1, 2, 3]\nheight = 100\n'
+                    '[neurons]\nvolume = "s3://my-bucket/seg"\n'
                     '[[beat]]\nname = "A"\nids = [3, 1]\ncolor = "#AABBCC"\n')
     spec = spec_mod.load(path)
     assert spec["name"] == "pop"
@@ -46,7 +48,7 @@ def test_a_toml_syntax_error_is_a_spec_error(tmp_path):
 
 def test_query_defaults_merge_under_the_set(tmp_path):
     spec = make_spec([{"name": "T", "label": "^Tm", "without": ["truncated"]}],
-                     neurons={"layer": "seg", "query": {"without": ["fragment"], "limit": 9}})
+                     neurons={"library": "lib", "query": {"without": ["fragment"], "limit": 9}})
     assert spec["sets"]["T"]["query"] == {"without": ["truncated"], "limit": 9, "label": "^Tm"}
 
 
@@ -67,8 +69,21 @@ def test_repeating_an_identical_definition_is_allowed():
     ({"timing": {"fade_s": 1}}, None, r"\[timing\]: unknown key\(s\) fade_s"),
     ({"mode": "stack"}, None, "mode 'stack'"),
     ({"camera": {"style": "dolly"}}, None, "camera style 'dolly'"),
-    ({"neurons": {}}, None, "`layer` is required"),
-    ({"neurons": {"layer": "s", "query": {"lable": "x"}}}, None, "query: unknown key"),
+    ({"neurons": {}}, None, r"\[neurons\]: give one of `library` or `volume`"),
+    ({"neurons": {"library": "l", "volume": "v"}}, None, "give one of `library` or `volume`"),
+    ({"neurons": {"library": "l", "query": {"lable": "x"}}}, None, "query: unknown key"),
+    ({"view": {"position": [1, 2], "height": 1}}, None, r"`position` must be 3 numbers"),
+    ({"view": {"position": [1, 2, 3], "height": 0}}, None, "`height` must be a number above"),
+    ({"view": {"position": [1, 2, 3], "height": 1, "orientation": [0, 0, 1]}}, None,
+     "`orientation` must be 4 numbers"),
+    ({"camera": {"up": [0, 1]}}, None, r"`up` must be 3 numbers"),
+    ({"neuropils": {"library": "l"}}, [{"name": "Z", "ids": [9], "regions": ["LA"]}],
+     "with `library`, give `path`"),
+    ({}, [{"name": "Z", "ids": [9], "regions": ["LA"]}], "no \\[neuropils\\] section"),
+    ({"neuropils": {"volume": "v", "colors": {"ME": "#ff0000"}}},
+     [{"name": "Z", "ids": [9], "regions": ["LA"]}], "colors: no set shows ME"),
+    ({"neuropils": {"volume": "v", "colors": {"LA": "red"}}},
+     [{"name": "Z", "ids": [9], "regions": ["LA"]}], "colors: colour 'red' is not"),
     ({"head": {"id": 3}}, None, "one of `library` or `volume`"),
     ({"head": {"library": "x", "volume": "y", "id": 3}}, None, "one of `library` or `volume`"),
     ({"head": {"library": "x"}}, None, r"\[head\]: `id` is required"),
@@ -88,7 +103,10 @@ def test_repeating_an_identical_definition_is_allowed():
     ({"timing": {"repeat": 1.5}}, None, "`repeat` must be a whole number"),
     ({"mode": "accumulate", "timing": {"repeat": 2}}, None, "`repeat` needs mode"),
     ({"camera": {"style": "follow", "loop": True}}, None, "`loop` is for the orbit camera"),
-    ({"camera": {"level": "front.json"}}, None, "`level` is for the follow camera"),
+    ({"camera": {"frame": "neurons"}}, None, "frame 'neurons' is not one of"),
+    ({"camera": {"style": "glide", "loop": True}}, None, "`loop` is for the orbit camera"),
+    ({"light": {"fill": -1}}, None, "`fill` must be a number"),
+    ({"light": {"fill": "bright"}}, None, "`fill` must be a number"),
 ])
 def test_mistakes_fail_loudly(raw, beats, message):
     with pytest.raises(SpecError, match=message):
@@ -96,9 +114,15 @@ def test_mistakes_fail_loudly(raw, beats, message):
 
 
 def test_a_missing_view_is_an_error():
-    with pytest.raises(SpecError, match="`view`"):
-        spec_mod.parse({"neurons": {"layer": "s"}, "beat": [{"name": "A", "ids": [1]}]},
+    with pytest.raises(SpecError, match=r"\[view\] needs `position` and `height`"):
+        spec_mod.parse({"neurons": {"library": "s"}, "beat": [{"name": "A", "ids": [1]}]},
                        "/specs/m.toml")
+
+
+def test_a_view_file_says_how_to_make_the_table():
+    with pytest.raises(SpecError, match="`neu-movie camera front.json` prints one"):
+        spec_mod.parse({"view": "front.json", "neurons": {"library": "s"},
+                        "beat": [{"name": "A", "ids": [1]}]}, "/specs/m.toml")
 
 
 def test_defaults_are_not_shared_between_specs():
@@ -115,7 +139,9 @@ def test_repeat_plays_the_beats_over_again():
     assert set(spec["sets"]) == {"A", "B"}
 
 
-def test_level_is_a_view_beside_the_spec():
-    spec = make_spec([{"name": "A", "ids": [1]}],
-                     camera={"style": "follow", "level": "front.json"})
-    assert spec["camera"]["level"] == "/specs/front.json"
+def test_up_and_neuropil_colours_are_normalised():
+    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA"]}],
+                     camera={"style": "follow", "up": [0, 1, 0]},
+                     neuropils={"library": "l", "path": "rois", "colors": {"LA": "#AABBCC"}})
+    assert spec["camera"]["up"] == [0.0, 1.0, 0.0]
+    assert spec["neuropils"]["colors"] == {"LA": "#aabbcc"}

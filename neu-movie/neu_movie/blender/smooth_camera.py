@@ -11,15 +11,23 @@ automatic (unclamped) Bezier handles, so the camera passes through each framing 
 stopping. The key at S keeps its handles, so the path still eases out of rest there, and keys
 from E on are untouched (the orbit is driven by a constraint over keys that must stay put).
 
+It also turns each camera rotation the short way. `poseCamera` keys Euler angles and Blender
+blends each angle on its own, so of the two Euler triples for one orientation, neuVid's
+`make_compatible` can leave the far one: a 25 degree turn keyed as (54, 177, -33) ->
+(-104, 11, 141) swung the camera through several hundred degrees. Each rotation key is
+rewritten as whichever triple is nearer the key before it.
+
 Edits `<build>/<name>Anim.blend` in place, which is what render.py reads. Imports bpy, so it
 runs only inside Blender.
 """
 
 import argparse
+import math
 import os
 import sys
 
 import bpy
+import mathutils
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser(prog="smooth_camera.py")
@@ -59,6 +67,37 @@ for fc in curves:
         if args.start < f < args.end:
             k.handle_left_type = k.handle_right_type = "AUTO"
     fc.update()
+
+
+
+def nearest_euler(e, prev):
+    """Of the two XYZ Euler triples for `e`'s orientation, each made compatible with
+    `prev`, the one nearer `prev`."""
+    alt = mathutils.Euler((e.x + math.pi, math.pi - e.y, e.z + math.pi), "XYZ")
+    best = []
+    for c in (e.copy(), alt):
+        c.make_compatible(prev)
+        best.append((sum(abs(a - b) for a, b in zip(c, prev)), c))
+    return min(best, key=lambda dc: dc[0])[1]
+
+
+turns = [fc for fc in camera.animation_data.action.fcurves if fc.data_path == "rotation_euler"]
+if turns:
+    by_frame = [keys_at(fc) for fc in turns]
+    frames_r = sorted(set.intersection(*(set(k) for k in by_frame)))
+    for prev_f, f in zip(frames_r, frames_r[1:]):
+        prev = mathutils.Euler([k[prev_f].co[1] for k in by_frame], "XYZ")
+        e = mathutils.Euler([k[f].co[1] for k in by_frame], "XYZ")
+        n = nearest_euler(e, prev)
+        if max(abs(a - b) for a, b in zip(n, e)) > 1e-6:
+            turn = math.degrees(prev.to_quaternion().rotation_difference(e.to_quaternion()).angle)
+            print(f"rotation key at frame {f}: {[round(math.degrees(v)) for v in e]} -> "
+                  f"{[round(math.degrees(v)) for v in n]} deg, a turn of "
+                  f"{min(turn, 360 - turn):.1f} deg from the key before")
+        for k, v in zip(by_frame, n):
+            k[f].co[1] = v
+    for fc in turns:
+        fc.update()
 
 kept = [f for f in sorted(keys_at(curves[0])) if args.start <= f <= args.end]
 print(f"smoothed camera between frames {args.start} and {args.end}: dropped {len(dropped)} "

@@ -1,5 +1,6 @@
 """neu-movie: a TOML spec in, a rendered movie out.
 
+    neu-movie camera  STATE                 a spec's [view] from a neuroglancer state or link
     neu-movie check   SPEC [--links]        sets, counts, schedule, colour clashes; no Blender
     neu-movie build   SPEC                  meshes and Blender files -> a new build folder
     neu-movie stills  BUILD -f 300 450      render a few frames here, labelled
@@ -15,15 +16,34 @@ Site settings (Blender, neuVid, Slurm) come from `configs/neu-movie.toml`; see
 
 import argparse
 import sys
+from pathlib import Path
 
 from neu_movie import build as build_mod
 from neu_movie import compose, links, schedule
+from neu_movie import site as site_mod
 from neu_movie import spec as spec_mod
+
+
+def _camera(args):
+    from neu_glance.state import load_state
+    v = compose.view_from_state(load_state(args.state))
+
+    def numbers(xs):
+        return "[" + ", ".join(f"{x:g}" for x in xs) + "]"
+    print("[view]")
+    print(f"position = {numbers(v['position'])}       # nm")
+    print(f"orientation = {numbers(v['orientation'])}")
+    print(f"height = {v['height']:g}                  # nm, top to bottom at `position`")
+    print()
+    print("# in [camera], to orbit about this view's vertical instead of the opening one's:")
+    print(f"# up = {numbers(v['up'])}")
+    return 0
 
 
 def _check(args):
     spec = spec_mod.load(args.spec)
-    view, volume, ids, colours = build_mod.resolve(spec, limit=args.limit)
+    world = build_mod.resolve(spec, site_mod.load(Path(args.spec).parent), limit=args.limit)
+    ids, colours = world["ids"], world["colours"]
     print(f"\n{spec['name']}: {spec['mode']}, camera {spec['camera']['style']}, "
           f"{sum(len(v) for v in ids.values())} bodies")
     for i, beat in enumerate(spec["beats"]):
@@ -31,13 +51,13 @@ def _check(args):
                  for n in beat["sets"]]
         print(f"  {schedule.beat_start(spec, i):6.1f} s  {beat['title'] or '-':20s} "
               f"{', '.join(names)}")
-    scene = {"view": view, "ids": ids, "colours": colours, "neuron_dir": "-", "roi_dir": "-",
-             "region_colours": {}, "head": {"dir": "-", "roi": "-"} if spec["head"] else None,
-             "level": build_mod.level_reference(spec)}
+    scene = {"unit": world["unit"], "ids": ids, "colours": colours, "neuron_dir": "-",
+             "roi_dir": "-", "head": {"dir": "-", "roi": "-"} if spec["head"] else None,
+             "region_colours": {r: v["color"] for r, v in world["regions"].items()}}
     _, _, info = compose.compose(spec, scene)
     print(f"  {info['seconds']:g} s at {spec['fps']} fps = {info['frames']} frames")
     if args.links:
-        for title, url in links.beat_links(spec, view, ids, colours):
+        for title, url in links.links(spec, world):
             print(f"\n# {title}\n{url}")
     return 0
 
@@ -46,6 +66,9 @@ def build_parser():
     ap = argparse.ArgumentParser(prog="neu-movie", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("camera", help="print a spec's [view] from a neuroglancer state")
+    p.add_argument("state", help="a neuroglancer state JSON file or link")
 
     p = sub.add_parser("check", help="resolve sets and show the schedule; no Blender")
     p.add_argument("spec")
@@ -87,6 +110,8 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "camera":
+            return _camera(args)
         if args.command == "check":
             return _check(args)
         if args.command in ("build", "animate"):

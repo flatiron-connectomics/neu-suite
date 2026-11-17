@@ -6,14 +6,13 @@ import pytest
 from conftest import make_spec
 from neu_movie import compose as compose_mod
 from neu_movie import labels, schedule
-from neu_movie.palette import linear_hex
+from neu_movie.palette import linear_hex, mute
 
-VIEW = {"position": [1, 2, 3], "projectionOrientation": [0, 0, 0, 1], "projectionScale": 1000}
 
 
 def scene(spec, *, head=False, regions=()):
     ids = {n: ["1"] for n in spec["sets"]}
-    return {"view": VIEW, "ids": ids, "colours": {n: "#ff0000" for n in ids},
+    return {"unit": 8.0, "ids": ids, "colours": {n: "#ff0000" for n in ids},
             "neuron_dir": "/m/neurons",
             "roi_dir": "/m/rois" if (spec["neuropils"] or head) else None,   # as gather does
             "region_colours": {r: "#00ff00" for r in regions},
@@ -192,6 +191,13 @@ def test_a_repeated_sequence_runs_its_beats_again_on_the_same_clock():
 # from it that a follow camera opens on.
 FRONT = [-0.12595, 0.67477, 0.72233, 0.08407]
 TILTED = [0.10992, 0.44167, 0.85068, 0.26305]
+UP = list(-compose_mod._matrix(FRONT)[:, 1])          # the frontal view's vertical
+
+
+def tilted(spec, **camera):
+    """`spec` opening on the tilted view, with `camera` keys set."""
+    return dict(spec, view=dict(spec["view"], orientation=TILTED),
+                camera=dict(spec["camera"], **camera))
 
 
 def test_quaternions_round_trip():
@@ -203,30 +209,116 @@ def test_quaternions_round_trip():
 
 
 def test_level_orientation_keeps_the_direction_around_the_vertical():
-    m = compose_mod._matrix(compose_mod.level_orientation(TILTED, FRONT))
+    m = compose_mod._matrix(compose_mod.level_orientation(TILTED, UP))
     front, tilted = compose_mod._matrix(FRONT), compose_mod._matrix(TILTED)
     up = front[:, 1]
     assert np.isclose(m[:, 1] @ up, 1)                 # upright in the reference
     assert np.isclose(m[:, 2] @ up, 0)                 # looking level
     flat = tilted[:, 2] - (tilted[:, 2] @ up) * up     # the same way round the vertical
     assert np.allclose(m[:, 2], flat / np.linalg.norm(flat))
-    assert np.allclose(compose_mod._matrix(compose_mod.level_orientation(FRONT, FRONT)), front)
+    assert np.allclose(compose_mod._matrix(compose_mod.level_orientation(FRONT, UP)), front)
 
 
 def test_level_orientation_refuses_a_view_along_the_vertical():
     front = compose_mod._matrix(FRONT)
     down = compose_mod._quaternion(np.column_stack([front[:, 0], front[:, 2], -front[:, 1]]))
     with pytest.raises(ValueError, match="straight along"):
-        compose_mod.level_orientation(down, FRONT)
+        compose_mod.level_orientation(down, UP)
 
 
 def test_a_levelled_follow_camera_pulls_back_upright(accumulate_spec):
-    view = dict(VIEW, projectionOrientation=TILTED)
-    sc = dict(scene(accumulate_spec), view=view, level=FRONT)
-    events, _ = at(compose_mod.compose(accumulate_spec, sc)[0]["animation"])
+    spec = tilted(accumulate_spec, up=UP)
+    events, _ = at(compose_mod.compose(spec, scene(spec))[0]["animation"])
     opening, back = [a for t, c, a in events if c == "poseCamera"]
     assert opening["orientation"] == TILTED
-    assert back["orientation"] == compose_mod.level_orientation(TILTED, FRONT)
+    assert back["orientation"] == compose_mod.level_orientation(TILTED, UP)
     assert back["target"] == opening["target"] and back["distance"] == opening["distance"]
-    events, _ = at(compose_mod.compose(accumulate_spec, dict(sc, level=None))[0]["animation"])
+    spec = tilted(accumulate_spec)
+    events, _ = at(compose_mod.compose(spec, scene(spec))[0]["animation"])
     assert [a for t, c, a in events if c == "poseCamera"][1]["orientation"] == TILTED
+
+
+def test_a_glide_camera_moves_once_from_the_first_beat_to_everything():
+    spec = make_spec([{"name": "A", "ids": [1]}, {"name": "B", "ids": [2]},
+                      {"name": "C", "ids": [3]}], mode="accumulate",
+                     timing={"start": 0.5, "every": 2.0, "fade": 1.0},
+                     camera={"style": "glide", "orbit_seconds": 10.0, "scale": 1.2})
+    doc, _, info = compose_mod.compose(spec, scene(spec))
+    events, end = at(doc["animation"])
+    frames = [(t, a["bound"], a["duration"]) for t, c, a in events if c == "frameCamera"]
+    # Framed on A from the start; one move from A's start until C (at 4.5) has faded in.
+    assert frames == [(0.0, "neurons.A", 0), (0.5, "neurons.A + neurons.B + neurons.C", 5.0)]
+    assert all(a["scale"] == 1.2 for t, c, a in events if c == "frameCamera")
+    orbit = next((t, a["duration"]) for t, c, a in events if c == "orbitCamera")
+    assert orbit == (5.5, 10.0)
+    assert end == info["seconds"] == 5.5 + 10.0 + 1.5
+    assert info["smooth"] is None and info["orbit"] and not info["loop"]
+    assert [t for t, c, a in events if c == "poseCamera"] == [0.0]
+
+
+def test_a_levelled_glide_camera_is_upright_from_the_start():
+    spec = tilted(make_spec([{"name": "A", "ids": [1]}], mode="accumulate",
+                            camera={"style": "glide"}), up=UP)
+    events, _ = at(compose_mod.compose(spec, scene(spec))[0]["animation"])
+    poses = [a for t, c, a in events if c == "poseCamera"]
+    assert [p["orientation"] for p in poses] == [compose_mod.level_orientation(TILTED, UP)]
+
+
+def test_the_fill_light_strength_is_passed_on(replace_spec):
+    assert compose_mod.compose(replace_spec, scene(replace_spec))[2]["fill"] == 2.0
+    spec = make_spec([{"name": "A", "ids": [1]}], light={"fill": 0})
+    assert compose_mod.compose(spec, scene(spec))[2]["fill"] == 0
+
+
+def test_an_orbit_can_frame_the_sets_and_be_levelled():
+    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)"]}, {"name": "B", "ids": [2]}],
+                     mode="accumulate", neuropils={"library": "lib", "path": "rois"},
+                     head={"library": "lib", "id": 1},
+                     camera={"frame": "sets", "orbit_degrees": -360.0})
+    spec = tilted(spec, up=UP)
+    events, _ = at(compose_mod.compose(spec, scene(spec, head=True, regions=["LA(L)"]))[0]
+                   ["animation"])
+    frame = next(a for t, c, a in events if c == "frameCamera")
+    assert frame["bound"] == "neurons.A + rois.A + neurons.B"           # not the head
+    assert next(a for t, c, a in events if c == "orbitCamera")["endingRelativeAngle"] == -360
+    poses = [a for t, c, a in events if c == "poseCamera"]
+    assert [p["orientation"] for p in poses] == [compose_mod.level_orientation(TILTED, UP)]
+    default = make_spec([{"name": "A", "ids": [1]}], head={"library": "lib", "id": 1})
+    events, _ = at(compose_mod.compose(default, scene(default, head=True))[0]["animation"])
+    assert next(a for t, c, a in events if c == "frameCamera")["bound"] == "rois.head"
+
+
+def neuropil_rows(doc):
+    return [(t, a["text"], a["position"], a["color"]) for t, c, a in at(doc["animation"])[0]
+            if a.get("align") == "right"]
+
+
+def test_neuropils_get_a_legend_on_the_right_as_they_appear():
+    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)", "ME(L)"]},
+                      {"name": "B", "ids": [2]},
+                      {"name": "C", "ids": [3], "regions": ["ME(L)", "AOTU(L)"]}],
+                     mode="accumulate", neuropils={"library": "lib", "path": "rois", "mute": 0.5},
+                     timing={"start": 0.5, "every": 2.0, "fade": 1.5})
+    ids = {"A": ["1"], "B": ["2"], "C": ["3"]}
+    regions = {"LA(L)": "#1b9e77", "ME(L)": "#e6ab02", "AOTU(L)": "#17becf"}
+    doc = labels.compose(spec, ids, dict.fromkeys(ids, "#ff0000"), 20.0, regions)
+    # One row per neuropil at its first set's beat, top-down, right-aligned at 1 - legend_x,
+    # in the colour it is drawn in.
+    assert neuropil_rows(doc) == [
+        (0.5, "LA(L)", [0.96, 0.19], linear_hex(mute("#1b9e77", 0.5))),
+        (0.5, "ME(L)", [0.96, 0.125], linear_hex(mute("#e6ab02", 0.5))),
+        (4.5, "AOTU(L)", [0.96, 0.06], linear_hex(mute("#17becf", 0.5)))]
+    assert {r[1] for r in label_rows(doc)} >= {"A", "B", "C"}           # the set legend stays
+    off = dict(spec, labels=dict(spec["labels"], neuropil_legend=False))
+    assert neuropil_rows(labels.compose(off, ids, dict.fromkeys(ids, "#ff0000"), 20.0,
+                                        regions)) == []
+
+
+def test_a_replace_beats_neuropils_come_and_go_with_it(replace_spec):
+    ids = {"A": ["1"], "B": ["2"], "C": ["3"]}
+    doc = labels.compose(replace_spec, ids, dict.fromkeys(ids, "#ff0000"), 16.5,
+                         {"LA(L)": "#1b9e77"})
+    assert [(t, text, pos) for t, text, pos, _ in neuropil_rows(doc)] == [
+        (11.0, "LA(L)", [0.96, 0.06])]
+    la = next(a for t, c, a in at(doc["animation"])[0] if a["text"] == "LA(L)")
+    assert la["duration"] == 4.0                                         # as C's own label

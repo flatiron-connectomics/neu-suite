@@ -1,17 +1,22 @@
 """A movie spec: one TOML file per animation. Every key is checked, so a typo fails loudly
 instead of quietly falling back to a default::
 
-    view = "frontal_view.json"   # the opening camera, and the layers volumes are read from
     mode = "replace"             # or "accumulate"
     fps = 30
 
+    [view]                       # the opening camera; `neu-movie camera STATE` prints it
+    position = [53304.0, 43142.0, 53359.0]          # what it looks at, nm
+    orientation = [-0.126, 0.675, 0.722, 0.084]     # neuroglancer's projectionOrientation
+    height = 109974.0            # nm spanned top to bottom at `position`
+
     [neurons]                    # the segmentation the sets come from
-    layer = "segmentation"       # its layer in the view
+    library = "my-volume/v1"     # a volume library name, or `volume = "<url>"`
     lod = 1                      # mesh level of detail (0 = full)
     query = { without = ["fragment"] }   # defaults for every set's query
 
     [neuropils]                  # optional: regions shown with sets (a set's `regions`)
-    layer = "neuropils"
+    library = "my-volume/v1"
+    path = "rois/neuropils"      # the region layer, under the library volume
 
     [head]                       # optional: the animal's outline, as a faint shell
     library = "my-volume/v1"     # a volume library name, or `volume = "<url>"`
@@ -52,14 +57,27 @@ palette. A set named in several beats is ONE set, defined once.
 **Repeats.** `[timing] repeat = N` plays the beats N times over (`replace` mode only), each
 pass with its own `start` and `tail`, so the seam between passes matches a loop's.
 
-**Camera.** `orbit`: frames the head (or every set) and turns about the screen's vertical
-from `orbit_at` until the last fade ends. With `loop = true` it turns from the first frame
+**Sources.** `[neurons]`, `[neuropils]` and `[head]` each name a volume: a `library` name
+or a `volume` URL, and a `path` under it (the head's defaults to `rois/head`).
+
+**Camera.** `orbit`: frames the head (`frame = "sets"`, or without a head: every set) and
+turns about the screen's vertical from `orbit_at` until the last fade ends. With `loop = true` it turns from the first frame
 to the last at constant speed instead, so the movie loops without a seam. `follow`: each
 beat dollies to frame its sets with the previous `window - 1` beats', then the camera
-returns to the opening view and orbits for `orbit_seconds`. A positive `orbit_degrees`
-moves the camera to its right, so the scene turns to the left. `level = "<view>.json"` levels
-that return: same direction and distance, but upright in that view, so the orbit turns
-about its vertical rather than the opening view's.
+returns to the opening view and orbits for `orbit_seconds`. `glide`: opens framed on the
+first beat and makes one slow move, from the first beat's start until the last beat has
+faded in, to frame every set, then orbits for `orbit_seconds`. A positive `orbit_degrees`
+moves the camera to its right, so the scene turns to the left. `up = [x, y, z]` keeps the
+view direction but stands it upright about that vertical, so the orbit turns about it
+rather than about the opening view's: for `follow` it levels the return, for `orbit` and
+`glide` the whole movie.
+
+**Light.** neuVid's lights are fixed in the world, so `[light] fill` adds one that moves with
+the camera, so no side the camera comes round to is black (W/m^2; neuVid's lamps give
+about 4 each; 0 for none).
+
+**Labels.** Beat titles at the top, a legend of the sets at the bottom left and, with
+`neuropil_legend`, one of the neuropils at the bottom right, each name in its colour.
 """
 
 import copy
@@ -69,12 +87,16 @@ import tomllib
 from neu_movie import palette
 
 MODES = ("replace", "accumulate")
-CAMERA_STYLES = ("orbit", "follow")
+CAMERA_STYLES = ("orbit", "follow", "glide")
+FRAMES = ("head", "sets")
 QUERY_KEYS = ("label", "tags", "any_tags", "without", "limit")
 
 SECTIONS = {
-    "neurons": {"layer": None, "lod": 0, "query": {}, "workers": 16},
-    "neuropils": {"layer": None, "alpha": 0.08, "exponent": 7.0, "mute": 0.5},
+    "view": {"position": None, "orientation": [0.0, 0.0, 0.0, 1.0], "height": None},
+    "neurons": {"library": None, "volume": None, "path": "", "lod": 0, "query": {},
+                "workers": 16},
+    "neuropils": {"library": None, "volume": None, "path": None, "colors": {}, "alpha": 0.08,
+                  "exponent": 7.0, "mute": 0.5},
     "head": {"library": None, "volume": None, "path": "rois/head", "id": None, "lod": 0,
              "alpha": 0.035, "color": "#808080", "exponent": 7.0, "offset": 4.0,
              "intro_at": 1.0, "intro_seconds": 0.0, "lit_color": "#d9d9d9"},
@@ -83,12 +105,14 @@ SECTIONS = {
                "tail": 1.5, "repeat": 1},
     "camera": {"style": "orbit", "scale": 1.0, "orbit_degrees": 360.0, "orbit_at": 1.0,
                "loop": False, "window": 2, "move_seconds": None, "pullback_seconds": 4.0,
-               "orbit_seconds": 12.0, "level": None},
-    "labels": {"titles": True, "legend": True, "legend_header": "", "title_size": 0.06,
+               "orbit_seconds": 12.0, "up": None, "frame": "head"},
+    "light": {"fill": 2.0},
+    "labels": {"titles": True, "legend": True, "neuropil_legend": True,
+               "legend_header": "", "title_size": 0.06,
                "legend_size": 0.045, "legend_x": 0.04, "legend_bottom": 0.06,
                "legend_step": 0.065},
 }
-TOP = {"view": None, "name": None, "fps": 30, "mode": "replace", "beat": None, **SECTIONS}
+TOP = {"name": None, "fps": 30, "mode": "replace", "beat": None, **SECTIONS}
 SET_KEYS = ("name", "ids", "exclude", "regions", "color", *QUERY_KEYS)
 
 
@@ -145,16 +169,40 @@ def load(path):
     return parse(raw, path)
 
 
+def _numbers(value, n, what):
+    """`value` as `n` floats, or a SpecError naming `what`."""
+    if (not isinstance(value, (list, tuple)) or len(value) != n
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+        raise SpecError(f"{what} must be {n} numbers")
+    return [float(v) for v in value]
+
+
+def _source(section, where):
+    if bool(section["library"]) == bool(section["volume"]):
+        raise SpecError(f"{where}: give one of `library` or `volume`")
+
+
 def parse(raw, path):
     where = os.path.basename(path)
+    if not isinstance(raw.get("view", {}), dict):
+        raise SpecError(f"{where}: `view` is a [view] table of the opening camera (position, "
+                        f"orientation, height); `neu-movie camera {raw['view']}` prints one "
+                        f"from a neuroglancer state")
     spec = _section(raw, TOP, where)
     for name, defaults in SECTIONS.items():
         spec[name] = _section(raw.get(name, {}), defaults, f"{where} [{name}]")
     spec["path"] = path
     spec["name"] = spec["name"] or os.path.splitext(os.path.basename(path))[0]
-    if not spec["view"]:
-        raise SpecError(f"{where}: `view` (a neuroglancer state file) is required")
-    spec["view"] = os.path.join(os.path.dirname(path), os.path.expanduser(spec["view"]))
+    view = spec["view"]
+    if "view" not in raw or view["position"] is None or view["height"] is None:
+        raise SpecError(f"{where}: [view] needs `position` and `height` (and `orientation`); "
+                        f"`neu-movie camera STATE` prints them from a neuroglancer state")
+    view["position"] = _numbers(view["position"], 3, f"{where} [view] `position`")
+    view["orientation"] = _numbers(view["orientation"], 4, f"{where} [view] `orientation`")
+    h = view["height"]
+    if isinstance(h, bool) or not isinstance(h, (int, float)) or h <= 0:
+        raise SpecError(f"{where} [view]: `height` must be a number above 0")
+    view["height"] = float(h)
     if spec["mode"] not in MODES:
         raise SpecError(f"{where}: mode {spec['mode']!r} is not one of {MODES}")
     cam = spec["camera"]
@@ -163,21 +211,32 @@ def parse(raw, path):
                         f"{CAMERA_STYLES}")
     if cam["loop"] and cam["style"] != "orbit":
         raise SpecError(f"{where} [camera]: `loop` is for the orbit camera")
-    if cam["level"]:
-        if cam["style"] != "follow":
-            raise SpecError(f"{where} [camera]: `level` is for the follow camera")
-        cam["level"] = os.path.join(os.path.dirname(path), os.path.expanduser(cam["level"]))
-    if not spec["neurons"]["layer"]:
-        raise SpecError(f"{where} [neurons]: `layer` is required")
+    if cam["frame"] not in FRAMES:
+        raise SpecError(f"{where} [camera]: frame {cam['frame']!r} is not one of {FRAMES}")
+    if cam["up"] is not None:
+        cam["up"] = _numbers(cam["up"], 3, f"{where} [camera] `up`")
+    fill = spec["light"]["fill"]
+    if isinstance(fill, bool) or not isinstance(fill, (int, float)) or fill < 0:
+        raise SpecError(f"{where} [light]: `fill` must be a number, 0 or more")
+    _source(spec["neurons"], f"{where} [neurons]")
     head = spec["head"]
     if "head" in raw:
-        if bool(head["library"]) == bool(head["volume"]):
-            raise SpecError(f"{where} [head]: give one of `library` or `volume`")
+        _source(head, f"{where} [head]")
         if head["id"] is None:
             raise SpecError(f"{where} [head]: `id` is required")
     else:
         spec["head"] = None
-    if "neuropils" not in raw:
+    if "neuropils" in raw:
+        nps = spec["neuropils"]
+        _source(nps, f"{where} [neuropils]")
+        if nps["library"] and not nps["path"]:
+            raise SpecError(f"{where} [neuropils]: with `library`, give `path`, the region "
+                            f"layer under it (e.g. \"rois/neuropils\")")
+        try:
+            nps["colors"] = {str(r): palette.normalize(c) for r, c in nps["colors"].items()}
+        except ValueError as e:
+            raise SpecError(f"{where} [neuropils] colors: {e}") from None
+    else:
         spec["neuropils"] = None
 
     query_defaults = spec["neurons"]["query"]
@@ -221,6 +280,12 @@ def parse(raw, path):
                         f"mode the sets of the first pass never leave")
     spec["beats"], spec["sets"] = [dict(b) for _ in range(repeat) for b in beats], sets
     del spec["beat"]
+    regions = {r for s in sets.values() for r in s["regions"]}
+    if regions and not spec["neuropils"]:
+        raise SpecError(f"{where}: sets name `regions` but there is no [neuropils] section")
+    stray = set(spec["neuropils"]["colors"]) - regions if spec["neuropils"] else set()
+    if stray:
+        raise SpecError(f"{where} [neuropils] colors: no set shows {', '.join(sorted(stray))}")
 
     if spec["mode"] == "accumulate":
         again = [n for n in sets if sum(n in b["sets"] for b in beats) > 1]

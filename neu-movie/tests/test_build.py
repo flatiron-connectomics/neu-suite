@@ -11,10 +11,12 @@ from neu_movie import site as site_mod
 from neu_movie.spec import SpecError
 
 SPEC = """\
-view = "../views/view.json"
 mode = "replace"
+[view]
+position = [8, 16, 24]
+height = 8000
 [neurons]
-layer = "seg"
+volume = "s3://my-bucket/seg"
 [timing]
 start = 1.0
 every = 5.0
@@ -30,11 +32,6 @@ title = "two"
 name = "C"
 ids = [3]
 """
-
-VIEW = {"dimensions": {"x": [8e-9, "m"], "y": [8e-9, "m"], "z": [8e-9, "m"]},
-        "position": [1, 2, 3], "projectionScale": 1000,
-        "layers": [{"type": "segmentation", "name": "seg", "source": "precomputed://x"}]}
-
 
 @pytest.fixture
 def site(tmp_path, monkeypatch):
@@ -54,7 +51,6 @@ def build_dir(tmp_path, site):
     d = tmp_path / "movies" / "renders" / "movie_20260101T0000"
     d.mkdir(parents=True)
     (d / "spec.toml").write_text(SPEC)
-    (d / "view.json").write_text(json.dumps(VIEW))
     (d / "build.json").write_text(json.dumps({"seconds": 16.5, "frames": 495,
                                               "smooth": None, "name": "movie"}))
     (d / "sets.json").write_text(json.dumps({"volume": "precomputed://x", "limit": None, "sets": {
@@ -89,10 +85,10 @@ def test_no_site_config_says_where_to_put_one(tmp_path, monkeypatch):
         site_mod.load(tmp_path)
 
 
-def test_open_build_reads_its_own_copy_of_the_view(build_dir):
+def test_open_build_reads_its_own_spec(build_dir):
     d, spec, info, recorded = build_mod.open_build(build_dir / "build.json")
     assert d == build_dir
-    assert spec["view"] == str(build_dir / "view.json")
+    assert spec["view"]["position"] == [8.0, 16.0, 24.0]
     assert info["frames"] == 495 and set(recorded["sets"]) == {"A", "C"}
 
 
@@ -110,21 +106,29 @@ def test_relabel_uses_the_recorded_sets_and_colours(build_dir):
     assert "B" not in texts                       # resolved to nothing when built
 
 
-def test_unit_nm_needs_isotropic_dimensions():
-    assert build_mod.unit_nm(VIEW) == pytest.approx(8.0)
-    flat = dict(VIEW, dimensions=dict(VIEW["dimensions"], z=[4e-8, "m"]))
+def test_unit_nm_is_the_volumes_finest_voxel_and_must_be_a_cube(monkeypatch):
+    from types import SimpleNamespace
+
+    import neu_vol
+
+    def scales(voxel):
+        return lambda volume: [SimpleNamespace(frame=SimpleNamespace(voxel_size_nm=voxel))]
+    monkeypatch.setattr(neu_vol, "read_scales", scales((8.0, 8.0, 8.0)))
+    assert build_mod.unit_nm("s3://my-bucket/seg") == 8.0
+    monkeypatch.setattr(neu_vol, "read_scales", scales((40.0, 8.0, 8.0)))
     with pytest.raises(SpecError, match="anisotropic"):
-        build_mod.unit_nm(flat)
+        build_mod.unit_nm("s3://my-bucket/seg")
 
 
-def test_a_layer_not_in_the_view_lists_the_ones_that_are():
-    with pytest.raises(SpecError, match="no layer 'cells'; it has 'seg'"):
-        build_mod._layer(VIEW, "cells")
-
-
-def test_head_volume_from_a_url():
-    spec = {"head": {"volume": "s3://my-bucket/rois/", "library": None, "path": "/rois/head/"}}
-    assert build_mod.head_volume(spec, None) == "s3://my-bucket/rois/rois/head"
+def test_a_location_is_a_volume_or_library_entry_with_a_path_under_it(tmp_path, monkeypatch):
+    section = {"volume": "s3://my-bucket/v1/", "library": None, "path": "/rois/head/"}
+    assert build_mod.location(section, None) == "s3://my-bucket/v1/rois/head"
+    assert build_mod.location(dict(section, path=""), None) == "s3://my-bucket/v1"
+    from neu_recipe import library
+    monkeypatch.setattr(library, "location", lambda name, directory: f"s3://my-bucket/{name}")
+    site = type("Site", (), {"library": tmp_path})()
+    section = {"volume": None, "library": "fly/v2", "path": "rois/neuropils"}
+    assert build_mod.location(section, site) == "s3://my-bucket/fly/v2/rois/neuropils"
 
 
 def test_new_build_is_named_by_spec_and_minute(tmp_path):
@@ -175,31 +179,6 @@ def test_frame_numbers(tmp_path):
     assert build_mod.frame_numbers(tmp_path) == [1, 2, 10]
 
 
-def test_links_put_each_beats_sets_in_their_own_coloured_layers(build_dir):
-    pytest.importorskip("neu_glance")
-    from neu_movie import links
-    _, spec, _, recorded = build_mod.open_build(build_dir)
-    ids = {n: s["ids"] for n, s in recorded["sets"].items()}
-    colours = {n: s["color"] for n, s in recorded["sets"].items()}
-    states = links.beat_states(spec, VIEW, ids, colours)
-    assert [title for title, _ in states] == ["one", "two"]
-    layers = {lyr["name"]: lyr for lyr in states[0][1]["layers"]}
-    assert layers["A"]["segmentDefaultColor"] == "#1f77b4"
-    assert "B" not in layers
-    assert VIEW["layers"][0]["name"] == "seg" and len(VIEW["layers"]) == 1
-    url = links.beat_links(spec, VIEW, ids, colours)[1][1]
-    assert url.startswith("http")
-
-
-def test_open_build_reads_its_own_copy_of_a_level_view(build_dir):
-    (build_dir / "spec.toml").write_text(SPEC.replace(
-        "[labels]", '[camera]\nstyle = "follow"\nlevel = "../views/front.json"\n[labels]'))
-    (build_dir / "front.json").write_text(json.dumps({"projectionOrientation": [0, 0, 0, 1]}))
-    _, spec, _, _ = build_mod.open_build(build_dir)
-    assert spec["camera"]["level"] == str(build_dir / "front.json")
-    assert build_mod.level_reference(spec) == [0, 0, 0, 1]
-
-
 def test_an_orbiting_build_fixes_its_orbit(build_dir, site, monkeypatch):
     ran = []
     monkeypatch.setattr(build_mod, "blender", lambda site, script, *a, **k: ran.append(
@@ -219,17 +198,37 @@ def test_an_orbiting_build_fixes_its_orbit(build_dir, site, monkeypatch):
     assert [r[0] for r in ran] == ["importMeshes.py", "addAnimation.py"]
 
 
-def test_a_repeated_sequence_gets_one_link_per_beat(build_dir):
-    pytest.importorskip("neu_glance")
-    from neu_movie import links
-    (build_dir / "spec.toml").write_text(SPEC.replace("hold = 2.0", "hold = 2.0\nrepeat = 2"))
-    _, spec, _, recorded = build_mod.open_build(build_dir)
-    ids = {n: s["ids"] for n, s in recorded["sets"].items()}
-    colours = {n: s["color"] for n, s in recorded["sets"].items()}
-    assert len(spec["beats"]) == 4
-    assert [t for t, _ in links.beat_states(spec, VIEW, ids, colours)] == ["one", "two"]
+def test_a_build_with_a_fill_light_adds_it_last(build_dir, site, monkeypatch):
+    ran = []
+    monkeypatch.setattr(build_mod, "blender", lambda site, script, *a, **k: ran.append(
+        (script.name, [str(x) for x in a])))
+    for name in ("movie.blend", "movieAnim.blend"):
+        (build_dir / name).write_bytes(b"x")
+    s = site_mod.load(build_dir)
+    build_mod.make_blend(build_dir, s, {"name": "movie", "smooth": None, "frames": 495,
+                                        "orbit": True, "loop": True, "fill": 2.5})
+    assert [r[0] for r in ran] == ["importMeshes.py", "addAnimation.py", "orbit.py",
+                                   "fill_light.py"]
+    assert ran[-1][1] == ["-i", str(build_dir / "movie.json"), "--strength", "2.5"]
+    ran.clear()
+    build_mod.make_blend(build_dir, s, {"name": "movie", "smooth": None, "frames": 495,
+                                        "fill": 0})
+    assert "fill_light.py" not in [r[0] for r in ran]
 
 
 def test_a_missing_blender_script_fails_before_blender_runs(build_dir, site, tmp_path):
     with pytest.raises(FileNotFoundError, match="no Blender script"):
         build_mod.blender(site_mod.load(build_dir), tmp_path / "gone.py")
+
+
+def test_relabel_uses_the_recorded_neuropil_colours(build_dir):
+    (build_dir / "spec.toml").write_text(
+        SPEC.replace("[timing]", '[neuropils]\nvolume = "s3://my-bucket/rois"\n[timing]')
+            .replace("ids = [3]", 'ids = [3]\nregions = ["LA(L)"]'))
+    recorded = json.loads((build_dir / "sets.json").read_text())
+    recorded["regions"] = {"LA(L)": {"id": "2", "color": "#1b9e77"}}
+    (build_dir / "sets.json").write_text(json.dumps(recorded))
+    build_mod.relabel(build_dir)
+    doc = json.loads((build_dir / "movie_labels.json").read_text())
+    la = [a for c, a in doc["animation"] if c == "label" and a["text"] == "LA(L)"]
+    assert len(la) == 1 and la[0]["align"] == "right"

@@ -1,12 +1,13 @@
 """Builds: a folder per invocation of a spec, `renders/<spec name>_<YYYYmmddTHHMM>/` beside
 the spec. It holds::
 
-    spec.toml, <view>.json     copies of what it was made from (and of a `level` view)
-    sets.json                  each set's body ids and colour, as resolved
-    build.json                 duration, frame count, camera smoothing range, orbit
+    spec.toml                  a copy of the spec it was made from
+    sets.json                  the volumes, each set's body ids and colour, each neuropil's
+                               segment id and colour, as resolved
+    build.json                 duration, frame count, camera smoothing range, orbit, fill light
     <name>.json                neuVid's input; <name>.blend, <name>Anim.blend from it
     <name>_labels.json         the labels
-    links.txt                  a neuroglancer link per beat
+    links.txt                  neuroglancer links: everything, then each beat
     build-*.log                Blender's output for each step
     frames/, frames-labeled/   rendered, then labelled
     <name>.mp4
@@ -38,100 +39,87 @@ def log(msg):
 
 # -- reading the world --------------------------------------------------------------- #
 
-def _layer(state, name):
-    for lyr in state["layers"]:
-        if lyr.get("name") == name:
-            return lyr
-    raise spec_mod.SpecError(f"the view has no layer {name!r}; it has "
-                             f"{', '.join(repr(lyr.get('name')) for lyr in state['layers'])}")
-
-
-def unit_nm(state):
-    dims = state["dimensions"]
-    sizes = {float(dims[a][0]) for a in "xyz"}
-    if len(sizes) != 1:
-        raise spec_mod.SpecError(f"anisotropic display dimensions {dims}: neuVid units need "
-                                 f"one voxel size")
-    return sizes.pop() * 1e9
-
-
-def head_volume(spec, site):
-    head = spec["head"]
-    if head["volume"]:
-        base = head["volume"]
+def location(section, site):
+    """The URL of a `[neurons]`, `[neuropils]` or `[head]` volume: its library volume or
+    `volume`, with its `path` under it."""
+    if section["volume"]:
+        base = section["volume"]
     else:
         from neu_recipe import library
-        base = library.location(head["library"], directory=site.library)
-    return base.rstrip("/") + "/" + head["path"].strip("/")
+        base = library.location(section["library"], directory=site.library)
+    path = (section["path"] or "").strip("/")
+    return base.rstrip("/") + (f"/{path}" if path else "")
 
 
-def level_reference(spec):
-    """The orientation of the spec's `[camera] level` view, or None."""
-    if not spec["camera"]["level"]:
-        return None
-    with open(spec["camera"]["level"]) as f:
-        return json.load(f).get("projectionOrientation", [0, 0, 0, 1])
+def unit_nm(volume):
+    """neuVid's unit, in nm: the neuron volume's finest voxel."""
+    from neu_vol import read_scales
+    size = read_scales(volume)[0].frame.voxel_size_nm
+    if len(set(size)) != 1:
+        raise spec_mod.SpecError(f"{volume} has anisotropic voxels {size}; neuVid units need "
+                                 f"one voxel size")
+    return float(size[0])
 
 
-def resolve(spec, *, limit=None):
-    """The view, the neuron volume, each set's ids and colour. Reads segment properties,
-    nothing else."""
-    from neu_glance.sources import layer_volume
-    from neu_glance.state import load_state
-    view = load_state(spec["view"])
-    volume = layer_volume(_layer(view, spec["neurons"]["layer"]))
+def resolve(spec, site, *, limit=None):
+    """What the movie shows, as `world`: the volumes, neuVid's unit, each set's ids and
+    colour, each neuropil's segment id and colour. Reads metadata and segment properties,
+    no meshes."""
+    volume = location(spec["neurons"], site)
     ids = sets.resolve(spec, volume, limit=limit)
     if not ids:
         raise spec_mod.SpecError("no set matched anything")
     colours = sets.colours(spec)
     for a, b, c in sets.clashes(spec, colours, ids):
         log(f"  ! {a!r} and {b!r} are on screen together and share {c}")
-    return view, volume, ids, colours
+    world = {"volume": volume, "unit": unit_nm(volume), "ids": ids, "colours": colours,
+             "roi_volume": None, "regions": {},
+             "head_volume": location(spec["head"], site) if spec["head"] else None}
+    regions = list(dict.fromkeys(r for name in ids for r in spec["sets"][name]["regions"]))
+    if regions:
+        from neu_glance.sources import segment_ids
+
+        from neu_movie.palette import neuropil_colours
+        nps = spec["neuropils"]
+        world["roi_volume"] = location(nps, site)
+        own = {r: [colours[n] for n in ids if r in spec["sets"][n]["regions"]] for r in regions}
+        chosen = neuropil_colours(regions, nps["colors"], colours.values(), own, nps["mute"])
+        for name, sid in zip(regions, segment_ids(world["roi_volume"], regions)):
+            world["regions"][name] = {"id": str(sid), "color": chosen[name]}
+            log(f"  neuropil {name}: {chosen[name]}"
+                + (" (the spec's)" if name in nps["colors"] else ""))
+    return world
 
 
-def gather(spec, site, view, volume, ids, colours, *, force=False):
+def gather(spec, site, world, *, force=False):
     """Export every mesh the movie needs and return the `scene` `compose` takes."""
-    from neu_glance.sources import layer_volume, segment_ids
-    unit = unit_nm(view)
-    smooth = spec["meshes"]["smooth"]
+    unit, smooth = world["unit"], spec["meshes"]["smooth"]
     cache = site.meshes / f"smooth{smooth}"
     lod = spec["neurons"]["lod"]
-    neuron_dir = cache / f"neurons-{volume_tag(volume)}-lod{lod}"
-    bodies = sorted({b for members in ids.values() for b in members}, key=int)
-    meshes.export_bodies(volume, bodies, str(neuron_dir), unit, lod, smooth=smooth,
+    neuron_dir = cache / f"neurons-{volume_tag(world['volume'])}-lod{lod}"
+    bodies = sorted({b for members in world["ids"].values() for b in members}, key=int)
+    meshes.export_bodies(world["volume"], bodies, str(neuron_dir), unit, lod, smooth=smooth,
                          force=force, workers=spec["neurons"]["workers"])
 
-    scene = {"view": view, "ids": ids, "colours": colours, "neuron_dir": str(neuron_dir),
-             "roi_dir": None, "region_colours": {}, "head": None,
-             "level": level_reference(spec)}
-    regions = list(dict.fromkeys(r for name in ids for r in spec["sets"][name]["regions"]))
-    if regions and not spec["neuropils"]:
-        raise spec_mod.SpecError("sets name `regions` but the spec has no [neuropils] layer")
-    if spec["neuropils"]:
-        np_layer = _layer(view, spec["neuropils"]["layer"])
-        roi_vol = layer_volume(np_layer)
-        scene["roi_dir"] = str(cache / f"rois-{volume_tag(roi_vol)}")
-        region_ids = dict(zip(regions, segment_ids(roi_vol, regions))) if regions else {}
-        for name, sid in region_ids.items():
-            meshes.export(roi_vol, sid, os.path.join(scene["roi_dir"], f"{safe_name(name)}.obj"),
+    scene = {"unit": unit, "ids": world["ids"], "colours": world["colours"],
+             "neuron_dir": str(neuron_dir), "roi_dir": None, "head": None,
+             "region_colours": {r: v["color"] for r, v in world["regions"].items()}}
+    if world["roi_volume"]:
+        scene["roi_dir"] = str(cache / f"rois-{volume_tag(world['roi_volume'])}")
+        for name, region in world["regions"].items():
+            meshes.export(world["roi_volume"], int(region["id"]),
+                          os.path.join(scene["roi_dir"], f"{safe_name(name)}.obj"),
                           unit, None, force=force, smooth=smooth)
-        # A region's colour: the view's, else the next neuropil palette colour unused there.
-        from neu_movie.palette import NEUROPILS
-        view_colours = np_layer.get("segmentColors", {})
-        unused = iter(c for c in NEUROPILS if c not in view_colours.values())
-        scene["region_colours"] = {name: view_colours.get(region_ids[name]) or
-                                   next(unused, "#ffffff") for name in regions}
     head = spec["head"]
     if head:
         if not scene["roi_dir"]:
             scene["roi_dir"] = str(cache / "rois-head")
-        head_vol = head_volume(spec, site)
-        tag = volume_tag(head_vol)
+        tag = volume_tag(world["head_volume"])
         head_dir = cache / f"head-{tag}-lod{head['lod']}"
         # The shell is the same mesh as an ROI, moved off the lit head (see meshes.export).
         roi = f"head{tag[-8:]}id{head['id']}lod{head['lod']}off{head['offset']:g}"
-        meshes.export(head_vol, head["id"], str(head_dir / f"{head['id']}.obj"), unit,
-                      head["lod"], force=force, one_piece=True, smooth=smooth,
+        meshes.export(world["head_volume"], head["id"], str(head_dir / f"{head['id']}.obj"),
+                      unit, head["lod"], force=force, one_piece=True, smooth=smooth,
                       offset_copy=(os.path.join(scene["roi_dir"], f"{roi}.obj"),
                                    head["offset"]))
         scene["head"] = {"dir": str(head_dir), "roi": roi}
@@ -159,14 +147,7 @@ def open_build(path):
         d = d.parent
     if not (d / "build.json").exists():
         raise FileNotFoundError(f"{d} is not a build (no build.json)")
-    # The build's own copy of the view, wherever the original spec found it.
-    import tomllib
-    with open(d / "spec.toml", "rb") as f:
-        raw = tomllib.load(f)
-    raw["view"] = os.path.basename(raw.get("view", ""))
-    if raw.get("camera", {}).get("level"):
-        raw["camera"]["level"] = os.path.basename(raw["camera"]["level"])
-    spec = spec_mod.parse(raw, str(d / "spec.toml"))
+    spec = spec_mod.load(d / "spec.toml")
     with open(d / "build.json") as f:
         info = json.load(f)
     with open(d / "sets.json") as f:
@@ -199,20 +180,21 @@ def build(spec_path, *, limit=None, force=False, blend=True):
     d = new_build(spec)
     log(f"== build {d}")
     shutil.copy(spec_path, d / "spec.toml")
-    for view_file in (spec["view"], spec["camera"]["level"]):
-        if view_file:
-            shutil.copy(view_file, d / os.path.basename(view_file))
 
     log("== sets")
-    view, volume, ids, colours = resolve(spec, limit=limit)
-    write_json(d / "sets.json", {"volume": volume, "limit": limit,
-                                 "sets": {n: {"color": colours[n], "ids": ids[n]} for n in ids}})
+    world = resolve(spec, site, limit=limit)
+    ids, colours = world["ids"], world["colours"]
+    write_json(d / "sets.json", {
+        "volume": world["volume"], "unit_nm": world["unit"], "limit": limit,
+        "sets": {n: {"color": colours[n], "ids": ids[n]} for n in ids},
+        "neuropils": world["roi_volume"], "regions": world["regions"],
+        "head": world["head_volume"]})
     with open(d / "links.txt", "w") as f:
-        for title, url in links.beat_links(spec, view, ids, colours):
+        for title, url in links.links(spec, world):
             f.write(f"# {title}\n{url}\n\n")
 
     log("== meshes")
-    scene = gather(spec, site, view, volume, ids, colours, force=force)
+    scene = gather(spec, site, world, force=force)
     doc, labels, info = compose_mod.compose(spec, scene)
     name = spec["name"]
     info["name"] = name
@@ -238,6 +220,9 @@ def make_blend(d, site, info):
     if info.get("orbit"):
         steps.append(("orbit", BLENDER_SCRIPTS / "orbit.py",
                       ["-i", json_path] + (["--loop"] if info.get("loop") else [])))
+    if info.get("fill"):
+        steps.append(("fill_light", BLENDER_SCRIPTS / "fill_light.py",
+                      ["-i", json_path, "--strength", info["fill"]]))
     for step, script, args in steps:
         log(f"== {step} (log: {d / f'build-{step}.log'})")
         blender(site, script, *args, log_path=d / f"build-{step}.log")
@@ -256,8 +241,9 @@ def relabel(path):
     ids = {n: s["ids"] for n, s in recorded["sets"].items()}
     colours = {n: s["color"] for n, s in recorded["sets"].items()}
     spec = dict(spec, beats=[b for b in spec["beats"] if any(n in ids for n in b["sets"])])
+    regions = {r: v["color"] for r, v in recorded.get("regions", {}).items()}
     write_json(d / f"{info['name']}_labels.json",
-               labels_mod.compose(spec, ids, colours, info["seconds"]))
+               labels_mod.compose(spec, ids, colours, info["seconds"], regions))
     log(f"wrote {d / (info['name'] + '_labels.json')}")
     return d
 
@@ -314,8 +300,9 @@ def finish(path, processes=1):
     site = site_mod.load(d)
     frames = d / "frames"
     src = frames
-    if (d / f"{info['name']}_labels.json").exists() and (spec["labels"]["titles"] or
-                                                         spec["labels"]["legend"]):
+    lab = spec["labels"]
+    if (d / f"{info['name']}_labels.json").exists() and (
+            lab["titles"] or lab["legend"] or lab["neuropil_legend"]):
         src = d / "frames-labeled"
         label_frames(d, site, info, frames, src, processes)
     encode(d, site, info, src, d / f"{info['name']}.mp4")
