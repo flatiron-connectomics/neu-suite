@@ -2,8 +2,30 @@
 content. The neuVid input, the labels and the colour check all read it from here."""
 
 
+def pass_beats(spec):
+    """Beats in one pass of the sequence (`spec["beats"]` holds `repeat` passes)."""
+    return len(spec["beats"]) // spec["timing"]["repeat"]
+
+
+def pass_seconds(spec):
+    """One pass, lead-in and tail included: a repeated pass starts where the movie's own
+    start would, so the seam between passes is the seam of a loop."""
+    t = spec["timing"]
+    return _offset(spec, pass_beats(spec) - 1) + _span(spec) + t["tail"]
+
+
+def _offset(spec, j):
+    return spec["timing"]["start"] + j * spec["timing"]["every"]
+
+
+def _span(spec):
+    t = spec["timing"]
+    return t["fade"] + t["hold"] + t["fade"] if spec["mode"] == "replace" else t["fade"]
+
+
 def beat_start(spec, i):
-    return spec["timing"]["start"] + i * spec["timing"]["every"]
+    n = pass_beats(spec)
+    return (i // n) * pass_seconds(spec) + _offset(spec, i % n)
 
 
 def runs(spec):
@@ -35,10 +57,7 @@ def intervals(spec):
 
 def beat_end(spec, i):
     """When beat `i`'s own sets are gone (replace) or fully in (accumulate)."""
-    t = spec["timing"]
-    if spec["mode"] == "replace":
-        return beat_start(spec, i) + t["fade"] + t["hold"] + t["fade"]
-    return beat_start(spec, i) + t["fade"]
+    return beat_start(spec, i) + _span(spec)
 
 
 def content_end(spec):

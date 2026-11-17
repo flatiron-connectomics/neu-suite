@@ -32,7 +32,8 @@ def _check(args):
         print(f"  {schedule.beat_start(spec, i):6.1f} s  {beat['title'] or '-':20s} "
               f"{', '.join(names)}")
     scene = {"view": view, "ids": ids, "colours": colours, "neuron_dir": "-", "roi_dir": "-",
-             "region_colours": {}, "head": {"dir": "-", "roi": "-"} if spec["head"] else None}
+             "region_colours": {}, "head": {"dir": "-", "roi": "-"} if spec["head"] else None,
+             "level": build_mod.level_reference(spec)}
     _, _, info = compose.compose(spec, scene)
     print(f"  {info['seconds']:g} s at {spec['fps']} fps = {info['frames']} frames")
     if args.links:

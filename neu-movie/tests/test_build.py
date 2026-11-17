@@ -189,3 +189,47 @@ def test_links_put_each_beats_sets_in_their_own_coloured_layers(build_dir):
     assert VIEW["layers"][0]["name"] == "seg" and len(VIEW["layers"]) == 1
     url = links.beat_links(spec, VIEW, ids, colours)[1][1]
     assert url.startswith("http")
+
+
+def test_open_build_reads_its_own_copy_of_a_level_view(build_dir):
+    (build_dir / "spec.toml").write_text(SPEC.replace(
+        "[labels]", '[camera]\nstyle = "follow"\nlevel = "../views/front.json"\n[labels]'))
+    (build_dir / "front.json").write_text(json.dumps({"projectionOrientation": [0, 0, 0, 1]}))
+    _, spec, _, _ = build_mod.open_build(build_dir)
+    assert spec["camera"]["level"] == str(build_dir / "front.json")
+    assert build_mod.level_reference(spec) == [0, 0, 0, 1]
+
+
+def test_an_orbiting_build_fixes_its_orbit(build_dir, site, monkeypatch):
+    ran = []
+    monkeypatch.setattr(build_mod, "blender", lambda site, script, *a, **k: ran.append(
+        (script.name, [str(x) for x in a])))
+    for name in ("movie.blend", "movieAnim.blend"):
+        (build_dir / name).write_bytes(b"x")
+    s = site_mod.load(build_dir)
+    build_mod.make_blend(build_dir, s, {"name": "movie", "smooth": None, "frames": 495,
+                                        "orbit": True, "loop": True})
+    assert ran[-1] == ("orbit.py", ["-i", str(build_dir / "movie.json"), "--loop"])
+    ran.clear()
+    build_mod.make_blend(build_dir, s, {"name": "movie", "smooth": None, "frames": 495,
+                                        "orbit": True, "loop": False})
+    assert ran[-1] == ("orbit.py", ["-i", str(build_dir / "movie.json")])
+    ran.clear()
+    build_mod.make_blend(build_dir, s, {"name": "movie", "smooth": None, "frames": 495})
+    assert [r[0] for r in ran] == ["importMeshes.py", "addAnimation.py"]
+
+
+def test_a_repeated_sequence_gets_one_link_per_beat(build_dir):
+    pytest.importorskip("neu_glance")
+    from neu_movie import links
+    (build_dir / "spec.toml").write_text(SPEC.replace("hold = 2.0", "hold = 2.0\nrepeat = 2"))
+    _, spec, _, recorded = build_mod.open_build(build_dir)
+    ids = {n: s["ids"] for n, s in recorded["sets"].items()}
+    colours = {n: s["color"] for n, s in recorded["sets"].items()}
+    assert len(spec["beats"]) == 4
+    assert [t for t, _ in links.beat_states(spec, VIEW, ids, colours)] == ["one", "two"]
+
+
+def test_a_missing_blender_script_fails_before_blender_runs(build_dir, site, tmp_path):
+    with pytest.raises(FileNotFoundError, match="no Blender script"):
+        build_mod.blender(site_mod.load(build_dir), tmp_path / "gone.py")

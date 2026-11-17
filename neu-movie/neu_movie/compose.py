@@ -9,6 +9,8 @@ its commands run on a clock that only moves forward, so commands are collected a
 
 import sys
 
+import numpy as np
+
 from neu_movie import labels as labels_mod
 from neu_movie import schedule
 from neu_movie.meshes import safe_name
@@ -21,8 +23,9 @@ DISTANCE_SCALE = 1.45
 
 
 def compose(spec, scene):
-    """``(neuvid doc, labels doc, info)``. `info` has the duration, frame count and, for a
-    follow camera, the frame range `smooth_camera` joins into one path."""
+    """``(neuvid doc, labels doc, info)``. `info` has the duration, frame count, for a
+    follow camera the frame range `smooth_camera` joins into one path, and whether there is
+    an orbit and whether it loops (both for `blender/orbit.py`)."""
     t, cam, head = spec["timing"], spec["camera"], spec["head"]
     view_state = scene["view"]
     ids, colours = scene["ids"], scene["colours"]
@@ -119,11 +122,15 @@ def compose(spec, scene):
     content_end = schedule.content_end(spec)
     smooth = None
     if cam["style"] == "orbit":
-        if cam["orbit_degrees"]:
-            events.append((cam["orbit_at"], ["orbitCamera", {
-                "localAxis": "y", "endingRelativeAngle": -cam["orbit_degrees"],
-                "duration": round(content_end - cam["orbit_at"], 3)}]))
         end = content_end + t["tail"]
+        # A loop turns over the whole movie: keyed at frames 1 and frames + 1, so the frame
+        # after the last is the first again.
+        orbit_at = 0.0 if cam["loop"] else cam["orbit_at"]
+        orbit_end = end if cam["loop"] else content_end
+        if cam["orbit_degrees"]:
+            events.append((orbit_at, ["orbitCamera", {
+                "localAxis": "y", "endingRelativeAngle": cam["orbit_degrees"],
+                "duration": round(orbit_end - orbit_at, 3)}]))
     else:
         # Each beat frames its sets with the previous ones in the window. Moves run back to
         # back; neuVid keys each as its own ease-in/ease-out, and smooth_camera (run after
@@ -135,11 +142,14 @@ def compose(spec, scene):
             window = " + ".join(beat_expr[max(0, i + 1 - cam["window"]):i + 1])
             events.append((schedule.beat_start(spec, i), ["frameCamera", {
                 "bound": window, "scale": cam["scale"], "duration": move}]))
-        settle = schedule.beat_start(spec, len(spec["beats"]))
-        events.append((settle, ["poseCamera", dict(view, duration=cam["pullback_seconds"])]))
+        settle = schedule.beat_start(spec, len(spec["beats"]) - 1) + t["every"]
+        back = dict(view)
+        if scene.get("level"):
+            back["orientation"] = level_orientation(view["orientation"], scene["level"])
+        events.append((settle, ["poseCamera", dict(back, duration=cam["pullback_seconds"])]))
         orbit_at = settle + cam["pullback_seconds"]
         events.append((orbit_at, ["orbitCamera", {
-            "localAxis": "y", "endingRelativeAngle": -cam["orbit_degrees"],
+            "localAxis": "y", "endingRelativeAngle": cam["orbit_degrees"],
             "duration": cam["orbit_seconds"]}]))
         end = orbit_at + cam["orbit_seconds"] + t["tail"]
         # neuVid's frame numbering: frame(t) = round(t * fps) + 1.
@@ -147,8 +157,48 @@ def compose(spec, scene):
 
     doc = {"fps": spec["fps"], "neurons": neurons, "rois": rois,
            "animation": timeline(events, end)}
-    info = {"seconds": end, "frames": round(end * spec["fps"]), "smooth": smooth}
+    orbit = any(cmd[0] == "orbitCamera" for _, cmd in events)
+    info = {"seconds": end, "frames": round(end * spec["fps"]), "smooth": smooth,
+            "orbit": orbit, "loop": orbit and cam["style"] == "orbit" and cam["loop"]}
     return doc, labels_mod.compose(spec, ids, colours, end), info
+
+
+def _matrix(q):
+    """The rotation matrix of a neuroglancer quaternion ``[x, y, z, w]``; its columns are
+    the view's own axes (x right, y the screen's vertical, z the view direction)."""
+    x, y, z, w = np.asarray(q, float) / np.linalg.norm(q)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def _quaternion(m):
+    """``[x, y, z, w]`` for a rotation matrix, from whichever of the four standard forms
+    has the largest (best-conditioned) leading term."""
+    t = np.trace(m)
+    forms = [
+        (t, [m[2, 1] - m[1, 2], m[0, 2] - m[2, 0], m[1, 0] - m[0, 1], 1 + t]),
+        (m[0, 0], [1 + 2 * m[0, 0] - t, m[0, 1] + m[1, 0], m[0, 2] + m[2, 0], m[2, 1] - m[1, 2]]),
+        (m[1, 1], [m[0, 1] + m[1, 0], 1 + 2 * m[1, 1] - t, m[1, 2] + m[2, 1], m[0, 2] - m[2, 0]]),
+        (m[2, 2], [m[0, 2] + m[2, 0], m[1, 2] + m[2, 1], 1 + 2 * m[2, 2] - t, m[1, 0] - m[0, 1]])]
+    q = np.array(max(forms, key=lambda f: f[0])[1])
+    return [float(v) for v in q / np.linalg.norm(q)]
+
+
+def level_orientation(q, reference):
+    """`q` turned upright in `reference`: the same view direction swung into the plane
+    level in `reference`, with `reference`'s vertical as its own. An orbit about the
+    result's vertical (neuVid's local y) then turns about `reference`'s."""
+    r = _matrix(q)
+    up = _matrix(reference)[:, 1]
+    if r[:, 1] @ up < 0:
+        up = -up
+    d = r[:, 2] - (r[:, 2] @ up) * up
+    if np.linalg.norm(d) < 1e-6:
+        raise ValueError("the view looks straight along the level view's vertical")
+    d /= np.linalg.norm(d)
+    return _quaternion(np.column_stack([np.cross(up, d), up, d]))
 
 
 def timeline(events, end):

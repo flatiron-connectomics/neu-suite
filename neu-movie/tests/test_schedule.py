@@ -1,5 +1,6 @@
 """When each set is on screen, in both modes."""
 
+from conftest import make_spec
 from neu_movie import schedule
 
 
@@ -27,3 +28,14 @@ def test_overlapping_treats_none_as_the_end():
     assert not schedule.overlapping([(0, 2)], [(2, 3)], end=10)
     assert schedule.overlapping([(5, None)], [(8, 9)], end=10)
     assert not schedule.overlapping([(5, None)], [(10, 12)], end=10)
+
+
+def test_each_pass_has_its_own_lead_in_and_tail():
+    spec = make_spec([{"name": "A", "ids": [1]}, {"name": "B", "ids": [2]}],
+                     timing={"start": 1.0, "every": 5.0, "fade": 1.0, "hold": 2.0,
+                             "tail": 1.5, "repeat": 3})
+    period = 6.0 + 4.0 + 1.5
+    assert schedule.pass_beats(spec) == 2 and schedule.pass_seconds(spec) == period
+    assert [schedule.beat_start(spec, i) for i in range(6)] == [
+        1.0, 6.0, period + 1.0, period + 6.0, 2 * period + 1.0, 2 * period + 6.0]
+    assert schedule.content_end(spec) + 1.5 == 3 * period

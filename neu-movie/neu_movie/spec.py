@@ -49,10 +49,17 @@ segment_properties (`label` regex, `tags`, `any_tags`, `without`, `limit`), with
 `[neurons].query` as defaults. `exclude` drops bodies either way. `color` overrides the
 palette. A set named in several beats is ONE set, defined once.
 
+**Repeats.** `[timing] repeat = N` plays the beats N times over (`replace` mode only), each
+pass with its own `start` and `tail`, so the seam between passes matches a loop's.
+
 **Camera.** `orbit`: frames the head (or every set) and turns about the screen's vertical
-from `orbit_at` until the last fade ends. `follow`: each beat dollies to frame its sets with
-the previous `window - 1` beats', then the camera returns to the opening view and orbits for
-`orbit_seconds`.
+from `orbit_at` until the last fade ends. With `loop = true` it turns from the first frame
+to the last at constant speed instead, so the movie loops without a seam. `follow`: each
+beat dollies to frame its sets with the previous `window - 1` beats', then the camera
+returns to the opening view and orbits for `orbit_seconds`. A positive `orbit_degrees`
+moves the camera to its right, so the scene turns to the left. `level = "<view>.json"` levels
+that return: same direction and distance, but upright in that view, so the orbit turns
+about its vertical rather than the opening view's.
 """
 
 import copy
@@ -73,10 +80,10 @@ SECTIONS = {
              "intro_at": 1.0, "intro_seconds": 0.0, "lit_color": "#d9d9d9"},
     "meshes": {"smooth": 10},
     "timing": {"start": 0.5, "every": 5.5, "fade": 1.5, "hold": 4.0, "alpha": 1.0,
-               "tail": 1.5},
+               "tail": 1.5, "repeat": 1},
     "camera": {"style": "orbit", "scale": 1.0, "orbit_degrees": 360.0, "orbit_at": 1.0,
-               "window": 2, "move_seconds": None, "pullback_seconds": 4.0,
-               "orbit_seconds": 12.0},
+               "loop": False, "window": 2, "move_seconds": None, "pullback_seconds": 4.0,
+               "orbit_seconds": 12.0, "level": None},
     "labels": {"titles": True, "legend": True, "legend_header": "", "title_size": 0.06,
                "legend_size": 0.045, "legend_x": 0.04, "legend_bottom": 0.06,
                "legend_step": 0.065},
@@ -150,9 +157,16 @@ def parse(raw, path):
     spec["view"] = os.path.join(os.path.dirname(path), os.path.expanduser(spec["view"]))
     if spec["mode"] not in MODES:
         raise SpecError(f"{where}: mode {spec['mode']!r} is not one of {MODES}")
-    if spec["camera"]["style"] not in CAMERA_STYLES:
-        raise SpecError(f"{where}: camera style {spec['camera']['style']!r} is not one of "
+    cam = spec["camera"]
+    if cam["style"] not in CAMERA_STYLES:
+        raise SpecError(f"{where}: camera style {cam['style']!r} is not one of "
                         f"{CAMERA_STYLES}")
+    if cam["loop"] and cam["style"] != "orbit":
+        raise SpecError(f"{where} [camera]: `loop` is for the orbit camera")
+    if cam["level"]:
+        if cam["style"] != "follow":
+            raise SpecError(f"{where} [camera]: `level` is for the follow camera")
+        cam["level"] = os.path.join(os.path.dirname(path), os.path.expanduser(cam["level"]))
     if not spec["neurons"]["layer"]:
         raise SpecError(f"{where} [neurons]: `layer` is required")
     head = spec["head"]
@@ -199,7 +213,13 @@ def parse(raw, path):
         beats.append({"title": str(b.get("title", "")), "sets": names})
     if not beats:
         raise SpecError(f"{where}: no `[[beat]]`")
-    spec["beats"], spec["sets"] = beats, sets
+    repeat = spec["timing"]["repeat"]
+    if not isinstance(repeat, int) or repeat < 1:
+        raise SpecError(f"{where} [timing]: `repeat` must be a whole number, 1 or more")
+    if repeat > 1 and spec["mode"] != "replace":
+        raise SpecError(f"{where} [timing]: `repeat` needs mode \"replace\"; in accumulate "
+                        f"mode the sets of the first pass never leave")
+    spec["beats"], spec["sets"] = [dict(b) for _ in range(repeat) for b in beats], sets
     del spec["beat"]
 
     if spec["mode"] == "accumulate":

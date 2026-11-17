@@ -9,11 +9,12 @@ from neu_movie.palette import normalize
 def beat_states(spec, view, ids, colours):
     """``[(beat title or set names, neuroglancer state), ...]``."""
     from neu_glance.state import subset_layers
-    out = []
+    out, seen = [], []
     for beat in spec["beats"]:
         shown = {n: ids[n] for n in beat["sets"] if n in ids}
-        if not shown:
+        if not shown or beat in seen:            # a repeated pass shows the same beats
             continue
+        seen.append(beat)
         state, _, _ = subset_layers(copy.deepcopy(view), spec["neurons"]["layer"], shown,
                                     colors={n: normalize(colours[n]) for n in shown})
         out.append((beat["title"] or ", ".join(shown), state))

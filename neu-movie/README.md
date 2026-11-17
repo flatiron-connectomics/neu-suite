@@ -104,10 +104,19 @@ with the set. A set named in several beats is one set: define it once, then give
 they have faded in, unless the next beat names them too, in which case they stay on. In
 `accumulate`, every set stays once shown, so a set may appear in only one beat.
 
+`[timing] repeat = N` plays the beats N times over, in `replace` mode, each pass with its
+own `start` and `tail`. With a looping orbit of one turn, `repeat = 2` shows every set once
+from the front and once from behind.
+
 **Camera.** `orbit` frames the head (or, without one, every set) and turns once about the
-screen's vertical from `orbit_at` until the last fade ends. `follow` moves to frame each
-beat's sets together with the previous `window - 1` beats', in one continuous path, then
-pulls back to the opening view and orbits for `orbit_seconds`.
+screen's vertical from `orbit_at` until the last fade ends. With `loop = true` it turns at
+constant speed from the first frame to the last instead, and the frame after the last is
+the first, so the movie plays on a loop without a seam. `follow` moves to frame each beat's
+sets together with the previous `window - 1` beats', in one continuous path, then pulls back
+to the opening view and orbits for `orbit_seconds`. A positive `orbit_degrees` moves the
+camera to its right, so the scene turns to the left. When the opening view is tilted, the
+orbit is too; `level = "<view>.json"` names a view whose vertical to turn about, and the
+camera pulls back to the opening direction levelled to it.
 
 **Labels.** Each beat's `title` shows at the top. A legend of the sets on screen, each name
 in its set's colour, sits at the bottom left, with an optional `legend_header` line above
@@ -123,8 +132,8 @@ Every key, with its default:
 | `[neuropils]` | `layer`, `alpha = 0.08`, `exponent = 7.0`, `mute = 0.5` (how far region colours move toward grey) |
 | `[head]` | `library` or `volume`, `id`, `path = "rois/head"`, `lod = 0`, `alpha = 0.035`, `color = "#808080"`, `exponent = 7.0`, `offset = 4.0`, `intro_at = 1.0`, `intro_seconds = 0.0` (above 0, the head starts solid in `lit_color` and fades to the shell), `lit_color = "#d9d9d9"` |
 | `[meshes]` | `smooth = 10` (Taubin iterations) |
-| `[timing]` | `start = 0.5`, `every = 5.5`, `fade = 1.5`, `hold = 4.0`, `alpha = 1.0`, `tail = 1.5` (seconds after the content ends) |
-| `[camera]` | `style = "orbit"`, `scale = 1.0` (framing margin), `orbit_degrees = 360.0`, `orbit_at = 1.0`, `window = 2`, `move_seconds` (defaults to `every`), `pullback_seconds = 4.0`, `orbit_seconds = 12.0` |
+| `[timing]` | `start = 0.5`, `every = 5.5`, `fade = 1.5`, `hold = 4.0`, `alpha = 1.0`, `tail = 1.5` (seconds after the content ends), `repeat = 1` |
+| `[camera]` | `style = "orbit"`, `scale = 1.0` (framing margin), `orbit_degrees = 360.0`, `orbit_at = 1.0`, `loop = false`, `window = 2`, `move_seconds` (defaults to `every`), `pullback_seconds = 4.0`, `orbit_seconds = 12.0`, `level` (a view file) |
 | `[labels]` | `titles = true`, `legend = true`, `legend_header = ""`, `title_size = 0.06`, `legend_size = 0.045`, `legend_x = 0.04`, `legend_bottom = 0.06`, `legend_step = 0.065` (sizes and positions are fractions of the frame height) |
 
 ## The build
@@ -135,9 +144,9 @@ even if the spec or the segmentation has changed since.
 
 | file | what it is |
 | --- | --- |
-| `spec.toml`, `<view>.json` | copies of what the build was made from |
+| `spec.toml`, `<view>.json` | copies of what the build was made from, with any `level` view |
 | `sets.json` | each set's body ids and colour, as resolved |
-| `build.json` | duration, frame count, the follow camera's smoothing range |
+| `build.json` | duration, frame count, the follow camera's smoothing range, whether the orbit loops |
 | `<name>.json`, `<name>_labels.json` | neuVid's input, and the labels |
 | `<name>.blend`, `<name>Anim.blend` | the Blender files neuVid made from it |
 | `links.txt` | a neuroglancer link per beat |
@@ -169,7 +178,7 @@ time = "03:00:00"                        # default; `submit --time` overrides
 Blender, neuVid and the Python running neu-movie must all be visible from the compute
 nodes, since the render job calls back into `neu-movie finish`.
 
-## Colours, and two neuVid details
+## Colours, and three neuVid details
 
 neuVid reads a hex colour straight into a material as a linear value, and Blender's display
 transform then brightens it, so sRGB colours would come out pale. neu-movie converts every
@@ -180,3 +189,9 @@ Labels are kept in their own file rather than in neuVid's input, because neuVid'
 `addAnimation` stops on a label argument it does not know (`fade`). They are drawn by
 `neu_movie/blender/labels.py`, which is neuVid's `compLabels.py` with each label's fade
 matched to its cells and a cheaper renderer for flat text.
+
+neuVid's `orbitCamera` turns about the vertical of a camera matrix nothing has updated since
+the file was saved, which is Blender's default camera rather than the view, so its orbits
+come out tilted. `neu_movie/blender/orbit.py`, run after `addAnimation` whenever there is an
+orbit, turns each one about the camera's own vertical where it starts, and for `loop` makes
+the turn linear.

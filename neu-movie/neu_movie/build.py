@@ -1,9 +1,9 @@
 """Builds: a folder per invocation of a spec, `renders/<spec name>_<YYYYmmddTHHMM>/` beside
 the spec. It holds::
 
-    spec.toml, <view>.json     copies of what it was made from
+    spec.toml, <view>.json     copies of what it was made from (and of a `level` view)
     sets.json                  each set's body ids and colour, as resolved
-    build.json                 duration, frame count, camera smoothing range
+    build.json                 duration, frame count, camera smoothing range, orbit
     <name>.json                neuVid's input; <name>.blend, <name>Anim.blend from it
     <name>_labels.json         the labels
     links.txt                  a neuroglancer link per beat
@@ -65,6 +65,14 @@ def head_volume(spec, site):
     return base.rstrip("/") + "/" + head["path"].strip("/")
 
 
+def level_reference(spec):
+    """The orientation of the spec's `[camera] level` view, or None."""
+    if not spec["camera"]["level"]:
+        return None
+    with open(spec["camera"]["level"]) as f:
+        return json.load(f).get("projectionOrientation", [0, 0, 0, 1])
+
+
 def resolve(spec, *, limit=None):
     """The view, the neuron volume, each set's ids and colour. Reads segment properties,
     nothing else."""
@@ -94,7 +102,8 @@ def gather(spec, site, view, volume, ids, colours, *, force=False):
                          force=force, workers=spec["neurons"]["workers"])
 
     scene = {"view": view, "ids": ids, "colours": colours, "neuron_dir": str(neuron_dir),
-             "roi_dir": None, "region_colours": {}, "head": None}
+             "roi_dir": None, "region_colours": {}, "head": None,
+             "level": level_reference(spec)}
     regions = list(dict.fromkeys(r for name in ids for r in spec["sets"][name]["regions"]))
     if regions and not spec["neuropils"]:
         raise spec_mod.SpecError("sets name `regions` but the spec has no [neuropils] layer")
@@ -155,6 +164,8 @@ def open_build(path):
     with open(d / "spec.toml", "rb") as f:
         raw = tomllib.load(f)
     raw["view"] = os.path.basename(raw.get("view", ""))
+    if raw.get("camera", {}).get("level"):
+        raw["camera"]["level"] = os.path.basename(raw["camera"]["level"])
     spec = spec_mod.parse(raw, str(d / "spec.toml"))
     with open(d / "build.json") as f:
         info = json.load(f)
@@ -169,6 +180,9 @@ def write_json(path, doc):
 
 
 def blender(site, script, *args, log_path=None, env=None):
+    # Blender reports a script it cannot open and still exits 0.
+    if not Path(script).is_file():
+        raise FileNotFoundError(f"no Blender script {script}")
     cmd = [str(site.blender), "--background", "--python", str(script), "--", *map(str, args)]
     with open(log_path, "w") if log_path else open(os.devnull, "w") as out:
         result = subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT,
@@ -185,7 +199,9 @@ def build(spec_path, *, limit=None, force=False, blend=True):
     d = new_build(spec)
     log(f"== build {d}")
     shutil.copy(spec_path, d / "spec.toml")
-    shutil.copy(spec["view"], d / os.path.basename(spec["view"]))
+    for view_file in (spec["view"], spec["camera"]["level"]):
+        if view_file:
+            shutil.copy(view_file, d / os.path.basename(view_file))
 
     log("== sets")
     view, volume, ids, colours = resolve(spec, limit=limit)
@@ -219,6 +235,9 @@ def make_blend(d, site, info):
         s, e = info["smooth"]
         steps.append(("smooth_camera", BLENDER_SCRIPTS / "smooth_camera.py",
                       ["-i", json_path, "--start", s, "--end", e]))
+    if info.get("orbit"):
+        steps.append(("orbit", BLENDER_SCRIPTS / "orbit.py",
+                      ["-i", json_path] + (["--loop"] if info.get("loop") else [])))
     for step, script, args in steps:
         log(f"== {step} (log: {d / f'build-{step}.log'})")
         blender(site, script, *args, log_path=d / f"build-{step}.log")

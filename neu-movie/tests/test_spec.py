@@ -84,6 +84,11 @@ def test_repeating_an_identical_definition_is_allowed():
     ({}, [{"name": "A", "ids": [1]}, {"name": "A", "ids": [2]}], "defined differently"),
     ({"mode": "accumulate"}, [{"name": "A", "ids": [1]}, {"name": "A"}],
      "accumulate mode.*: A"),
+    ({"timing": {"repeat": 0}}, None, "`repeat` must be a whole number"),
+    ({"timing": {"repeat": 1.5}}, None, "`repeat` must be a whole number"),
+    ({"mode": "accumulate", "timing": {"repeat": 2}}, None, "`repeat` needs mode"),
+    ({"camera": {"style": "follow", "loop": True}}, None, "`loop` is for the orbit camera"),
+    ({"camera": {"level": "front.json"}}, None, "`level` is for the follow camera"),
 ])
 def test_mistakes_fail_loudly(raw, beats, message):
     with pytest.raises(SpecError, match=message):
@@ -101,3 +106,16 @@ def test_defaults_are_not_shared_between_specs():
     a["neurons"]["query"]["label"] = "changed"
     b = make_spec([{"name": "A", "ids": [1]}])
     assert b["neurons"]["query"] == {}
+
+
+def test_repeat_plays_the_beats_over_again():
+    spec = make_spec([{"title": "one", "name": "A", "ids": [1]},
+                      {"title": "two", "name": "B", "ids": [2]}], timing={"repeat": 3})
+    assert [b["title"] for b in spec["beats"]] == ["one", "two"] * 3
+    assert set(spec["sets"]) == {"A", "B"}
+
+
+def test_level_is_a_view_beside_the_spec():
+    spec = make_spec([{"name": "A", "ids": [1]}],
+                     camera={"style": "follow", "level": "front.json"})
+    assert spec["camera"]["level"] == "/specs/front.json"
