@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 
 #: Reserved rule names, which set a segment property rather than a tag (declared
 #: ``tag=False``; see :mod:`neu_mark.segprops`). Any other ``tag=False`` rule is evaluated,
-#: coverage-reported and written to the table, but not to the document.
+#: coverage-reported and written to the table; with ``publish=True`` it is also a
+#: ``string`` property of the document.
 RESERVED = ("label", "description")
 
 
@@ -49,7 +50,7 @@ class Rule:
                  needs: Sequence[str] | None = None, multi: bool = False,
                  tag: bool = True, prefix: str | None = None,
                  description: str | None = None, drop: bool = False,
-                 consumes: Iterable[str] | Callable | None = None):
+                 consumes: Iterable[str] | Callable | None = None, publish: bool = False):
         self.func = func
         self.name = name or getattr(func, "__name__", "rule")
         self._needs = tuple(needs) if needs else None
@@ -78,10 +79,28 @@ class Rule:
                 f"PROPERTY, not a tag. Declare it @rule(name={self.name!r}, tag=False). "
                 f"Left tagged it would quietly mint {self.name}:… tags instead, which is a "
                 f"valid document that simply never sets the property.")
+        #: Whether a ``tag=False`` rule is written to the document as a ``string`` property:
+        #: one value per segment, read by a viewer or ``neu-glance --color-by`` but never
+        #: listed with the tags.
+        self.publish = bool(publish)
+        if self.publish and (self.tag or self.drop or self.multi or self.name in RESERVED):
+            raise ValueError(
+                f"rule {self.name!r} is declared publish=True, which writes one string per "
+                f"segment as a property of its own. That needs tag=False, a single value "
+                f"and a name other than {' or '.join(RESERVED)}.")
         self.prefix = prefix if prefix is not None else self.name
         self.description = description or (func.__doc__ or "").strip().split("\n")[0]
         self.__doc__ = func.__doc__
         self.__name__ = self.name
+
+    @property
+    def kind(self) -> str:
+        """``drop``, ``tag``, ``string`` (a published property) or ``property`` (table only)."""
+        if self.drop:
+            return "drop"
+        if self.tag:
+            return "tag"
+        return "string" if self.publish else "property"
 
     @property
     def needs(self) -> tuple[str, ...]:
@@ -116,7 +135,7 @@ class Rule:
     def _parts(self) -> tuple[str, str, str, str, str]:
         """``(name, kind, needs, extras, description)``, the fields of a rule's repr, also
         used by :meth:`RuleSet.__repr__`."""
-        kind = "drop" if self.drop else "tag" if self.tag else "property"
+        kind = self.kind
         if self.tag:
             kind += f" {self.prefix}:" if self.prefix else " bare"
         extras = ["multi"] if self.multi else []
@@ -214,7 +233,8 @@ class Rule:
 def rule(func: Callable | None = None, /, *, needs: Sequence[str] | None = None,
          multi: bool = False, tag: bool = True, prefix: str | None = None,
          name: str | None = None, description: str | None = None,
-         drop: bool = False, consumes: Iterable[str] | Callable | None = None):
+         drop: bool = False, consumes: Iterable[str] | Callable | None = None,
+         publish: bool = False):
     """Declare a function as a rule. Usable bare (``@rule``) or called (``@rule(...)``).
 
     - ``needs``: the columns the rule reads, checked up front. Left out, the rule reads the
@@ -226,13 +246,15 @@ def rule(func: Callable | None = None, /, *, needs: Sequence[str] | None = None,
     - ``drop``: the rule excludes the body it fires on, returning the reason.
     - ``consumes``: the tokens it accounts for, for :meth:`RuleSet.remainder`.
     - ``tag=False``: the rule produces a property, not a tag (see :data:`RESERVED`).
+    - ``publish``: a ``tag=False`` rule is also written to the document as a ``string``
+      property, one value per segment, which ``neu-glance --color-by`` can colour by.
 
     The docstring's first line becomes the description shown in reports and in the
     published ``tag_descriptions``. A rule may read a column an earlier rule produced.
     """
     def wrap(f: Callable) -> Rule:
         return Rule(f, name=name, needs=needs, multi=multi, tag=tag, prefix=prefix,
-                    description=description, drop=drop, consumes=consumes)
+                    description=description, drop=drop, consumes=consumes, publish=publish)
 
     return wrap(func) if func is not None else wrap
 
@@ -392,7 +414,7 @@ class RuleSet:
         reports what they did to a frame.)"""
         return pd.DataFrame([{
             "rule": r.name,
-            "kind": "drop" if r.drop else "tag" if r.tag else "property",
+            "kind": r.kind,
             "prefix": r.prefix,
             "multi": r.multi,
             "needs": ", ".join(r.needs),
@@ -522,7 +544,8 @@ def provenance(ruleset: RuleSet, *, embed: bool = True,
         "names": ruleset.names,
         "keep": list(ruleset.keep),
         "rules": [{"name": r.name, "description": r.description, "needs": list(r.needs),
-                   "multi": r.multi, "tag": r.tag, "drop": r.drop, "prefix": r.prefix}
+                   "multi": r.multi, "tag": r.tag, "drop": r.drop, "prefix": r.prefix,
+                   "publish": r.publish}
                   for r in ruleset.rules],
         "files": files,
     }

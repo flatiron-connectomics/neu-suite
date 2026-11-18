@@ -520,8 +520,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--color-by", action="append", default=None,
                    metavar="LAYER_NAME=PROP[,PROP...]",
                    help="colour each segment of one segmentation layer by a segment property, "
-                        "from its source's segment_properties: a tag facet (col, group), a "
-                        "flag tag, or label. A segment takes the first property it has a value for, so "
+                        "from its source's segment_properties: a string property (parsed_type), "
+                        "a tag facet (col, group), a flag tag, or label. A segment takes the first property it has a value for, so "
                         "col,group colours by column and falls back to group. Each value gets "
                         "a fixed colour from neuroglancer's segment palette; segments with "
                         "none keep their hash colour. Written as segmentColors, so it is fixed "

@@ -17,11 +17,36 @@ ROWS = [("1", "Tm2_A2(L)", ("col:A2", "group:Tm2", "side:L")),
         ("4", "4", ("glia",))]
 
 
-def _props(rows=ROWS, numbers=None):
+def _props(rows=ROWS, numbers=None, strings=None):
     vocabulary = sorted({t for *_, tags in rows for t in tags})
     return {"ids": [r[0] for r in rows], "labels": [r[1] for r in rows],
             "tags": [r[2] for r in rows], "numbers": numbers or {},
-            "vocabulary": vocabulary}
+            "strings": strings or {}, "vocabulary": vocabulary}
+
+
+#: A cell type as a string property: not a tag, one value per segment, "" for none.
+TYPES = {"parsed_type": ["Tm2", "Tm2", "", "Mi1"]}
+
+
+def test_a_string_property_colours_and_falls_back_like_any_other():
+    colors, report = colors_by_property(_props(strings=TYPES), ["parsed_type", "group"])
+    assert colors["1"] == colors["2"] == value_color("parsed_type:Tm2")
+    assert colors["3"] == value_color("group:LN")      # no type: falls back
+    assert colors["4"] == value_color("parsed_type:Mi1")
+    assert report["by_key"] == {"parsed_type": 3, "group": 1}
+
+
+def test_a_string_property_ranks_its_values_for_the_spaced_palette():
+    colors, _ = colors_by_property(_props(strings=TYPES), ["parsed_type"], palette="spaced")
+    # Mi1 and Tm2 are the only values; "" is none
+    assert colors["4"] == spaced_color("parsed_type", 0, 2)
+    assert colors["1"] == spaced_color("parsed_type", 1, 2)
+    assert "3" not in colors
+
+
+def test_an_unknown_key_names_the_string_properties():
+    with pytest.raises(StateProblem, match="String properties: parsed_type"):
+        colors_by_property(_props(strings=TYPES), ["type"])
 
 
 def test_segment_color_is_neuroglancers():

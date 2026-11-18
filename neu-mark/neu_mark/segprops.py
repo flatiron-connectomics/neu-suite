@@ -167,7 +167,8 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
     the rules' own; ``drop`` names rules whose bodies are excluded rather than tagged.
     Evaluation order: drop rules, then tag rules, then the reserved
     ``label``/``description`` rules, then any other ``tag=False`` rule (reported, and a
-    column of the table, but not in the document).
+    column of the table; in the document only as a ``string`` property, when declared
+    ``publish=True``).
 
     Returns ``{"info": …, "report": …}``. Check the report's coverage: a facet that fired on
     2% of bodies looks the same in the viewer as one the data does not have.
@@ -205,6 +206,7 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
     tag_rules = [r for r in ruleset.tagged if r.name not in RESERVED]
     quiet_rules = [r for r in ruleset
                    if not r.tag and not r.drop and r.name not in RESERVED]
+    published = [r for r in quiet_rules if r.publish]
 
     fired = {r.name: 0 for r in ruleset}
     distinct: dict[str, set] = {r.name: set() for r in ruleset}
@@ -214,6 +216,8 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
     # (body, excluded reason, label, description, tags, {quiet rule: values}) for every
     # record, for the table
     outcomes = []
+    # Per segment written, the value of each published rule.
+    strings: list[list[str | None]] = []
 
     for _index, raw in frame.iterrows():
         row = _plain(raw)
@@ -264,6 +268,9 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
         rows.append((int(raw["body"]), label, description, tags))
         outcomes.append((int(raw["body"]), None, label or str(int(raw["body"])),
                          description, tags, quiet))
+        # As the rule returned it, so the document and the table agree.
+        strings.append([str(quiet[r.name][0]).strip() if quiet[r.name] else None
+                        for r in published])
 
     if not rows:
         raise ValueError("every body was excluded; nothing to write")
@@ -299,8 +306,21 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
              "tag_descriptions": [described.get(tag, tag) for tag in vocabulary],
              "values": per_body})
 
+    for k, r in enumerate(published):
+        prop = {"id": r.name, "type": "string",
+                "values": [row[k] or "" for row in strings]}
+        if r.description:
+            prop["description"] = r.description
+        properties.append(prop)
+
     numbers = _number_properties(ids, counts=counts, sizes=sizes)
     properties.extend(numbers)
+    taken = [p["id"] for p in properties]
+    clashes = sorted({i for i in taken if taken.count(i) > 1})
+    if clashes:
+        raise ValueError(
+            f"property id(s) {clashes} are used twice in the document: rename the rule, "
+            f"since the viewer would keep only one of them")
 
     collisions = case_collisions(vocabulary)
     if collisions:
@@ -326,6 +346,7 @@ def build(bodies, *, rules=None, label: str | None = None, drop: Sequence[str] =
         "label": label_column,
         "absent_columns": absent,
         "numbers": [p["id"] for p in numbers],
+        "strings": [r.name for r in published],
         "untagged": sum(1 for v in per_body if not v),
     }
     out = {"info": info, "report": report}
@@ -430,11 +451,10 @@ def _coverage_report(ruleset, fired: Mapping[str, int], distinct: Mapping[str, s
     for r in ruleset:
         n = fired.get(r.name, 0)
         denominator = total if r.drop else segments
-        kind = "drop" if r.drop else "tag" if r.tag else "property"
         out[r.name] = {"bodies": n,
                        "fraction": (n / denominator) if denominator else 0.0,
                        "distinct": len(distinct.get(r.name, ())),
-                       "kind": kind,
+                       "kind": r.kind,
                        "description": r.description}
     return out
 
@@ -552,6 +572,8 @@ def format_report(report: Mapping[str, Any]) -> list[str]:
                      f"  {stat.get('distinct', 0):>5} distinct{suffix}")
     if report.get("numbers"):
         lines.append(f"  numbers: {', '.join(report['numbers'])}")
+    if report.get("strings"):
+        lines.append(f"  strings: {', '.join(report['strings'])}")
     if report.get("untagged"):
         lines.append(f"  {report['untagged']} segments carry no tag at all")
     return lines

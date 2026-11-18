@@ -362,6 +362,7 @@ What a declaration buys you, beyond the bare function:
 | `drop` | the rule **excludes** the body it fires on and returns the reason, which is counted in the report |
 | `consumes` | which tokens of the instance this rule accounts for, so `RuleSet.remainder` can hand you what no rule recognized. Derived from the returned values by default — declare it only where a rule normalizes an alias (`NCL` → `nucleated`) |
 | `tag=False` | produces something other than a tag. `label` and `description` are reserved and set those properties; anything else is computed, reported and written as a column of the `--table` output, but not put in the document |
+| `publish=True` | with `tag=False`, also writes the rule to the document as a `string` property: one value per segment, never listed with the tags, which `neu-glance gen --color-by` can colour by |
 | the docstring | becomes the description — in the coverage report, and on every tag the rule mints, so the viewer explains itself |
 
 Testing one rule, or all of them, on one string:

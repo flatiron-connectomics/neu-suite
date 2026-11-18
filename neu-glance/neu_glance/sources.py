@@ -404,9 +404,10 @@ def segment_ids(volume: str, names: Sequence[str], *,
 def read_segment_properties(volume: str, *, info: Mapping[str, Any] | None = None) -> dict:
     """Everything a volume's ``segment_properties`` carries, in ONE read.
 
-    Returns ``{"ids", "labels", "tags", "numbers", "vocabulary"}``: ids as strings, labels
-    parallel to them, tags resolved from indices to strings, and each numeric property under
-    its own name. Pass the result to :func:`select_segments` to query it without re-reading.
+    Returns ``{"ids", "labels", "tags", "numbers", "strings", "vocabulary"}``: ids as
+    strings, labels parallel to them, tags resolved from indices to strings, and each numeric
+    and ``string`` property under its own name (``""`` where a segment has no value). Pass
+    the result to :func:`select_segments` to query it without re-reading.
     Properties are paired with ids by position, so a length mismatch raises.
     """
     from neu_vol import read_json
@@ -426,7 +427,7 @@ def read_segment_properties(volume: str, *, info: Mapping[str, Any] | None = Non
 
     ids = [str(i) for i in inline.get("ids") or []]
     out: dict[str, Any] = {"ids": ids, "labels": [], "tags": [], "numbers": {},
-                           "vocabulary": []}
+                           "strings": {}, "vocabulary": []}
     for prop in inline.get("properties") or []:
         values = prop.get("values") or []
         if len(values) != len(ids):
@@ -443,6 +444,8 @@ def read_segment_properties(volume: str, *, info: Mapping[str, Any] | None = Non
             out["tags"] = [tuple(vocabulary[i] for i in row) for row in values]
         elif kind == "number":
             out["numbers"][str(prop.get("id"))] = list(values)
+        elif kind == "string":
+            out["strings"][str(prop.get("id"))] = [str(v) for v in values]
     if not out["labels"]:
         out["labels"] = list(ids)
     if not out["tags"]:

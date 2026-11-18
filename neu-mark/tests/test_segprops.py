@@ -421,6 +421,41 @@ def test_a_quiet_rule_is_reported_and_tabled_but_not_in_the_document():
     assert t.loc[5, "depth"] is None                 # excluded bodies get no value
 
 
+def test_a_published_rule_is_a_string_property_and_still_not_a_tag():
+    @rule(tag=False, publish=True, needs=["type"])
+    def cell_type(r):
+        """the curated type"""
+        return r["type"] or None
+
+    result = _build(BODIES, rules=[cell_type], table=True)
+    prop = _props(result["info"])["cell_type"]
+    assert prop == {"id": "cell_type", "type": "string", "description": "the curated type",
+                    "values": ["Tm2", "", "LN", "", "", ""]}
+    assert result["info"]["inline"]["ids"] == ["1", "2", "3", "4", "6", "7"]
+    assert not [t for t in _props(result["info"])["tags"]["tags"] if "cell_type" in t]
+    assert result["report"]["strings"] == ["cell_type"]
+    assert result["report"]["coverage"]["cell_type"]["kind"] == "string"
+    assert result["table"].set_index("body").loc[1, "cell_type"] == "Tm2"
+
+
+@pytest.mark.parametrize("kw", [{"tag": True}, {"tag": False, "multi": True},
+                                {"tag": False, "drop": True},
+                                {"tag": False, "name": "label"}])
+def test_publish_needs_a_single_valued_untagged_rule(kw):
+    with pytest.raises(ValueError, match="publish=True"):
+        rule(lambda r: None, publish=True, **kw)
+
+
+def test_a_published_rule_may_not_take_another_propertys_id():
+    @rule(tag=False, publish=True, name="syn")
+    def syn(r):
+        """clashes with the synapse count"""
+        return "x"
+
+    with pytest.raises(ValueError, match="used twice"):
+        _build(BODIES, rules=[syn], counts=COUNTS)
+
+
 def test_tag_descriptions_come_from_the_rule_that_minted_the_tag():
     tags = _props(_built()["info"])["tags"]
     described = dict(zip(tags["tags"], tags["tag_descriptions"]))

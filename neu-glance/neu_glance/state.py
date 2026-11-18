@@ -377,8 +377,9 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
     it has a value for, for a segmentation layer's ``segmentColors``.
 
     ``properties`` is what :func:`neu_glance.sources.read_segment_properties` returns. A key
-    is ``label``, or a tag facet (``col`` or ``col:``, taking the value after the colon), or
-    a bare flag tag (``glia``). A segment with several values for a facet takes the first.
+    is ``label``, a ``string`` property (``parsed_type``), a tag facet (``col`` or ``col:``,
+    taking the value after the colon), or a bare flag tag (``glia``). A segment with several
+    values for a facet takes the first.
     Segments with no value keep their hash colour.
 
     ``palette="hash"`` colours each ``key:value`` on its own
@@ -395,6 +396,7 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
     ids = list(properties.get("ids") or [])
     vocabulary = list(properties.get("vocabulary") or [])
     numbers = set((properties.get("numbers") or {}))
+    strings = dict(properties.get("strings") or {})
     facets = sorted({t.split(":", 1)[0] for t in vocabulary if ":" in t})
     flags = sorted(t for t in vocabulary if ":" not in t)
 
@@ -403,16 +405,19 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
         key = str(raw).strip().rstrip(":")
         if key == "label":
             resolved.append((key, "label"))
+        elif key in strings:
+            resolved.append((key, "string"))
         elif key in facets:
             resolved.append((key, "facet"))
         elif key in flags:
             resolved.append((key, "flag"))
         elif key in numbers:
             raise StateProblem(f"--color-by {key!r} is a number property; colouring is by "
-                               f"category: a tag facet, a flag or label")
+                               f"category: a string property, a tag facet, a flag or label")
         else:
             raise StateProblem(
-                f"--color-by {key!r} is not a property of this layer. Tag facets: "
+                f"--color-by {key!r} is not a property of this layer. String properties: "
+                f"{', '.join(sorted(strings)) or '(none)'}; tag facets: "
                 f"{', '.join(facets) or '(none)'}; flags: {', '.join(flags) or '(none)'}; "
                 f"or label")
 
@@ -423,6 +428,8 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
         for key, kind in resolved:
             if kind == "label":
                 present = {lbl for i, lbl in enumerate(labels) if lbl and lbl != ids[i]}
+            elif kind == "string":
+                present = {v for v in strings[key] if v}
             elif kind == "facet":
                 present = {t.split(":", 1)[1] for t in vocabulary if t.startswith(f"{key}:")}
             else:
@@ -438,6 +445,8 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
                 # read_segment_properties labels a segment with no label by its id
                 label = labels[i] if i < len(labels) else ""
                 found = [label] if label and label != sid else []
+            elif kind == "string":
+                found = [strings[key][i]] if strings[key][i] else []
             elif kind == "facet":
                 found = [t.split(":", 1)[1] for t in tags[i] if t.startswith(f"{key}:")]
             else:

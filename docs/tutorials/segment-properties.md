@@ -111,6 +111,8 @@ What each piece does:
 - **`tag=False`** keeps a value out of the tags but writes it to the `--table` output. A
   cell type usually has hundreds of values, which is a long list to click through; the label
   already starts with it, and the viewer's search box matches label prefixes as you type.
+  Add `publish=True` to also write it to the document as a `string` property, still not a
+  tag, so `neu-glance gen --color-by LAYER=parsed_type` can colour each body by its type.
 - **Reading a column only within its family** (`col` above) is what keeps `E2` an
   ellipsoid-body column on `PEN_E2` from also being an optic lobe column.
 - **Values carrying their family** (`class:OL/Tm`) sort by family in the viewer's list.

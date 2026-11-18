@@ -103,7 +103,7 @@ def test_a_properties_source_of_the_wrong_type_is_refused(tmp_path):
 # --------------------------------------------------------------------------- #
 # tags, and building a set from a query
 # --------------------------------------------------------------------------- #
-def _tagged(tmp_path, rows, *, numbers=None):
+def _tagged(tmp_path, rows, *, numbers=None, strings=None):
     """`rows` is {id: (label, [tags])}. Tags are stored as INDICES into a vocabulary."""
     vocabulary = sorted({t for _, tags in rows.values() for t in tags})
     root = tmp_path / "vol"
@@ -118,6 +118,8 @@ def _tagged(tmp_path, rows, *, numbers=None):
     ]
     for name, values in (numbers or {}).items():
         properties.append({"id": name, "type": "number", "values": values})
+    for name, values in (strings or {}).items():
+        properties.append({"id": name, "type": "string", "values": values})
     (root / "segment_properties" / "info").write_text(json.dumps({
         "@type": "neuroglancer_segment_properties",
         "inline": {"ids": list(rows), "properties": properties}}))
@@ -140,11 +142,14 @@ def test_tags_are_resolved_from_their_vocabulary_indices(tmp_path):
 
 
 def test_everything_comes_back_from_ONE_read(tmp_path):
-    """Ids, labels, numbers and the tag vocabulary come from one read."""
-    read = read_segment_properties(_tagged(tmp_path, ROWS, numbers={"voxels": [9, 8, 7, 6, 5]}))
+    """Ids, labels, numbers, strings and the tag vocabulary come from one read."""
+    read = read_segment_properties(_tagged(tmp_path, ROWS, numbers={"voxels": [9, 8, 7, 6, 5]},
+                                           strings={"parsed_type": ["KCa", "KCa", "KCb",
+                                                                    "MBON01", ""]}))
     assert read["ids"] == list(ROWS)
     assert read["labels"][0] == "KCa_1(L)"
     assert read["numbers"]["voxels"] == [9, 8, 7, 6, 5]
+    assert read["strings"]["parsed_type"] == ["KCa", "KCa", "KCb", "MBON01", ""]
     assert "side:L" in read["vocabulary"]
 
 

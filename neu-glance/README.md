@@ -74,7 +74,8 @@ path's name, and an annotation layer linked to a renamed segmentation follows it
 
 **`--color-by LAYER=PROP[,PROP...]` colours bodies by their segment properties**, which a
 segmentation layer cannot do itself (it has no shader). A property is a tag facet (`group`,
-`ol_column`), a flag tag or `label`; each body takes the first one it has a value for, so
+`ol_column`), a flag tag, `label`, or a `string` property — one value per body that is not a
+tag, such as a cell type with too many values to list as tags; each body takes the first one it has a value for, so
 `ol_column,group` colours by column and falls back to the cell type. Each value gets a fixed
 colour from neuroglancer's segment palette, the same in every state, written into
 `segmentColors` — so it is fixed when the state is made (regenerate after the properties
