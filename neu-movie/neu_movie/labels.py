@@ -39,45 +39,45 @@ def _row(lab, row, rows, right=False):
             round(lab["legend_bottom"] + lab["legend_step"] * (rows - 1 - row), 4)]
 
 
-def _regions(spec, names):
-    """The regions shown with the sets `names`, in order, each once."""
-    return list(dict.fromkeys(r for n in names for r in spec["sets"][n]["regions"]))
+def _neuropils(spec, names):
+    """The neuropils shown with the sets `names`, in order, each once."""
+    return list(dict.fromkeys(r for n in names for r in spec["sets"][n]["neuropils"]))
 
 
-def compose(spec, ids, colours, end, region_colours=None):
+def compose(spec, ids, colours, end, neuropil_colours=None):
     """The labels document: neuVid `label` commands, plus a `fade` and an `align` neuVid's
-    own lack. `region_colours` are the neuropils' colours before muting."""
+    own lack. `neuropil_colours` are the neuropils' colours before muting."""
     lab, fade = spec["labels"], spec["timing"]["fade"]
-    region_colours = region_colours or {}
-    if lab["neuropil_legend"] and spec["neuropils"] and region_colours:
-        amount, np_header = spec["neuropils"]["mute"], lab["neuropil_header"]
+    neuropil_colours = neuropil_colours or {}
+    if lab["neuropil_legend"] and spec["neuropils"] and neuropil_colours:
+        amount, np_header = spec["neuropils"]["mute"], lab["neuropil_legend_header"]
 
-        def region_legend(starts, gone):
-            """The right-hand column: `starts` maps each region to when it appears."""
+        def neuropil_legend(starts, gone):
+            """The right-hand column: `starts` maps each neuropil to when it appears."""
             if not starts:
                 return []
             rows = len(starts) + bool(np_header)
             out = [_label(min(starts.values()), gone, np_header, _row(lab, 0, rows, right=True),
                           lab["legend_size"], WHITE, fade, "right")] if np_header else []
-            return out + [_label(start, gone, region, _row(lab, row, rows, right=True),
+            return out + [_label(start, gone, np, _row(lab, row, rows, right=True),
                                  lab["legend_size"],
-                                 linear_hex(mute(region_colours[region], amount)), fade, "right")
-                          for row, (region, start) in enumerate(starts.items(),
-                                                                start=bool(np_header))]
+                                 linear_hex(mute(neuropil_colours[np], amount)), fade, "right")
+                          for row, (np, start) in enumerate(starts.items(),
+                                                            start=bool(np_header))]
     else:
-        region_legend = None
-    header = lab["legend_header"] if lab["legend"] else ""
+        neuropil_legend = None
+    header = lab["neuron_legend_header"] if lab["neuron_legend"] else ""
     beats = spec["beats"]
     out = []
     if spec["mode"] == "replace":
         for i, beat in enumerate(beats):
             start = schedule.beat_start(spec, i)
             gone = schedule.beat_end(spec, i)
-            if lab["titles"] and beat["title"]:
+            if lab["beat_titles"] and beat["title"]:
                 out.append(_label(start, gone, beat["title"], "top", lab["title_size"], WHITE,
                                   fade))
             shown = [n for n in beat["sets"] if n in ids]
-            if lab["legend"]:
+            if lab["neuron_legend"]:
                 rows = len(shown) + bool(header and shown)
                 if header and shown:
                     out.append(_label(start, gone, header, _row(lab, 0, rows),
@@ -85,12 +85,12 @@ def compose(spec, ids, colours, end, region_colours=None):
                 for row, name in enumerate(shown, start=rows - len(shown)):
                     out.append(_label(start, gone, name, _row(lab, row, rows),
                                       lab["legend_size"], linear_hex(colours[name]), fade))
-            if region_legend:
-                out += region_legend({r: start for r in _regions(spec, shown)
-                                      if r in region_colours}, gone)
+            if neuropil_legend:
+                out += neuropil_legend({r: start for r in _neuropils(spec, shown)
+                                        if r in neuropil_colours}, gone)
     else:
         gone = end + fade                      # fade-out falls after the last frame
-        if lab["titles"]:
+        if lab["beat_titles"]:
             for i, beat in enumerate(beats):
                 if beat["title"]:
                     until = (schedule.beat_start(spec, i + 1) + fade if i + 1 < len(beats)
@@ -98,7 +98,7 @@ def compose(spec, ids, colours, end, region_colours=None):
                     out.append(_label(schedule.beat_start(spec, i), until, beat["title"],
                                       "top", lab["title_size"], WHITE, fade))
         order = [(i, n) for i, b in enumerate(beats) for n in b["sets"] if n in ids]
-        if lab["legend"]:
+        if lab["neuron_legend"]:
             rows = len(order) + bool(header)
             if header:
                 out.append(_label(schedule.beat_start(spec, 0), gone, header,
@@ -107,13 +107,13 @@ def compose(spec, ids, colours, end, region_colours=None):
                 out.append(_label(schedule.beat_start(spec, i), gone, name,
                                   _row(lab, row, rows), lab["legend_size"],
                                   linear_hex(colours[name]), fade))
-        if region_legend:
+        if neuropil_legend:
             first = {}
             for i, name in order:
-                for r in _regions(spec, [name]):
-                    if r in region_colours:
+                for r in _neuropils(spec, [name]):
+                    if r in neuropil_colours:
                         first.setdefault(r, schedule.beat_start(spec, i))
-            out += region_legend(first, gone)
+            out += neuropil_legend(first, gone)
     return {"fps": spec["fps"], "animation": commands(out)}
 
 

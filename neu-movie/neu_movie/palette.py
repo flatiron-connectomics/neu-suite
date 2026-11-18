@@ -89,43 +89,43 @@ MIN_OWN_HUE = 90.0
 MIN_SIBLING_HUE = 30.0
 
 
-def neuropil_colours(regions, given, avoid, own=None, amount=0.5):
-    """``{region: "#rrggbb"}``, in the order of `regions`.
+def neuropil_colours(neuropils, given, avoid, own=None, amount=0.5):
+    """``{neuropil: "#rrggbb"}``, in the order of `neuropils`.
 
-    `given` holds colours chosen for regions (the spec's), kept as they are. `own` maps a
-    region to the colours of the sets shown with it, `avoid` lists every set's colour, and
-    `amount` is how far neuropils are muted toward grey. A colour fits a region if, once
+    `given` holds colours chosen for neuropils (the spec's), kept as they are. `own` maps a
+    neuropil to the colours of the sets shown with it, `avoid` lists every set's colour, and
+    `amount` is how far neuropils are muted toward grey. A colour fits a neuropil if, once
     muted, it keeps `MIN_CHROMA` (it does not read as the head's grey) and `MIN_OWN_HUE`
     from its own sets (it does not wear the colour of the neurons inside it). Any other
-    region takes the `NEUROPILS` colour that fits and is, in order of preference:
+    neuropil takes the `NEUROPILS` colour that fits and is, in order of preference:
     `MIN_SIBLING_HUE` from the colours of its own sets' other neuropils (given or already
     chosen), the least used, `MIN_DELTA_E` from every set, the earliest."""
     avoid, own = list(avoid), own or {}
 
-    def fits(c, region):
+    def fits(c, neuropil):
         m = mute(c, amount)
         return chroma(m) >= MIN_CHROMA and all(
-            hue_gap(m, o) >= MIN_OWN_HUE for o in own.get(region, ()) if chroma(o) >= MIN_CHROMA)
+            hue_gap(m, o) >= MIN_OWN_HUE for o in own.get(neuropil, ()) if chroma(o) >= MIN_CHROMA)
 
     def near_a_set(c):
         return any(delta_e(c, a) < MIN_DELTA_E for a in avoid)
 
-    kept = {r: given[r] for r in regions if given.get(r)}
+    kept = {r: given[r] for r in neuropils if given.get(r)}
     used = {}
     for c in kept.values():
         used[c] = used.get(c, 0) + 1
     out = {}
-    for region in regions:
-        c = kept.get(region)
+    for neuropil in neuropils:
+        c = kept.get(neuropil)
         if not c:
             siblings = [c for r, c in {**kept, **out}.items()
-                        if set(own.get(r, ())) & set(own.get(region, ()))]
-            pool = [c for c in NEUROPILS if fits(c, region)] or NEUROPILS
+                        if set(own.get(r, ())) & set(own.get(neuropil, ()))]
+            pool = [c for c in NEUROPILS if fits(c, neuropil)] or NEUROPILS
             c = min(pool, key=lambda c: (
                 any(hue_gap(c, s) < MIN_SIBLING_HUE for s in siblings), used.get(c, 0),
                 near_a_set(c), NEUROPILS.index(c)))
             used[c] = used.get(c, 0) + 1
-        out[region] = c
+        out[neuropil] = c
     return out
 
 

@@ -24,15 +24,16 @@ def _layers(spec, world, names):
     layers = [{"type": "segmentation", "name": n, "source": _source(world["volume"]),
                "segments": [str(b) for b in world["ids"][n]],
                "segmentDefaultColor": world["colours"][n]} for n in names]
-    regions = [r for r in dict.fromkeys(r for n in names for r in spec["sets"][n]["regions"])
-               if r in world["regions"]]
-    if regions:
+    nps = world["neuropils"]
+    shown = [r for r in dict.fromkeys(r for n in names for r in spec["sets"][n]["neuropils"])
+             if r in nps]
+    if shown:
         amount = spec["neuropils"]["mute"]
         layers.append({
-            "type": "segmentation", "name": "neuropils", "source": _source(world["roi_volume"]),
-            "segments": [world["regions"][r]["id"] for r in regions],
-            "segmentColors": {world["regions"][r]["id"]: mute(world["regions"][r]["color"],
-                                                              amount) for r in regions},
+            "type": "segmentation", "name": "neuropils",
+            "source": _source(world["neuropil_volume"]),
+            "segments": [nps[r]["id"] for r in shown],
+            "segmentColors": {nps[r]["id"]: mute(nps[r]["color"], amount) for r in shown},
             "objectAlpha": NEUROPIL_ALPHA})
     if spec["head"]:
         layers.append({"type": "segmentation", "name": "head",

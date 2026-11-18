@@ -10,7 +10,8 @@ the spec. It holds::
     links.txt                  neuroglancer links: everything, then each beat
     build-*.log                Blender's output for each step
     frames/, frames-labeled/   rendered, then labelled
-    <name>.mp4
+    <name>.mp4                 the movie
+    <name>_labeled.mp4         the movie with its labels
 
 Everything after the build reads only the build, so `relabel` and `finish` work from its
 records even if the spec or the segmentation has changed since.
@@ -73,19 +74,19 @@ def resolve(spec, site, *, limit=None):
     for a, b, c in sets.clashes(spec, colours, ids):
         log(f"  ! {a!r} and {b!r} are on screen together and share {c}")
     world = {"volume": volume, "unit": unit_nm(volume), "ids": ids, "colours": colours,
-             "roi_volume": None, "regions": {},
+             "neuropil_volume": None, "neuropils": {},
              "head_volume": location(spec["head"], site) if spec["head"] else None}
-    regions = list(dict.fromkeys(r for name in ids for r in spec["sets"][name]["regions"]))
-    if regions:
+    shown = list(dict.fromkeys(r for name in ids for r in spec["sets"][name]["neuropils"]))
+    if shown:
         from neu_glance.sources import segment_ids
 
         from neu_movie.palette import neuropil_colours
         nps = spec["neuropils"]
-        world["roi_volume"] = location(nps, site)
-        own = {r: [colours[n] for n in ids if r in spec["sets"][n]["regions"]] for r in regions}
-        chosen = neuropil_colours(regions, nps["colors"], colours.values(), own, nps["mute"])
-        for name, sid in zip(regions, segment_ids(world["roi_volume"], regions)):
-            world["regions"][name] = {"id": str(sid), "color": chosen[name]}
+        world["neuropil_volume"] = location(nps, site)
+        own = {r: [colours[n] for n in ids if r in spec["sets"][n]["neuropils"]] for r in shown}
+        chosen = neuropil_colours(shown, nps["colors"], colours.values(), own, nps["mute"])
+        for name, sid in zip(shown, segment_ids(world["neuropil_volume"], shown)):
+            world["neuropils"][name] = {"id": str(sid), "color": chosen[name]}
             log(f"  neuropil {name}: {chosen[name]}"
                 + (" (the spec's)" if name in nps["colors"] else ""))
     return world
@@ -103,11 +104,11 @@ def gather(spec, site, world, *, force=False):
 
     scene = {"unit": unit, "ids": world["ids"], "colours": world["colours"],
              "neuron_dir": str(neuron_dir), "roi_dir": None, "head": None,
-             "region_colours": {r: v["color"] for r, v in world["regions"].items()}}
-    if world["roi_volume"]:
-        scene["roi_dir"] = str(cache / f"rois-{volume_tag(world['roi_volume'])}")
-        for name, region in world["regions"].items():
-            meshes.export(world["roi_volume"], int(region["id"]),
+             "neuropil_colours": {r: v["color"] for r, v in world["neuropils"].items()}}
+    if world["neuropil_volume"]:
+        scene["roi_dir"] = str(cache / f"rois-{volume_tag(world['neuropil_volume'])}")
+        for name, neuropil in world["neuropils"].items():
+            meshes.export(world["neuropil_volume"], int(neuropil["id"]),
                           os.path.join(scene["roi_dir"], f"{safe_name(name)}.obj"),
                           unit, None, force=force, smooth=smooth)
     head = spec["head"]
@@ -147,7 +148,7 @@ def open_build(path):
         d = d.parent
     if not (d / "build.json").exists():
         raise FileNotFoundError(f"{d} is not a build (no build.json)")
-    spec = spec_mod.load(d / "spec.toml")
+    spec = spec_mod.load(d / "spec.toml", old_names=True)
     with open(d / "build.json") as f:
         info = json.load(f)
     with open(d / "sets.json") as f:
@@ -187,7 +188,7 @@ def build(spec_path, *, limit=None, force=False, blend=True):
     write_json(d / "sets.json", {
         "volume": world["volume"], "unit_nm": world["unit"], "limit": limit,
         "sets": {n: {"color": colours[n], "ids": ids[n]} for n in ids},
-        "neuropils": world["roi_volume"], "regions": world["regions"],
+        "neuropil_volume": world["neuropil_volume"], "neuropils": world["neuropils"],
         "head": world["head_volume"]})
     with open(d / "links.txt", "w") as f:
         for title, url in links.links(spec, world):
@@ -241,9 +242,12 @@ def relabel(path):
     ids = {n: s["ids"] for n, s in recorded["sets"].items()}
     colours = {n: s["color"] for n, s in recorded["sets"].items()}
     spec = dict(spec, beats=[b for b in spec["beats"] if any(n in ids for n in b["sets"])])
-    regions = {r: v["color"] for r, v in recorded.get("regions", {}).items()}
+    nps = recorded.get("neuropils")
+    if not isinstance(nps, dict):          # older builds recorded them as "regions"
+        nps = recorded.get("regions", {})
     write_json(d / f"{info['name']}_labels.json",
-               labels_mod.compose(spec, ids, colours, info["seconds"], regions))
+               labels_mod.compose(spec, ids, colours, info["seconds"],
+                                  {r: v["color"] for r, v in nps.items()}))
     log(f"wrote {d / (info['name'] + '_labels.json')}")
     return d
 
@@ -294,18 +298,17 @@ def encode(d, site, info, frames_dir, output):
     log(f"wrote {output}")
 
 
-def finish(path, processes=1):
-    """Label a build's frames and encode the movie."""
+def finish(path, processes=1, labels=True):
+    """Encode a build's frames as `<name>.mp4`; then, unless `labels` is off or the spec
+    draws none, label them and encode `<name>_labeled.mp4` too."""
     d, spec, info, _ = open_build(path)
     site = site_mod.load(d)
-    frames = d / "frames"
-    src = frames
-    lab = spec["labels"]
-    if (d / f"{info['name']}_labels.json").exists() and (
-            lab["titles"] or lab["legend"] or lab["neuropil_legend"]):
-        src = d / "frames-labeled"
-        label_frames(d, site, info, frames, src, processes)
-    encode(d, site, info, src, d / f"{info['name']}.mp4")
+    name, lab = info["name"], spec["labels"]
+    encode(d, site, info, d / "frames", d / f"{name}.mp4")
+    if labels and (d / f"{name}_labels.json").exists() and (
+            lab["beat_titles"] or lab["neuron_legend"] or lab["neuropil_legend"]):
+        label_frames(d, site, info, d / "frames", d / "frames-labeled", processes)
+        encode(d, site, info, d / "frames-labeled", d / f"{name}_labeled.mp4")
     return d
 
 

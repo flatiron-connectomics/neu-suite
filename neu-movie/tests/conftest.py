@@ -69,7 +69,7 @@ def replace_spec():
     return make_spec(
         [{"title": "one", "sets": [{"name": "A", "ids": [1, 2]}]},
          {"title": "two", "sets": [{"name": "A"}, {"name": "B", "label": "^B"}]},
-         {"title": "three", "name": "C", "ids": [5], "regions": ["LA(L)"]}],
+         {"title": "three", "name": "C", "ids": [5], "neuropils": ["LA(L)"]}],
         neuropils={"library": "lib/seg", "path": "rois"},
         timing={"start": 1.0, "every": 5.0, "fade": 1.0, "hold": 2.0})
 

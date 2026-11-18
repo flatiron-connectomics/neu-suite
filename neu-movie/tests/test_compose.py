@@ -15,7 +15,7 @@ def scene(spec, *, head=False, regions=()):
     return {"unit": 8.0, "ids": ids, "colours": {n: "#ff0000" for n in ids},
             "neuron_dir": "/m/neurons",
             "roi_dir": "/m/rois" if (spec["neuropils"] or head) else None,   # as gather does
-            "region_colours": {r: "#00ff00" for r in regions},
+            "neuropil_colours": {r: "#00ff00" for r in regions},
             "head": {"dir": "/m/head", "roi": "headroi"} if head else None}
 
 
@@ -104,7 +104,7 @@ def label_rows(doc):
 
 
 def test_replace_labels_cross_fade_with_their_beats(replace_spec):
-    spec = dict(replace_spec, labels=dict(replace_spec["labels"], legend_header="Types:"))
+    spec = dict(replace_spec, labels=dict(replace_spec["labels"], neuron_legend_header="Types:"))
     ids = {"A": ["1"], "B": ["2"], "C": ["3"]}
     doc = labels.compose(spec, ids, {n: "#ff0000" for n in ids}, end=16.5)
     rows = label_rows(doc)
@@ -147,14 +147,14 @@ def test_accumulate_legend_grows_and_stays(accumulate_spec):
     assert colours == {linear_hex("#00ff00")}
 
 
-@pytest.mark.parametrize("off", [{"titles": False}, {"legend": False}])
+@pytest.mark.parametrize("off", [{"beat_titles": False}, {"neuron_legend": False}])
 def test_titles_and_legend_can_be_turned_off(replace_spec, off):
     spec = dict(replace_spec, labels=dict(replace_spec["labels"], **off))
     ids = {"A": ["1"], "B": ["2"], "C": ["3"]}
     texts = {r[1] for r in label_rows(labels.compose(spec, ids, dict.fromkeys(ids, "#f00000"),
                                                      16.5))}
-    assert ("one" in texts) == off.get("titles", True)
-    assert ("A" in texts) == off.get("legend", True)
+    assert ("one" in texts) == off.get("beat_titles", True)
+    assert ("A" in texts) == off.get("neuron_legend", True)
 
 
 def test_a_looping_orbit_turns_through_the_whole_movie(replace_spec):
@@ -271,7 +271,7 @@ def test_the_fill_light_strength_is_passed_on(replace_spec):
 
 
 def test_an_orbit_can_frame_the_sets_and_be_levelled():
-    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)"]}, {"name": "B", "ids": [2]}],
+    spec = make_spec([{"name": "A", "ids": [1], "neuropils": ["LA(L)"]}, {"name": "B", "ids": [2]}],
                      mode="accumulate", neuropils={"library": "lib", "path": "rois"},
                      head={"library": "lib", "id": 1},
                      camera={"frame": "sets", "orbit_degrees": -360.0})
@@ -294,9 +294,9 @@ def neuropil_rows(doc):
 
 
 def test_neuropils_get_a_legend_on_the_right_as_they_appear():
-    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)", "ME(L)"]},
+    spec = make_spec([{"name": "A", "ids": [1], "neuropils": ["LA(L)", "ME(L)"]},
                       {"name": "B", "ids": [2]},
-                      {"name": "C", "ids": [3], "regions": ["ME(L)", "AOTU(L)"]}],
+                      {"name": "C", "ids": [3], "neuropils": ["ME(L)", "AOTU(L)"]}],
                      mode="accumulate", neuropils={"library": "lib", "path": "rois", "mute": 0.5},
                      timing={"start": 0.5, "every": 2.0, "fade": 1.5})
     ids = {"A": ["1"], "B": ["2"], "C": ["3"]}
@@ -336,10 +336,10 @@ def test_an_orbit_can_outlast_the_beats():
 
 
 def test_the_neuropil_legend_can_have_a_header():
-    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA(L)"]},
-                      {"name": "C", "ids": [3], "regions": ["ME(L)"]}],
+    spec = make_spec([{"name": "A", "ids": [1], "neuropils": ["LA(L)"]},
+                      {"name": "C", "ids": [3], "neuropils": ["ME(L)"]}],
                      mode="accumulate", neuropils={"library": "lib", "path": "rois"},
-                     labels={"neuropil_header": "Neuropil regions:"},
+                     labels={"neuropil_legend_header": "Neuropil regions:"},
                      timing={"start": 0.5, "every": 2.0, "fade": 1.5})
     ids = {"A": ["1"], "C": ["3"]}
     doc = labels.compose(spec, ids, dict.fromkeys(ids, "#ff0000"), 20.0,

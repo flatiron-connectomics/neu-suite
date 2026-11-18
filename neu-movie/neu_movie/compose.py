@@ -59,9 +59,9 @@ def compose(spec, scene):
         g = safe_name(name)
         neurons[g] = [int(b) for b in ids[name]]
         parts = [f"neurons.{g}"]
-        regions = spec["sets"][name]["regions"]
-        if regions:
-            rois[g] = [safe_name(r) for r in regions]
+        shown = spec["sets"][name]["neuropils"]
+        if shown:
+            rois[g] = [safe_name(r) for r in shown]
             parts.append(f"rois.{g}")
         expr[name] = " + ".join(parts)
 
@@ -84,10 +84,10 @@ def compose(spec, scene):
         events.append((0.0, ["setValue", {"meshes": f"neurons.{safe_name(name)}",
                                           "color": linear_hex(colours[name])}]))
     if spec["neuropils"]:
-        for region, colour in scene["region_colours"].items():
-            rois[f"c_{safe_name(region)}"] = [safe_name(region)]
+        for neuropil, colour in scene["neuropil_colours"].items():
+            rois[f"c_{safe_name(neuropil)}"] = [safe_name(neuropil)]
             events.append((0.0, ["setValue", {
-                "meshes": f"rois.c_{safe_name(region)}",
+                "meshes": f"rois.c_{safe_name(neuropil)}",
                 "color": linear_hex(mute(colour, spec["neuropils"]["mute"]))}]))
     if head:
         # A faint shell throughout, or, with an intro, the solid lit head cross-fading into it.
@@ -110,7 +110,7 @@ def compose(spec, scene):
             continue
         g = safe_name(name)
         meshes = [(f"neurons.{g}", t["alpha"])]
-        if spec["sets"][name]["regions"]:
+        if spec["sets"][name]["neuropils"]:
             meshes.append((f"rois.{g}", np_alpha))
         for start, out in spans:
             for mesh, alpha in meshes:
@@ -177,7 +177,7 @@ def compose(spec, scene):
     info = {"seconds": end, "frames": round(end * spec["fps"]), "smooth": smooth,
             "orbit": orbit, "loop": orbit and cam["style"] == "orbit" and cam["loop"],
             "fill": spec["light"]["fill"]}
-    return doc, labels_mod.compose(spec, ids, colours, end, scene["region_colours"]), info
+    return doc, labels_mod.compose(spec, ids, colours, end, scene["neuropil_colours"]), info
 
 
 def opening_orientation(spec):

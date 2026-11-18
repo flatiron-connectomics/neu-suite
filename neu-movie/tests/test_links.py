@@ -12,14 +12,16 @@ pytest.importorskip("neu_glance")
 WORLD = {"volume": "s3://my-bucket/seg", "unit": 8.0,
          "ids": {"A": ["1"], "B": ["2", "3"], "C": ["4"]},
          "colours": {"A": "#1f77b4", "B": "#ff7f0e", "C": "#2ca02c"},
-         "roi_volume": "s3://my-bucket/seg/rois", "head_volume": "s3://my-bucket/seg/rois/head",
-         "regions": {"LA": {"id": "2", "color": "#1b9e77"}, "ME": {"id": "3", "color": "#e7298a"}}}
+         "neuropil_volume": "s3://my-bucket/seg/rois",
+         "head_volume": "s3://my-bucket/seg/rois/head",
+         "neuropils": {"LA": {"id": "2", "color": "#1b9e77"},
+                       "ME": {"id": "3", "color": "#e7298a"}}}
 
 
 def spec(mode="accumulate", **raw):
-    return make_spec([{"title": "one", "name": "A", "ids": [1], "regions": ["LA"]},
+    return make_spec([{"title": "one", "name": "A", "ids": [1], "neuropils": ["LA"]},
                       {"name": "B", "ids": [2, 3]},
-                      {"title": "three", "name": "C", "ids": [4], "regions": ["ME", "LA"]}],
+                      {"title": "three", "name": "C", "ids": [4], "neuropils": ["ME", "LA"]}],
                      mode=mode, neuropils={"library": "lib", "path": "rois"},
                      head={"library": "lib", "id": 95},
                      timing={"start": 0.5, "every": 2.0, "fade": 1.0, "hold": 1.0}, **raw)

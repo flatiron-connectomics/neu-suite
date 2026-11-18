@@ -14,7 +14,7 @@ neu-movie stills  BUILD -f 300 450      render a few frames here, labelled
 neu-movie submit  BUILD                 render on Slurm; the job then labels and encodes
 neu-movie animate SPEC                  build, then submit
 neu-movie relabel BUILD                 rewrite labels from the build's spec.toml ...
-neu-movie finish  BUILD                 ... then label the frames and encode the movie
+neu-movie finish  BUILD                 ... then encode the movie, and a labelled one
 ```
 
 ## Installing
@@ -51,7 +51,9 @@ the centre the movie frames. `build` writes the same links to the build's `links
 `--limit N` caps every set at N bodies, as does `build --limit` for a fast test movie.
 
 `submit` writes `render.sbatch` into the build and submits it. The job runs one Blender per
-GPU, each on its own run of frames, then calls `neu-movie finish` to label and encode.
+GPU, each on its own run of frames, then calls `neu-movie finish`, which encodes the frames
+as `<name>.mp4`, labels them and encodes `<name>_labeled.mp4` (`--no-labels`: only the
+first).
 Resubmitting resumes: rendered frames are skipped. If the job ends before finishing, run
 `neu-movie finish BUILD` anywhere Blender runs. `animate` is `build` then `submit`.
 
@@ -77,9 +79,9 @@ library = "my-specimen/v1"   # a volume library name, or volume = "<url>"
 lod = 0
 query = { without = ["fragment"] }   # defaults merged into every query set
 
-[neuropils]                  # optional: regions shown with a set (its `regions`)
+[neuropils]                  # optional: shown with a set (its `neuropils`)
 library = "my-specimen/v1"
-path = "rois/neuropils"      # the region layer under the library volume
+path = "rois/neuropils"      # the neuropil layer under the library volume
 colors = { "ME(L)" = "#e6ab02" }     # optional: chosen colours, kept as they are
 
 [head]                       # optional: the animal's outline, a faint shell
@@ -97,7 +99,7 @@ style = "follow"
 [[beat]]                     # one set: its keys given on the beat
 name = "R7p"
 ids = [27332882]
-regions = ["LA(L)", "ME(L)"]
+neuropils = ["LA(L)", "ME(L)"]
 
 [[beat]]                     # several sets
 title = "optic lobe"
@@ -118,7 +120,7 @@ coordinate space.
 bodies whose mesh is in the store. `exclude = [...]` drops bodies either way, before the
 limit is applied. `color = "#rrggbb"` overrides the palette; otherwise sets take tab10 then
 Dark2 in order of first appearance, without the colours too dim to see on black.
-`regions` names neuropils, by their segment names in the `[neuropils]` volume, that fade in
+`neuropils` names neuropils, by their segment names in the `[neuropils]` volume, that fade in
 with the set. A neuropil takes its colour in `[neuropils] colors`, else one of tab10, Dark2
 and Set2 that stays a colour once muted, so it never reads as the head's grey, and is
 at least 90 degrees of hue from the sets shown with it, so the neurons inside it stand out.
@@ -155,12 +157,13 @@ and no ambient light, so a camera that orbits round to the back sees black surfa
 `[light] fill` adds a lamp that moves with the camera and shines along its view, in W/m²
 (each of neuVid's lamps gives about 4; `0` for none).
 
-**Labels.** Each beat's `title` shows at the top. A legend of the sets on screen, each name
-in its set's colour, sits at the bottom left, with an optional `legend_header` line above
-it. The neuropils have their own legend at the bottom right, right-aligned, each name in the
-colour its neuropil is drawn in, under an optional `neuropil_header`. Labels fade with
+**Labels.** Text drawn over the frames, three parts each with its own switch in `[labels]`.
+`beat_titles`: each beat's `title` at the top. `neuron_legend`: the sets on screen at the
+bottom left, each name in its set's colour, under an optional `neuron_legend_header`.
+`neuropil_legend`: the neuropils at the bottom right, right-aligned, each name in the colour
+its neuropil is drawn in, under an optional `neuropil_legend_header`. Labels fade with
 their cells. In `replace` the legends are per beat; in `accumulate` they grow a row per set
-and per neuropil.
+and per neuropil. With all three off, `finish` makes only the unlabelled movie.
 
 Every key, with its default:
 
@@ -169,13 +172,13 @@ Every key, with its default:
 | top level | `name` (the file's stem), `fps = 30`, `mode = "replace"` |
 | `[view]` | `position` (nm, required), `orientation = [0, 0, 0, 1]`, `height` (nm, required) |
 | `[neurons]` | `library` or `volume`, `path = ""`, `lod = 0`, `query = {}`, `workers = 16` |
-| `[neuropils]` | `library` or `volume`, `path` (required with `library`), `colors = {}`, `alpha = 0.08`, `exponent = 7.0`, `mute = 0.5` (how far region colours move toward grey) |
+| `[neuropils]` | `library` or `volume`, `path` (required with `library`), `colors = {}`, `alpha = 0.08`, `exponent = 7.0`, `mute = 0.5` (how far neuropil colours move toward grey) |
 | `[head]` | `library` or `volume`, `id`, `path = "rois/head"`, `lod = 0`, `alpha = 0.035`, `color = "#808080"`, `exponent = 7.0`, `offset = 4.0`, `intro_at = 1.0`, `intro_seconds = 0.0` (above 0, the head starts solid in `lit_color` and fades to the shell), `lit_color = "#d9d9d9"` |
 | `[meshes]` | `smooth = 10` (Taubin iterations) |
 | `[timing]` | `start = 0.5`, `every = 5.5`, `fade = 1.5`, `hold = 4.0`, `alpha = 1.0`, `tail = 1.5` (seconds after the content ends), `repeat = 1` |
 | `[camera]` | `style = "orbit"`, `scale = 1.0` (framing margin), `orbit_degrees = 360.0`, `orbit_at = 1.0`, `loop = false`, `window = 2`, `move_seconds` (defaults to `every`), `pullback_seconds = 4.0`, `orbit_seconds` (orbit: until the last fade ends; follow and glide: 12), `up` (a vertical), `frame = "head"` (or `"sets"`; orbit) |
 | `[light]` | `fill = 2.0` |
-| `[labels]` | `titles = true`, `legend = true`, `neuropil_legend = true`, `legend_header = ""`, `neuropil_header = ""`, `title_size = 0.06`, `legend_size = 0.045`, `legend_x = 0.04`, `legend_bottom = 0.06`, `legend_step = 0.065` (sizes and positions are fractions of the frame height) |
+| `[labels]` | `beat_titles = true`, `neuron_legend = true`, `neuron_legend_header = ""`, `neuropil_legend = true`, `neuropil_legend_header = ""`, `title_size = 0.06`, `legend_size = 0.045`, `legend_x = 0.04`, `legend_bottom = 0.06`, `legend_step = 0.065` (sizes and positions are fractions of the frame height) |
 
 ## The build
 
@@ -192,7 +195,8 @@ even if the spec or the segmentation has changed since.
 | `<name>.blend`, `<name>Anim.blend` | the Blender files neuVid made from it |
 | `links.txt` | neuroglancer links: everything the movie shows, then each beat |
 | `build-*.log`, `render-*.log`, `labels-*.log`, `slurm-*.out` | each step's output |
-| `frames/`, `frames-labeled/`, `<name>.mp4` | the result |
+| `frames/`, `frames-labeled/` | the rendered frames, and the same with their labels |
+| `<name>.mp4`, `<name>_labeled.mp4` | the movie, and the movie with its labels |
 
 Meshes are not in the build. They are exported once to the site's mesh cache, by source
 volume, smoothing and level of detail, and shared by every build. A volume rewritten at the

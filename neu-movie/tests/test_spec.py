@@ -35,7 +35,7 @@ def test_load_reads_toml(tmp_path):
                     '[[beat]]\nname = "A"\nids = [3, 1]\ncolor = "#AABBCC"\n')
     spec = spec_mod.load(path)
     assert spec["name"] == "pop"
-    assert spec["sets"]["A"] == {"name": "A", "regions": [], "exclude": [],
+    assert spec["sets"]["A"] == {"name": "A", "neuropils": [], "exclude": [],
                                  "color": "#aabbcc", "ids": ["3", "1"], "query": None}
 
 
@@ -79,19 +79,22 @@ def test_repeating_an_identical_definition_is_allowed():
     ({"camera": {"up": [0, 1]}}, None, r"`up` must be 3 numbers"),
     ({"camera": {"loop": True, "orbit_seconds": 10}}, None, "takes no `orbit_seconds`"),
     ({"camera": {"orbit_seconds": 0}}, None, "`orbit_seconds` must be a number above 0"),
-    ({"neuropils": {"library": "l"}}, [{"name": "Z", "ids": [9], "regions": ["LA"]}],
+    ({"neuropils": {"library": "l"}}, [{"name": "Z", "ids": [9], "neuropils": ["LA"]}],
      "with `library`, give `path`"),
-    ({}, [{"name": "Z", "ids": [9], "regions": ["LA"]}], "no \\[neuropils\\] section"),
+    ({}, [{"name": "Z", "ids": [9], "neuropils": ["LA"]}], "no \\[neuropils\\] section"),
     ({"neuropils": {"volume": "v", "colors": {"ME": "#ff0000"}}},
-     [{"name": "Z", "ids": [9], "regions": ["LA"]}], "colors: no set shows ME"),
+     [{"name": "Z", "ids": [9], "neuropils": ["LA"]}], "colors: no set shows ME"),
     ({"neuropils": {"volume": "v", "colors": {"LA": "red"}}},
-     [{"name": "Z", "ids": [9], "regions": ["LA"]}], "colors: colour 'red' is not"),
+     [{"name": "Z", "ids": [9], "neuropils": ["LA"]}], "colors: colour 'red' is not"),
     ({"head": {"id": 3}}, None, "one of `library` or `volume`"),
     ({"head": {"library": "x", "volume": "y", "id": 3}}, None, "one of `library` or `volume`"),
     ({"head": {"library": "x"}}, None, r"\[head\]: `id` is required"),
     ({}, [], r"no `\[\[beat\]\]`"),
     ({}, [{"ids": [1]}], "needs a `name`"),
     ({}, [{"name": "A", "lable": "^A"}], r"unknown key\(s\) lable"),
+    ({"neuropils": {"volume": "v"}}, [{"name": "A", "ids": [1], "regions": ["LA"]}],
+     r"unknown key\(s\) regions"),                     # the earlier names, outside a build
+    ({"labels": {"legend_header": "x"}}, None, r"unknown key\(s\) legend_header"),
     ({}, [{"name": "A"}], "neither `ids` nor a query"),
     ({}, [{"name": "A", "ids": [1], "label": "^A"}], "`ids` or a query, not both"),
     ({}, [{"name": "A", "ids": [1], "color": "red"}], "is not #rrggbb"),
@@ -142,7 +145,7 @@ def test_repeat_plays_the_beats_over_again():
 
 
 def test_up_and_neuropil_colours_are_normalised():
-    spec = make_spec([{"name": "A", "ids": [1], "regions": ["LA"]}],
+    spec = make_spec([{"name": "A", "ids": [1], "neuropils": ["LA"]}],
                      camera={"style": "follow", "up": [0, 1, 0]},
                      neuropils={"library": "l", "path": "rois", "colors": {"LA": "#AABBCC"}})
     assert spec["camera"]["up"] == [0.0, 1.0, 0.0]

@@ -40,7 +40,7 @@ def test_check_prints_the_schedule(tmp_path, monkeypatch, capsys):
     (tmp_path / "site.toml").write_text('blender = "/b"\n')
     monkeypatch.setenv("NEU_MOVIE_CONFIG", str(tmp_path / "site.toml"))
     world = {"volume": "s3://my-bucket/seg", "unit": 8.0, "ids": {"A": ["1", "2"]},
-             "colours": {"A": "#1f77b4", "B": "#ff7f0e"}, "roi_volume": None, "regions": {},
+             "colours": {"A": "#1f77b4", "B": "#ff7f0e"}, "neuropil_volume": None, "neuropils": {},
              "head_volume": None}
     monkeypatch.setattr(build_mod, "resolve", lambda spec, site, limit=None: world)
     assert main(["check", str(path)]) == 0

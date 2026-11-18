@@ -7,7 +7,7 @@
     neu-movie submit  BUILD                 render on Slurm; the job then labels and encodes
     neu-movie animate SPEC                  build, then submit
     neu-movie relabel BUILD                 rewrite labels from the build's spec.toml ...
-    neu-movie finish  BUILD                 ... then label the frames and encode the movie
+    neu-movie finish  BUILD                 ... then encode the movie, and a labelled one
 
 A build is the folder one `build` makes: `renders/<spec name>_<timestamp>/` beside the spec.
 Site settings (Blender, neuVid, Slurm) come from `configs/neu-movie.toml`; see
@@ -53,7 +53,7 @@ def _check(args):
               f"{', '.join(names)}")
     scene = {"unit": world["unit"], "ids": ids, "colours": colours, "neuron_dir": "-",
              "roi_dir": "-", "head": {"dir": "-", "roi": "-"} if spec["head"] else None,
-             "region_colours": {r: v["color"] for r, v in world["regions"].items()}}
+             "neuropil_colours": {r: v["color"] for r, v in world["neuropils"].items()}}
     _, _, info = compose.compose(spec, scene)
     print(f"  {info['seconds']:g} s at {spec['fps']} fps = {info['frames']} frames")
     if args.links:
@@ -101,9 +101,11 @@ def build_parser():
     p = sub.add_parser("relabel", help="rewrite a build's labels from its spec.toml")
     p.add_argument("build")
 
-    p = sub.add_parser("finish", help="label a build's frames and encode the movie")
+    p = sub.add_parser("finish", help="encode a build's movie, and a labelled one")
     p.add_argument("build")
     p.add_argument("--processes", type=int, default=4, help="label passes side by side")
+    p.add_argument("--labels", action=argparse.BooleanOptionalAction, default=True,
+                   help="also label the frames and encode <name>_labeled.mp4 (default: yes)")
     return ap
 
 
@@ -135,7 +137,7 @@ def main(argv=None):
             build_mod.relabel(args.build)
             return 0
         if args.command == "finish":
-            build_mod.finish(args.build, args.processes)
+            build_mod.finish(args.build, args.processes, labels=args.labels)
             return 0
     except (spec_mod.SpecError, FileNotFoundError, FileExistsError, RuntimeError) as e:
         print(f"neu-movie: {e}", file=sys.stderr)

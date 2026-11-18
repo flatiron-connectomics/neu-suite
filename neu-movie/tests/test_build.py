@@ -23,7 +23,7 @@ every = 5.0
 fade = 1.0
 hold = 2.0
 [labels]
-legend_header = "Types:"
+neuron_legend_header = "Types:"
 [[beat]]
 title = "one"
 sets = [{ name = "A", ids = [1] }, { name = "B", ids = [2] }]
@@ -224,11 +224,40 @@ def test_a_missing_blender_script_fails_before_blender_runs(build_dir, site, tmp
 def test_relabel_uses_the_recorded_neuropil_colours(build_dir):
     (build_dir / "spec.toml").write_text(
         SPEC.replace("[timing]", '[neuropils]\nvolume = "s3://my-bucket/rois"\n[timing]')
-            .replace("ids = [3]", 'ids = [3]\nregions = ["LA(L)"]'))
+            .replace("ids = [3]", 'ids = [3]\nneuropils = ["LA(L)"]'))
     recorded = json.loads((build_dir / "sets.json").read_text())
-    recorded["regions"] = {"LA(L)": {"id": "2", "color": "#1b9e77"}}
+    recorded["neuropils"] = {"LA(L)": {"id": "2", "color": "#1b9e77"}}
     (build_dir / "sets.json").write_text(json.dumps(recorded))
     build_mod.relabel(build_dir)
     doc = json.loads((build_dir / "movie_labels.json").read_text())
     la = [a for c, a in doc["animation"] if c == "label" and a["text"] == "LA(L)"]
     assert len(la) == 1 and la[0]["align"] == "right"
+
+
+def test_an_older_build_with_the_earlier_key_names_still_relabels(build_dir):
+    (build_dir / "spec.toml").write_text(
+        SPEC.replace("neuron_legend_header", "legend_header")
+            .replace("[timing]", '[neuropils]\nvolume = "s3://my-bucket/rois"\n[timing]')
+            .replace("ids = [3]", 'ids = [3]\nregions = ["LA(L)"]'))
+    recorded = json.loads((build_dir / "sets.json").read_text())
+    recorded["neuropils"] = "s3://my-bucket/rois"
+    recorded["regions"] = {"LA(L)": {"id": "2", "color": "#1b9e77"}}
+    (build_dir / "sets.json").write_text(json.dumps(recorded))
+    build_mod.relabel(build_dir)
+    texts = [a["text"] for c, a in json.loads((build_dir / "movie_labels.json").read_text())
+             ["animation"] if c == "label"]
+    assert "Types:" in texts and "LA(L)" in texts
+
+
+@pytest.mark.parametrize("labels", [True, False])
+def test_finish_encodes_the_movie_and_a_labelled_one(build_dir, monkeypatch, labels):
+    encoded, labelled = [], []
+    monkeypatch.setattr(build_mod, "encode",
+                        lambda d, site, info, frames, out: encoded.append((frames.name, out.name)))
+    monkeypatch.setattr(build_mod, "label_frames",
+                        lambda d, site, info, frames, out, processes: labelled.append(out.name))
+    (build_dir / "movie_labels.json").write_text("{}")
+    build_mod.finish(build_dir, labels=labels)
+    assert encoded[0] == ("frames", "movie.mp4")
+    assert encoded[1:] == ([("frames-labeled", "movie_labeled.mp4")] if labels else [])
+    assert labelled == (["frames-labeled"] if labels else [])

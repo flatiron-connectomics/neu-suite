@@ -14,9 +14,9 @@ instead of quietly falling back to a default::
     lod = 1                      # mesh level of detail (0 = full)
     query = { without = ["fragment"] }   # defaults for every set's query
 
-    [neuropils]                  # optional: regions shown with sets (a set's `regions`)
+    [neuropils]                  # optional: shown with sets (a set's `neuropils`)
     library = "my-volume/v1"
-    path = "rois/neuropils"      # the region layer, under the library volume
+    path = "rois/neuropils"      # the neuropil layer, under the library volume
 
     [head]                       # optional: the animal's outline, as a faint shell
     library = "my-volume/v1"     # a volume library name, or `volume = "<url>"`
@@ -31,7 +31,7 @@ instead of quietly falling back to a default::
     style = "orbit"              # or "follow"
 
     [labels]
-    legend_header = "Cell types:"
+    neuron_legend_header = "Cell types:"
 
     [[beat]]
     title = "optic lobe"
@@ -43,7 +43,7 @@ instead of quietly falling back to a default::
     [[beat]]                     # a beat of one set may give the set's keys directly
     name = "R7p"
     ids = [27332882]
-    regions = ["LA(L)", "ME(L)"]
+    neuropils = ["LA(L)", "ME(L)"]
 
 **Modes.** `replace`: each beat's sets fade in at its start and out `hold` seconds after
 their fade-in ends, unless the next beat names them too — a set named in consecutive beats
@@ -77,8 +77,9 @@ rather than about the opening view's: for `follow` it levels the return, for `or
 the camera, so no side the camera comes round to is black (W/m^2; neuVid's lamps give
 about 4 each; 0 for none).
 
-**Labels.** Beat titles at the top, a legend of the sets at the bottom left and, with
-`neuropil_legend`, one of the neuropils at the bottom right, each name in its colour.
+**Labels.** Text drawn over the frames, each part with its own switch: `beat_titles` at the
+top, `neuron_legend` (the sets) at the bottom left and `neuropil_legend` at the bottom right,
+each name in its colour, under an optional `neuron_legend_header` / `neuropil_legend_header`.
 """
 
 import copy
@@ -108,13 +109,13 @@ SECTIONS = {
                "loop": False, "window": 2, "move_seconds": None, "pullback_seconds": 4.0,
                "orbit_seconds": None, "up": None, "frame": "head"},
     "light": {"fill": 2.0},
-    "labels": {"titles": True, "legend": True, "neuropil_legend": True,
-               "legend_header": "", "neuropil_header": "", "title_size": 0.06,
+    "labels": {"beat_titles": True, "neuron_legend": True, "neuron_legend_header": "",
+               "neuropil_legend": True, "neuropil_legend_header": "", "title_size": 0.06,
                "legend_size": 0.045, "legend_x": 0.04, "legend_bottom": 0.06,
                "legend_step": 0.065},
 }
 TOP = {"name": None, "fps": 30, "mode": "replace", "beat": None, **SECTIONS}
-SET_KEYS = ("name", "ids", "exclude", "regions", "color", *QUERY_KEYS)
+SET_KEYS = ("name", "ids", "exclude", "neuropils", "color", *QUERY_KEYS)
 
 
 class SpecError(ValueError):
@@ -138,7 +139,7 @@ def _set(raw, where, query_defaults):
                         f"a set takes {', '.join(SET_KEYS)}")
     if not raw.get("name"):
         raise SpecError(f"{where}: a set needs a `name`")
-    s = {"name": str(raw["name"]), "regions": list(raw.get("regions", [])),
+    s = {"name": str(raw["name"]), "neuropils": list(raw.get("neuropils", [])),
          "exclude": [str(b) for b in raw.get("exclude", [])], "color": None}
     if raw.get("color") is not None:
         try:
@@ -159,15 +160,36 @@ def _set(raw, where, query_defaults):
     return s
 
 
-def load(path):
-    """The spec at `path`, every default filled in. Paths in it become absolute."""
+#: Earlier names of `[labels]` keys, which older builds' copies of their spec still use.
+OLD_LABEL_KEYS = {"titles": "beat_titles", "legend": "neuron_legend",
+                  "legend_header": "neuron_legend_header",
+                  "neuropil_header": "neuropil_legend_header"}
+
+
+def _new_names(raw):
+    """`raw` with the earlier key names (`OLD_LABEL_KEYS`, a set's `regions`) renamed."""
+    raw = copy.deepcopy(raw)
+    lab = raw.get("labels", {})
+    for old, new in OLD_LABEL_KEYS.items():
+        if old in lab and new not in lab:
+            lab[new] = lab.pop(old)
+    for b in raw.get("beat") or []:
+        for m in b.get("sets", [b]):
+            if "regions" in m and "neuropils" not in m:
+                m["neuropils"] = m.pop("regions")
+    return raw
+
+
+def load(path, *, old_names=False):
+    """The spec at `path`, every default filled in. Paths in it become absolute.
+    `old_names` reads the earlier key names too, for a build's own copy of its spec."""
     path = os.path.abspath(path)
     with open(path, "rb") as f:
         try:
             raw = tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
             raise SpecError(f"{path}: {e}") from None
-    return parse(raw, path)
+    return parse(_new_names(raw) if old_names else raw, path)
 
 
 def _numbers(value, n, what):
@@ -239,8 +261,8 @@ def parse(raw, path):
         nps = spec["neuropils"]
         _source(nps, f"{where} [neuropils]")
         if nps["library"] and not nps["path"]:
-            raise SpecError(f"{where} [neuropils]: with `library`, give `path`, the region "
-                            f"layer under it (e.g. \"rois/neuropils\")")
+            raise SpecError(f"{where} [neuropils]: with `library`, give `path`, the "
+                            f"neuropil layer under it (e.g. \"rois/neuropils\")")
         try:
             nps["colors"] = {str(r): palette.normalize(c) for r, c in nps["colors"].items()}
         except ValueError as e:
@@ -289,10 +311,10 @@ def parse(raw, path):
                         f"mode the sets of the first pass never leave")
     spec["beats"], spec["sets"] = [dict(b) for _ in range(repeat) for b in beats], sets
     del spec["beat"]
-    regions = {r for s in sets.values() for r in s["regions"]}
-    if regions and not spec["neuropils"]:
-        raise SpecError(f"{where}: sets name `regions` but there is no [neuropils] section")
-    stray = set(spec["neuropils"]["colors"]) - regions if spec["neuropils"] else set()
+    shown = {r for s in sets.values() for r in s["neuropils"]}
+    if shown and not spec["neuropils"]:
+        raise SpecError(f"{where}: sets name `neuropils` but there is no [neuropils] section")
+    stray = set(spec["neuropils"]["colors"]) - shown if spec["neuropils"] else set()
     if stray:
         raise SpecError(f"{where} [neuropils] colors: no set shows {', '.join(sorted(stray))}")
 
