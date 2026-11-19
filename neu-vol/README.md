@@ -311,6 +311,24 @@ Each returns `None` for a body with none. Multi-LOD Draco and legacy meshes and 
 skeletons are read, sharded or not, and vertices come back in nm through each
 subresource's own `transform`. neu-morpho writes the meshes and neu-skel the skeletons.
 
+### Reading segment properties and annotation sources
+
+```python
+from neu_vol.segment_properties import segment_properties_frame
+from neu_vol import annotations
+
+cells = segment_properties_frame(volume)          # DataFrame indexed by body id
+lines = annotations.read_all(f"{volume}/synapses")
+```
+
+`segment_properties_frame` gives one row per segment: the label, every string and number
+property, and the tags split by facet (`family:MB` becomes column `tag:family`, a bare
+`fragment` the boolean `flag:fragment`). `annotations.read_all` reads a whole
+`neuroglancer_annotations_v1` source from its `by_id` index, one shard file at a time, and
+returns columns: ids, geometry, each property, and each relationship's segments at full
+uint64 width. `read_annotation` and `read_related` fetch one annotation, or one segment's
+annotations, the way a viewer does.
+
 ## S3 / object stores
 
 Destinations can be local paths, `s3://bucket/prefix` URLs, or kvstore dicts (for

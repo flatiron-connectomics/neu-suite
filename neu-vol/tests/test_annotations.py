@@ -11,7 +11,7 @@ import struct
 import numpy as np
 import pytest
 
-from neu_mark import annotations as ann
+from neu_vol import annotations as ann
 
 #: A property mix whose byte layout matches the validated case: float32 x4, uint32 x2, int16,
 #: uint16, uint8 x9 = 37 bytes, which pads a 24-byte LINE geometry to a 64-byte stride.
@@ -214,3 +214,91 @@ def test_an_enum_property_carries_parallel_values_and_labels():
     p = ann.enum_property("roi", ["<unspecified>", "ME(L)", "LO(R)"])
     assert p["enum_values"] == [0, 1, 2]
     assert len(p["enum_labels"]) == len(p["enum_values"])
+
+
+# --------------------------------------------------------------------------- #
+# reading a source back
+# --------------------------------------------------------------------------- #
+READ_PROPS = [{"id": "conf", "type": "float32"}, {"id": "roi", "type": "int16"}]
+RECORDS = {   # id: (geometry, conf, roi, [pre segments], [post segments])
+    101: ([1, 2, 3, 4, 5, 6], 0.5, 3, [2**40 + 7], [9]),
+    202: ([7, 8, 9, 1, 1, 1], 0.25, 0, [9], []),
+    2**63 + 5: ([0, 0, 0, 2, 2, 2], 1.0, -1, [], [11, 12]),
+}
+
+
+def _source(tmp_path, *, sharded_index: bool):
+    """A small source written by hand: by_id only, sharded or one object per id."""
+    from neu_vol import location, sharded
+
+    dst = str(tmp_path / "src")
+    by_id = {"key": "by_id"}
+    blobs = {i: ann.encode_single(g, properties=READ_PROPS, values={"conf": c, "roi": r},
+                                  relationships=[pre, post])
+             for i, (g, c, r, pre, post) in RECORDS.items()}
+    if sharded_index:
+        by_id["sharding"] = sharded.sharding_spec(shard_bits=1, minishard_bits=1)
+        sharded.write_all(dst, by_id["sharding"], blobs.items(), "by_id")
+    else:
+        for i, blob in blobs.items():
+            location.write_bytes(dst, blob, "by_id", str(i))
+    info = ann.build_info(lower_bound=[0, 0, 0], upper_bound=[10, 10, 10],
+                          voxel_size_xyz=[8, 8, 8], properties=READ_PROPS, by_id=by_id,
+                          relationships=[{"id": "body_pre", "key": "rel_pre"},
+                                         {"id": "body_post", "key": "rel_post"}])
+    location.write_json(dst, info, "info")
+    return dst
+
+
+@pytest.mark.parametrize("sharded_index", [True, False], ids=["sharded", "unsharded"])
+def test_read_all_recovers_every_record_with_full_width_relationships(tmp_path,
+                                                                      sharded_index):
+    got = ann.read_all(_source(tmp_path, sharded_index=sharded_index))
+    assert sorted(int(i) for i in got["ids"]) == sorted(RECORDS)
+    assert got["ids"].dtype == np.uint64
+    for row, i in enumerate(int(i) for i in got["ids"]):
+        geometry, conf, roi, pre, post = RECORDS[i]
+        assert list(got["geometry"][row]) == geometry
+        assert got["values"]["conf"][row] == conf and got["values"]["roi"][row] == roi
+        for name, want in (("body_pre", pre), ("body_post", post)):
+            offsets, segments = got["relationships"][name]
+            assert segments[offsets[row]:offsets[row + 1]].tolist() == want
+
+
+def test_read_all_of_an_empty_source_is_empty_columns_not_an_error(tmp_path):
+    from neu_vol import location
+
+    dst = str(tmp_path / "empty")
+    location.write_json(dst, ann.build_info(lower_bound=[0, 0, 0], upper_bound=[1, 1, 1],
+                                            voxel_size_xyz=[8, 8, 8], properties=READ_PROPS,
+                                            relationships=[{"id": "r", "key": "rel"}]),
+                        "info")
+    got = ann.read_all(dst)
+    assert got["ids"].shape == (0,) and got["geometry"].shape == (0, 6)
+    assert got["values"]["conf"].shape == (0,)
+    assert got["relationships"]["r"][0].tolist() == [0]
+
+
+@pytest.mark.parametrize("sharded_index", [True, False], ids=["sharded", "unsharded"])
+def test_read_annotation_by_id(tmp_path, sharded_index):
+    dst = _source(tmp_path, sharded_index=sharded_index)
+    got = ann.read_annotation(dst, 2**63 + 5)
+    assert got["relationships"] == [[], [11, 12]]
+    assert ann.read_annotation(dst, 999) is None
+
+
+def test_read_info_refuses_a_source_of_another_type(tmp_path):
+    from neu_vol import location
+
+    location.write_json(str(tmp_path / "vol"),
+                        {"@type": "neuroglancer_multiscale_volume"}, "info")
+    with pytest.raises(ValueError, match="not 'neuroglancer_annotations_v1'"):
+        ann.read_info(str(tmp_path / "vol"))
+    with pytest.raises(FileNotFoundError):
+        ann.read_info(str(tmp_path / "nothing"))
+
+
+def test_read_related_names_the_relationships_a_source_has(tmp_path):
+    dst = _source(tmp_path, sharded_index=True)
+    with pytest.raises(KeyError, match="'body_pre', 'body_post'"):
+        ann.read_related(dst, "body_tbar", 9)

@@ -1,8 +1,9 @@
-"""Encoding ``neuroglancer_annotations_v1`` LINE annotations.
+"""The ``neuroglancer_annotations_v1`` format: encoding records, and reading a source back.
 
-One annotation per synaptic connection, a line from the T-bar to the PSD, as published
-synapse sources do. A shader can still draw either endpoint alone
-(``setLineWidth(0.0); setEndpointMarkerSize(pre, 0.0)`` shows only T-bars).
+The encoders serve writers (neu-mark's synapse source writes one LINE per connection, T-bar
+to PSD); the readers serve anything consuming a published source: one annotation by id
+(:func:`read_annotation`), one segment's annotations through a relationship index
+(:func:`read_related`), or the whole source as columns (:func:`read_all`).
 
 Byte layout, little-endian, checked against a published male-CNS source. Per annotation:
 geometry (for LINE, two ``float32`` xyz triples), then properties in descending size
@@ -83,8 +84,8 @@ def encode_group(geometry: np.ndarray, ids: Sequence[int], *,
                  values: Mapping[str, Any] | None = None) -> bytes:
     """The multiple-annotation encoding: a spatial cell, or one relationship's annotations.
 
-    ``geometry`` is ``(n, floats)`` in xyz, from :func:`neu_mark.tables.positions_xyz`.
-    Relationship ids are not part of this encoding; see :func:`encode_single`.
+    ``geometry`` is ``(n, floats)`` in xyz. Relationship ids are not part of this encoding;
+    see :func:`encode_single`.
     """
     props = list(properties)
     n = len(ids)
@@ -141,10 +142,7 @@ def encode_single(geometry: Sequence[float], *, annotation_type: str = LINE,
 
 def decode_group(raw: bytes, *, annotation_type: str = LINE,
                  properties: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
-    """Invert :func:`encode_group`. Returns ``{"ids", "geometry", "values"}``.
-
-    Used to check a written source against the table it came from.
-    """
+    """Invert :func:`encode_group`. Returns ``{"ids", "geometry", "values"}``."""
     props = list(properties)
     floats = GEOMETRY_FLOATS[annotation_type]
     stride = record_size(annotation_type, props)
@@ -230,3 +228,124 @@ def enum_property(prop_id: str, labels: Sequence[str], *, dtype: str = "int16",
             **({"description": description} if description else {}),
             "enum_values": list(range(len(labels))),
             "enum_labels": [str(v) for v in labels]}
+
+
+# --------------------------------------------------------------------------- #
+# reading a source
+# --------------------------------------------------------------------------- #
+def read_info(src: str) -> dict[str, Any]:
+    """A source's ``info``, refused unless it declares this format."""
+    from .location import read_json
+
+    info = read_json(src, "info")
+    if info is None:
+        raise FileNotFoundError(f"no annotation info at {str(src).rstrip('/')}")
+    if info.get("@type") != AT_TYPE:
+        raise ValueError(f"{src} declares @type {info.get('@type')!r}, not {AT_TYPE!r}")
+    return info
+
+
+def _read_entry(src: str, index: Mapping[str, Any], chunk_id: int) -> bytes | None:
+    from . import sharded
+    from .location import read_bytes
+
+    if "sharding" in index:
+        return sharded.read_one(src, index["sharding"], chunk_id, index["key"])
+    return read_bytes(src, index["key"], str(int(chunk_id)))
+
+
+def read_annotation(src: str, annotation_id: int, *, info: Mapping[str, Any] | None = None
+                    ) -> dict[str, Any] | None:
+    """One annotation from the ``by_id`` index, decoded; ``None`` when the id is absent."""
+    info = info if info is not None else read_info(src)
+    raw = _read_entry(src, {"key": "by_id", **info["by_id"]}, annotation_id)
+    if raw is None:
+        return None
+    return decode_single(raw, annotation_type=info["annotation_type"],
+                         properties=info["properties"],
+                         n_relationships=len(info["relationships"]))
+
+
+def read_related(src: str, relationship: str, segment: int, *,
+                 info: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """One segment's annotations from a relationship index, decoded — a viewer's keyed
+    fetch. ``None`` when the segment has none."""
+    info = info if info is not None else read_info(src)
+    rel = next((r for r in info["relationships"] if r["id"] == relationship), None)
+    if rel is None:
+        raise KeyError(f"no relationship {relationship!r}; this source declares "
+                       + ", ".join(repr(r["id"]) for r in info["relationships"]))
+    raw = _read_entry(src, rel, segment)
+    if raw is None:
+        return None
+    return decode_group(raw, annotation_type=info["annotation_type"],
+                        properties=info["properties"])
+
+
+def _by_id_entries(src: str, info: Mapping[str, Any], threads: int):
+    from . import sharded
+    from .location import list_keys, read_bytes
+
+    index = {"key": "by_id", **info["by_id"]}
+    if "sharding" in index:
+        yield from sharded.read_all(src, index["sharding"], index["key"], threads=threads)
+        return
+    for name in list_keys(src, index["key"]):
+        raw = read_bytes(src, index["key"], name)
+        if raw is not None:
+            yield int(name), raw
+
+
+def read_all(src: str, *, info: Mapping[str, Any] | None = None,
+             threads: int = 8) -> dict[str, Any]:
+    """Every annotation in a source, as columns, from its ``by_id`` index.
+
+    Returns ``{"ids", "geometry", "values", "relationships"}``: ``ids`` uint64 ``(n,)``,
+    ``geometry`` float32 ``(n, floats)`` in xyz, ``values`` one array per property, and
+    ``relationships`` ``{name: (offsets, segments)}`` — annotation ``i`` relates to
+    ``segments[offsets[i]:offsets[i + 1]]``, uint64, so an empty relationship is
+    representable. ``by_id`` is the index that carries relationships at full uint64
+    width; the spatial index has only the properties. Rows follow the index's storage
+    order, not the ids.
+    """
+    info = info if info is not None else read_info(src)
+    props = list(info["properties"])
+    atype = info["annotation_type"]
+    floats = GEOMETRY_FLOATS[atype]
+    stride = record_size(atype, props)
+    names = [r["id"] for r in info["relationships"]]
+
+    ids: list[int] = []
+    prefixes = bytearray()
+    counts: list[list[int]] = [[] for _ in names]
+    related: list[list[bytes]] = [[] for _ in names]
+    for chunk_id, raw in _by_id_entries(src, info, threads):
+        ids.append(chunk_id)
+        prefixes += raw[:stride]
+        offset = stride
+        for r in range(len(names)):
+            (count,) = struct.unpack_from("<I", raw, offset)
+            offset += 4
+            counts[r].append(count)
+            related[r].append(raw[offset:offset + 8 * count])
+            offset += 8 * count
+        if offset != len(raw):
+            raise ValueError(f"annotation {chunk_id}: {len(raw) - offset} bytes left after "
+                             f"{len(names)} relationships; the record is not the shape "
+                             f"its info declares")
+
+    n = len(ids)
+    body = np.frombuffer(bytes(prefixes), dtype="u1").reshape(n, stride)
+    values, offset = {}, 4 * floats
+    for p in props:
+        size, dtype = PROPERTY_TYPES[p["type"]]
+        values[p["id"]] = body[:, offset:offset + size].copy().view(dtype).reshape(n)
+        offset += size
+    relationships = {}
+    for r, name in enumerate(names):
+        offsets = np.zeros(n + 1, dtype=np.int64)
+        np.cumsum(counts[r], out=offsets[1:])
+        relationships[name] = (offsets, np.frombuffer(b"".join(related[r]), dtype="<u8"))
+    return {"ids": np.asarray(ids, dtype=np.uint64),
+            "geometry": body[:, :4 * floats].copy().view("<f4").reshape(n, floats),
+            "values": values, "relationships": relationships}

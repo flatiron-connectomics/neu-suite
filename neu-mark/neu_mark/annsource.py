@@ -23,7 +23,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from . import annotations as ann
+from neu_vol import annotations as ann
 
 logger = logging.getLogger(__name__)
 
@@ -434,48 +434,6 @@ def write(dst: str, built: Mapping[str, Any]) -> list[str]:
     return written
 
 
-def read_annotation(src: str, annotation_id: int, *, info: Mapping[str, Any] | None = None
-                    ) -> dict[str, Any] | None:
-    """One annotation out of a written source's ``by_id`` index, decoded.
-
-    ``None`` when the id is absent. Reads through the sharded index, as a viewer does.
-    """
-    from neu_vol import sharded
-    from neu_vol.location import read_json
-
-    if info is None:
-        info = read_json(src, "info")
-        if info is None:
-            raise FileNotFoundError(f"no annotation info at {str(src).rstrip('/')}")
-    raw = sharded.read_one(src, info["by_id"]["sharding"], annotation_id, BY_ID_KEY)
-    if raw is None:
-        return None
-    return ann.decode_single(raw, annotation_type=info["annotation_type"],
-                             properties=info["properties"],
-                             n_relationships=len(info["relationships"]))
-
-
-def read_related(src: str, relationship: str, body: int, *,
-                 info: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
-    """One body's annotations from a relationship index, decoded — a viewer's keyed fetch."""
-    from neu_vol import sharded
-    from neu_vol.location import read_json
-
-    if info is None:
-        info = read_json(src, "info")
-        if info is None:
-            raise FileNotFoundError(f"no annotation info at {str(src).rstrip('/')}")
-    rel = next((r for r in info["relationships"] if r["id"] == relationship), None)
-    if rel is None:
-        raise KeyError(f"no relationship {relationship!r}; this source declares "
-                       + ", ".join(repr(r["id"]) for r in info["relationships"]))
-    raw = sharded.read_one(src, rel["sharding"], body, rel["key"])
-    if raw is None:
-        return None
-    return ann.decode_group(raw, annotation_type=info["annotation_type"],
-                            properties=info["properties"])
-
-
 def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[str, Any]:
     """Read a written source back and check it against the table it was built from.
 
@@ -484,13 +442,9 @@ def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[s
     (:func:`verify_spatial`). Only a read-back shows the keys are right: a wrong key leaves
     correct bytes on the store and nothing in the viewer.
     """
-    from neu_vol.location import read_json
-
     from . import tables
 
-    info = read_json(src, "info")
-    if info is None:
-        raise FileNotFoundError(f"no annotation info at {str(src).rstrip('/')}")
+    info = ann.read_info(src)
 
     pre_xyz = tables.positions_xyz(connections, "pre_").astype("<i4")
     post_xyz = tables.positions_xyz(connections, "post_").astype("<i4")
@@ -500,7 +454,7 @@ def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[s
     rows = rng.choice(len(ids), size=min(sample, len(ids)), replace=False)
     problems: list[str] = []
     for row in rows:
-        got = read_annotation(src, int(ids[row]), info=info)
+        got = ann.read_annotation(src, int(ids[row]), info=info)
         if got is None:
             problems.append(f"id {int(ids[row])} (row {row}) is not in by_id")
             continue
@@ -526,7 +480,7 @@ def verify(src: str, connections, *, sample: int = 200, seed: int = 0) -> dict[s
     if len(bodies):
         body = int(bodies.value_counts().index[0])
         expected = int((connections["pre_body"] == body).sum())
-        group = read_related(src, REL_PRE, body, info=info)
+        group = ann.read_related(src, REL_PRE, body, info=info)
         found = 0 if group is None else len(group["ids"])
         body_check = {"body": body, "expected": expected, "found": found}
         if found != expected:

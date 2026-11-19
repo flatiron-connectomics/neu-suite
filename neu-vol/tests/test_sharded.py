@@ -354,6 +354,44 @@ def test_the_indexes_are_read_once_per_shard_not_once_per_key(tmp_path, monkeypa
     assert len(calls) == 52
 
 
+# --------------------------------------------------------------------------- #
+# read_all: a whole index, one shard file at a time
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("encoding", ["gzip", "raw"])
+@pytest.mark.parametrize("bits", [(0, 0), (3, 2), (1, 4)])
+def test_read_all_returns_every_entry_exactly_once(tmp_path, encoding, bits):
+    spec = sharded.sharding_spec(shard_bits=bits[0], minishard_bits=bits[1],
+                                 data_encoding=encoding, minishard_index_encoding=encoding)
+    entries = {i * 37 + 5: f"payload-{i}-{'x' * (i % 13)}".encode() for i in range(300)}
+    entries[2**64 - 1] = b"largest id"
+    sharded.write_all(str(tmp_path / "idx"), spec, entries.items())
+
+    got = list(sharded.read_all(str(tmp_path / "idx"), spec, threads=3))
+    assert len(got) == len(entries)
+    assert dict(got) == entries
+
+
+def test_read_all_ignores_a_sibling_info_and_an_absent_index_is_empty(tmp_path):
+    from neu_vol import location
+
+    spec = sharded.sharding_spec(shard_bits=1, minishard_bits=1)
+    dst = str(tmp_path / "idx")
+    sharded.write_all(dst, spec, [(7, b"a"), (8, b"b")])
+    location.write_bytes(dst, b"{}", "info")
+    assert dict(sharded.read_all(dst, spec)) == {7: b"a", 8: b"b"}
+    assert list(sharded.read_all(str(tmp_path / "nothing-here"), spec)) == []
+
+
+def test_read_all_agrees_with_shard_reader_on_every_key(tmp_path):
+    """The whole-shard parse and the keyed parse share one index decoder; check both paths."""
+    spec = sharded.sharding_spec(shard_bits=2, minishard_bits=3, preshift_bits=2)
+    entries = [(i * 1009 + 3, bytes([i % 256]) * (i % 40 + 1)) for i in range(200)]
+    sharded.write_all(str(tmp_path / "idx"), spec, entries)
+    reader = sharded.ShardReader(str(tmp_path / "idx"), spec)
+    for chunk_id, value in sharded.read_all(str(tmp_path / "idx"), spec):
+        assert reader.read(chunk_id) == value
+
+
 def test_clear_leaves_a_sibling_info_alone(tmp_path):
     """A sharded mesh or skeleton sits beside its `info`; only `.shard` objects are removed."""
     from neu_vol import location

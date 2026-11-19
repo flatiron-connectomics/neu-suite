@@ -376,7 +376,8 @@ def colors_by_property(properties: Mapping[str, Any], keys: Sequence[str], *,
     """``({segment_id: "#rrggbb"}, report)``: each segment coloured by the first of ``keys``
     it has a value for, for a segmentation layer's ``segmentColors``.
 
-    ``properties`` is what :func:`neu_glance.sources.read_segment_properties` returns. A key
+    ``properties`` is what :func:`neu_vol.segment_properties.read_segment_properties`
+    returns. A key
     is ``label``, a ``string`` property (``parsed_type``), a tag facet (``col`` or ``col:``,
     taking the value after the colon), or a bare flag tag (``glia``). A segment with several
     values for a facet takes the first.

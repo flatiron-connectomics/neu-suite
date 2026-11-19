@@ -12,8 +12,8 @@ def resolve(spec, volume, *, properties=None, limit=None, log=sys.stderr):
     drawn). `exclude` drops bodies after the query and before its `limit`, so a limited
     test set never holds an excluded body. `limit` (for quick tests) caps every set.
     """
-    from neu_glance.sources import (read_segment_properties, segments_with_meshes,
-                                    select_segments)
+    from neu_glance.sources import segments_with_meshes, select_segments
+    from neu_vol.segment_properties import read_segment_properties
     out = {}
     for name, s in spec["sets"].items():
         exclude = set(s["exclude"])

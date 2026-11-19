@@ -845,7 +845,9 @@ def _color_by(args, site: dict, layers: list[dict], new: set[str], *, file) -> N
     The flag may name any segmentation layer in ``layers``; the config only the ``new``
     ones. Each layer's volume is read back from its source.
     """
-    from .sources import SourceProblem, layer_volume, read_segment_properties
+    from neu_vol.segment_properties import SegmentPropertiesProblem, read_segment_properties
+
+    from .sources import layer_volume
     from .state import StateProblem, colors_by_property
 
     by_name = {lyr.get("name"): lyr for lyr in layers if lyr.get("type") == "segmentation"}
@@ -871,7 +873,7 @@ def _color_by(args, site: dict, layers: list[dict], new: set[str], *, file) -> N
         try:
             colors, report = colors_by_property(read_segment_properties(volumes[name]), keys,
                                                 palette=args.color_palette)
-        except (SourceProblem, StateProblem) as e:
+        except (SegmentPropertiesProblem, StateProblem) as e:
             raise SystemExit(f"--color-by {name}: {e}") from None
         by_name[name]["segmentColors"] = colors
         counts = ", ".join(f"{k} {n}" for k, n in report["by_key"].items())

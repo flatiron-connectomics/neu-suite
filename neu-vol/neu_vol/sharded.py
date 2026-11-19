@@ -9,7 +9,8 @@ Writing goes entirely through tensorstore's ``neuroglancer_uint64_sharded`` kvst
 :class:`ShardReader` is the one exception: the sharded multi-resolution mesh format stores
 fragment data outside the index, at byte offsets relative to the manifest, and the driver
 cannot say where an entry lies. So the addressing (hash, shard index, minishard table) is
-reimplemented here, for reading, and a test asserts it agrees with the driver.
+reimplemented here, for reading, and a test asserts it agrees with the driver. The same
+parsing serves :func:`read_all`, which reads a whole index one shard file at a time.
 
 Two things a caller has to get right:
 
@@ -25,7 +26,7 @@ small index.
 from __future__ import annotations
 
 import struct
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 AT_TYPE = "neuroglancer_uint64_sharded_v1"
 
@@ -321,6 +322,70 @@ def shard_location(chunk_id: int, metadata: Mapping[str, Any]) -> tuple[str, int
     return f"{shard:0{width}x}.shard", minishard
 
 
+def _decode_minishard_index(raw: bytes, metadata: Mapping[str, Any], index_length: int):
+    """``(n, 3)`` uint64 rows of ``(id, start, size)``, ``start`` absolute in the shard."""
+    import gzip
+
+    import numpy as np
+
+    if metadata.get("minishard_index_encoding", "raw") == "gzip":
+        raw = gzip.decompress(raw)
+    flat = np.frombuffer(raw, dtype="<u8")
+    n = flat.size // 3
+    # Three parallel arrays, each delta-encoded against a different baseline: ids against
+    # the previous id, starts against the previous END (hence the sizes term), sizes as is.
+    ids = np.cumsum(flat[0:n])
+    sizes = flat[2 * n:3 * n]
+    starts = np.cumsum(flat[n:2 * n])
+    starts[1:] += np.cumsum(sizes[:-1])
+    starts += np.uint64(index_length)
+    return np.stack([ids, starts, sizes], axis=1)
+
+
+def shard_entries(raw: bytes, metadata: Mapping[str, Any]) -> Iterator[tuple[int, bytes]]:
+    """Every ``(chunk_id, value)`` in one whole shard file, values decoded per
+    ``data_encoding``."""
+    import gzip
+
+    import numpy as np
+
+    index_length = (1 << int(metadata["minishard_bits"])) * 16
+    if len(raw) < index_length:
+        raise ValueError(f"a shard of {len(raw)} bytes is shorter than its "
+                         f"{index_length}-byte shard index")
+    gz = metadata.get("data_encoding", "raw") == "gzip"
+    table = np.frombuffer(raw, dtype="<u8", count=index_length // 8).reshape(-1, 2)
+    for start, end in table:
+        start, end = int(start) + index_length, int(end) + index_length
+        if end <= start:
+            continue
+        for chunk_id, offset, size in _decode_minishard_index(raw[start:end], metadata,
+                                                              index_length):
+            value = raw[int(offset):int(offset) + int(size)]
+            yield int(chunk_id), (gzip.decompress(value) if gz else bytes(value))
+
+
+def read_all(location: str | Mapping[str, Any], metadata: Mapping[str, Any], *parts: str,
+             threads: int = 8) -> Iterator[tuple[int, bytes]]:
+    """Every ``(chunk_id, value)`` in a sharded index, each shard file read whole.
+
+    For reading an entire index, which keyed reads would do one request at a time. Order
+    follows the shard files, not the keys. Objects that are not ``.shard`` files (a
+    sibling ``info``) are ignored.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .location import list_keys, read_bytes
+
+    shards = sorted(name for name in list_keys(location, *parts) if name.endswith(".shard"))
+    with ThreadPoolExecutor(max_workers=max(1, int(threads))) as pool:
+        for name, raw in zip(shards, pool.map(lambda s: read_bytes(location, *parts, s),
+                                              shards)):
+            if raw is None:
+                raise FileNotFoundError(f"shard {name} was listed but could not be read")
+            yield from shard_entries(raw, metadata)
+
+
 class ShardReader:
     """Locates and reads entries of a sharded index, by key and by byte offset.
 
@@ -365,10 +430,6 @@ class ShardReader:
         if (shard, minishard) in self._minishard_index:
             return self._minishard_index[(shard, minishard)]
 
-        import gzip
-
-        import numpy as np
-
         table = self._shard_table(shard)
         result = None
         if table is not None and minishard < len(table):
@@ -378,19 +439,7 @@ class ShardReader:
             if end > start:
                 raw = self.read_range(shard, start, end)
                 if raw:
-                    if self.metadata.get("minishard_index_encoding", "raw") == "gzip":
-                        raw = gzip.decompress(raw)
-                    flat = np.frombuffer(raw, dtype="<u8")
-                    n = flat.size // 3
-                    # Three parallel arrays, each delta-encoded against a different
-                    # baseline: ids against the previous id, starts against the previous
-                    # END (hence the sizes term), sizes stored outright.
-                    ids = np.cumsum(flat[0:n])
-                    sizes = flat[2 * n:3 * n]
-                    starts = np.cumsum(flat[n:2 * n])
-                    starts[1:] += np.cumsum(sizes[:-1])
-                    starts += self._index_length
-                    result = np.stack([ids, starts, sizes], axis=1)
+                    result = _decode_minishard_index(raw, self.metadata, self._index_length)
         self._minishard_index[(shard, minishard)] = result
         return result
 

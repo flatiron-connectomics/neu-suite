@@ -41,7 +41,6 @@ _EXPORTS = {
     "segment_labels": "sources",
     "segment_tags": "sources",
     "segment_boxes": "sources",
-    "read_segment_properties": "sources",
     "volume_layer": "sources",
     "volume_extent": "sources",
     "annotation_layer": "sources",

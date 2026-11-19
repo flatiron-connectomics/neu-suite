@@ -9,9 +9,9 @@ import struct
 import numpy as np
 import pytest
 
-from neu_glance.sources import (SourceProblem, read_segment_properties,
-                                segment_boxes, segment_ids, segment_labels,
+from neu_glance.sources import (SourceProblem, segment_boxes, segment_ids, segment_labels,
                                 segment_tags, select_segments)
+from neu_vol.segment_properties import read_segment_properties
 
 
 def _volume(tmp_path, *, labels=None, meshes=None, mesh_type="neuroglancer_legacy_mesh",
@@ -139,18 +139,6 @@ def test_tags_are_resolved_from_their_vocabulary_indices(tmp_path):
     """Tags are stored as indices into a vocabulary."""
     vol = _tagged(tmp_path, ROWS)
     assert segment_tags(vol)["1"] == ("group:KCa", "side:L")
-
-
-def test_everything_comes_back_from_ONE_read(tmp_path):
-    """Ids, labels, numbers, strings and the tag vocabulary come from one read."""
-    read = read_segment_properties(_tagged(tmp_path, ROWS, numbers={"voxels": [9, 8, 7, 6, 5]},
-                                           strings={"parsed_type": ["KCa", "KCa", "KCb",
-                                                                    "MBON01", ""]}))
-    assert read["ids"] == list(ROWS)
-    assert read["labels"][0] == "KCa_1(L)"
-    assert read["numbers"]["voxels"] == [9, 8, 7, 6, 5]
-    assert read["strings"]["parsed_type"] == ["KCa", "KCa", "KCb", "MBON01", ""]
-    assert "side:L" in read["vocabulary"]
 
 
 def test_tags_combine_as_AND_and_a_label_regex_narrows_further(tmp_path):

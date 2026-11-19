@@ -328,39 +328,28 @@ def _subresource(volume: str, key: str, info: Mapping[str, Any] | None = None) -
     return str(name)
 
 
+def _segment_properties(volume: str, info: Mapping[str, Any] | None = None) -> dict:
+    """:func:`neu_vol.segment_properties.read_segment_properties`, its refusals raised as
+    :class:`SourceProblem` like everything else here."""
+    from neu_vol.segment_properties import SegmentPropertiesProblem, read_segment_properties
+
+    try:
+        return read_segment_properties(volume, info=info)
+    except SegmentPropertiesProblem as e:
+        raise SourceProblem(str(e)) from None
+
+
 @_quiet
 def segment_labels(volume: str, *, info: Mapping[str, Any] | None = None) -> dict[str, str]:
     """``{segment_id: label}`` from a volume's ``segment_properties`` subresource.
 
-    Lets code name segments (``"LAL(L)"``) rather than ids. The format pairs ids and values
-    by position, so arrays of different lengths raise rather than mislabel segments.
+    Lets code name segments (``"LAL(L)"``) rather than ids. Raises when the source has no
+    label property, rather than naming segments by their ids.
     """
-    from neu_vol import read_json
-
-    directory = _subresource(volume, "segment_properties", info)
-    document = read_json(f"{volume.rstrip('/')}/{directory}", "info")
-    declared = (document or {}).get("@type")
-    if declared != "neuroglancer_segment_properties":
-        raise SourceProblem(
-            f"{volume}/{directory} declares @type {declared!r}, not "
-            f"'neuroglancer_segment_properties' — that is not a segment properties source")
-    inline = (document or {}).get("inline")
-    if not inline:
-        raise SourceProblem(
-            f"{volume}/{directory} carries no `inline` block; only inline segment properties "
-            f"are readable here")
-    ids = [str(i) for i in inline.get("ids") or []]
-    labels = next((p.get("values") for p in inline.get("properties") or []
-                   if p.get("type") == "label"), None)
-    if labels is None:
-        kinds = ", ".join(sorted({str(p.get("type")) for p in inline.get("properties") or []}))
-        raise SourceProblem(
-            f"{volume}/{directory} has no property of type 'label' (it has: {kinds or 'none'})")
-    if len(labels) != len(ids):
-        raise SourceProblem(
-            f"{volume}/{directory} lists {len(ids)} ids and {len(labels)} labels; the format "
-            f"pairs them by position, so a mismatch would mislabel segments")
-    return dict(zip(ids, [str(v) for v in labels]))
+    read = _segment_properties(volume, info)
+    if read["label_id"] is None:
+        raise SourceProblem(f"{volume}'s segment properties have no property of type 'label'")
+    return dict(zip(read["ids"], read["labels"]))
 
 
 @_quiet
@@ -401,62 +390,9 @@ def segment_ids(volume: str, names: Sequence[str], *,
 
 
 @_quiet
-def read_segment_properties(volume: str, *, info: Mapping[str, Any] | None = None) -> dict:
-    """Everything a volume's ``segment_properties`` carries, in ONE read.
-
-    Returns ``{"ids", "labels", "tags", "numbers", "strings", "vocabulary"}``: ids as
-    strings, labels parallel to them, tags resolved from indices to strings, and each numeric
-    and ``string`` property under its own name (``""`` where a segment has no value). Pass
-    the result to :func:`select_segments` to query it without re-reading.
-    Properties are paired with ids by position, so a length mismatch raises.
-    """
-    from neu_vol import read_json
-
-    directory = _subresource(volume, "segment_properties", info)
-    document = read_json(f"{volume.rstrip('/')}/{directory}", "info")
-    declared = (document or {}).get("@type")
-    if declared != "neuroglancer_segment_properties":
-        raise SourceProblem(
-            f"{volume}/{directory} declares @type {declared!r}, not "
-            f"'neuroglancer_segment_properties' — that is not a segment properties source")
-    inline = (document or {}).get("inline")
-    if not inline:
-        raise SourceProblem(
-            f"{volume}/{directory} carries no `inline` block; only inline segment properties "
-            f"are readable here")
-
-    ids = [str(i) for i in inline.get("ids") or []]
-    out: dict[str, Any] = {"ids": ids, "labels": [], "tags": [], "numbers": {},
-                           "strings": {}, "vocabulary": []}
-    for prop in inline.get("properties") or []:
-        values = prop.get("values") or []
-        if len(values) != len(ids):
-            raise SourceProblem(
-                f"{volume}/{directory} property {prop.get('id')!r} has {len(values)} values "
-                f"for {len(ids)} ids; the format pairs them by position, so a mismatch would "
-                f"attach them to the wrong segments")
-        kind = prop.get("type")
-        if kind == "label":
-            out["labels"] = [str(v) for v in values]
-        elif kind == "tags":
-            vocabulary = [str(t) for t in prop.get("tags") or []]
-            out["vocabulary"] = vocabulary
-            out["tags"] = [tuple(vocabulary[i] for i in row) for row in values]
-        elif kind == "number":
-            out["numbers"][str(prop.get("id"))] = list(values)
-        elif kind == "string":
-            out["strings"][str(prop.get("id"))] = [str(v) for v in values]
-    if not out["labels"]:
-        out["labels"] = list(ids)
-    if not out["tags"]:
-        out["tags"] = [()] * len(ids)
-    return out
-
-
-@_quiet
 def segment_tags(volume: str, *, info: Mapping[str, Any] | None = None) -> dict[str, tuple]:
     """``{segment_id: (tag, ...)}``, tags resolved from their vocabulary indices."""
-    read = read_segment_properties(volume, info=info)
+    read = _segment_properties(volume, info)
     return dict(zip(read["ids"], read["tags"]))
 
 
@@ -481,7 +417,7 @@ def select_segments(volume: str, *, tags: Sequence[str] | None = None,
     """
     import re
 
-    read = properties if properties is not None else read_segment_properties(volume)
+    read = properties if properties is not None else _segment_properties(volume)
     pattern = re.compile(label) if label else None
     tags, any_tags, without = set(tags or ()), set(any_tags or ()), set(without or ())
 

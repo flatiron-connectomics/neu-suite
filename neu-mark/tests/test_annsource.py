@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from neu_mark import annotations as ann
 from neu_mark import annsource
+from neu_vol import annotations as ann
 from neu_vol.location import read_json
 
 BOUNDS = ([0, 0, 0], [600, 800, 1000])       # xyz
@@ -424,9 +424,33 @@ def test_verify_resolves_each_annotation_through_the_declared_sharding(tmp_path)
     dst = _write(tmp_path, df, per_cell=30)
     pre = tables_positions(df, "pre_")
     ids = annsource.annotation_ids(pre, tables_positions(df, "post_"))
-    got = annsource.read_annotation(dst, int(ids[5]))
+    got = ann.read_annotation(dst, int(ids[5]))
     assert list(got["geometry"][:3]) == list(pre[5].astype(float))
-    assert annsource.read_annotation(dst, 12345) is None      # absent, not an error
+    assert ann.read_annotation(dst, 12345) is None      # absent, not an error
+
+
+def test_the_whole_source_reads_back_as_the_table_it_was_built_from(tmp_path):
+    """`read_all` recovers every line with full uint64 bodies; an unknown partner is an
+    empty relationship, not body 0."""
+    df = connections(300, partial=25)
+    df["pre_body"] = df["pre_body"] + np.uint64(2**40)     # beyond what uint32 holds
+    dst = _write(tmp_path, df, per_cell=40)
+    got = ann.read_all(dst)
+
+    pre = tables_positions(df, "pre_")
+    post = tables_positions(df, "post_")
+    ids = annsource.annotation_ids(pre, post)
+    order = {int(i): row for row, i in enumerate(ids)}
+    assert sorted(order) == sorted(int(i) for i in got["ids"])
+    rows = np.array([order[int(i)] for i in got["ids"]])
+
+    assert np.array_equal(got["geometry"], np.hstack([pre, post])[rows].astype("<f4"))
+    assert np.allclose(got["values"]["conf_pre"], df["pre_conf"].to_numpy()[rows])
+    for name, column in (("body_pre", "pre_body"), ("body_post", "post_body")):
+        offsets, segments = got["relationships"][name]
+        want = df[column].iloc[rows]
+        assert np.array_equal(np.diff(offsets), want.notna().astype(int).to_numpy())
+        assert np.array_equal(segments, want.dropna().to_numpy(dtype=np.uint64))
 
 
 def test_a_spatial_cell_reads_back_at_the_key_a_viewer_computes(tmp_path):
