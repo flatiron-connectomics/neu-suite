@@ -57,6 +57,8 @@ dev = ["pytest", "pytest-xdist"]
 # Streamed, multipart S3 transfers for files with no object-store driver (HDF5); without
 # it they pass through memory and S3 uploads stop at 5 GB. Imported lazily.
 s3 = ["boto3"]
+# segment_properties_frame only. Imported lazily.
+pandas = ["pandas"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["neu_vol"]

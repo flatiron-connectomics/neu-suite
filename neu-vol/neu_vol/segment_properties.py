@@ -100,7 +100,8 @@ def segment_properties_frame(volume_or_read: str | Mapping[str, Any], *,
     when some segment carries several values of that facet. A bare tag ``name`` becomes
     the boolean column ``flag:<name>``.
 
-    Accepts a volume location, or what :func:`read_segment_properties` returned.
+    Accepts a volume location, or what :func:`read_segment_properties` returned. Needs
+    pandas (``pip install "neu-vol[pandas]"``).
     """
     import numpy as np
     import pandas as pd

@@ -323,7 +323,8 @@ lines = annotations.read_all(f"{volume}/synapses")
 
 `segment_properties_frame` gives one row per segment: the label, every string and number
 property, and the tags split by facet (`family:MB` becomes column `tag:family`, a bare
-`fragment` the boolean `flag:fragment`). `annotations.read_all` reads a whole
+`fragment` the boolean `flag:fragment`); it needs pandas, the `pandas` extra.
+`annotations.read_all` reads a whole
 `neuroglancer_annotations_v1` source from its `by_id` index, one shard file at a time, and
 returns columns: ids, geometry, each property, and each relationship's segments at full
 uint64 width. `read_annotation` and `read_related` fetch one annotation, or one segment's

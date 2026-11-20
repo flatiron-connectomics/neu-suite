@@ -43,8 +43,8 @@ jobs:
           - {pkg: neu-lib,    python: "3.12", deps: ""}
           - {pkg: blockrun,   python: "3.11", deps: ""}
           - {pkg: blockrun,   python: "3.12", deps: ""}
-          - {pkg: neu-vol,    python: "3.11", deps: "../neu-lib ../blockrun"}
-          - {pkg: neu-vol,    python: "3.12", deps: "../neu-lib ../blockrun"}
+          - {pkg: neu-vol,    python: "3.11", deps: "../neu-lib ../blockrun", extras: ",pandas"}
+          - {pkg: neu-vol,    python: "3.12", deps: "../neu-lib ../blockrun", extras: ",pandas"}
           - {pkg: neu-mark,   python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol"}
           - {pkg: neu-mark,   python: "3.12", deps: "../neu-lib ../blockrun ../neu-vol"}
           - {pkg: neu-glance, python: "3.11", deps: "../neu-lib ../blockrun ../neu-vol"}
