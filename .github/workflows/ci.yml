@@ -153,6 +153,19 @@ jobs:
         with:
           path: docs/_build/html
 
+  # The one check branch protection requires, so the matrix can change without editing
+  # the protection rule. Runs even when a job above failed or was cancelled, and fails then.
+  all-checks:
+    name: all checks
+    if: always()
+    needs: [versions, pip, full, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job above passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$NEEDS"
+
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [versions, pip, full, docs]
