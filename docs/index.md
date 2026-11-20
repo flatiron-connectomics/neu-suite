@@ -76,7 +76,7 @@ GPU node with neuVid, labels each frame and encodes the video.
 :::
 ::::
 
-Three packages have no command. `neu-lib` holds the types they all share and `blockrun`
+Four packages have no command. `neu-lib` holds the types they all share and `blockrun`
 is the substrate they all run on; `neu-draw` is a notebook library — it draws meshes,
 skeletons and synapse points locally with pygfx, where `neu-glance` sends a state to a
 remote neuroglancer. `neu-proc` is the newest and the least finished: array-in, array-out

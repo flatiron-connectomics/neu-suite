@@ -186,6 +186,9 @@ def write_api_index(path: Path) -> None:
          "{doc}`neu_vol.ops.convert <../api/neu_vol/ops/convert/index>`"),
         ("neu_vol", "read published meshes and skeletons back",
          "{doc}`neu_vol.readback <../api/neu_vol/readback/index>`"),
+        ("neu_vol", "read segment properties or a synapse source",
+         "{doc}`neu_vol.segment_properties <../api/neu_vol/segment_properties/index>`, "
+         "{doc}`neu_vol.annotations <../api/neu_vol/annotations/index>`"),
         ("neu_morpho", "measure morphology of published output",
          "{doc}`neu_morpho.measure <../api/neu_morpho/measure/index>`"),
         ("neu_mark", "pull DVID annotations into DataFrames",

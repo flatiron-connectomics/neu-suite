@@ -1,9 +1,8 @@
-# One environment for all nine neu-* packages, for users and CI alike.
+# One environment for all the neu-* packages, for users and CI alike.
 #
 #   mamba create -n neu-env -f environment.yml        # or micromamba; conda is slow
 #   conda activate neu-env
-#   pip install --no-deps -e ./neu-lib -e ./blockrun -e ./neu-vol -e ./neu-morpho \
-#       -e ./neu-mark -e ./neu-glance -e ./neu-draw -e ./neu-proc -e ./neu-eval
+#   make install                                # every package, editable, --no-deps
 #   pip install -r docs/requirements.txt        # only to build the docs site
 #
 # DVID sources (neu-vol's dvid backend, neu-mark) need neuclease, kept out of this file
