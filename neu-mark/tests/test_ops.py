@@ -355,6 +355,172 @@ def test_limit_takes_the_top_n_of_the_ranking(tmp_path, dvid_server):
     assert r["bodies"]["body"].tolist() == [1, 2]
 
 
+def _connections(tmp_path, pairs, *, uuid="d38898"):
+    """A tables directory as `points --connections` writes it, from node ``uuid``."""
+    import numpy as np
+
+    from neu_vol.location import write_json
+
+    out = str(tmp_path / "syn")
+    pre, post = zip(*pairs)
+    io.write_table(pd.DataFrame({"pre_body": np.array(pre, np.uint64),
+                                 "post_body": np.array(post, np.uint64)}),
+                   out, "connections")
+    if uuid is not None:
+        write_json(out, {"source": {"uuid": uuid}}, "provenance.json")
+    return out
+
+
+RULES_MODULE = '''
+from neu_mark import rule
+
+LABEL = "instance"
+
+
+@rule(drop=True)
+def noise(r):
+    """not data"""
+    return "noise" if "irrelevant" in (r["instance"] or "") else None
+
+
+@rule(tag=False)
+def cell_type(r):
+    """a typed name"""
+    name = r["instance"] or ""
+    return None if not name or "fragment" in name else name
+'''
+
+
+def _rules(tmp_path):
+    path = tmp_path / "rules.py"
+    path.write_text(RULES_MODULE)
+    return str(path)
+
+
+def test_min_pairs_adds_a_highly_connected_body_with_few_synapses(tmp_path, dvid_server):
+    """Body 4 has 5 synapses but takes part in 6 connections: a few T-bars with many PSDs."""
+    conns = _connections(tmp_path, [(4, 1)] * 6 + [(2, 1)])
+    out, r = _select(tmp_path, dvid_server, min_synapses=10, min_pairs=6,
+                     connections=conns)
+    df = r["bodies"]
+    assert df["body"].tolist() == [1, 2, 3, 4]               # still ranked by synapses
+    assert df.set_index("body").loc[4, ["pre", "post", "syn", "pairs"]].tolist() == \
+        [2, 3, 5, 6]
+    assert r["added"]["extra"] == [4]
+    run = r["record"]["run"]
+    assert run["min_pairs"] == 6
+    assert run["bodies_added"] == {"by_pairs": 1, "by_name": 0, "total": 1}
+
+    back = pd.read_csv(out)
+    assert all(pd.api.types.is_integer_dtype(back[c]) for c in back.columns)
+
+
+def test_named_adds_bodies_the_rules_name_and_nothing_drops(tmp_path, dvid_server,
+                                                           monkeypatch):
+    """Body 4 is below the count but named; body 5 is named and has no synapses at all;
+    body 6 is a fragment and body 7 noise, so neither is added."""
+    for key, name in {"4": "Tm1(L)", "5": "R7(R)", "6": "SNP_fragment",
+                      "7": "Tm1_irrelevant"}.items():
+        monkeypatch.setitem(BODY_RECORDS, key, {"bodyid": int(key), "instance": name})
+    annotations = ann_dvid.open_bodies_source(_src(KV_URL))
+    _out, r = _select(tmp_path, dvid_server, min_synapses=10, named="cell_type",
+                      rules_path=_rules(tmp_path), annotations_source=annotations)
+    df = r["bodies"].set_index("body")
+    assert sorted(df.index) == [1, 2, 3, 4, 5]
+    assert df.loc[5, ["pre", "post", "syn"]].tolist() == [0, 0, 0]
+    assert df["named"].to_dict() == {1: 1, 2: 0, 3: 0, 4: 1, 5: 1}  # body 1 is CAm(L)
+    assert r["record"]["run"]["bodies_added"]["by_name"] == 2
+    assert r["record"]["run"]["rules"] is not None
+
+
+EXCLUDE_RULES = RULES_MODULE + '''
+
+@rule(prefix="")
+def glia(r):
+    """glia"""
+    return "glia" if "glia" in (r["instance"] or "") else None
+
+
+@rule(tag=False, needs=["voxels"])
+def big_named(r):
+    """a name on a body of at least 100 voxels"""
+    return r["instance"] if (r["voxels"] or 0) >= 100 else None
+'''
+
+
+def test_exclude_leaves_out_a_body_whichever_criterion_admitted_it(tmp_path, dvid_server,
+                                                                   monkeypatch):
+    """Body 1 has the synapses and body 5 a name; both are glia, and both go."""
+    for key, name in {"1": "glia", "5": "glia(L)", "4": "Tm1(L)"}.items():
+        monkeypatch.setitem(BODY_RECORDS, key, {"bodyid": int(key), "instance": name})
+    rules = tmp_path / "rules.py"
+    rules.write_text(EXCLUDE_RULES)
+    annotations = ann_dvid.open_bodies_source(_src(KV_URL))
+    _out, r = _select(tmp_path, dvid_server, min_synapses=10, named="cell_type",
+                      exclude=["glia"], rules_path=str(rules),
+                      annotations_source=annotations)
+    assert sorted(r["bodies"]["body"]) == [2, 3, 4]
+    assert r["dropped"] == {"from_count": 1, "from_added": 1}
+    run = r["record"]["run"]
+    assert run["exclude"] == ["glia"]
+    assert run["bodies_excluded"]["records_by_rule"] == {"glia": 2}
+    assert run["bodies_added"]["by_name"] == 1
+
+
+def test_labelmap_gives_the_rules_each_records_size(tmp_path, dvid_server, monkeypatch):
+    for key, name in {"4": "SNP_fragment", "5": "LO_fragment"}.items():
+        monkeypatch.setitem(BODY_RECORDS, key, {"bodyid": int(key), "instance": name})
+    asked = []
+
+    def sizes(source, bodies):
+        asked.append(source)
+        return {1: 1000, 2: 5, 4: 500, 5: 50}
+
+    monkeypatch.setattr(ann_dvid, "fetch_voxel_counts", sizes)
+    rules = tmp_path / "rules.py"
+    rules.write_text(EXCLUDE_RULES)
+    annotations = ann_dvid.open_bodies_source(_src(KV_URL))
+    labelmap = {**annotations, "instance": "labels"}
+    _out, r = _select(tmp_path, dvid_server, min_synapses=10, named="big_named",
+                      rules_path=str(rules), annotations_source=annotations,
+                      labelmap_source=labelmap)
+    assert sorted(r["bodies"]["body"]) == [1, 2, 3, 4]       # 5 is too small
+    assert asked and r["record"]["run"]["labelmap"] == "labels"
+
+
+def test_labelmap_from_another_node_is_refused(tmp_path, dvid_server, monkeypatch):
+    rules = tmp_path / "rules.py"
+    rules.write_text(EXCLUDE_RULES)
+    annotations = ann_dvid.open_bodies_source(_src(KV_URL))
+    with pytest.raises(ValueError, match="same node"):
+        _select(tmp_path, dvid_server, named="big_named", rules_path=str(rules),
+                annotations_source=annotations,
+                labelmap_source={**annotations, "instance": "labels", "uuid": "846e3a"})
+
+
+def test_labelmap_needs_a_rule_to_read_it(tmp_path, dvid_server):
+    with pytest.raises(ValueError, match="voxels"):
+        _select(tmp_path, dvid_server, labelmap_source={"instance": "labels"})
+
+
+def test_tables_from_another_node_are_refused(tmp_path, dvid_server):
+    conns = _connections(tmp_path, [(4, 1)] * 6, uuid="846e3a")
+    with pytest.raises(ValueError, match="same node"):
+        _select(tmp_path, dvid_server, min_pairs=6, connections=conns)
+
+
+def test_tables_with_no_provenance_are_refused(tmp_path, dvid_server):
+    conns = _connections(tmp_path, [(4, 1)] * 6, uuid=None)
+    with pytest.raises(ValueError, match="no provenance"):
+        _select(tmp_path, dvid_server, min_pairs=6, connections=conns)
+
+
+def test_limit_does_not_combine_with_the_extra_criteria(tmp_path, dvid_server):
+    conns = _connections(tmp_path, [(4, 1)] * 6)
+    with pytest.raises(ValueError, match="limit"):
+        _select(tmp_path, dvid_server, limit=2, min_pairs=6, connections=conns)
+
+
 def test_a_per_type_minimum_raises_the_query_threshold(tmp_path, dvid_server,
                                                        monkeypatch):
     """AllSyn >= each type, so max(minimums) is a sound narrowing threshold."""

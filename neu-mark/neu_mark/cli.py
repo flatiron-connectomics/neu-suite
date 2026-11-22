@@ -156,7 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
                         ".feather. A provenance record naming the node goes beside it as "
                         "<name>.provenance.json. Accepts the same {uuid}/{branch}/"
                         "{instance} placeholders.")
-    q.add_argument("--min-synapses", type=int, default=10, metavar="N",
+    q.add_argument("--criteria", metavar="FILE", default=None,
+                   help="choose by a criteria file instead of the thresholds below: a "
+                        "TOML file whose tables are lists, each saying which body "
+                        "categories go in, outright or on conditions of size, sites and "
+                        "pairs (see neu_mark.criteria). Needs --list, --rules (with the "
+                        "category rule) and --annotations; --labelmap for a size "
+                        "condition, --connections for a pairs condition. Not with "
+                        "--min-*, --limit, --named or --exclude.")
+    q.add_argument("--list", dest="criteria_list", metavar="NAME", default=None,
+                   help="with --criteria: which list of the file to write, e.g. meshes.")
+    q.add_argument("--min-synapses", type=int, default=None, metavar="N",
                    help="keep bodies with at least this many synapses in TOTAL "
                         "(default 10). Total rather than per-type on purpose: sensory "
                         "neurons may have no postsynapses, and a neuron leaving the "
@@ -169,7 +179,47 @@ def build_parser() -> argparse.ArgumentParser:
                         "excludes sensory neurons.")
     q.add_argument("--limit", type=int, default=None, metavar="N",
                    help="keep only the top N after filtering. Results are ranked by total "
-                        "synapses, so this is how to ask for 'the biggest N'.")
+                        "synapses, so this is how to ask for 'the biggest N'. Not with "
+                        "--min-pairs, --named or --exclude.")
+    q.add_argument("--min-pairs", type=int, default=None, metavar="N",
+                   help="ALSO keep bodies taking part in at least N T-bar -> PSD "
+                        "connections, at either end: a few T-bars with many partners each "
+                        "make a highly connected body with few synapses. Needs "
+                        "--connections. Adds a `pairs` column.")
+    q.add_argument("--connections", metavar="DIR",
+                   help="for --min-pairs, or a pairs condition of --criteria: a directory "
+                        "`neu-mark points --connections` wrote, from the same node as --src "
+                        "(checked against its provenance).")
+    q.add_argument("--named", metavar="RULE",
+                   help="ALSO keep bodies whose annotation record RULE (a rule of --rules) "
+                        "gives a value and no drop rule excludes: which names count is the "
+                        "rules module's call. Needs --rules and --annotations; reads every "
+                        "record (about a minute). Adds a `named` column (0/1).")
+    q.add_argument("--exclude", metavar="RULE", action="append", default=None,
+                   help="leave out bodies whose annotation record RULE (a rule of --rules) "
+                        "gives a value, whichever criterion admitted them (repeatable), "
+                        "e.g. --exclude glia for a list to skeletonize. Needs --rules and "
+                        "--annotations.")
+    q.add_argument("--rules", metavar="MODULE",
+                   help="for --named / --exclude / --criteria: a rules module, or @name "
+                        "from [rule_sets].")
+    q.add_argument("--annotations", metavar="URL",
+                   help="for --named / --exclude / --criteria: the body annotation keyvalue "
+                        "instance, on the same node as --src (e.g. "
+                        "dvid://host/<uuid>/labels_annotations).")
+    q.add_argument("--labelmap", metavar="URL", default=None,
+                   help="for --named / --exclude: a labelmap instance, read at the "
+                        "annotations' node, giving every record a `voxels` field "
+                        "(full-resolution voxels, from DVID's /sizes) for the rules to read: "
+                        "a size threshold. ~30 s for 70k records. For --criteria: the sizes "
+                        "a size condition reads, and a `voxels` column; listing every label "
+                        "of a size, when bodies with no record can be admitted by size "
+                        "alone, takes ~30 minutes (see --sizes-cache).")
+    q.add_argument("--sizes-cache", metavar="DIR", default=None,
+                   help="with --criteria: a directory keeping each LOCKED node's listing "
+                        "of large labels, named by server, uuid and instance, so it is "
+                        "read from DVID once and reused by every later run at that size "
+                        "or above. An open node is listed every time.")
     q.add_argument("--dvid-locked", action="store_true",
                    help="rank from the newest LOCKED ancestor. Worth doing: body ids "
                         "change with proofreading, so the list and the annotations should "
@@ -664,18 +714,120 @@ def cmd_bodies(args) -> int:
 
 
 def cmd_select_bodies(args) -> int:
+    if args.criteria or args.criteria_list:
+        return _select_by_criteria(args)
+    if args.sizes_cache:
+        raise SystemExit("--sizes-cache keeps the listing --criteria makes: it needs "
+                         "--criteria")
     from . import dvid, ops
 
+    if args.min_synapses is None:
+        args.min_synapses = 10
+    if (args.min_pairs is None) != (args.connections is None):
+        raise SystemExit("--min-pairs and --connections go together")
+    reads_records = bool(args.named or args.exclude)
+    if reads_records and not (args.rules and args.annotations):
+        raise SystemExit("--named and --exclude need --rules and --annotations")
+    if args.labelmap and not reads_records:
+        raise SystemExit("--labelmap gives the rules a voxels field: it needs --named or "
+                         "--exclude")
     source = dvid.open_counts_source(_src_spec(args.src),
                                     prefer_locked=bool(args.dvid_locked))
+    annotations = labelmap = None
+    if reads_records:
+        annotations = dvid.open_bodies_source(_src_spec(args.annotations),
+                                             prefer_locked=bool(args.dvid_locked))
+    if args.labelmap:
+        from neu_vol.dvid import parse_url
+        labelmap = {"backend": "dvid", **parse_url(_resolve_src(args.labelmap))}
+        labelmap["uuid"] = annotations["uuid"]           # the SAME node, always
     out = _expand_out(args.out, source)
-    result = ops.write_selected_bodies(source, out, min_synapses=args.min_synapses,
-                                       min_pre=args.min_pre, min_post=args.min_post,
-                                       limit=args.limit)
+    try:
+        result = ops.write_selected_bodies(
+            source, out, min_synapses=args.min_synapses, min_pre=args.min_pre,
+            min_post=args.min_post, limit=args.limit, min_pairs=args.min_pairs,
+            connections=args.connections, named=args.named,
+            rules_path=_rules_path(args.rules), annotations_source=annotations,
+            exclude=args.exclude or (), labelmap_source=labelmap)
+    except (ValueError, KeyError) as e:
+        raise SystemExit(str(e).strip('"')) from None
     df = result["bodies"]
-    print(f"selected {len(df)} bodies (>= {args.min_synapses} synapses"
+    added = result["added"]
+    dropped = result["dropped"]
+    print(f"selected {len(df)} bodies: {len(df) - len(added['extra'])} with "
+          f">= {args.min_synapses} synapses"
           + (f", >= {args.min_pre} pre" if args.min_pre else "")
-          + (f", >= {args.min_post} post" if args.min_post else "") + ")")
+          + (f", >= {args.min_post} post" if args.min_post else ""))
+    if args.min_pairs is not None:
+        print(f"  {len(added['by_pairs'])} take part in >= {args.min_pairs} connections, "
+              f"{len(set(added['by_pairs']) & set(added['extra']))} of them added")
+    if args.named:
+        print(f"  {len(added['by_name'])} have a {args.named}, "
+              f"{len(set(added['by_name']) & set(added['extra']))} of them added")
+    if args.exclude:
+        print(f"  left out by {', '.join(args.exclude)}: {dropped['from_count']} with enough "
+              f"synapses, {dropped['from_added']} others")
+    if len(df):
+        print(f"  synapses per body: {int(df['syn'].min())}..{int(df['syn'].max())}, "
+              f"{int(df['syn'].sum())} total")
+    print(f"wrote {result['path']}")
+    print(f"  feed it onward with:  --bodies {result['path']}")
+    return 0
+
+
+def _select_by_criteria(args) -> int:
+    from . import criteria as _criteria
+    from . import dvid, ops
+
+    if not (args.criteria and args.criteria_list):
+        raise SystemExit("--criteria and --list go together: the file, and which of its "
+                         "lists to write")
+    clash = [flag for flag, given in (
+        ("--min-synapses", args.min_synapses is not None), ("--min-pre", bool(args.min_pre)),
+        ("--min-post", bool(args.min_post)), ("--limit", args.limit is not None),
+        ("--min-pairs", args.min_pairs is not None), ("--named", bool(args.named)),
+        ("--exclude", bool(args.exclude))) if given]
+    if clash:
+        raise SystemExit(f"--criteria decides the list itself; drop {', '.join(clash)}")
+    if args.sizes_cache and not args.labelmap:
+        raise SystemExit("--sizes-cache keeps the --labelmap listing: it needs --labelmap")
+    if not (args.rules and args.annotations):
+        raise SystemExit("--criteria needs --rules (the category rule) and --annotations "
+                         "(the records it reads)")
+    try:
+        criteria = _criteria.load(args.criteria, args.criteria_list)
+    except (ValueError, FileNotFoundError) as e:
+        raise SystemExit(str(e)) from None
+    source = dvid.open_counts_source(_src_spec(args.src),
+                                    prefer_locked=bool(args.dvid_locked))
+    annotations = dvid.open_bodies_source(_src_spec(args.annotations),
+                                         prefer_locked=bool(args.dvid_locked))
+    labelmap = None
+    if args.labelmap:
+        from neu_vol.dvid import parse_url
+        labelmap = {"backend": "dvid", **parse_url(_resolve_src(args.labelmap))}
+        labelmap["uuid"] = annotations["uuid"]           # the SAME node, always
+    out = _expand_out(args.out, source)
+    try:
+        result = ops.write_criteria_bodies(
+            source, out, criteria=criteria, rules_path=_rules_path(args.rules),
+            annotations_source=annotations, connections=args.connections,
+            labelmap_source=labelmap, sizes_cache=args.sizes_cache)
+    except (ValueError, KeyError) as e:
+        raise SystemExit(str(e).strip('"')) from None
+    df = result["bodies"]
+    print(f"selected {len(df)} bodies for [{criteria.name}] of {criteria.path}")
+    width = max(len(c) for c in result["by_category"]) if result["by_category"] else 0
+    for category, row in result["by_category"].items():
+        by = ", ".join(f"{k} {v}" for k, v in row["by"].items())
+        print(f"  {category:<{width}}  {row['included']:>7} of {row['candidates']:<7} "
+              f"{row['mode']}" + (f": {by}" if row["mode"] == "conditional" and by else ""))
+    left_out = sorted(c for c, m in criteria.modes.items() if m == "none")
+    if left_out:
+        print(f"  left out: {', '.join(left_out)}")
+    if result["found"]:
+        print(f"  bodies with no record ({result['unrecorded']}) looked for by "
+              + ", ".join(f"{k} {v}" for k, v in result["found"].items()))
     if len(df):
         print(f"  synapses per body: {int(df['syn'].min())}..{int(df['syn'].max())}, "
               f"{int(df['syn'].sum())} total")

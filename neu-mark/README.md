@@ -50,6 +50,55 @@ projecting outside the traced volume may have no presynapses, so requiring both 
 exactly the cells most worth looking at. `--min-pre` / `--min-post` exist when you do want
 that; both default to off.
 
+Two more criteria can each add bodies the count misses:
+
+- **`--min-pairs N --connections DIR`**: bodies taking part in at least N T-bar → PSD
+  connections, at either end, counted from the `connections` table `points --connections`
+  wrote. A T-bar has several PSDs, so a body with a few T-bars can be highly connected
+  while holding few synapses. Adds a `pairs` column.
+- **`--named RULE --rules MODULE --annotations URL`**: bodies whose annotation record the
+  rules module's `RULE` gives a value, and no drop rule excludes. Which names count (a
+  cell type, not a fragment or a bare neuropil name) is the rules module's call. Reads
+  every record, about a minute. Adds a `named` column (0/1).
+
+A body is kept if any criterion admits it. **`--exclude RULE`** (repeatable, same
+`--rules` and `--annotations`) then leaves out bodies whose record that rule gives a value,
+whichever criterion admitted them: `--exclude glia` turns a list to mesh into a list to
+skeletonize. **`--labelmap URL`** gives every record a `voxels` field (full-resolution
+voxels, from DVID's `/sizes`, about 30 s for 70k records), so a rule can set a size
+threshold. Every extra source must come from the node the counts do, which is checked.
+
+**`--criteria FILE --list NAME`** replaces all of those with a file of lists, one per use
+(meshes, skeletons, segment properties), so the choice is written down in one place. A rule
+of `--rules` (`category`) puts every body in one category by its name; each list says of
+every category whether it goes in outright (`"all"`), never (`"none"`), or on conditions
+(`"conditional"`). A condition is a set of minimums that must all hold, over `size`
+(full-resolution voxels, `--labelmap`), `sites` (synapse elements) and `pairs`
+(connections, `--connections`); every `necessary_conditions` must hold, and at least one of
+`sufficient_conditions` for a conditional category:
+
+```toml
+[meshes]
+non_fragments = "all"
+neuropil_fragments = "conditional"
+glia = "conditional"
+noise = "none"
+unnamed = "conditional"           # bodies with no name: found by each condition
+necessary_conditions = []
+sufficient_conditions = ["large", "large_enough_and_synaptic"]
+
+[meshes.conditions]
+large = { size = 1_000_000 }
+large_enough_and_synaptic = { size = 500_000, sites = 3 }
+```
+
+The list gains `category` and `admitted_by` (`all`, or the first sufficient condition that
+held) columns, and its provenance record keeps the whole list. Bodies with no annotation
+record get the category the rule gives an empty one; when a list can admit those on size
+alone, every label of that size is listed from DVID, which takes about half an hour for
+~34M labels. `--sizes-cache DIR` keeps a locked node's listing there, named by server, uuid
+and instance, so later runs on that node read it instead.
+
 Rank from a **locked** node. Body ids change with proofreading, so the list and the
 annotations should come from the same node — which is also why `select-bodies` writes a
 provenance record naming it, rather than a bare list of ids.
@@ -86,7 +135,7 @@ means a different node tomorrow.
 
 | table | grain | key columns |
 | --- | --- | --- |
-| `select-bodies --out` (the file named) | one row per selected body | `body`, `pre`, `post`, `syn` |
+| `select-bodies --out` (the file named) | one row per selected body | `body`, `pre`, `post`, `syn` (+ `pairs`, `named`) |
 | `points` | one row per element | `body`, `z`, `y`, `x`, `kind`, `conf`, `user`, `roi` |
 | `relationships` | one row per relationship | `rel`, `z/y/x`, `to_z/to_y/to_x`, `from_body`, `to_body` |
 | `connections` (`--connections`) | one row per distinct (tbar, psd) pair | `pre_*`, `post_*`, `pre_body`, `post_body` |

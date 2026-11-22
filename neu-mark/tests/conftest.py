@@ -192,8 +192,9 @@ def dvid_server(monkeypatch):
                          name="AllSyn", dtype="int64").rename_axis("body")
 
     def fetch_counts(server, uuid, instance, bodies, element_type, **k):
-        idx = 0 if element_type == "PreSyn" else 1
-        return pd.Series({int(b): COUNTS.get(int(b), (0, 0))[idx] for b in bodies},
+        pick = {"PreSyn": lambda c: c[0], "PostSyn": lambda c: c[1],
+                "AllSyn": lambda c: c[0] + c[1]}[element_type]
+        return pd.Series({int(b): pick(COUNTS.get(int(b), (0, 0))) for b in bodies},
                          name=element_type, dtype="int64").rename_axis("body")
 
     monkeypatch.setattr(ndsz, "fetch_threshold", fetch_threshold)

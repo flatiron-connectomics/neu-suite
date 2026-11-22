@@ -273,6 +273,42 @@ def fetch_synapse_counts(source: Mapping[str, Any], *, min_total: int = 10,
 
     server, uuid, instance = _vdvid.address(source)
     threshold = max(int(min_total), int(min_pre), int(min_post), 1)
+    syn = ranked_synapse_counts(source, threshold)
+    bodies = [int(b) for b in syn.index]
+    pre = with_retry(
+        lambda: labelsz.fetch_counts(server, uuid, instance, bodies, "PreSyn"),
+        label="labelsz PreSyn counts")
+    post = with_retry(
+        lambda: labelsz.fetch_counts(server, uuid, instance, bodies, "PostSyn"),
+        label="labelsz PostSyn counts")
+
+    df = pd.DataFrame({"syn": syn.astype("int64")})
+    df["pre"] = pre.reindex(df.index).fillna(0).astype("int64")
+    df["post"] = post.reindex(df.index).fillna(0).astype("int64")
+    if min_pre:
+        df = df[df["pre"] >= int(min_pre)]
+    if min_post:
+        df = df[df["post"] >= int(min_post)]
+    df = df.sort_values(["syn", "pre"], ascending=False)
+    if limit is not None:
+        df = df.head(int(limit))
+    out = df.reset_index()
+    out = out.rename(columns={out.columns[0]: "body"})
+    out["body"] = out["body"].astype(tables.BODY_DTYPE)
+    return out[["body", "pre", "post", "syn"]]
+
+
+def ranked_synapse_counts(source: Mapping[str, Any], threshold: int):
+    """``{body: AllSyn}`` for every body with at least ``threshold`` synapses, ranked.
+
+    A Series indexed by body. One ranked ``threshold`` query, paged up to ``_MAX_SELECT``.
+    """
+    import pandas as pd
+
+    from neuclease.dvid import labelsz
+
+    server, uuid, instance = _vdvid.address(source)
+    threshold = max(int(threshold), 1)
 
     # Page explicitly, up to _MAX_SELECT: per-page cost grows with offset.
     pages, offset = [], 0
@@ -303,29 +339,7 @@ def fetch_synapse_counts(source: Mapping[str, Any], *, min_total: int = 10,
             f"instance — DVID answers an unindexed element type with an EMPTY result "
             f"rather than an error.")
 
-    syn = pd.concat(pages)
-    bodies = [int(b) for b in syn.index]
-    pre = with_retry(
-        lambda: labelsz.fetch_counts(server, uuid, instance, bodies, "PreSyn"),
-        label="labelsz PreSyn counts")
-    post = with_retry(
-        lambda: labelsz.fetch_counts(server, uuid, instance, bodies, "PostSyn"),
-        label="labelsz PostSyn counts")
-
-    df = pd.DataFrame({"syn": syn.astype("int64")})
-    df["pre"] = pre.reindex(df.index).fillna(0).astype("int64")
-    df["post"] = post.reindex(df.index).fillna(0).astype("int64")
-    if min_pre:
-        df = df[df["pre"] >= int(min_pre)]
-    if min_post:
-        df = df[df["post"] >= int(min_post)]
-    df = df.sort_values(["syn", "pre"], ascending=False)
-    if limit is not None:
-        df = df.head(int(limit))
-    out = df.reset_index()
-    out = out.rename(columns={out.columns[0]: "body"})
-    out["body"] = out["body"].astype(tables.BODY_DTYPE)
-    return out[["body", "pre", "post", "syn"]]
+    return pd.concat(pages)
 
 
 # --------------------------------------------------------------------------- #
@@ -587,6 +601,120 @@ def fetch_voxel_counts(source: Mapping[str, Any], bodies: Sequence[int],
         lambda: fetch_sizes(server, uuid, instance, ids, batch_size=batch_size),
         label=f"sizes for {len(ids)} bodies")
     return {int(b): int(v) for b, v in series.items()}
+
+
+def fetch_large_bodies(source: Mapping[str, Any], min_voxels: int, *,
+                       batch_size: int = 200_000) -> dict[int, int]:
+    """``{body: voxels}`` for EVERY body of at least ``min_voxels`` full-resolution voxels.
+
+    DVID can only list labels with their sizes, all of them (``/listlabels``), so this
+    pages through every label in one stream, keeping only the large ones: ~34M labels took
+    32 minutes. Parallel streams were slower (60 minutes over 8), so there are none; see
+    :func:`large_bodies` to keep a listing of a locked node for reuse.
+    """
+    import numpy as np
+
+    try:
+        from neuclease.dvid import fetch_listlabels, fetch_maxlabel
+    except ImportError as exc:
+        raise ImportError(MISSING) from exc
+
+    server, uuid, instance = _vdvid.address(source)
+    top = int(with_retry(lambda: fetch_maxlabel(server, uuid, instance),
+                         label="labelmap maxlabel"))
+    found: dict[int, int] = {}
+    start, seen, pages = 0, 0, 0
+    while start <= top:
+        page = with_retry(
+            lambda s=start: fetch_listlabels(server, uuid, instance, s, batch_size,
+                                             sizes=True),
+            label=f"listlabels from {start}")
+        if page is None or not len(page):
+            break
+        ids, sizes = page.index.to_numpy(np.int64), page.to_numpy()
+        keep = sizes >= int(min_voxels)
+        found.update(zip(ids[keep].tolist(), sizes[keep].astype(np.int64).tolist()))
+        seen, pages, start = seen + len(ids), pages + 1, int(ids[-1]) + 1
+        if pages % 20 == 0:
+            logger.info("listed %d labels, up to id %d of %d: %d bodies of >= %d voxels",
+                        seen, start - 1, top, len(found), int(min_voxels))
+    logger.info("listed %d labels: %d bodies of >= %d voxels", seen, len(found),
+                int(min_voxels))
+    return found
+
+
+def _node_locked(source: Mapping[str, Any]) -> bool:
+    return bool(_vdvid.resolve_node(dict(source))["locked"])
+
+
+def large_bodies(source: Mapping[str, Any], min_voxels: int, *,
+                 cache: str | None = None) -> tuple[dict[int, int], str]:
+    """:func:`fetch_large_bodies`, kept in the directory ``cache`` for a locked node.
+
+    The listing is saved as ``<server>_<uuid>_<instance>.sizes.parquet`` beside a JSON
+    record naming the node and the ``min_voxels`` it was listed down to; a later call for
+    the same node at that size or above reads it instead of DVID. An open node is listed
+    every time, since its sizes can change. Returns ``(sizes, where)``: where they came
+    from, for the provenance record.
+    """
+    import json
+    import os
+    import re
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    import pandas as pd
+
+    if cache is None:
+        return fetch_large_bodies(source, min_voxels), "DVID"
+    server, uuid, instance = _vdvid.address(source)
+    host = server.split("://")[-1].rstrip("/")
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{host}_{uuid}_{instance}")
+    table, meta = Path(cache) / f"{stem}.sizes.parquet", Path(cache) / f"{stem}.sizes.json"
+    if table.exists() and meta.exists():
+        saved = json.loads(meta.read_text())
+        same = (str(saved.get("server", "")).split("://")[-1].rstrip("/"),
+                saved.get("uuid"), saved.get("instance")) == (host, uuid, instance)
+        if same and int(saved["min_voxels"]) <= int(min_voxels):
+            frame = pd.read_parquet(table)
+            frame = frame[frame["voxels"] >= int(min_voxels)]
+            logger.info("%d bodies of >= %d voxels from %s", len(frame), int(min_voxels),
+                        table)
+            return (dict(zip(frame["body"].astype("int64").tolist(),
+                             frame["voxels"].astype("int64").tolist())), str(table))
+    found = fetch_large_bodies(source, min_voxels)
+    if not _node_locked(source):
+        logger.warning("%s is an open node: its listing is not saved to %s", uuid, cache)
+        return found, "DVID"
+    table.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame({"body": pd.array(list(found), dtype="uint64"),
+                          "voxels": pd.array(list(found.values()), dtype="int64")})
+    tmp = table.with_suffix(".parquet.tmp")
+    frame.to_parquet(tmp, index=False)
+    os.replace(tmp, table)
+    meta.write_text(json.dumps({"server": server, "uuid": uuid, "instance": instance,
+                                "min_voxels": int(min_voxels), "bodies": len(frame),
+                                "listed": datetime.now(timezone.utc).isoformat(
+                                    timespec="seconds")}, indent=1) + "\n")
+    logger.info("saved %d bodies of >= %d voxels to %s", len(frame), int(min_voxels), table)
+    return found, str(table)
+
+
+def fetch_allsyn_counts(source: Mapping[str, Any], bodies: Sequence[int], *,
+                        batch_size: int = 50_000) -> dict[int, int]:
+    """``{body: AllSyn}`` from ``labelsz`` for given bodies; a body with none is absent."""
+    from neuclease.dvid import labelsz
+
+    server, uuid, instance = _vdvid.address(source)
+    ids = [int(b) for b in bodies]
+    out: dict[int, int] = {}
+    for i in range(0, len(ids), batch_size):
+        chunk = ids[i:i + batch_size]
+        got = with_retry(
+            lambda c=chunk: labelsz.fetch_counts(server, uuid, instance, c, "AllSyn"),
+            label=f"labelsz AllSyn counts for {len(chunk)} bodies")
+        out.update({int(b): int(v) for b, v in got.items() if v})
+    return out
 
 
 def node_record(source: Mapping[str, Any], **extra: Any) -> dict[str, Any]:
