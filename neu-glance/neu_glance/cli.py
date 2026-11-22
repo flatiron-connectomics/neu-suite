@@ -543,7 +543,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "flags and the config still name the layer by its path")
     q.add_argument("--config", default=None, metavar="TOML",
                    help="site display defaults: volume bounds, annotation shader controls, "
-                        "and per-layer silhouette, opacities, hide, all_segments and name by "
+                        "and per-layer silhouette, opacities, colour, pick, hover highlight, "
+                        "hide, all_segments and name by "
                         "layer name (see neu_glance.config). Read only when named; a flag "
                         "here wins over the file")
     q.add_argument("--voxel-size", default=None, metavar="Z,Y,X",

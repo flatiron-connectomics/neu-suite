@@ -27,6 +27,7 @@ on the command line wins over the file.
     opacity_3d = 1              # objectAlpha
     color = "white"             # segmentDefaultColor: every segment without its own colour
     pick = false                # clicks go through it, to what is inside
+    hover_highlight = false     # no highlight of the segment under the mouse
     skeletons = false           # the source's skeletons subsource (its Source-tab box)
     tab = "segments"            # the side panel's tab for this layer
     hide = true                 # added switched off
@@ -53,7 +54,7 @@ LAYER_DISPLAY = {
 #: ``[layer.NAME]`` colour keys and the state key each sets, as ``#rrggbb``.
 LAYER_COLORS = {"color": "segmentDefaultColor"}
 #: ``[layer.NAME]`` true/false keys written to the layer as they are.
-LAYER_SWITCHES = {"pick": "pick"}
+LAYER_SWITCHES = {"pick": "pick", "hover_highlight": "hoverHighlight"}
 #: ``[layer.NAME]`` true/false keys switching one of the source's subsources.
 LAYER_SUBSOURCES = ("skeletons",)
 #: Side-panel tabs a ``[layer.NAME] tab`` may name (neuroglancer's own ids).

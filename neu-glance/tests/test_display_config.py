@@ -49,6 +49,16 @@ def test_colour_and_pick_from_the_config_and_from_flags(tmp_path, capsys):
     assert layers["b"]["pick"] is False
 
 
+def test_hover_highlight_from_the_config(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    state = _gen(tmp_path, capsys, '[layer.a]\nhover_highlight = false\n',
+                 "--seg", a, "--seg", b)
+    layers = {lyr["name"]: lyr for lyr in state["layers"]}
+    assert layers["a"]["hoverHighlight"] is False
+    assert "hoverHighlight" not in layers["b"]          # neuroglancer's default: on
+
+
 @pytest.mark.parametrize("bounds", ["false", "true"])
 def test_skeletons_off_switches_the_subsource_and_keeps_the_others(tmp_path, capsys, bounds):
     a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
