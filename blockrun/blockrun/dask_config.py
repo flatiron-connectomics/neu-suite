@@ -165,11 +165,15 @@ def write_effective_config(dest: str, merged: Mapping[str, Any],
                            sources: Iterable[str]) -> str:
     """Record the config dask actually received. Returns the path written.
 
-    ``dest`` is a directory (the file is named ``dask-config.effective.yaml``) or a full
-    path. Kept with a run, it records what layered overrides produced.
+    ``dest`` is a ``.yaml``/``.yml`` file path, or else a directory, created if missing,
+    holding ``dask-config.effective.yaml``. Kept with a run, it records what layered
+    overrides produced.
     """
-    path = (os.path.join(dest, "dask-config.effective.yaml")
-            if os.path.isdir(dest) else dest)
+    if os.path.splitext(dest)[1].lower() in (".yaml", ".yml"):
+        path = dest
+    else:
+        os.makedirs(dest, exist_ok=True)
+        path = os.path.join(dest, "dask-config.effective.yaml")
     header = "".join(f"#   {s}\n" for s in sources)
     body = yaml.safe_dump(dict(merged), sort_keys=False, default_flow_style=False)
     with open(path, "w") as f:

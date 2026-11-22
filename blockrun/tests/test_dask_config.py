@@ -155,3 +155,13 @@ def test_effective_config_accepts_an_explicit_file_path(tmp_path):
     target = tmp_path / "chosen-name.yaml"
     assert dc.write_effective_config(str(target), merged, sources) == str(target)
     assert target.is_file()
+
+
+def test_effective_config_creates_a_directory_that_does_not_exist_yet(tmp_path):
+    # A run's work dir may not exist when the cluster starts; it must not become the file.
+    merged, sources = dc.load_config("dask-local")
+    work = tmp_path / "runs" / "fresh_work_dir"
+    written = dc.write_effective_config(str(work), merged, sources)
+    assert work.is_dir()
+    assert written == str(work / "dask-config.effective.yaml")
+    assert os.path.isfile(written)

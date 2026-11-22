@@ -54,7 +54,8 @@ def start_dask(
       - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs.
 
     Tears the cluster (and its SLURM jobs) down on exit. ``effective_config_path`` (a
-    directory or file) records the merged config, worth keeping with a run.
+    ``.yaml`` file, or a directory, created if missing) records the merged config, worth
+    keeping with a run.
     """
     logger = logger or logging.getLogger(__name__)
     config, sources = load_config(config_path)
