@@ -896,6 +896,40 @@ def test_from_source_splits_a_dataset_only_on_a_LEADING_slash(tmp_path):
         ServedLayer.from_source(f"{path}:data", "image")
 
 
+def test_reader_constructors_give_layer_options_to_the_layer_not_the_reader(tmp_path):
+    """`cmd_serve` passes shader= and color= to every source; read_piece takes neither."""
+    path = _piece(tmp_path, voxel_size=np.asarray([8.0, 8.0, 8.0]), axes="zyx")
+    layer = ServedLayer.from_source(f"{path}:/data", "probability", shader=None,
+                                    color="cyan", opacity=0.5)
+    assert (layer.color, layer.opacity) == ("cyan", 0.5)
+    layer = ServedLayer.from_hdf5(path, "/data", "image", shader="grayscale")
+    assert layer.shader == "grayscale"
+
+
+def test_cmd_serve_reads_its_sources(tmp_path, monkeypatch):
+    """The CLI path end to end, up to the server, which is replaced."""
+    from neu_glance import cli, serving
+
+    path = _piece(tmp_path, voxel_size=np.asarray([8.0, 8.0, 8.0]), axes="zyx")
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_serve(layers, **kw):
+        seen["layers"] = layers
+        raise _Stop
+
+    monkeypatch.setattr(serving, "_neuroglancer", lambda: None)
+    monkeypatch.setattr(serving, "serve", fake_serve)
+    with pytest.raises(_Stop):
+        cli.main(["serve", "--image", f"{path}:/data", "--prob", f"{path}:/data",
+                  "--color", "cyan"])
+    image, prob = seen["layers"]
+    assert (image.kind, image.color) == ("image", None)
+    assert (prob.kind, prob.color) == ("probability", "cyan")
+
+
 def _ome_volume(tmp_path, kind="image", dtype="uint8", profile="local"):
     """A (16, 32, 32) volume at 40x8x8 nm with one (1, 2, 2) level: a multiscale zarr
     group by default, precomputed with ``profile="local-neuroglancer"``."""

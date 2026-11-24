@@ -9,7 +9,7 @@ a uint8 label array is an image, averaging label ids and losing the segment UI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Mapping, Sequence
 
 from neu_lib import Piece
@@ -106,16 +106,22 @@ class ServedLayer:
     @classmethod
     def _read(cls, src: Any, kind: str | None, name: str | None,
               **read_kwargs) -> "ServedLayer":
-        """Read through ``neu_vol.read_piece`` and wrap it. Shared by the three readers."""
+        """Read through ``neu_vol.read_piece`` and wrap it. Shared by the three readers.
+
+        Keywords naming a layer field (``shader``, ``color``, ...) go to the layer; the
+        rest go to ``read_piece``.
+        """
         from neu_vol import read_piece
 
+        layer_kwargs = {k: read_kwargs.pop(k) for k in list(read_kwargs)
+                        if k in _LAYER_OPTIONS}
         try:
             piece = read_piece(src, kind, **read_kwargs)
         except ValueError as e:
             # Translated so callers can catch ServeProblem.
             raise ServeProblem(str(e)) from None
         # The name comes from the piece, which read_piece derives from the source.
-        return cls.from_piece(piece, name=name)
+        return cls.from_piece(piece, name=name, **layer_kwargs)
 
     @classmethod
     def from_hdf5(cls, path: str, dataset: str | None = None, kind: str | None = None, *,
@@ -234,6 +240,11 @@ class ServedLayer:
                 f"{rank}-D array {tuple(self.array.shape)}, which has "
                 f"{'a' if derived else 'no'} leading channel axis. Leave it out — the rank "
                 f"decides it")
+
+
+#: ServedLayer fields a reader constructor accepts as keywords; the source fixes the rest.
+_LAYER_OPTIONS = frozenset(f.name for f in fields(ServedLayer)) - {"array", "kind", "name",
+                                                                    "frame"}
 
 
 def _coordinate_space(ng, frame: Any = None, *, channel_axis: bool = False,
