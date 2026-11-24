@@ -58,6 +58,20 @@ def test_a_local_precomputed_target_has_a_profile_to_use(tmp_path):
     assert describe(dst)["format"] == "neuroglancer_precomputed"
 
 
+def test_convert_shard_overrides_a_named_profile(tmp_path):
+    """`--shard` with `--profile ceph` writes the asked-for shard, not the profile's 1024^3."""
+    src, dst = _pyramid(tmp_path, shape=(32, 32, 32)), str(tmp_path / "sharded.zarr")
+    assert cli.cmd_convert(cli._parse_args(
+        ["convert", "--src", src, "--dst", dst, "--format", "zarr", "--profile", "ceph",
+         "--chunk", "8,8,8", "--shard", "16,16,16", "--min-dim", "8", "--serial"])) == 0
+    with open(os.path.join(dst, "0", "zarr.json")) as f:
+        meta = json.load(f)
+    assert meta["chunk_grid"]["configuration"]["chunk_shape"] == [16, 16, 16]
+    inner = [c["configuration"]["chunk_shape"] for c in meta["codecs"]
+             if c["name"] == "sharding_indexed"]
+    assert inner == [[8, 8, 8]]
+
+
 def test_a_subcommand_is_required():
     with pytest.raises(SystemExit):
         cli._parse_args([])

@@ -635,7 +635,7 @@ def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int
                     src_format=getattr(args, "src_format", None),
                     src_level=getattr(args, "src_level", None),
                     dtype=getattr(args, "dtype", None),
-                    profile=profile, kind=kind, chunk=chunk,
+                    profile=profile, kind=kind, chunk=chunk, shard=shard,
                     crop_start=crop_start, crop_stop=crop_stop,
                     mask_boxes=[[lo, hi] for lo, hi in masks],
                     mask_value=args.mask_value,
