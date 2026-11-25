@@ -69,6 +69,27 @@ def manifest_counts(path: str) -> dict[int, dict] | None:
     return out
 
 
+def manifest_plan(path: str) -> dict[int, dict]:
+    """``{level: planned row}`` from the run's ``plan`` record, ``{}`` if it has none.
+
+    A run records the plan before its first level: each level's shape, task shape and
+    ``grid_total``, with ``upper_bound`` where ``--sparse`` will drop empty tasks once the
+    level below exists. The latest record wins, as a resume records it again.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    plan: list = []
+    with open(path) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("group") == "plan" and "status" not in rec:
+                plan = (rec.get("meta") or {}).get("levels") or plan
+    return {int(p["level"]): p for p in plan if isinstance(p, dict) and "level" in p}
+
+
 def task_total(lv: dict, chunk_total: int, chunk: tuple, level: int) -> tuple[int, str]:
     """The denominator for a level's manifest count, and a note if it isn't the chunk grid.
 
@@ -137,8 +158,12 @@ def level_progress(volume: str, *, progress_path: str | None = None,
     it) unless ``storage`` is set or no manifest exists, then from a storage listing.
     Returns ``{"manifest_path", "source": "manifest"|"storage", "levels": [row, ...],
     "notes": [...]}``, each row ``{"level", "shape", "chunk", "done", "total",
-    "written", "empty"}``; ``chunk`` is ``None`` where the level's chunking is unknown,
-    and ``written`` / ``empty`` are ``None`` when counting from storage.
+    "written", "empty", "planned", "upper_bound"}``; ``chunk`` is ``None`` where the level's
+    chunking is unknown, and ``written`` / ``empty`` are ``None`` when counting from storage.
+
+    From a manifest that records the run's plan, levels not yet created are rows too
+    (``planned``), counted against their task grid; ``upper_bound`` marks a grid that
+    ``--sparse`` will shrink when the level starts.
 
     Raises ``FileNotFoundError`` if nothing at ``volume`` is a volume, and
     ``ValueError`` for a single-array format, which has no chunks to count.
@@ -167,7 +192,8 @@ def level_progress(volume: str, *, progress_path: str | None = None,
     for level, lv_info in sorted(levels.items()):
         shape, chunk = lv_info["shape"], lv_info["chunks"]
         row = {"level": level, "shape": shape, "chunk": chunk or None, "done": None,
-               "total": None, "written": None, "empty": None}
+               "total": None, "written": None, "empty": None, "planned": False,
+               "upper_bound": False}
         rows.append(row)
         if not chunk:
             continue
@@ -184,6 +210,18 @@ def level_progress(volume: str, *, progress_path: str | None = None,
         else:
             row["done"] = stored_chunks(volume, fmt, level, scale_keys.get(level))
         row["total"] = total
+
+    plan = manifest_plan(manifest_path) if manifest is not None else {}
+    ahead = [p for lvl, p in sorted(plan.items()) if lvl not in levels]
+    for p in ahead:
+        rows.append({"level": int(p["level"]), "shape": tuple(p["shape"]),
+                     "chunk": tuple(p["task_shape"]), "done": 0, "total": int(p["grid_total"]),
+                     "written": 0, "empty": 0, "planned": True,
+                     "upper_bound": bool(p.get("upper_bound"))})
+    if any(p.get("upper_bound") for p in ahead):
+        notes.append("levels not started yet are counted against their full task grid; "
+                     "with --sparse each shrinks when it starts (tasks with empty input are "
+                     "dropped), so those totals, and the TOTAL, are upper bounds")
     return {"manifest_path": manifest_path,
             "source": "manifest" if manifest is not None else "storage",
             "levels": rows, "notes": notes}

@@ -1169,6 +1169,7 @@ def cmd_progress(args) -> int:
     print(header)
 
     done_total = expected_total = written_total = empty_total = 0
+    bounded = False
     for row in p["levels"]:
         level, shape, chunk = row["level"], row["shape"], row["chunk"]
         if chunk is None:
@@ -1182,17 +1183,22 @@ def cmd_progress(args) -> int:
             extra = f" {row['written']:>10,} {row['empty']:>10,}"
         done_total += done
         expected_total += expected
+        bound = "≤" if row.get("upper_bound") else ""
+        bounded |= bool(bound)
+        if row.get("planned"):
+            extra += "   (not started)"
         pct = 100.0 * done / expected if expected else 100.0
         print(f"{level:>5} {str(shape):>24} {str(chunk):>18} "
-              f"{f'{done}/{expected}':>20} {pct:>6.1f}%{extra}")
+              f"{f'{done}/{bound}{expected}':>20} {pct:>6.1f}%{extra}")
 
     if not p["levels"]:
         print("no levels found yet — level 0 has not been created")
         return 1
     pct = 100.0 * done_total / expected_total if expected_total else 100.0
     total_extra = f" {written_total:>10,} {empty_total:>10,}" if from_manifest else ""
+    bound = "≤" if bounded else ""
     print(f"{'TOTAL':>5} {'':>24} {'':>18} "
-          f"{f'{done_total}/{expected_total}':>20} {pct:>6.1f}%{total_extra}")
+          f"{f'{done_total}/{bound}{expected_total}':>20} {pct:>6.1f}%{total_extra}")
     for note in p["notes"]:
         print(f"\n  {note}")
 

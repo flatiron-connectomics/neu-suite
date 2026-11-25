@@ -408,3 +408,83 @@ def test_progress_storage_and_manifest_disagree_on_sparse_data_by_design(tmp_pat
 def test_progress_reports_nothing_at_a_path_with_no_volume(tmp_path, capsys):
     assert cli.cmd_progress(cli._parse_args(["progress", str(tmp_path / "no")])) == 1
     assert "no volume found" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# progress — the whole pyramid from the start, from the run's recorded plan
+# --------------------------------------------------------------------------- #
+def _sparse_source(tmp_path, shape=(32, 32, 32)):
+    data = np.zeros(shape, np.uint64)
+    data[2:6, 2:6, 2:6] = 5                     # one corner: most pyramid tasks are empty
+    src = str(tmp_path / "plan.src.zarr")
+    be = TensorStoreBackend.create(
+        zarr3_create_spec("local", src, shape, "uint64",
+                          dimension_names=("z", "y", "x"), chunk=(8, 8, 8)),
+        delete_existing=True)
+    be.write_region(tuple(slice(0, s) for s in shape), data)
+    return src
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_the_recorded_plan_matches_the_levels_that_ran(tmp_path, sparse):
+    from neu_vol.ops.progress import manifest_plan
+
+    dst = str(tmp_path / "plan.zarr")
+    convert(_sparse_source(tmp_path), dst, voxel_size=(8, 8, 8), kind="segmentation",
+            profile="local", chunk=(8, 8, 8), min_dim=8, sparse=sparse, delete_existing=True)
+    manifest = dst + ".progress.jsonl"
+    plan, ran = manifest_plan(manifest), manifest_counts(manifest)
+    assert sorted(plan) == sorted(ran) == [0, 1, 2]
+    for level, p in plan.items():
+        if sparse and level > 0:
+            assert p["upper_bound"] and p["grid_total"] >= ran[level]["total"]
+        else:
+            assert not p["upper_bound"] and p["grid_total"] == ran[level]["total"]
+    if sparse:      # level 1's grid is 8 tasks, and only the one over the data runs
+        assert (plan[1]["grid_total"], ran[1]["total"]) == (8, 1)
+
+
+def test_progress_shows_the_levels_not_started_yet(tmp_path, capsys):
+    """Part-way through a run: level 0 done, levels 1-2 not yet created."""
+    dst = _precomputed(tmp_path)
+    info = json.load(open(os.path.join(dst, "info")))
+    full = len(info["scales"])
+    info["scales"] = info["scales"][:1]
+    json.dump(info, open(os.path.join(dst, "info"), "w"))
+    manifest = dst + ".progress.jsonl"
+    kept = [l for l in open(manifest)
+            if json.loads(l).get("group") in (0, "plan", "source", "reducer")]
+    open(manifest, "w").writelines(kept)
+
+    assert cli.cmd_progress(cli._parse_args(["progress", dst])) == 0
+    out = capsys.readouterr().out
+    assert _done_total(_level_row(out, 0)) == (64, 64)
+    for level in range(1, full):
+        row = _level_row(out, level)
+        assert "(not started)" in row and "≤" not in row      # not sparse: exact
+        assert _done_total(row)[0] == 0
+    total = next(l for l in out.splitlines() if l.startswith("TOTAL"))
+    assert _done_total(total) == (64, 64 + 8 + 1)               # 4^3 + 2^3 + 1
+
+
+def test_progress_marks_a_sparse_runs_planned_totals_as_upper_bounds(tmp_path, capsys):
+    from neu_vol.profiles import StorageProfile
+
+    dst = str(tmp_path / "sparse.precomputed")
+    convert(_sparse_source(tmp_path), dst, voxel_size=(8, 8, 8), kind="segmentation",
+            chunk=(8, 8, 8), min_dim=8, sparse=True, delete_existing=True,
+            profile=StorageProfile("neuroglancer_precomputed", chunk=(8, 8, 8)))
+    info = json.load(open(os.path.join(dst, "info")))
+    info["scales"] = info["scales"][:1]
+    json.dump(info, open(os.path.join(dst, "info"), "w"))
+    manifest = dst + ".progress.jsonl"
+    kept = [l for l in open(manifest)
+            if json.loads(l).get("group") in (0, "plan", "source", "reducer")]
+    open(manifest, "w").writelines(kept)
+
+    assert cli.cmd_progress(cli._parse_args(["progress", dst])) == 0
+    out = capsys.readouterr().out
+    assert "/≤" in _level_row(out, 1) and "/≤" in _level_row(out, 2)
+    assert "/≤" not in _level_row(out, 0)
+    assert "/≤" in next(l for l in out.splitlines() if l.startswith("TOTAL"))
+    assert "upper bounds" in out

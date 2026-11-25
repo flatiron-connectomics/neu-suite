@@ -64,6 +64,23 @@ def _canonical(identity: Any) -> str:
 SOURCE_GROUP = "source"
 #: Manifest group recording how the pyramid levels are reduced.
 REDUCER_GROUP = "reducer"
+#: Manifest group recording, before any level runs, every level the run will write.
+PLAN_GROUP = "plan"
+
+
+def _level_plan(level_shapes, first: int, first_unit, unit, sparse: bool) -> list[dict]:
+    """Every level from ``first`` up, with its task grid: what progress can show as the
+    whole pyramid before each level exists. With ``sparse`` a level's grid is an upper
+    bound — tasks with empty input are dropped only once the level below is written —
+    except a conversion's level 0, which is never filtered."""
+    plan = []
+    for i in range(first, len(level_shapes)):
+        u = first_unit if i == first else unit
+        shape = [int(s) for s in level_shapes[i]]
+        plan.append({"level": i, "shape": shape, "task_shape": [int(x) for x in u],
+                     "grid_total": math.prod(-(-s // int(x)) for s, x in zip(shape, u)),
+                     "upper_bound": bool(sparse and i > 0)})
+    return plan
 #: Spec keys saying how a source was resolved or reached, not what it is: a branch ref
 #: resolving to the same node reads the same data.
 _RESOLUTION_KEYS = frozenset({"requested_ref", "ancestors_walked", "context"})
@@ -442,6 +459,9 @@ def _run_multiscale(
                     "%d destination chunks per task, so each source chunk is read once "
                     "rather than %d times",
                     task_shape, tuple(src_chunks), tuple(lvl0.chunks), per_task, per_task)
+            # Every level shares level 0's chunking, so the whole pyramid's grid is known now.
+            manifest.record_meta(PLAN_GROUP, levels=_level_plan(
+                level_shapes, 0, task_shape or lvl0.chunks, lvl0.chunks, sparse))
             _run_level(manifest, 0, lvl0,
                        lambda *, verify: functools.partial(_copy_block, src_spec=src_spec,
                                                             dst_spec=prev_spec, out_dtype=out_dtype,
@@ -461,6 +481,9 @@ def _run_multiscale(
                     f"rebuild from a level that matches.")
             prev_spec = seed.to_spec()
             prev_shape, prev_chunks = seed.shape, seed.chunks
+            if seed_level + 1 < len(level_shapes):
+                manifest.record_meta(PLAN_GROUP, levels=_level_plan(
+                    level_shapes, seed_level + 1, seed.chunks, seed.chunks, sparse))
             logger.info("rebuilding from existing level %d %s (level%s below it "
                         "untouched)", seed_level, got,
                         f"s 0-{seed_level - 1}" if seed_level else " 0 is the seed; none")
