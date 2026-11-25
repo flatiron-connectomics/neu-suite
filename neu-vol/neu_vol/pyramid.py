@@ -10,6 +10,7 @@ The orchestration lives in ops/ (block-map per level).
 
 from __future__ import annotations
 
+import functools
 from typing import Callable, Sequence
 
 import numpy as np
@@ -128,12 +129,19 @@ def mean_downsample(arr: np.ndarray, factors: Sequence[int]) -> np.ndarray:
     return res.astype(arr.dtype)
 
 
-def mode_downsample(arr: np.ndarray, factors: Sequence[int]) -> np.ndarray:
+def mode_downsample(arr: np.ndarray, factors: Sequence[int], *,
+                    prefer_nonzero: bool = False) -> np.ndarray:
     """Label-preserving mode downsample; ties broken to the smallest label.
 
     For segmentations (never interpolate IDs). Vectorized for small windows
     (prod(factors) small, e.g. 8 for 2x2x2); chunk the input for very large
     windows if memory-bound.
+
+    The smallest label is 0, so by default background wins every tie with an object, and
+    a sparse volume of small objects (organelles, synapse-sized labels) loses a rim of
+    each object at every level. ``prefer_nonzero`` gives such a tie to the object; a
+    strict majority of background still wins, and ties between objects still go to the
+    smallest.
     """
     factors = tuple(int(f) for f in factors)
     ndim = arr.ndim
@@ -155,6 +163,9 @@ def mode_downsample(arr: np.ndarray, factors: Sequence[int]) -> np.ndarray:
     eq = vals_s[:, :, None] == vals_s[:, None, :]
     counts = (eq & val_s[:, None, :]).sum(axis=2)
     counts[~val_s] = -1
+    if prefer_nonzero:
+        # Doubling keeps every strict majority, and the -1 decides only a tie with 0.
+        counts = 2 * counts - (vals_s == 0)
     best = counts.argmax(axis=1)
     mode = vals_s[np.arange(vals_s.shape[0]), best]
     return mode.reshape(out_shape).astype(arr.dtype)
@@ -167,12 +178,30 @@ REDUCERS: dict[str, Callable[[np.ndarray, Sequence[int]], np.ndarray]] = {
     "segmentation": mode_downsample,
 }
 
+#: How a segmentation reducer breaks a tie: to the smallest label (0, when background is
+#: in the tie), or to the smallest NONZERO label.
+LABEL_TIES = ("smallest", "nonzero")
 
-def get_reducer(kind: str) -> Callable[[np.ndarray, Sequence[int]], np.ndarray]:
+
+def get_reducer(kind: str, label_ties: str = "smallest"
+                ) -> Callable[[np.ndarray, Sequence[int]], np.ndarray]:
     try:
-        return REDUCERS[kind]
+        reducer = REDUCERS[kind]
     except KeyError as e:
         raise ValueError(f"unknown data kind {kind!r}; known: {sorted(REDUCERS)}") from e
+    check_label_ties(kind, label_ties)
+    if label_ties == "nonzero":
+        return functools.partial(mode_downsample, prefer_nonzero=True)
+    return reducer
+
+
+def check_label_ties(kind: str, label_ties: str) -> None:
+    """Refuse an unknown tie rule, and a nondefault one for a kind that has no ties."""
+    if label_ties not in LABEL_TIES:
+        raise ValueError(f"unknown label_ties {label_ties!r}; known: {LABEL_TIES}")
+    if label_ties != "smallest" and kind != "segmentation":
+        raise ValueError(f"label_ties={label_ties!r} applies to segmentations; kind {kind!r} "
+                         f"is averaged, not voted, so it would have no effect")
 
 
 # --------------------------------------------------------------------------- #

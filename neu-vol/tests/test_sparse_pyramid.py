@@ -87,7 +87,8 @@ def test_the_manifest_denominator_is_the_filtered_total(tmp_path):
     for line in open(progress):
         rec = json.loads(line)
         if "meta" in rec:
-            meta[rec["group"]] = rec["meta"]
+            if isinstance(rec["group"], int):          # levels; not the reducer record
+                meta[rec["group"]] = rec["meta"]
         else:
             statuses[rec["group"]] = statuses.get(rec["group"], 0) + 1
     assert meta, "levels recorded their totals"

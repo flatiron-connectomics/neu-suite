@@ -71,6 +71,7 @@ def rebuild_pyramid(
     sparse: bool = False,
     progress_path: str | None = None,
     validate: bool = True,
+    label_ties: str = "smallest",
 ) -> dict:
     """Rebuild levels ``start_level+1 …`` of the volume at ``dst``, in place.
 
@@ -81,6 +82,7 @@ def rebuild_pyramid(
     ``"segmentation"`` a label-preserving mode. It defaults to whatever the volume
     already records (precomputed ``info["type"]``, OME multiscales ``type``), since
     averaging label ids invents ids. If the volume records nothing usable, pass it.
+    ``label_ties`` is the segmentation tie rule, as for :func:`~neu_vol.convert`.
 
     Metadata (shape, voxel size, offset, axes) comes from the existing volume.
     ``voxel_size`` overrides it, for a volume whose recorded scale is itself the
@@ -180,4 +182,5 @@ def rebuild_pyramid(
         validate=validate,
         # An int, never None, which would mean "convert" and try to create level 0.
         seed_level=start_level,
+        label_ties=label_ties,
     )

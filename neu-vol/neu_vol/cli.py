@@ -78,6 +78,15 @@ def _add_server_source_args(p):
                         "mappings")
 
 
+def _add_label_ties_arg(p):
+    p.add_argument("--label-ties", choices=("smallest", "nonzero"), default="smallest",
+                   help="how a segmentation pyramid breaks a tie: to the smallest label "
+                        "(default), which is 0 whenever background is in the tie, or to "
+                        "the smallest NONZERO label. The default erodes small objects in "
+                        "a sparse volume at every level; 'nonzero' keeps them, while a "
+                        "strict majority of background still wins")
+
+
 def _add_convert_args(p, *, source_defaults: bool):
     """The arguments shared by ``convert`` and ``copy``.
 
@@ -159,6 +168,13 @@ def _add_convert_args(p, *, source_defaults: bool):
                         "and an all-background block of 1s is not all-fill, so without "
                         "this every such block is stored and the volume stops answering "
                         "'where is the data' by which chunks exist")
+    p.add_argument("--keep-where", default=None, metavar="VOLUME",
+                   help="write 0 wherever this other volume is 0, keeping the source "
+                        "elsewhere. It must share the source's voxel size and origin; its "
+                        "extent may differ, and outside it nothing is kept. E.g. a neuron "
+                        "segmentation kept where an organelle segmentation is nonzero "
+                        "labels each organelle voxel with its neuron")
+    _add_label_ties_arg(p)
     p.add_argument("--bbox-scale", type=int, default=0, metavar="N",
                    help="the scale EVERY bbox argument is given in (default: 0, level-0 "
                         "voxels). Converted using the source's own per-level voxel "
@@ -641,6 +657,7 @@ def _run_convert(args, *, fmt, voxel, chunk, shard, kind, crop, masks=()) -> int
                     mask_value=args.mask_value,
                     background=(_int_list(args.background, "background")
                                 if args.background else None),
+                    keep_where=args.keep_where, label_ties=args.label_ties,
                     supervoxels=getattr(args, "dvid_supervoxels", False),
                     prefer_locked=getattr(args, "dvid_locked", False),
                     wk_mapping=getattr(args, "wk_mapping", None),
@@ -901,14 +918,19 @@ def cmd_downsample(args) -> int:
         log.info("--dry-run: nothing executed")
         return 0
 
+    from neu_vol.ops._multiscale import StaleManifest
+
     kw = dict(start_level=args.start_level, kind=kind, profile=args.profile,
               voxel_size=_triple(args.voxel_size, "voxel-size"),
               factors=_factor_list(args.factors), max_levels=args.max_levels,
               min_dim=args.min_dim, chunk=_triple(args.chunk, "chunk"),
               encoding=args.encoding, resume=args.resume, sparse=args.sparse,
-              progress_path=args.progress_path)
+              progress_path=args.progress_path, label_ties=args.label_ties)
     with _maybe_cluster(args) as client:
-        summary = rebuild_pyramid(args.volume, client=client, **kw)
+        try:
+            summary = rebuild_pyramid(args.volume, client=client, **kw)
+        except StaleManifest as e:
+            raise SystemExit(str(e)) from None
 
     log.info("rebuilt levels %d-%d of %s", args.start_level + 1,
              summary["num_levels"] - 1, args.volume)
@@ -1750,6 +1772,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="level to derive from; it is read, never written (default: 0)")
     q.add_argument("--kind", choices=("image", "segmentation"), default=None,
                    help="reducer (default: read from the volume)")
+    _add_label_ties_arg(q)
     q.add_argument("--min-dim", type=int, default=128)
     q.add_argument("--max-levels", type=int, default=None,
                    help="at most this many levels, COUNTING LEVEL 0. Defaults to as many "

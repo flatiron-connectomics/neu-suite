@@ -2,8 +2,8 @@
 
 ``CropBackend`` is a shifted/resized window over a source, padding out-of-bounds regions
 with a fill value; ``MaskBackend`` blanks boxes to a fill value; ``RemapBackend`` replaces
-values. Each opens from a spec, so the engine can crop, pad, mask and pyramid a region as it
-would any other source.
+values; ``KeepBackend`` blanks everything where a second volume is 0. Each opens from a
+spec, so the engine can crop, pad, mask and pyramid a region as it would any other source.
 
 Masking on the read side holds at every scale: each pyramid level is derived from the level
 below it in the output, so a hole in level 0 propagates upward on its own.
@@ -213,3 +213,78 @@ class RemapBackend:
 
 
 register_backend(REMAP_TAG, RemapBackend.open)
+
+
+KEEP_TAG = "keep"
+
+
+class KeepBackend:
+    """A source with every voxel where ``where`` is 0 replaced by ``value`` (default 0).
+
+    ``where`` is another volume in the same frame — same voxel size, same origin — so a
+    voxel index means the same place in both; ``convert`` checks that before building
+    this. Its extent may differ: outside it nothing is kept. E.g. a neuron segmentation
+    kept where an organelle segmentation is nonzero labels each organelle voxel with the
+    neuron containing it.
+    """
+
+    def __init__(self, spec: Mapping[str, Any]):
+        self._spec = dict(spec)
+        self._source = open_backend(dict(spec["source"]))
+        self._where = open_backend(dict(spec["where"]))
+        self._value = spec.get("value", 0)
+        if len(self._where.shape) != len(self._source.shape):
+            raise ValueError(f"keep: the source has rank {len(self._source.shape)} and "
+                             f"`where` rank {len(self._where.shape)}; both must be spatial "
+                             f"volumes of the same rank")
+
+    @classmethod
+    def open(cls, spec: Mapping[str, Any]) -> "KeepBackend":
+        return cls(spec)
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self._source.shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self._source.dtype
+
+    @property
+    def chunks(self) -> tuple[int, ...]:
+        return self._source.chunks
+
+    def read_region(self, region: Region) -> np.ndarray:
+        data = self._source.read_region(region)
+        if not data.flags.writeable:
+            data = data.copy()
+        keep = np.zeros(data.shape, bool)
+        inside = tuple(slice(s.start, min(s.stop, n)) for s, n in zip(region, self._where.shape))
+        if all(s.stop > s.start for s in inside):
+            local = tuple(slice(0, s.stop - s.start) for s in inside)
+            keep[local] = self._where.read_region(inside) != 0
+        data[~keep] = self._value
+        return data
+
+    def write_region(self, region: Region, data: np.ndarray) -> None:
+        raise TypeError("keep views are read-only")
+
+    # Values change, geometry does not: the source's recorded frame still holds.
+    def stored_offset(self, name: str = "voxel_offset"):
+        return self._forward("stored_offset", name)
+
+    def stored_axes(self, name: str = "axes"):
+        return self._forward("stored_axes", name)
+
+    def stored_voxel_size(self, name: str = "voxel_size"):
+        return self._forward("stored_voxel_size", name)
+
+    def _forward(self, capability: str, name: str):
+        read = getattr(self._source, capability, None)
+        return read(name) if read is not None else None
+
+    def to_spec(self) -> dict[str, Any]:
+        return dict(self._spec)
+
+
+register_backend(KEEP_TAG, KeepBackend.open)

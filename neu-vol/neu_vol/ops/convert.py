@@ -114,6 +114,41 @@ def _resolve_masks(
     return {"backend": "mask", "source": dict(data_spec), "boxes": full, "value": value}
 
 
+def _resolve_keep(data_spec: dict, where: str, *, voxel_size: Sequence[float],
+                  offset: Sequence[float], has_channels: bool) -> dict:
+    """A keep view over ``data_spec``: zero wherever the volume at ``where`` is 0.
+
+    ``where`` must share the source's frame (voxel size and origin), so a voxel index is
+    the same place in both; its extent may differ, and outside it nothing is kept. It is
+    read at its finest level that stores data, which must be the source's resolution.
+    """
+    import numpy as np
+
+    if has_channels:
+        raise ValueError("keep_where takes a spatial source; this one has a channel axis")
+    fmt = detect_backend(where)
+    if fmt is None:
+        raise ValueError(f"keep_where: nothing at {where!r} looks like a volume")
+    meta = read_source_metadata(location_spec(where, fmt))
+    if not meta:
+        raise ValueError(f"keep_where: {where!r} records no voxel size or origin, so "
+                         f"nothing says it is in the source's frame")
+    w_vs = tuple(float(v) for v in meta["voxel_size"])
+    w_off = tuple(float(v) for v in (meta.get("offset") or (0.0,) * len(w_vs)))
+    s_vs = tuple(float(v) for v in voxel_size)
+    s_off = tuple(float(v) for v in offset)
+    if not (np.allclose(w_vs, s_vs) and np.allclose(w_off, s_off)):
+        raise ValueError(
+            f"keep_where: {where} has voxel size {w_vs} nm and origin {w_off} nm, the source "
+            f"{s_vs} nm and {s_off} nm. They must share a frame, or a voxel index would name "
+            f"different places in the two")
+    w_spec = meta["data_spec"]
+    require_populated_scale(w_spec, op="convert --keep-where")
+    logger.info("keeping only voxels where %s is nonzero (its shape %s)", where,
+                tuple(open_backend(w_spec).shape))
+    return {"backend": "keep", "source": dict(data_spec), "where": dict(w_spec), "value": 0}
+
+
 def with_source_options(spec: dict, *, prefer_locked: bool = False,
                         supervoxels: bool = False, wk_mapping: str | None = None) -> dict:
     """``spec`` with the server-source read options set, each only when asked for.
@@ -158,6 +193,7 @@ def convert(
     mask_boxes: Sequence[Sequence[Sequence[int]]] | None = None,
     mask_value: float = 0,
     background: Sequence[int] | None = None,
+    keep_where: str | None = None,
     supervoxels: bool = False,
     prefer_locked: bool = False,
     wk_mapping: str | None = None,
@@ -173,6 +209,7 @@ def convert(
     factors: Sequence[Sequence[int]] | None = None,
     max_levels: int = 8,
     min_dim: int = 128,
+    label_ties: str = "smallest",
     name: str = "image",
     client: Any | None = None,
     npartitions: int | None = None,
@@ -203,6 +240,15 @@ def convert(
     ``sparse=True`` skips **pyramid** tasks whose input holds no stored chunk, which on a
     sparse volume is nearly all of them. The level-0 copy is never skipped, since its
     source is foreign.
+
+    ``keep_where`` names a second volume in the same frame (voxel size and origin):
+    every voxel where it is 0 is written as 0, so e.g. a neuron segmentation kept where
+    an organelle segmentation is nonzero labels each organelle voxel with its neuron.
+
+    ``label_ties`` is how a segmentation pyramid breaks a tie: ``"smallest"`` (default,
+    so 0 wins a tie with an object) or ``"nonzero"`` (the object wins; a strict majority
+    of background still does not). The default erodes sparse small objects at every
+    level; ``"nonzero"`` keeps them.
 
     ``mask_boxes`` is a list of spatial ``(lo, hi)`` pairs to *exclude*: everything else
     is copied and those regions are written as ``mask_value``. Because the pyramid is
@@ -327,6 +373,9 @@ def convert(
                      "values": [int(v) for v in background], "to": 0}
         logger.info("treating %s as background: replaced with 0 as the source is read",
                     [int(v) for v in background])
+    if keep_where:
+        read_spec = _resolve_keep(read_spec, keep_where, voxel_size=voxel_size,
+                                  offset=out_offset, has_channels=has_channels)
     if mask_boxes:
         read_spec = _resolve_masks(read_spec, src_shape, mask_boxes, value=mask_value,
                                    n_spatial=n_spatial, has_channels=has_channels)
@@ -374,6 +423,7 @@ def convert(
         sparse=sparse,
         progress_path=progress_path,
         validate=validate,
+        label_ties=label_ties,
     )
 
     # After the data, so a run that died half way leaves no record claiming a volume.
@@ -389,6 +439,8 @@ def convert(
         crop_stop=list(crop_stop) if crop_stop is not None else None,
         mask_boxes=[[list(lo), list(hi)] for lo, hi in mask_boxes] if mask_boxes else None,
         background=list(background) if background else None,
+        keep_where=keep_where,
+        label_ties=label_ties if label_ties != "smallest" else None,
         num_levels=summary.get("num_levels"),
         status_counts=summary.get("status_counts"),
     ))

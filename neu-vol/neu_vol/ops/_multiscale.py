@@ -62,6 +62,8 @@ def _canonical(identity: Any) -> str:
 
 #: Manifest group recording the source a conversion reads.
 SOURCE_GROUP = "source"
+#: Manifest group recording how the pyramid levels are reduced.
+REDUCER_GROUP = "reducer"
 #: Spec keys saying how a source was resolved or reached, not what it is: a branch ref
 #: resolving to the same node reads the same data.
 _RESOLUTION_KEYS = frozenset({"requested_ref", "ancestors_walked", "context"})
@@ -129,14 +131,15 @@ def _copy_block(block: Block, *, src_spec: dict, dst_spec: dict, out_dtype: str,
 
 
 def _downsample_block(block: Block, *, src_spec: dict, dst_spec: dict,
-                      factor: tuple, kind: str, verify: bool = False) -> tuple:
+                      factor: tuple, kind: str, label_ties: str = "smallest",
+                      verify: bool = False) -> tuple:
     def once():
         dst = open_backend(dst_spec)
         if verify and dst.is_region_stored(block.region):
             return (block.index, "skipped")
         src = open_backend(src_spec)
         data = src.read_region(_input_region(block.region, factor, src.shape))
-        out = get_reducer(kind)(data, factor)
+        out = get_reducer(kind, label_ties)(data, factor)
         if not out.any():
             return (block.index, "empty")
         dst.write_region(block.region, out)
@@ -329,6 +332,7 @@ def _run_multiscale(
     sparse: bool = False,
     stored_cells: Callable[[int, tuple[int, ...]], set] | None = None,
     destination_exists: Callable[[], bool] | None = None,
+    label_ties: str = "smallest",
 ) -> tuple[list[tuple[int, ...]], list[tuple[int, ...]], dict[str, int]]:
     """Create + fill each level. Returns (level_shapes, cumulative_factors, status_counts).
 
@@ -352,7 +356,14 @@ def _run_multiscale(
     not, before level 0 is created again, or when the manifest records another source
     (compared by :func:`source_identity`). A manifest from before sources were recorded
     resumes, and records this one.
+
+    ``label_ties`` is the segmentation reducer's tie rule (:data:`neu_vol.pyramid.LABEL_TIES`).
+    The manifest records it with ``kind``, and a resume under another reducer is refused
+    for a rebuild as for a conversion: its done levels would keep the other rule.
     """
+    from ..pyramid import check_label_ties
+
+    check_label_ties(kind, label_ties)
     src_shape = tuple(int(s) for s in src_shape)
     identity = tuple([1] * n_spatial)
 
@@ -380,6 +391,7 @@ def _run_multiscale(
 
     manifest = Manifest(progress_path)
     source = source_identity(src_spec) if seed_level is None else None
+    reducer = {"kind": kind, "label_ties": label_ties}
     if resume:
         manifest.load()
         recorded = sum(manifest.counts().values())
@@ -398,10 +410,17 @@ def _run_multiscale(
                     f"Resuming would skip those tasks and leave that source's data in "
                     f"them.\n  recorded: {_canonical(before)}\n  now:      "
                     f"{_canonical(source)}\n{remedy}")
+        reducer_before = manifest.meta(REDUCER_GROUP)
+        if recorded and reducer_before and reducer_before != reducer:
+            raise StaleManifest(
+                f"{where} records {recorded} tasks done with another pyramid reducer "
+                f"({reducer_before}, now {reducer}). Resuming would leave those levels "
+                f"reduced the other way. {remedy}")
     else:
         manifest.reset()
     if source is not None:
         manifest.record_meta(SOURCE_GROUP, spec=source)
+    manifest.record_meta(REDUCER_GROUP, **reducer)
 
     try:
         if seed_level is None:
@@ -462,7 +481,7 @@ def _run_multiscale(
             _run_level(manifest, i, lvl,
                        lambda *, verify, s=src_for_lvl, d=lvl_spec, fac=ff: functools.partial(
                            _downsample_block, src_spec=s, dst_spec=d, factor=fac, kind=kind,
-                           verify=verify),
+                           label_ties=label_ties, verify=verify),
                        resume=resume, verify=verify, client=client, npartitions=npartitions,
                        skip=skip)
             prev_spec, prev_shape, prev_chunks = lvl_spec, lvl.shape, lvl.chunks
@@ -481,6 +500,7 @@ def materialize_zarr_multiscale(
     max_levels, min_dim, name, chunk, shard, client, npartitions, delete_existing, validate,
     resume=False, verify=False, progress_path=None, seed_level=None, sparse=False,
     encoding=None, compressed_segmentation_block_size=(8, 8, 8),  # precomputed-only; ignored here
+    label_ties="smallest",
 ) -> dict:
     prof = get_profile(profile)
     out_dtype = dtype or str(src_dtype)
@@ -514,6 +534,7 @@ def materialize_zarr_multiscale(
         seed_level=seed_level, open_level=open_level, sparse=sparse,
         stored_cells=_stored_cells_fn(dst, "zarr3"),
         destination_exists=lambda: exists(join(base_kv, "0"), "zarr.json"),
+        label_ties=label_ties,
     )
 
     datasets, scales = [], []
@@ -551,7 +572,7 @@ def materialize_precomputed_multiscale(
     spatial_axes, has_channels, num_channels, dtype, kind, multiscale, factors,
     max_levels, min_dim, name, chunk, shard, client, npartitions, delete_existing, validate,
     resume=False, verify=False, progress_path=None, seed_level=None, sparse=False,
-    encoding=None, compressed_segmentation_block_size=(8, 8, 8),
+    encoding=None, compressed_segmentation_block_size=(8, 8, 8), label_ties="smallest",
 ) -> dict:
     prof = get_profile(profile)
     out_dtype = dtype or str(src_dtype)
@@ -597,6 +618,7 @@ def materialize_precomputed_multiscale(
         seed_level=seed_level, open_level=open_level, sparse=sparse,
         stored_cells=_stored_cells_fn(dst, "neuroglancer_precomputed"),
         destination_exists=lambda: exists(base_kv, "info"),
+        label_ties=label_ties,
     )
     scales = [[float(v * c) for v, c in zip(voxel_size, F)] for F in cum]
     logger.info("wrote precomputed multiscale info: %d scales (encoding=%s)", len(level_shapes), encoding)
