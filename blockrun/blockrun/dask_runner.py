@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Iterator, Sequence
+import shlex
+from typing import Any, Iterator, Mapping, Sequence
 
 import dask
 from dask.distributed import Client
@@ -34,6 +35,31 @@ _THREAD_PIN = [
 ]
 
 
+def worker_config_exports(config: Mapping[str, Any]) -> list[str]:
+    """``export DASK_...`` lines carrying every setting outside ``jobqueue`` to workers.
+
+    SLURM workers are separate processes started by ``sbatch``; they read dask's config
+    from their own environment, never from the driver's, so without these a setting such
+    as ``distributed.worker.memory.pause: false`` reaches the driver alone. Dask parses
+    each value with ``ast.literal_eval`` (so ``False`` and ``0.6`` round-trip) and keeps
+    one it cannot parse as a string (``3h``).
+    """
+    lines: list[str] = []
+
+    def walk(prefix: str, node: Mapping[str, Any]) -> None:
+        for key, value in node.items():
+            path = f"{prefix}__{key}" if prefix else str(key)
+            if isinstance(value, Mapping) and value:
+                walk(path, value)
+            else:
+                name = "DASK_" + path.upper().replace("-", "_")
+                text = value if isinstance(value, str) else repr(value)
+                lines.append(f"export {name}={shlex.quote(text)}")
+
+    walk("", {k: v for k, v in config.items() if k != "jobqueue"})
+    return lines
+
+
 @contextlib.contextmanager
 def start_dask(
     num_workers: int,
@@ -51,7 +77,8 @@ def start_dask(
 
     The config's first ``jobqueue`` key selects the cluster type:
       - ``"local"``: a LocalCluster with ``num_workers`` single-threaded workers.
-      - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs.
+      - ``"slurm"``: a SLURMCluster; ``scale(num_workers)`` submits sbatch jobs, whose
+        script exports the rest of the config (:func:`worker_config_exports`).
 
     Tears the cluster (and its SLURM jobs) down on exit. ``effective_config_path`` (a
     ``.yaml`` file, or a directory, created if missing) records the merged config, worth
@@ -88,7 +115,8 @@ def start_dask(
     elif cluster_type == "slurm":
         from dask_jobqueue import SLURMCluster
 
-        cluster = SLURMCluster(job_script_prologue=_THREAD_PIN)  # reads jobqueue.slurm.* from config
+        # reads jobqueue.slurm.* from config; the rest reaches workers through the prologue
+        cluster = SLURMCluster(job_script_prologue=_THREAD_PIN + worker_config_exports(config))
         cluster.scale(num_workers)                               # <-- submits sbatch jobs
     else:
         raise ValueError(f"unsupported cluster type: {cluster_type!r}")
