@@ -484,13 +484,18 @@ def _read_json(path: str, read_bytes=None):
 
 
 def _relink(layers: Sequence[dict], renames: Mapping[str, str]) -> None:
-    """Point each of ``layers``' ``linkedSegmentationLayer`` at the renamed layers."""
+    """Point each of ``layers``' links to other layers at the renamed layers: an annotation
+    layer's ``linkedSegmentationLayer``, a segmentation layer's linked groups."""
     for layer in layers:
         links = layer.get("linkedSegmentationLayer")
         if isinstance(links, dict):
             layer["linkedSegmentationLayer"] = {r: renames.get(t, t) for r, t in links.items()}
         elif isinstance(links, str):
             layer["linkedSegmentationLayer"] = renames.get(links, links)
+        for key in ("linkedSegmentationGroup", "linkedSegmentationColorGroup"):
+            target = layer.get(key)
+            if isinstance(target, str):
+                layer[key] = renames.get(target, target)
 
 
 def unique_names(existing: Sequence[Any], layers: Sequence[dict]) -> list[str]:

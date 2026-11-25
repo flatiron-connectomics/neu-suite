@@ -33,11 +33,19 @@ on the command line wins over the file.
     hide = true                 # added switched off
     all_segments = true         # every id its segment_properties lists
     color_by = ["col", "group"] # segmentColors by property, first one present (--color-by)
+    link = "seg"                # share the selection with layer "seg" (linkedSegmentationGroup)
+    link_colors = false         # ... but keep this layer's own colours (default: shared too)
 
 A layer is named by the last component of its path. ``name`` renames it after everything
 else is applied, so the other sections, ``[view] select`` and the flags keep using the path's
 name. A ``[layer.NAME]`` the state has no layer for is reported, not refused: one site file
 serves many states. An unknown key is refused, since neuroglancer ignores what it does not know.
+
+``link`` makes two segmentation layers show the same segments: select a body in one and it
+is shown in the other. A volume whose labels are another's ids — organelles labelled with
+the neuron containing them — linked to that volume shows the selected neurons' organelles.
+It names the other layer by its path's name too, and follows a rename; a link to a layer
+the state lacks is reported and dropped.
 """
 
 from __future__ import annotations
@@ -62,6 +70,8 @@ LAYER_TABS = ("source", "rendering", "annotations", "segments")
 LAYER_FLAGS = ("hide", "all_segments")
 #: Keys the caller applies, as they need a store read or merge with flags.
 CALLER_KEYS = (*LAYER_FLAGS, "color_by", "name")
+#: ``[layer.NAME]`` keys linking it to another segmentation layer, and their state keys.
+LAYER_LINKS = {"link": "linkedSegmentationGroup", "link_colors": "linkedSegmentationColorGroup"}
 #: ``[view]`` keys: (how many numbers, or None for a string).
 VIEW_KEYS = {"position": 3, "projection_orientation": 4, "projection_scale": 1,
              "cross_section_scale": 1, "layout": None, "select": None}
@@ -131,14 +141,29 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
         if not isinstance(entry, Mapping):
             raise ConfigProblem(f"{where}: layer.{name} must be a table")
         known = [*LAYER_DISPLAY, *LAYER_COLORS, *LAYER_SWITCHES, *LAYER_SUBSOURCES, "tab",
-                 *CALLER_KEYS]
+                 *CALLER_KEYS, *LAYER_LINKS]
         bad = set(entry) - set(known)
         if bad:
             raise ConfigProblem(
                 f"{where}: [layer.{name}] has unknown key(s) {sorted(bad)}; known: "
                 f"{', '.join(known)}")
         out: dict[str, Any] = {}
+        if "link_colors" in entry and "link" not in entry:
+            raise ConfigProblem(f"{where}: [layer.{name}] link_colors needs link")
         for key, value in entry.items():
+            if key == "link":
+                if not isinstance(value, str) or not value or value == name:
+                    raise ConfigProblem(f"{where}: [layer.{name}] link must name another layer")
+                out["linkedSegmentationGroup"] = value
+                if entry.get("link_colors", True) is not False:
+                    out["linkedSegmentationColorGroup"] = value
+                continue
+            if key == "link_colors":
+                if not isinstance(value, bool):
+                    raise ConfigProblem(f"{where}: [layer.{name}] link_colors must be true or false")
+                if value is False:
+                    out["linkedSegmentationColorGroup"] = False
+                continue
             if key == "tab":
                 if value not in LAYER_TABS:
                     raise ConfigProblem(f"{where}: [layer.{name}] tab must be one of "
@@ -248,6 +273,17 @@ def apply(config: Mapping[str, Any], layers: list[dict], *,
         for key in LAYER_SUBSOURCES:
             if key in display:
                 _set_subsource(layer, key, display.pop(key), name)
+        target = display.get("linkedSegmentationGroup")
+        if target is not None:
+            other = by_name.get(target)
+            if other is None:
+                notes.append(f"config [layer.{name}] link: no layer {target!r} in this state, "
+                             f"so it is not linked")
+                display.pop("linkedSegmentationGroup")
+                display.pop("linkedSegmentationColorGroup", None)
+            elif other["type"] != "segmentation":
+                raise ConfigProblem(f"config [layer.{name}] link names {target!r}, a "
+                                    f"{other['type']} layer; only segmentation layers link")
         layer.update(display)
     if untouched:
         notes.append(f"config left the --into state's own layers as they are: "

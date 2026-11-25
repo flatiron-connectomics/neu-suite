@@ -277,3 +277,50 @@ def test_the_segments_tab_is_refused_on_an_image_layer():
     with pytest.raises(ConfigProblem, match="segmentation layer"):
         apply(parse({"layer": {"em": {"tab": "segments"}}}), [{"name": "em", "type": "image"}])
     apply(parse({"layer": {"em": {"tab": "rendering"}}}), [{"name": "em", "type": "image"}])
+
+
+def test_a_layer_links_its_selection_and_colours_to_another(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    c = _volume(tmp_path, "c", kind="segmentation", dtype="uint64")
+    state = _gen(tmp_path, capsys, """
+[layer.a]
+name = "neurons"
+[layer.b]
+link = "a"
+[layer.c]
+link = "a"
+link_colors = false
+""", "--seg", a, "--seg", b, "--seg", c)
+    layers = {lyr["name"]: lyr for lyr in state["layers"]}
+    # the link names the path's name in the file, and follows the rename
+    assert layers["b"]["linkedSegmentationGroup"] == "neurons"
+    assert layers["b"]["linkedSegmentationColorGroup"] == "neurons"
+    assert layers["c"]["linkedSegmentationGroup"] == "neurons"
+    assert layers["c"]["linkedSegmentationColorGroup"] is False
+    assert "linkedSegmentationGroup" not in layers["neurons"]
+
+
+def test_a_link_to_a_layer_the_state_lacks_is_reported_and_dropped(tmp_path, capsys):
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    cfg = tmp_path / "ngl.toml"
+    cfg.write_text('[layer.b]\nlink = "elsewhere"\n')
+    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", b, "--config", str(cfg)])) == 0
+    captured = capsys.readouterr()
+    assert "no layer 'elsewhere'" in captured.err
+    layer = parse_url(captured.out.strip())["layers"][0]
+    assert "linkedSegmentationGroup" not in layer and "linkedSegmentationColorGroup" not in layer
+
+
+def test_what_a_link_cannot_be_is_refused():
+    with pytest.raises(ConfigProblem, match="link_colors needs link"):
+        parse({"layer": {"b": {"link_colors": False}}})
+    with pytest.raises(ConfigProblem, match="another layer"):
+        parse({"layer": {"b": {"link": "b"}}})
+    with pytest.raises(ConfigProblem, match="true or false"):
+        parse({"layer": {"b": {"link": "a", "link_colors": "no"}}})
+    layers = [{"name": "em", "type": "image"}, {"name": "b", "type": "segmentation"}]
+    with pytest.raises(ConfigProblem, match="only segmentation layers link"):
+        apply(parse({"layer": {"b": {"link": "em"}}}), layers)
+    with pytest.raises(ConfigProblem, match="only a segmentation"):
+        apply(parse({"layer": {"em": {"link": "b"}}}), layers)
