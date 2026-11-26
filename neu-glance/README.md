@@ -62,10 +62,13 @@ Choices a site makes for every state go in a TOML file passed as `--config` (rea
 named, and a flag wins over it). `neu_glance.config` documents the keys: `[volume] bounds`,
 `[annotations.shader_controls]`, `[view]` (`position`, `projection_orientation`,
 `projection_scale`, `cross_section_scale`, `layout`, `select`, in neuroglancer's own units
-and xyz order, so they can be copied from a saved state), and `[layer.NAME]` with
+and xyz order, so they can be copied from a saved state; `axis_lines`; and `order`, layers
+to put first, in that order, the rest following), and `[layer.NAME]` with
 `silhouette`, `opacity_2d`, `opacity_3d`, `color`, `pick`, `hover_highlight`, `skeletons` (false leaves the
-source's skeletons unloaded, until ticked in its Source tab), `tab`, `hide`, `all_segments`,
-`color_by` and `name`.
+source's skeletons unloaded, until ticked in its Source tab), `tab`, `hide`, `archive`
+(kept in the state but off the layer bar until restored from the layer list),
+`all_segments`, `color_by` and `name`. One site file can serve several states: `--show NAME`
+adds a layer the file hides switched on.
 
 A layer is named after the last component of its path (`s3://bucket/em.zarr` is `em.zarr`).
 `--rename em.zarr=EM`, or `name = "EM"` under `[layer."em.zarr"]`, changes the name the viewer

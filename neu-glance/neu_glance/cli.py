@@ -217,6 +217,16 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                             "(repeatable). For layers that would crowd the view if all were "
                             "shown at once. A layer flag names a layer as the viewer shows it, "
                             "or by its source location, and reaches an --into state's layers")
+        q.add_argument("--show", action="append", default=None, metavar="LAYER_NAME",
+                       help="add this layer switched on, even where --config hides it "
+                            "(repeatable); switches on an --into state's hidden layer")
+        q.add_argument("--archive", action="append", default=None, metavar="LAYER_NAME",
+                       help="archive this layer (repeatable): kept in the state but off the "
+                            "layer bar and not drawn, until restored from the layer list. For "
+                            "layers few viewers will want")
+        q.add_argument("--hide-axis-lines", action="store_true",
+                       help="set showAxisLines false, removing the axis lines from the panels. "
+                            "Omitted from the state unless passed")
         q.add_argument("--select", default=None, metavar="LAYER_NAME",
                        help="open the side panel on this layer")
         q.add_argument("--select-last", action="store_true",
@@ -296,6 +306,17 @@ def _layer_named(ref: str, layers: list[dict]) -> str | None:
     return found[0] if found else None
 
 
+def _layer_refs(flag: str, refs, layers: list[dict]) -> list[str]:
+    """The names of the layers ``refs`` name (see :func:`_layer_named`); exits on one that
+    names none."""
+    names = [_layer_named(r, layers) or r for r in refs or []]
+    unknown = sorted(set(names) - {lyr.get("name") for lyr in layers})
+    if unknown:
+        raise SystemExit(f"{flag} names no layer: {', '.join(unknown)}. The layers are "
+                         f"{', '.join(str(lyr.get('name')) for lyr in layers)}")
+    return names
+
+
 def _resolve_format(args) -> str:
     """The format actually being emitted.
 
@@ -338,14 +359,22 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
         if into and base is None:
             base = _load_into(into)
         targets = [*_state_layers(base), *layers]
-        hide = [_layer_named(h, targets) or h for h in getattr(args, "hide", None) or []]
-        unknown = sorted(set(hide) - {lyr.get("name") for lyr in targets})
-        if unknown:
-            raise SystemExit(f"--hide names no layer: {', '.join(unknown)}. The layers are "
-                             f"{', '.join(str(lyr.get('name')) for lyr in targets)}")
+        hide = _layer_refs("--hide", getattr(args, "hide", None), targets)
+        show = _layer_refs("--show", getattr(args, "show", None), targets)
+        archive = _layer_refs("--archive", getattr(args, "archive", None), targets)
+        clash = sorted(set(hide) & set(show))
+        if clash:
+            raise SystemExit(f"--hide and --show both name {', '.join(clash)}")
+        # the config's hide and archive, for the layers added here (cmd_gen)
+        hide += [n for n in getattr(args, "config_hide", None) or [] if n not in show]
+        archive += getattr(args, "config_archive", None) or []
         for lyr in targets:
             if lyr.get("name") in hide:
                 lyr["visible"] = False
+            elif lyr.get("name") in show:
+                lyr.pop("visible", None)
+            if lyr.get("name") in archive:
+                lyr["archived"] = True
         selected_name = getattr(args, "select", None) or (
             layers[-1]["name"] if getattr(args, "select_last", False) and layers
             else selected)
@@ -359,11 +388,13 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             projection_scale=getattr(args, "projection_scale", None),
             selected=selected_name,
             show_slices=False if getattr(args, "hide_slices", False) else None,
+            show_axis_lines=(False if getattr(args, "hide_axis_lines", False)
+                             else getattr(args, "axis_lines", None)),
             projection_orientation=getattr(args, "projection_orientation", None),
         )
         if into and fmt == "url" and _is_cloud_state(into) and not getattr(args, "expand",
                                                                             False):
-            changed = (bool(layers or hide or modified)
+            changed = (bool(layers or hide or show or archive or modified)
                        or any(v is not None for v in shaping.values()))
             if changed:
                 raise SystemExit(
@@ -379,8 +410,9 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             state, notes = merge_into(base, layers, **shaping)
             print(f"added {len(layers)} layer(s) to {len(base.get('layers') or [])} "
                   f"already in {into if '#!' not in into else 'the given URL'}"
-                  + ("" if layers else " — changing its layers" if modified or hide
-                     else " — re-emitting it as is"), file=err)
+                  + ("" if layers else " — changing its layers"
+                     if modified or hide or show or archive else " — re-emitting it as is"),
+                  file=err)
             print(f"  kept the existing dimensions, position and zoom", file=err)
             for note in notes:
                 print(f"  {note}", file=err)
@@ -543,10 +575,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "flags and the config still name the layer by its path")
     q.add_argument("--config", default=None, metavar="TOML",
                    help="site display defaults: volume bounds, annotation shader controls, "
-                        "and per-layer silhouette, opacities, colour, pick, hover highlight, "
-                        "hide, all_segments and name by "
-                        "layer name (see neu_glance.config). Read only when named; a flag "
-                        "here wins over the file")
+                        "the view (position, zooms, layer order, axis lines), and per-layer "
+                        "silhouette, opacities, colour, pick, hover highlight, hide, archive, "
+                        "all_segments and name by layer name (see neu_glance.config). Read "
+                        "only when named; a flag here wins over the file")
     q.add_argument("--voxel-size", default=None, metavar="Z,Y,X",
                    help="level-0 voxel size in nm, overriding what the volumes record. "
                         "Required when every layer comes from --layer, since a layer file "
@@ -837,6 +869,8 @@ def _view_defaults(args, view: dict, names: set[str]) -> None:
             setattr(args, key, view[key])
     if not args.select and not args.select_last and view.get("select") in names:
         args.select = view["select"]
+    if not args.hide_axis_lines and view.get("axis_lines") is not None:
+        args.axis_lines = view["axis_lines"]
     args.projection_orientation = view.get("projection_orientation")
 
 
@@ -909,7 +943,7 @@ def cmd_gen(args) -> int:
     from .sources import (SourceProblem, annotation_layer, annotation_source_extent,
                           annotation_source_voxel_size, end_layers, volume_extent,
                           volume_layer)
-    from .state import (StateProblem, annotation_extent, load_layer, rename_layers,
+    from .state import (StateProblem, annotation_extent, load_layer, ordered, rename_layers,
                         unique_names)
 
     from . import config as _config
@@ -988,12 +1022,16 @@ def cmd_gen(args) -> int:
     except (SourceProblem, ShaderProblem, StateProblem, ValueError,
             json.JSONDecodeError) as e:
         raise SystemExit(str(e)) from None
+    if site["view"].get("order") and not base:
+        layers, notes = ordered(layers, site["view"]["order"])
+        config_notes += notes
     targets = [*existing, *layers]
     _seg_display(args, targets)
     new = {lyr["name"] for lyr in layers}
-    args.hide = list(dict.fromkeys(
-        [*(args.hide or []), *(n for n, s in site["layers"].items()
-                               if s.get("hide") and n in new)]))
+    # kept apart from the flags, since --show overrides the config's hide but not --hide
+    args.config_hide = [n for n, s in site["layers"].items() if s.get("hide") and n in new]
+    args.config_archive = [n for n, s in site["layers"].items()
+                           if s.get("archive") and n in new]
     if base and site["view"]:
         config_notes.append("config [view] not applied: --into keeps the state's view")
     else:
@@ -1038,7 +1076,8 @@ def cmd_gen(args) -> int:
             print(f"  {note}", file=err)
     except StateProblem as e:
         raise SystemExit(str(e)) from None
-    args.hide = [renames.get(h, h) for h in args.hide]
+    for flag in ("hide", "show", "archive", "config_hide", "config_archive"):
+        setattr(args, flag, [renames.get(h, h) for h in getattr(args, flag) or []])
     args.select = renames.get(args.select, args.select)
     selected = (base or {}).get("selectedLayer")
     if isinstance(selected, dict) and selected.get("layer") in renames:

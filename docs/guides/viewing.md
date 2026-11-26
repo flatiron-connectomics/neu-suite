@@ -528,12 +528,16 @@ displays. Whichever you use is echoed back on every run.
 panel** — usually what you want when the link is about meshes or skeletons, which the
 slices otherwise sit across. It leaves the 2D panels alone; `--layout 3d` is what removes
 those. Like `--position` and the two zooms, the key is written only when asked for, so a
-link without it opens the way the viewer normally would.
+link without it opens the way the viewer normally would. `--hide-axis-lines` does the same
+for `showAxisLines`.
 
 For a state with many layers, such as region layers beside a segmentation, `--hide NAME`
 adds a layer switched off, and `--all-segments NAME` selects every segment that layer's
 `segment_properties` lists. Together, turning a layer on in the viewer shows its meshes in
-the 3D panel at once, with nothing to click.
+the 3D panel at once, with nothing to click. `--archive NAME` goes further for layers few
+viewers will want: the layer stays in the state but leaves the layer bar and is not drawn
+until restored from the layer list. `--show NAME` adds a layer switched on even where the
+`--config` file hides it, so one site file can serve a state that features that layer.
 
 ```{note}
 Everything after `#!` is a URL fragment and never reaches a server, so a link carries no

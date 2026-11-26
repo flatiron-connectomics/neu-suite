@@ -324,3 +324,78 @@ def test_what_a_link_cannot_be_is_refused():
         apply(parse({"layer": {"b": {"link": "em"}}}), layers)
     with pytest.raises(ConfigProblem, match="only a segmentation"):
         apply(parse({"layer": {"em": {"link": "b"}}}), layers)
+
+
+def test_layers_are_archived_from_the_config_or_a_flag(tmp_path, capsys):
+    em = _volume(tmp_path, "em")
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    state = _gen(tmp_path, capsys, '[layer.a]\narchive = true\nhide = true\n',
+                 "--image", em, "--seg", a, "--seg", b, "--archive", "b")
+    layers = {lyr["name"]: lyr for lyr in state["layers"]}
+    assert layers["a"]["archived"] is True and layers["a"]["visible"] is False
+    assert layers["b"]["archived"] is True and "visible" not in layers["b"]
+    assert "archived" not in layers["em"]
+
+
+def test_show_overrides_the_configs_hide_but_not_hide(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    toml = '[layer.a]\nhide = true\n[layer.b]\nhide = true\n'
+    state = _gen(tmp_path, capsys, toml, "--seg", a, "--seg", b, "--show", "a")
+    layers = {lyr["name"]: lyr for lyr in state["layers"]}
+    assert "visible" not in layers["a"]
+    assert layers["b"]["visible"] is False
+    cfg = tmp_path / "ngl.toml"
+    with pytest.raises(SystemExit, match="--hide and --show both name a"):
+        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--hide", "a", "--show", "a",
+                                     "--config", str(cfg)]))
+
+
+def test_show_switches_on_a_hidden_layer_of_an_into_state(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--hide", "a", "--format",
+                                        "state", "--out", str(tmp_path / "s.json")])) == 0
+    capsys.readouterr()
+    assert cli.cmd_gen(cli._parse_args(["gen", "--into", str(tmp_path / "s.json"),
+                                        "--show", "a", "--archive", "a"])) == 0
+    layer = parse_url(capsys.readouterr().out.strip())["layers"][0]
+    assert "visible" not in layer and layer["archived"] is True
+
+
+def test_axis_lines_from_the_config_or_the_flag_and_left_out_otherwise(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    assert "showAxisLines" not in _gen(tmp_path, capsys, "", "--seg", a)
+    assert _gen(tmp_path, capsys, "[view]\naxis_lines = false\n",
+                "--seg", a)["showAxisLines"] is False
+    assert _gen(tmp_path, capsys, "", "--seg", a, "--hide-axis-lines")["showAxisLines"] is False
+    assert _gen(tmp_path, capsys, "[view]\naxis_lines = true\n", "--seg", a,
+                "--hide-axis-lines")["showAxisLines"] is False
+
+
+def test_the_config_orders_the_layers_it_names_and_the_rest_follow(tmp_path, capsys):
+    em = _volume(tmp_path, "em")
+    prob = _volume(tmp_path, "prob")
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    toml = '[view]\norder = ["em", "a", "prob", "gone"]\n[layer.prob]\nname = "P"\n'
+    cfg = tmp_path / "ngl.toml"
+    cfg.write_text(toml)
+    assert cli.cmd_gen(cli._parse_args(["gen", "--image", em, "--image", prob, "--seg", a,
+                                        "--seg", b, "--config", str(cfg)])) == 0
+    captured = capsys.readouterr()
+    state = parse_url(captured.out.strip())
+    assert [lyr["name"] for lyr in state["layers"]] == ["em", "a", "P", "b"]
+    assert "order names 'gone'" in captured.err
+
+
+@pytest.mark.parametrize("doc, message", [
+    ({"view": {"axis_lines": "no"}}, "true or false"),
+    ({"view": {"order": "em"}}, "list of layer names"),
+    ({"view": {"order": []}}, "list of layer names"),
+    ({"view": {"order": ["em", "em"]}}, "twice"),
+    ({"layer": {"a": {"archive": 1}}}, "true or false"),
+])
+def test_an_order_axis_lines_or_archive_neuroglancer_cannot_use_is_refused(doc, message):
+    with pytest.raises(ConfigProblem, match=message):
+        parse(doc)

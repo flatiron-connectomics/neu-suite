@@ -19,6 +19,8 @@ on the command line wins over the file.
     cross_section_scale = 15.8  # 2D zoom
     layout = "4panel"
     select = "seg"              # the layer the side panel opens on
+    axis_lines = false          # showAxisLines (gen --hide-axis-lines)
+    order = ["em", "seg", "mito"]   # these layers first, in this order; the rest follow
 
     [layer.head]                # by layer name
     name = "Head"               # the name the viewer shows (gen --rename)
@@ -30,7 +32,8 @@ on the command line wins over the file.
     hover_highlight = false     # no highlight of the segment under the mouse
     skeletons = false           # the source's skeletons subsource (its Source-tab box)
     tab = "segments"            # the side panel's tab for this layer
-    hide = true                 # added switched off
+    hide = true                 # added switched off (gen --show overrides it)
+    archive = true              # archived: in the layer list's archive, not the layer bar
     all_segments = true         # every id its segment_properties lists
     color_by = ["col", "group"] # segmentColors by property, first one present (--color-by)
     link = "seg"                # share the selection with layer "seg" (linkedSegmentationGroup)
@@ -46,6 +49,9 @@ is shown in the other. A volume whose labels are another's ids — organelles la
 the neuron containing them — linked to that volume shows the selected neurons' organelles.
 It names the other layer by its path's name too, and follows a rename; a link to a layer
 the state lacks is reported and dropped.
+
+``[view] order`` names layers by their path's name as well; one the state lacks is reported
+and skipped. Layers carrying ``segmentColors`` still go last (``state.colored_last``).
 """
 
 from __future__ import annotations
@@ -67,14 +73,16 @@ LAYER_SWITCHES = {"pick": "pick", "hover_highlight": "hoverHighlight"}
 LAYER_SUBSOURCES = ("skeletons",)
 #: Side-panel tabs a ``[layer.NAME] tab`` may name (neuroglancer's own ids).
 LAYER_TABS = ("source", "rendering", "annotations", "segments")
-LAYER_FLAGS = ("hide", "all_segments")
+LAYER_FLAGS = ("hide", "all_segments", "archive")
 #: Keys the caller applies, as they need a store read or merge with flags.
 CALLER_KEYS = (*LAYER_FLAGS, "color_by", "name")
 #: ``[layer.NAME]`` keys linking it to another segmentation layer, and their state keys.
 LAYER_LINKS = {"link": "linkedSegmentationGroup", "link_colors": "linkedSegmentationColorGroup"}
-#: ``[view]`` keys: (how many numbers, or None for a string).
+#: ``[view]`` keys: how many numbers, None for a name, "switch" for true/false, or
+#: "names" for a list of layer names.
 VIEW_KEYS = {"position": 3, "projection_orientation": 4, "projection_scale": 1,
-             "cross_section_scale": 1, "layout": None, "select": None}
+             "cross_section_scale": 1, "layout": None, "select": None,
+             "axis_lines": "switch", "order": "names"}
 _SECTIONS = {"volume", "annotations", "view", "layer"}
 
 
@@ -124,6 +132,17 @@ def parse(doc: Mapping[str, Any], *, where: str = "config") -> dict[str, Any]:
                             f"{', '.join(VIEW_KEYS)}")
     for key, value in view.items():
         size = VIEW_KEYS[key]
+        if size == "switch":
+            if not isinstance(value, bool):
+                raise ConfigProblem(f"{where}: [view] {key} must be true or false")
+            continue
+        if size == "names":
+            if (not isinstance(value, list) or not value
+                    or not all(isinstance(v, str) and v for v in value)):
+                raise ConfigProblem(f"{where}: [view] {key} must be a list of layer names")
+            if len(set(value)) != len(value):
+                raise ConfigProblem(f"{where}: [view] {key} names a layer twice")
+            continue
         if size is None:
             if not isinstance(value, str) or not value:
                 raise ConfigProblem(f"{where}: [view] {key} must be a name")

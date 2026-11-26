@@ -87,6 +87,17 @@ def colored_last(layers: Sequence[Any]) -> list[Any]:
     return [lyr for lyr in layers if not any(lyr is c for c in colored)] + colored
 
 
+def ordered(layers: Sequence[dict], names: Sequence[str]) -> tuple[list[dict], list[str]]:
+    """``layers`` with those ``names`` names first, in that order, and the rest after in
+    their own order. Returns the layers and a note per name no layer has."""
+    by_name = {lyr.get("name"): lyr for lyr in layers}
+    first = [by_name[n] for n in names if n in by_name]
+    rest = [lyr for lyr in layers if not any(lyr is f for f in first)]
+    notes = [f"config [view] order names {n!r}: no such layer in this state, skipped"
+             for n in names if n not in by_name]
+    return first + rest, notes
+
+
 def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | None = None,
                 position_zyx: Sequence[float] | None = None,
                 layout: str = "4panel",
@@ -94,6 +105,7 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
                 projection_scale: float | None = None,
                 selected: str | None = None,
                 show_slices: bool | None = None,
+                show_axis_lines: bool | None = None,
                 projection_orientation: Sequence[float] | None = None,
                 frame: tuple | None = None) -> tuple[dict, str | None]:
     """A viewer state. Coordinates are given zyx and written xyz.
@@ -107,7 +119,7 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
 
     ``show_slices=False`` hides the cross-section planes inside the 3D panel, useful for
     meshes and skeletons; the 2D panels need ``layout="3d"`` instead. ``None`` leaves the
-    viewer's default (shown).
+    viewer's default (shown). ``show_axis_lines`` is the same for the axis lines.
 
     Layers carrying ``segmentColors`` go last (:func:`colored_last`).
     """
@@ -130,6 +142,8 @@ def build_state(layers: Sequence[dict], *, voxel_size_zyx=None, units: str | Non
         state["selectedLayer"] = {"visible": True, "layer": selected}
     if show_slices is not None:
         state["showSlices"] = bool(show_slices)
+    if show_axis_lines is not None:
+        state["showAxisLines"] = bool(show_axis_lines)
     if projection_orientation is not None:
         state["projectionOrientation"] = [float(v) for v in projection_orientation]
     return state, warning
@@ -552,6 +566,7 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
                projection_scale: float | None = None,
                selected: str | None = None,
                show_slices: bool | None = None,
+               show_axis_lines: bool | None = None,
                projection_orientation: Sequence[float] | None = None
                ) -> tuple[dict, list[str]]:
     """``base`` with ``layers`` appended. Returns the state and any notes worth printing.
@@ -584,6 +599,8 @@ def merge_into(base: Mapping[str, Any], layers: Sequence[dict], *,
         state["selectedLayer"] = {"visible": True, "layer": selected}
     if show_slices is not None:
         state["showSlices"] = bool(show_slices)
+    if show_axis_lines is not None:
+        state["showAxisLines"] = bool(show_axis_lines)
     if projection_orientation is not None:
         state["projectionOrientation"] = [float(v) for v in projection_orientation]
     return state, notes
