@@ -536,8 +536,9 @@ adds a layer switched off, and `--all-segments NAME` selects every segment that 
 `segment_properties` lists. Together, turning a layer on in the viewer shows its meshes in
 the 3D panel at once, with nothing to click. `--archive NAME` goes further for layers few
 viewers will want: the layer stays in the state but leaves the layer bar and is not drawn
-until restored from the layer list. `--show NAME` adds a layer switched on even where the
-`--config` file hides it, so one site file can serve a state that features that layer.
+until restored from the layer list. `--show NAME` adds a layer switched on, in the layer
+bar, even where the `--config` file hides or archives it, so one site file can serve a state
+that features that layer.
 
 ```{note}
 Everything after `#!` is a URL fragment and never reaches a server, so a link carries no

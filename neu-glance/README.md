@@ -68,7 +68,7 @@ to put first, in that order, the rest following), and `[layer.NAME]` with
 source's skeletons unloaded, until ticked in its Source tab), `tab`, `hide`, `archive`
 (kept in the state but off the layer bar until restored from the layer list),
 `all_segments`, `color_by` and `name`. One site file can serve several states: `--show NAME`
-adds a layer the file hides switched on.
+adds a layer the file hides or archives switched on, in the layer bar.
 
 A layer is named after the last component of its path (`s3://bucket/em.zarr` is `em.zarr`).
 `--rename em.zarr=EM`, or `name = "EM"` under `[layer."em.zarr"]`, changes the name the viewer

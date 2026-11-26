@@ -218,8 +218,9 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                             "shown at once. A layer flag names a layer as the viewer shows it, "
                             "or by its source location, and reaches an --into state's layers")
         q.add_argument("--show", action="append", default=None, metavar="LAYER_NAME",
-                       help="add this layer switched on, even where --config hides it "
-                            "(repeatable); switches on an --into state's hidden layer")
+                       help="add this layer switched on and in the layer bar, even where "
+                            "--config hides or archives it (repeatable); does the same for an "
+                            "--into state's layer")
         q.add_argument("--archive", action="append", default=None, metavar="LAYER_NAME",
                        help="archive this layer (repeatable): kept in the state but off the "
                             "layer bar and not drawn, until restored from the layer list. For "
@@ -362,12 +363,13 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
         hide = _layer_refs("--hide", getattr(args, "hide", None), targets)
         show = _layer_refs("--show", getattr(args, "show", None), targets)
         archive = _layer_refs("--archive", getattr(args, "archive", None), targets)
-        clash = sorted(set(hide) & set(show))
-        if clash:
-            raise SystemExit(f"--hide and --show both name {', '.join(clash)}")
-        # the config's hide and archive, for the layers added here (cmd_gen)
+        for flag, names in (("--hide", hide), ("--archive", archive)):
+            clash = sorted(set(names) & set(show))
+            if clash:
+                raise SystemExit(f"{flag} and --show both name {', '.join(clash)}")
+        # the config's hide and archive, for the layers added here (cmd_gen); --show wins
         hide += [n for n in getattr(args, "config_hide", None) or [] if n not in show]
-        archive += getattr(args, "config_archive", None) or []
+        archive += [n for n in getattr(args, "config_archive", None) or [] if n not in show]
         for lyr in targets:
             if lyr.get("name") in hide:
                 lyr["visible"] = False
@@ -375,6 +377,8 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
                 lyr.pop("visible", None)
             if lyr.get("name") in archive:
                 lyr["archived"] = True
+            elif lyr.get("name") in show:
+                lyr.pop("archived", None)
         selected_name = getattr(args, "select", None) or (
             layers[-1]["name"] if getattr(args, "select_last", False) and layers
             else selected)

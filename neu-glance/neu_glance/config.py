@@ -34,6 +34,7 @@ on the command line wins over the file.
     tab = "segments"            # the side panel's tab for this layer
     hide = true                 # added switched off (gen --show overrides it)
     archive = true              # archived: in the layer list's archive, not the layer bar
+                                # (gen --show overrides this too)
     all_segments = true         # every id its segment_properties lists
     color_by = ["col", "group"] # segmentColors by property, first one present (--color-by)
     link = "seg"                # share the selection with layer "seg" (linkedSegmentationGroup)

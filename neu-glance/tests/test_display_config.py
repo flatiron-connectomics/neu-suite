@@ -338,29 +338,31 @@ def test_layers_are_archived_from_the_config_or_a_flag(tmp_path, capsys):
     assert "archived" not in layers["em"]
 
 
-def test_show_overrides_the_configs_hide_but_not_hide(tmp_path, capsys):
+def test_show_overrides_the_configs_hide_and_archive_but_not_the_flags(tmp_path, capsys):
     a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
     b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
-    toml = '[layer.a]\nhide = true\n[layer.b]\nhide = true\n'
+    toml = '[layer.a]\nhide = true\narchive = true\n[layer.b]\nhide = true\narchive = true\n'
     state = _gen(tmp_path, capsys, toml, "--seg", a, "--seg", b, "--show", "a")
     layers = {lyr["name"]: lyr for lyr in state["layers"]}
-    assert "visible" not in layers["a"]
-    assert layers["b"]["visible"] is False
+    assert "visible" not in layers["a"] and "archived" not in layers["a"]
+    assert layers["b"]["visible"] is False and layers["b"]["archived"] is True
     cfg = tmp_path / "ngl.toml"
-    with pytest.raises(SystemExit, match="--hide and --show both name a"):
-        cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--hide", "a", "--show", "a",
-                                     "--config", str(cfg)]))
+    for flag in ("--hide", "--archive"):
+        with pytest.raises(SystemExit, match=f"{flag} and --show both name a"):
+            cli.cmd_gen(cli._parse_args(["gen", "--seg", a, flag, "a", "--show", "a",
+                                         "--config", str(cfg)]))
 
 
-def test_show_switches_on_a_hidden_layer_of_an_into_state(tmp_path, capsys):
+def test_show_restores_a_hidden_archived_layer_of_an_into_state(tmp_path, capsys):
     a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
-    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--hide", "a", "--format",
-                                        "state", "--out", str(tmp_path / "s.json")])) == 0
+    assert cli.cmd_gen(cli._parse_args(["gen", "--seg", a, "--hide", "a", "--archive", "a",
+                                        "--format", "state",
+                                        "--out", str(tmp_path / "s.json")])) == 0
     capsys.readouterr()
     assert cli.cmd_gen(cli._parse_args(["gen", "--into", str(tmp_path / "s.json"),
-                                        "--show", "a", "--archive", "a"])) == 0
+                                        "--show", "a"])) == 0
     layer = parse_url(capsys.readouterr().out.strip())["layers"][0]
-    assert "visible" not in layer and layer["archived"] is True
+    assert "visible" not in layer and "archived" not in layer
 
 
 def test_axis_lines_from_the_config_or_the_flag_and_left_out_otherwise(tmp_path, capsys):
