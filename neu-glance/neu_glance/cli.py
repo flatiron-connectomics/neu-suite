@@ -225,6 +225,10 @@ def _add_output_flags(q: argparse.ArgumentParser, *, formats: tuple[str, ...],
                        help="archive this layer (repeatable): kept in the state but off the "
                             "layer bar and not drawn, until restored from the layer list. For "
                             "layers few viewers will want")
+        q.add_argument("--unarchive", action="append", default=None, metavar="LAYER_NAME",
+                       help="keep this layer in the layer bar where --config archives it, "
+                            "switched on or off as it otherwise would be (repeatable); restores "
+                            "an --into state's archived layer")
         q.add_argument("--hide-axis-lines", action="store_true",
                        help="set showAxisLines false, removing the axis lines from the panels. "
                             "Omitted from the state unless passed")
@@ -363,13 +367,17 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
         hide = _layer_refs("--hide", getattr(args, "hide", None), targets)
         show = _layer_refs("--show", getattr(args, "show", None), targets)
         archive = _layer_refs("--archive", getattr(args, "archive", None), targets)
-        for flag, names in (("--hide", hide), ("--archive", archive)):
-            clash = sorted(set(names) & set(show))
+        unarchive = _layer_refs("--unarchive", getattr(args, "unarchive", None), targets)
+        restore = {*show, *unarchive}
+        for a, b, names, others in (("--hide", "--show", hide, show),
+                                    ("--archive", "--show", archive, show),
+                                    ("--archive", "--unarchive", archive, unarchive)):
+            clash = sorted(set(names) & set(others))
             if clash:
-                raise SystemExit(f"{flag} and --show both name {', '.join(clash)}")
-        # the config's hide and archive, for the layers added here (cmd_gen); --show wins
+                raise SystemExit(f"{a} and {b} both name {', '.join(clash)}")
+        # the config's hide and archive, for the layers added here (cmd_gen); the flags win
         hide += [n for n in getattr(args, "config_hide", None) or [] if n not in show]
-        archive += [n for n in getattr(args, "config_archive", None) or [] if n not in show]
+        archive += [n for n in getattr(args, "config_archive", None) or [] if n not in restore]
         for lyr in targets:
             if lyr.get("name") in hide:
                 lyr["visible"] = False
@@ -377,7 +385,7 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
                 lyr.pop("visible", None)
             if lyr.get("name") in archive:
                 lyr["archived"] = True
-            elif lyr.get("name") in show:
+            elif lyr.get("name") in restore:
                 lyr.pop("archived", None)
         selected_name = getattr(args, "select", None) or (
             layers[-1]["name"] if getattr(args, "select_last", False) and layers
@@ -398,7 +406,7 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
         )
         if into and fmt == "url" and _is_cloud_state(into) and not getattr(args, "expand",
                                                                             False):
-            changed = (bool(layers or hide or show or archive or modified)
+            changed = (bool(layers or hide or show or archive or unarchive or modified)
                        or any(v is not None for v in shaping.values()))
             if changed:
                 raise SystemExit(
@@ -415,7 +423,8 @@ def _emit(args, layers: list[dict], *, voxel=None, units=None, frame=None,
             print(f"added {len(layers)} layer(s) to {len(base.get('layers') or [])} "
                   f"already in {into if '#!' not in into else 'the given URL'}"
                   + ("" if layers else " — changing its layers"
-                     if modified or hide or show or archive else " — re-emitting it as is"),
+                     if modified or hide or show or archive or unarchive
+                     else " — re-emitting it as is"),
                   file=err)
             print(f"  kept the existing dimensions, position and zoom", file=err)
             for note in notes:
@@ -1080,7 +1089,7 @@ def cmd_gen(args) -> int:
             print(f"  {note}", file=err)
     except StateProblem as e:
         raise SystemExit(str(e)) from None
-    for flag in ("hide", "show", "archive", "config_hide", "config_archive"):
+    for flag in ("hide", "show", "archive", "unarchive", "config_hide", "config_archive"):
         setattr(args, flag, [renames.get(h, h) for h in getattr(args, flag) or []])
     args.select = renames.get(args.select, args.select)
     selected = (base or {}).get("selectedLayer")

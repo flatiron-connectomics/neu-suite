@@ -347,10 +347,22 @@ def test_show_overrides_the_configs_hide_and_archive_but_not_the_flags(tmp_path,
     assert "visible" not in layers["a"] and "archived" not in layers["a"]
     assert layers["b"]["visible"] is False and layers["b"]["archived"] is True
     cfg = tmp_path / "ngl.toml"
-    for flag in ("--hide", "--archive"):
-        with pytest.raises(SystemExit, match=f"{flag} and --show both name a"):
-            cli.cmd_gen(cli._parse_args(["gen", "--seg", a, flag, "a", "--show", "a",
+    for flag, other in (("--hide", "--show"), ("--archive", "--show"),
+                        ("--archive", "--unarchive")):
+        with pytest.raises(SystemExit, match=f"{flag} and {other} both name a"):
+            cli.cmd_gen(cli._parse_args(["gen", "--seg", a, flag, "a", other, "a",
                                          "--config", str(cfg)]))
+
+
+def test_unarchive_keeps_a_layer_in_the_bar_and_as_the_config_switches_it(tmp_path, capsys):
+    a = _volume(tmp_path, "a", kind="segmentation", dtype="uint64")
+    b = _volume(tmp_path, "b", kind="segmentation", dtype="uint64")
+    toml = '[layer.a]\nhide = true\narchive = true\n[layer.b]\narchive = true\n'
+    state = _gen(tmp_path, capsys, toml, "--seg", a, "--seg", b,
+                 "--unarchive", "a", "--unarchive", "b")
+    layers = {lyr["name"]: lyr for lyr in state["layers"]}
+    assert layers["a"]["visible"] is False and "archived" not in layers["a"]
+    assert "visible" not in layers["b"] and "archived" not in layers["b"]
 
 
 def test_show_restores_a_hidden_archived_layer_of_an_into_state(tmp_path, capsys):
